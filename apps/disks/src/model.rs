@@ -233,9 +233,10 @@ impl Partition {
     /// Display name for the filesystem (label preferred, then fstype).
     pub fn display_label(&self) -> String {
         if let Some(l) = &self.label
-            && !l.is_empty() {
-                return l.clone();
-            }
+            && !l.is_empty()
+        {
+            return l.clone();
+        }
         self.fstype.clone().unwrap_or_else(|| "—".to_string())
     }
 }

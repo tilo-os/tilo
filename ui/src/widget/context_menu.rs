@@ -297,7 +297,12 @@ impl Widget for ContextMenu {
                 origin.y + f64::from(l.location.y),
             )
         };
-        self.rect = Rect::new(x0, y0, x0 + f64::from(l.size.width), y0 + f64::from(l.size.height));
+        self.rect = Rect::new(
+            x0,
+            y0,
+            x0 + f64::from(l.size.width),
+            y0 + f64::from(l.size.height),
+        );
     }
 
     fn draw(

@@ -339,10 +339,13 @@ pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
         }
         "microphone" => {
             let mut out = Vec::new();
-            let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| {
+            let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+                || {
                     // SAFETY: getuid always succeeds.
                     PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
-                }, PathBuf::from);
+                },
+                PathBuf::from,
+            );
             let pipewire = runtime_dir.join("pipewire-0");
             if pipewire.exists() {
                 out.push(pipewire);

@@ -823,7 +823,8 @@ impl Widget for FilePicker {
                 transform
                     * Affine::translate((
                         self.filter_rect.x0 + 8.0,
-                        self.filter_rect.y0 + (self.filter_rect.height() - f64::from(row_size)) / 2.0,
+                        self.filter_rect.y0
+                            + (self.filter_rect.height() - f64::from(row_size)) / 2.0,
                     )),
                 None,
             );
@@ -1039,7 +1040,8 @@ impl FilePicker {
     fn crumb_label_for(&self, idx: usize) -> Option<String> {
         let (target, _) = self.crumb_rects.get(idx)?;
         let label = target
-            .file_name().map_or_else(|| "/".to_string(), |n| n.to_string_lossy().into_owned());
+            .file_name()
+            .map_or_else(|| "/".to_string(), |n| n.to_string_lossy().into_owned());
         Some(label)
     }
 }

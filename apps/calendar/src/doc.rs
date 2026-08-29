@@ -251,9 +251,10 @@ impl CalDoc {
         let target = id.to_string();
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
-                && matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target) {
-                    return;
-                }
+                && matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target)
+            {
+                return;
+            }
         }
         let idx = doc.length(&list);
         let _ = doc.insert(&list, idx, target.as_str());
@@ -289,9 +290,10 @@ impl CalDoc {
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
                 && let automerge::ScalarValue::Str(s) = v.as_ref()
-                    && let Ok(id) = s.as_str().parse::<Id>() {
-                        out.push(id);
-                    }
+                && let Ok(id) = s.as_str().parse::<Id>()
+            {
+                out.push(id);
+            }
         }
         out
     }
@@ -323,9 +325,10 @@ impl CalDoc {
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
                 && let automerge::ScalarValue::Str(s) = v.as_ref()
-                    && s.as_str().split('\t').nth(1) == Some(uid.as_str()) {
-                        return;
-                    }
+                && s.as_str().split('\t').nth(1) == Some(uid.as_str())
+            {
+                return;
+            }
         }
         let entry = format!("{calendar_id}\t{uid}");
         let idx = doc.length(&list);
@@ -362,13 +365,15 @@ impl CalDoc {
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
-                && let automerge::ScalarValue::Str(s) = v.as_ref() {
-                    let mut parts = s.as_str().splitn(2, '\t');
-                    if let (Some(cal), Some(uid)) = (parts.next(), parts.next())
-                        && let Ok(id) = uid.parse::<Id>() {
-                            out.push((cal.to_string(), id));
-                        }
+                && let automerge::ScalarValue::Str(s) = v.as_ref()
+            {
+                let mut parts = s.as_str().splitn(2, '\t');
+                if let (Some(cal), Some(uid)) = (parts.next(), parts.next())
+                    && let Ok(id) = uid.parse::<Id>()
+                {
+                    out.push((cal.to_string(), id));
                 }
+            }
         }
         out
     }

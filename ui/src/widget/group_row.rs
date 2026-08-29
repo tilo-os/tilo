@@ -961,8 +961,14 @@ impl GroupRow {
                 // Don't start a group drag while a tab-detach or resize
                 // drag is already in flight, or one is already tracked.
                 if self.group_drag.is_some()
-                    || self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight)
-                    || self.handles.iter().any(super::resize_handle::ResizeHandle::is_dragging)
+                    || self
+                        .groups
+                        .iter()
+                        .any(super::window_group::WindowGroup::drag_in_flight)
+                    || self
+                        .handles
+                        .iter()
+                        .any(super::resize_handle::ResizeHandle::is_dragging)
                 {
                     return false;
                 }
@@ -1281,7 +1287,10 @@ impl Widget for GroupRow {
             self.laid_spans = spans;
             let steady = self.snap_anim.is_none()
                 && !self.group_drag_active()
-                && !self.handles.iter().any(super::resize_handle::ResizeHandle::is_dragging);
+                && !self
+                    .handles
+                    .iter()
+                    .any(super::resize_handle::ResizeHandle::is_dragging);
             if geometry_moved
                 && steady
                 && let Some(target) = self.strip_frame_target(&self.laid_spans)
@@ -1388,7 +1397,10 @@ impl Widget for GroupRow {
         // During a make-space slide, each handle travels with the group
         // on its right — otherwise two adjacent white cards read as one
         // wide window mid-slide.
-        let any_drag = self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight);
+        let any_drag = self
+            .groups
+            .iter()
+            .any(super::window_group::WindowGroup::drag_in_flight);
         if !any_drag && maximized_idx.is_none() {
             let remaining = 1.0 - self.shift_anim_t();
             let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
@@ -1434,7 +1446,10 @@ impl Widget for GroupRow {
             } else if ins >= self.groups.len() {
                 self.groups.last().unwrap().get_rect().x1 + 5.0
             } else {
-                f64::midpoint(self.groups[ins - 1].get_rect().x1, self.groups[ins].get_rect().x0)
+                f64::midpoint(
+                    self.groups[ins - 1].get_rect().x1,
+                    self.groups[ins].get_rect().x0,
+                )
             };
             let y0 = self.rect.y0;
             let y1 = self.rect.y1;
@@ -1475,7 +1490,10 @@ impl Widget for GroupRow {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             // Gate on an active drag so the "drop here" indicator never
             // shows for idle cursor motion.
-            let any_drag = self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight);
+            let any_drag = self
+                .groups
+                .iter()
+                .any(super::window_group::WindowGroup::drag_in_flight);
             self.hover_gap_idx = if any_drag {
                 self.gap_index_for(self.last_cursor)
             } else {
@@ -1522,7 +1540,10 @@ impl Widget for GroupRow {
         // Resize handles dispatch FIRST so a press in the gap claims the
         // event before adjacent groups see it. Skipped during any
         // child's tab-drag, which owns the gap itself.
-        let any_drag_inflight = self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight);
+        let any_drag_inflight = self
+            .groups
+            .iter()
+            .any(super::window_group::WindowGroup::drag_in_flight);
         if !any_drag_inflight {
             for (i, h) in self.handles.iter_mut().enumerate() {
                 let Some(&node_id) = self.handle_node_ids.get(i) else {
@@ -1628,7 +1649,12 @@ impl Widget for GroupRow {
         // CursorMoved only reclassifies on motion, so a child that
         // dropped its `pending_drag` internally could otherwise leave
         // this stuck once every drag has cleared.
-        if self.hover_gap_idx.is_some() && !self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight) {
+        if self.hover_gap_idx.is_some()
+            && !self
+                .groups
+                .iter()
+                .any(super::window_group::WindowGroup::drag_in_flight)
+        {
             self.hover_gap_idx = None;
         }
 

@@ -195,12 +195,14 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len()
-            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
         out.push(bytes[i]);
         i += 1;
     }
@@ -211,8 +213,10 @@ fn percent_decode(s: &str) -> String {
 pub fn label_for_paths(paths: &[std::path::PathBuf]) -> String {
     match paths {
         [] => "1 item".to_string(),
-        [one] => one
-            .file_name().map_or_else(|| one.display().to_string(), |n| n.to_string_lossy().into_owned()),
+        [one] => one.file_name().map_or_else(
+            || one.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        ),
         many => format!("{} items", many.len()),
     }
 }

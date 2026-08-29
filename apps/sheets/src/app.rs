@@ -561,10 +561,11 @@ impl SheetsApp {
     fn initialize(&mut self, doc: &mut AutoCommit) {
         if self.persist
             && let Some(path) = workbook_path()
-                && let Ok(bytes) = std::fs::read(&path)
-                    && let Ok(mut saved) = AutoCommit::load(&bytes) {
-                        let _ = doc.merge(&mut saved);
-                    }
+            && let Ok(bytes) = std::fs::read(&path)
+            && let Ok(mut saved) = AutoCommit::load(&bytes)
+        {
+            let _ = doc.merge(&mut saved);
+        }
         if SheetsDoc::is_empty(doc) {
             if self.seed_sample_data {
                 seed_workbook(doc);
@@ -627,10 +628,12 @@ impl SheetsApp {
         let heads = doc.get_heads();
         let sheet = SheetsDoc::active_index(doc);
         if let Some(c) = &self.cache
-            && c.sheet == sheet && c.heads == heads {
-                self.active_sheet = sheet;
-                return;
-            }
+            && c.sheet == sheet
+            && c.heads == heads
+        {
+            self.active_sheet = sheet;
+            return;
+        }
 
         self.active_sheet = sheet;
         self.sheet_names = SheetsDoc::sheet_names(doc);
@@ -648,9 +651,10 @@ impl SheetsApp {
                 continue; // user set it explicitly
             }
             if let Some(body) = raw.strip_prefix('=')
-                && let Some(inferred) = formula::infer_result_format(body, &snap.fmt) {
-                    fmt.insert(*addr, inferred);
-                }
+                && let Some(inferred) = formula::infer_result_format(body, &snap.fmt)
+            {
+                fmt.insert(*addr, inferred);
+            }
         }
 
         self.cache = Some(ReloadCache {
@@ -1109,9 +1113,10 @@ impl SheetsApp {
         for (addr, raw) in &snap.raw {
             if !snap.fmt.contains_key(addr)
                 && let Some(body) = raw.strip_prefix('=')
-                    && let Some(inferred) = formula::infer_result_format(body, &snap.fmt) {
-                        fmt.insert(*addr, inferred);
-                    }
+                && let Some(inferred) = formula::infer_result_format(body, &snap.fmt)
+            {
+                fmt.insert(*addr, inferred);
+            }
         }
         crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values)
     }
@@ -1503,8 +1508,7 @@ impl SheetsApp {
         self.reload(doc);
         self.status = format!(
             "Inserted column {}",
-            crate::model::addr_to_a1(c0, 0)
-                .trim_end_matches(|ch: char| ch.is_ascii_digit())
+            crate::model::addr_to_a1(c0, 0).trim_end_matches(|ch: char| ch.is_ascii_digit())
         );
     }
 
@@ -1514,8 +1518,7 @@ impl SheetsApp {
         self.reload(doc);
         self.status = format!(
             "Deleted column {}",
-            crate::model::addr_to_a1(c0, 0)
-                .trim_end_matches(|ch: char| ch.is_ascii_digit())
+            crate::model::addr_to_a1(c0, 0).trim_end_matches(|ch: char| ch.is_ascii_digit())
         );
     }
 
@@ -2085,24 +2088,23 @@ impl SheetsApp {
             &ff_shape,
         );
         // Selection highlight behind the text (drawn whenever editing).
-        if editing
-            && let Some((s, e)) = self.grid.edit_selection() {
-                let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
-                let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
-                let sel_rect = Rect::new(
-                    x0,
-                    self.formula_field_rect.y0 + 5.0,
-                    x1,
-                    self.formula_field_rect.y1 - 5.0,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.accent[5].with_alpha_factor(0.30),
-                    None,
-                    &sel_rect,
-                );
-            }
+        if editing && let Some((s, e)) = self.grid.edit_selection() {
+            let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
+            let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
+            let sel_rect = Rect::new(
+                x0,
+                self.formula_field_rect.y0 + 5.0,
+                x1,
+                self.formula_field_rect.y1 - 5.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5].with_alpha_factor(0.30),
+                None,
+                &sel_rect,
+            );
+        }
         // Formulas (whether being edited OR merely selected) tint each cell
         // reference to match the coloured outlines on the grid; plain values
         // draw in the body colour.
@@ -2128,20 +2130,19 @@ impl SheetsApp {
             );
         }
         // Caret in the formula bar while editing.
-        if editing
-            && let Some(caret) = self.grid.edit_caret() {
-                let cx = self.formula_char_x.get(caret).copied().unwrap_or(text_x0);
-                scene.stroke(
-                    &Stroke::new(1.5),
-                    transform,
-                    colors.accent[5],
-                    None,
-                    &Line::new(
-                        (cx, self.formula_field_rect.y0 + 5.0),
-                        (cx, self.formula_field_rect.y1 - 5.0),
-                    ),
-                );
-            }
+        if editing && let Some(caret) = self.grid.edit_caret() {
+            let cx = self.formula_char_x.get(caret).copied().unwrap_or(text_x0);
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                colors.accent[5],
+                None,
+                &Line::new(
+                    (cx, self.formula_field_rect.y0 + 5.0),
+                    (cx, self.formula_field_rect.y1 - 5.0),
+                ),
+            );
+        }
         scene.pop_layer();
 
         // Bottom strip: sheet tabs + status.
@@ -2202,7 +2203,8 @@ impl SheetsApp {
                 &name,
                 sm,
                 color,
-                transform * Affine::translate((tx, rect.y0 + (rect.height() - f64::from(sm)) / 2.0)),
+                transform
+                    * Affine::translate((tx, rect.y0 + (rect.height() - f64::from(sm)) / 2.0)),
                 None,
                 if active {
                     TextWeight::Semibold
@@ -2936,8 +2938,10 @@ fn parse_ref_target(s: &str) -> Option<(Addr, Addr)> {
 
 /// A short, user-facing label for a path (its file name) for status messages.
 fn file_label(path: &std::path::Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str()).map_or_else(|| path.display().to_string(), std::string::ToString::to_string)
+    path.file_name().and_then(|s| s.to_str()).map_or_else(
+        || path.display().to_string(),
+        std::string::ToString::to_string,
+    )
 }
 
 impl Widget for SheetsApp {
@@ -3094,9 +3098,10 @@ impl Widget for SheetsApp {
     /// Switch to the sheet a chosen palette row identifies.
     fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(idx) = crate::search_provider::SheetSearchProvider::parse_action_id(action_id)
-            && idx < self.sheet_names.len() {
-                self.switch_sheet(doc, idx);
-            }
+            && idx < self.sheet_names.len()
+        {
+            self.switch_sheet(doc, idx);
+        }
     }
 
     fn handle_event(
@@ -3139,10 +3144,7 @@ impl Widget for SheetsApp {
                 // An active inline rename is modal: a click outside its field
                 // commits it (Excel behaviour).
                 if self.tab_rename.is_some() {
-                    let inside = self
-                        .tab_rename
-                        .as_ref()
-                        .is_some_and(|r| r.rect.contains(p));
+                    let inside = self.tab_rename.as_ref().is_some_and(|r| r.rect.contains(p));
                     if !inside {
                         self.commit_tab_rename(state);
                     }
@@ -3341,11 +3343,11 @@ impl Widget for SheetsApp {
                         .iter()
                         .find(|(r, _)| r.contains(p))
                         .map(|(_, i)| *i)
-                    {
-                        self.open_tab_menu(idx);
-                        self.dirty = true;
-                        *handled = true;
-                    }
+                {
+                    self.open_tab_menu(idx);
+                    self.dirty = true;
+                    *handled = true;
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -3368,7 +3370,9 @@ impl Widget for SheetsApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (-f64::from(*x) * 48.0, -f64::from(*y) * 48.0),
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        (-f64::from(*x) * 48.0, -f64::from(*y) * 48.0)
+                    }
                     MouseScrollDelta::PixelDelta(pos) => {
                         (-pos.x / scale_factor, -pos.y / scale_factor)
                     }
@@ -3403,21 +3407,25 @@ impl Widget for SheetsApp {
                 // Ctrl+K opens the command palette.
                 if let WindowEvent::KeyboardInput { event: ke, .. } = event {
                     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    if ke.state.is_pressed() && ctrl && !self.grid.is_editing()
+                    if ke.state.is_pressed()
+                        && ctrl
+                        && !self.grid.is_editing()
                         && let winit::keyboard::Key::Character(c) = &ke.logical_key
-                            && c.as_str().eq_ignore_ascii_case("k") {
-                                self.open_command_palette();
-                                *handled = true;
-                                return;
-                            }
+                        && c.as_str().eq_ignore_ascii_case("k")
+                    {
+                        self.open_command_palette();
+                        *handled = true;
+                        return;
+                    }
                 }
 
                 // The Name box owns the keyboard while a Go-To entry is open.
                 if self.name_box_edit.is_some() {
                     if let WindowEvent::KeyboardInput { event: ke, .. } = event
-                        && ke.state.is_pressed() {
-                            self.name_box_key(ke, modifiers);
-                        }
+                        && ke.state.is_pressed()
+                    {
+                        self.name_box_key(ke, modifiers);
+                    }
                     self.dirty = true;
                     *handled = true;
                     return;
@@ -3426,9 +3434,10 @@ impl Widget for SheetsApp {
                 // An inline rename owns the keyboard while it is open.
                 if self.tab_rename.is_some() {
                     if let WindowEvent::KeyboardInput { event: ke, .. } = event
-                        && ke.state.is_pressed() {
-                            self.tab_rename_key(state, ke, modifiers);
-                        }
+                        && ke.state.is_pressed()
+                    {
+                        self.tab_rename_key(state, ke, modifiers);
+                    }
                     self.dirty = true;
                     *handled = true;
                     return;
@@ -3437,66 +3446,69 @@ impl Widget for SheetsApp {
                 // Escape closes any open overlay.
                 if let WindowEvent::KeyboardInput { event: ke, .. } = event
                     && ke.state.is_pressed()
-                        && matches!(
-                            ke.logical_key,
-                            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
-                        )
-                        && (self.open_menu != OpenMenu::None
-                            || self.settings_panel != SettingsPanel::None
-                            || self.tab_menu_target.is_some())
-                    {
-                        self.open_menu = OpenMenu::None;
-                        self.settings_panel = SettingsPanel::None;
-                        self.tab_menu_target = None;
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
+                    && matches!(
+                        ke.logical_key,
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                    )
+                    && (self.open_menu != OpenMenu::None
+                        || self.settings_panel != SettingsPanel::None
+                        || self.tab_menu_target.is_some())
+                {
+                    self.open_menu = OpenMenu::None;
+                    self.settings_panel = SettingsPanel::None;
+                    self.tab_menu_target = None;
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
 
                 // Clipboard chords + select-all operate on the grid selection,
                 // so they are skipped while an in-cell edit owns the keyboard.
                 if let WindowEvent::KeyboardInput { event: ke, .. } = event {
                     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    if ke.state.is_pressed() && ctrl && !self.grid.is_editing()
-                        && let winit::keyboard::Key::Character(c) = &ke.logical_key {
-                            match c.as_str() {
-                                "c" | "C" => {
-                                    self.copy_selection(false);
-                                    *handled = true;
-                                    return;
-                                }
-                                "x" | "X" => {
-                                    self.copy_selection(true);
-                                    *handled = true;
-                                    return;
-                                }
-                                "v" | "V" => {
-                                    self.paste(state);
-                                    *handled = true;
-                                    self.dirty = true;
-                                    return;
-                                }
-                                "a" | "A" => {
-                                    self.grid.select_used_range();
-                                    *handled = true;
-                                    self.dirty = true;
-                                    return;
-                                }
-                                "d" | "D" => {
-                                    self.fill_down(state);
-                                    *handled = true;
-                                    self.dirty = true;
-                                    return;
-                                }
-                                "r" | "R" => {
-                                    self.fill_right(state);
-                                    *handled = true;
-                                    self.dirty = true;
-                                    return;
-                                }
-                                _ => {}
+                    if ke.state.is_pressed()
+                        && ctrl
+                        && !self.grid.is_editing()
+                        && let winit::keyboard::Key::Character(c) = &ke.logical_key
+                    {
+                        match c.as_str() {
+                            "c" | "C" => {
+                                self.copy_selection(false);
+                                *handled = true;
+                                return;
                             }
+                            "x" | "X" => {
+                                self.copy_selection(true);
+                                *handled = true;
+                                return;
+                            }
+                            "v" | "V" => {
+                                self.paste(state);
+                                *handled = true;
+                                self.dirty = true;
+                                return;
+                            }
+                            "a" | "A" => {
+                                self.grid.select_used_range();
+                                *handled = true;
+                                self.dirty = true;
+                                return;
+                            }
+                            "d" | "D" => {
+                                self.fill_down(state);
+                                *handled = true;
+                                self.dirty = true;
+                                return;
+                            }
+                            "r" | "R" => {
+                                self.fill_right(state);
+                                *handled = true;
+                                self.dirty = true;
+                                return;
+                            }
+                            _ => {}
                         }
+                    }
                 }
 
                 // Clipboard + select-all chords while a cell/formula-bar edit
@@ -3504,41 +3516,44 @@ impl Widget for SheetsApp {
                 // (so Ctrl+V pastes text instead of inserting the letter 'v').
                 if let WindowEvent::KeyboardInput { event: ke, .. } = event {
                     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    if ke.state.is_pressed() && ctrl && self.grid.is_editing()
-                        && let winit::keyboard::Key::Character(c) = &ke.logical_key {
-                            match c.as_str() {
-                                "a" | "A" => {
-                                    self.grid.select_all_edit();
-                                    *handled = true;
-                                    self.dirty = true;
-                                    return;
-                                }
-                                "c" | "C" => {
-                                    if let Some(t) = self.grid.edit_selected_text() {
-                                        ui::clipboard_copy(&t);
-                                    }
-                                    *handled = true;
-                                    return;
-                                }
-                                "x" | "X" => {
-                                    if let Some(t) = self.grid.edit_cut_text() {
-                                        ui::clipboard_copy(&t);
-                                    }
-                                    *handled = true;
-                                    self.dirty = true;
-                                    return;
-                                }
-                                "v" | "V" => {
-                                    if let Some(t) = ui::clipboard_paste() {
-                                        self.grid.edit_paste_text(&t);
-                                    }
-                                    *handled = true;
-                                    self.dirty = true;
-                                    return;
-                                }
-                                _ => {}
+                    if ke.state.is_pressed()
+                        && ctrl
+                        && self.grid.is_editing()
+                        && let winit::keyboard::Key::Character(c) = &ke.logical_key
+                    {
+                        match c.as_str() {
+                            "a" | "A" => {
+                                self.grid.select_all_edit();
+                                *handled = true;
+                                self.dirty = true;
+                                return;
                             }
+                            "c" | "C" => {
+                                if let Some(t) = self.grid.edit_selected_text() {
+                                    ui::clipboard_copy(&t);
+                                }
+                                *handled = true;
+                                return;
+                            }
+                            "x" | "X" => {
+                                if let Some(t) = self.grid.edit_cut_text() {
+                                    ui::clipboard_copy(&t);
+                                }
+                                *handled = true;
+                                self.dirty = true;
+                                return;
+                            }
+                            "v" | "V" => {
+                                if let Some(t) = ui::clipboard_paste() {
+                                    self.grid.edit_paste_text(&t);
+                                }
+                                *handled = true;
+                                self.dirty = true;
+                                return;
+                            }
+                            _ => {}
                         }
+                    }
                 }
 
                 let mut out = Vec::new();
@@ -3700,16 +3715,18 @@ impl SheetsApp {
             }
             Key::Named(NamedKey::Backspace) => {
                 if let Some(r) = &mut self.tab_rename
-                    && r.caret > 0 {
-                        r.chars.remove(r.caret - 1);
-                        r.caret -= 1;
-                    }
+                    && r.caret > 0
+                {
+                    r.chars.remove(r.caret - 1);
+                    r.caret -= 1;
+                }
             }
             Key::Named(NamedKey::Delete) => {
                 if let Some(r) = &mut self.tab_rename
-                    && r.caret < r.chars.len() {
-                        r.chars.remove(r.caret);
-                    }
+                    && r.caret < r.chars.len()
+                {
+                    r.chars.remove(r.caret);
+                }
             }
             Key::Named(NamedKey::ArrowLeft) => {
                 if let Some(r) = &mut self.tab_rename {
@@ -3718,9 +3735,10 @@ impl SheetsApp {
             }
             Key::Named(NamedKey::ArrowRight) => {
                 if let Some(r) = &mut self.tab_rename
-                    && r.caret < r.chars.len() {
-                        r.caret += 1;
-                    }
+                    && r.caret < r.chars.len()
+                {
+                    r.caret += 1;
+                }
             }
             Key::Named(NamedKey::Home) => {
                 if let Some(r) = &mut self.tab_rename {
@@ -4393,7 +4411,9 @@ mod tests {
     fn copy_paste_preserves_value_and_format() {
         // Copy a currency cell into an empty one; the raw and the currency
         // format both come across, and it recomputes to the same number.
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clip = CLIP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((1, 1)); // B2 = 1200, currency
         app.copy_selection(false);
@@ -4412,7 +4432,9 @@ mod tests {
         // Copy E2 (`=SUM(B2:D2)`) and paste it over F3: the relative refs
         // shift by (+1 col, +1 row) to `=SUM(C3:E3)`, overwriting F3's seeded
         // AVERAGE, and the pasted formula recomputes against the new operands.
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clip = CLIP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2
         app.copy_selection(false);
@@ -4425,7 +4447,9 @@ mod tests {
 
     #[test]
     fn cut_moves_cell_and_clears_source() {
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clip = CLIP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((0, 0)); // A1 = "Category"
         app.copy_selection(true); // cut
@@ -4439,7 +4463,9 @@ mod tests {
     /// are *not* re-relativised (unlike a copy). The real cut→paste path.
     #[test]
     fn cut_paste_formula_does_not_relativize() {
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clip = CLIP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
         app.copy_selection(true); // cut
@@ -4459,7 +4485,9 @@ mod tests {
     /// real range-paste path.
     #[test]
     fn paste_tiles_a_formula_across_a_range() {
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clip = CLIP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
         app.copy_selection(false);

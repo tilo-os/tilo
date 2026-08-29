@@ -237,13 +237,15 @@ impl ChatApp {
                 },
             ..
         } = event
-            && !modifiers.state().shift_key() && self.focused_composer().value().is_empty() {
-                if let Some(id) = self.last_own_message_id() {
-                    self.begin_edit(id);
-                    self.reload(doc);
-                }
-                return;
+            && !modifiers.state().shift_key()
+            && self.focused_composer().value().is_empty()
+        {
+            if let Some(id) = self.last_own_message_id() {
+                self.begin_edit(id);
+                self.reload(doc);
             }
+            return;
+        }
         let key = self.draft_key();
         drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
         if self.focused_composer_mut().take_submit() {
@@ -483,10 +485,14 @@ impl ChatApp {
                     let channel = self
                         .ws_channels()
                         .into_iter()
-                        .find(|c| c.kind == ChannelKind::Voice).map_or_else(|| {
-                            let ws = self.active_ws.clone();
-                            ChatDoc::create_channel(doc, &ws, "", "Voice", ChannelKind::Voice)
-                        }, |c| c.id.clone());
+                        .find(|c| c.kind == ChannelKind::Voice)
+                        .map_or_else(
+                            || {
+                                let ws = self.active_ws.clone();
+                                ChatDoc::create_channel(doc, &ws, "", "Voice", ChannelKind::Voice)
+                            },
+                            |c| c.id.clone(),
+                        );
                     self.join_voice(&channel, doc);
                 }
             }
@@ -979,10 +985,11 @@ impl ChatApp {
             }
             Key::Character(s) => {
                 if let Some((_, text)) = &mut self.rename
-                    && s.chars().all(|c| !c.is_control()) {
-                        text.push_str(s);
-                        self.caret = text.chars().count();
-                    }
+                    && s.chars().all(|c| !c.is_control())
+                {
+                    text.push_str(s);
+                    self.caret = text.chars().count();
+                }
                 true
             }
             _ => true, // swallow everything else while renaming
@@ -1182,7 +1189,8 @@ impl ChatApp {
         }
         let path_str = path.to_string_lossy().into_owned();
         let name = path
-            .file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+            .file_name()
+            .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
         let attachment = if crate::picker::is_video_name(&name) {
             let size = std::fs::metadata(path).map_or(0, |m| m.len());
             // A video's pixel dimensions need a container probe (unavailable in

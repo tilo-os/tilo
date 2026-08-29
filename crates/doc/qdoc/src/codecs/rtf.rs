@@ -296,25 +296,26 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
 
         if skip_depth.is_none()
             && let Token::Control(w, _) = tok
-                && w == "colortbl" {
-                    let mut j = idx + 1;
-                    let mut inner_depth = 1; // we are inside the colortbl's group
-                    let start = j;
-                    while j < tokens.len() && inner_depth > 0 {
-                        match &tokens[j] {
-                            Token::GroupOpen => inner_depth += 1,
-                            Token::GroupClose => inner_depth -= 1,
-                            _ => {}
-                        }
-                        if inner_depth == 0 {
-                            break;
-                        }
-                        j += 1;
-                    }
-                    colors = parse_color_table(&tokens[start..j]);
-                    idx = j;
-                    continue;
+            && w == "colortbl"
+        {
+            let mut j = idx + 1;
+            let mut inner_depth = 1; // we are inside the colortbl's group
+            let start = j;
+            while j < tokens.len() && inner_depth > 0 {
+                match &tokens[j] {
+                    Token::GroupOpen => inner_depth += 1,
+                    Token::GroupClose => inner_depth -= 1,
+                    _ => {}
                 }
+                if inner_depth == 0 {
+                    break;
+                }
+                j += 1;
+            }
+            colors = parse_color_table(&tokens[start..j]);
+            idx = j;
+            continue;
+        }
 
         match tok {
             Token::GroupOpen => {
@@ -327,9 +328,10 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                     stack.pop();
                 }
                 if let Some(sd) = skip_depth
-                    && depth == sd {
-                        skip_depth = None;
-                    }
+                    && depth == sd
+                {
+                    skip_depth = None;
+                }
                 depth = depth.saturating_sub(1);
             }
             Token::Symbol(sym) => {

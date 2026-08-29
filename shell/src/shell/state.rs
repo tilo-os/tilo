@@ -2045,7 +2045,9 @@ impl WorkspaceTree {
     ) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-        let peers_id = if let Some((_, id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() { id } else {
+        let peers_id = if let Some((_, id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() {
+            id
+        } else {
             // Don't mint an empty map — a room nobody has named
             // anyone in produces no change at all.
             if names.is_empty() {
@@ -2734,12 +2736,13 @@ impl WorkspaceTree {
     fn hydrate_tab(rep: ReplicatedTab) -> Tab {
         let title = rep.title;
         Tab {
-            tile: rep
-                .tile
-                .map_or(TileContent::Stub {
+            tile: rep.tile.map_or(
+                TileContent::Stub {
                     kind: AppKind::Other(String::new()),
                     label: String::new(),
-                }, |tile| Self::localise_tile(tile, None, &title)),
+                },
+                |tile| Self::localise_tile(tile, None, &title),
+            ),
             id: rep.id,
             title,
         }
@@ -2757,10 +2760,10 @@ impl WorkspaceTree {
                 // Already resolved here, to our own instance or the same
                 // waypoint — the remote tile has nothing to add.
                 match current {
-                    Some(TileContent::Foreign { app_id: local, .. } | TileContent::PeerWindow {
-app_id: local, .. })
-                        if local.eq_ignore_ascii_case(&app_id) =>
-                    {
+                    Some(
+                        TileContent::Foreign { app_id: local, .. }
+                        | TileContent::PeerWindow { app_id: local, .. },
+                    ) if local.eq_ignore_ascii_case(&app_id) => {
                         return current.cloned().expect("matched a Some");
                     }
                     _ => {}
@@ -3326,9 +3329,10 @@ app_id: local, .. })
     fn rebuild_cache_from_doc(&mut self) {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         if let Some((Value::Scalar(s), _)) = self.doc.get(&ROOT, "active").ok().flatten()
-            && let ScalarValue::Uint(raw) = s.as_ref() {
-                self.active = WorkspaceId::from(*raw);
-            }
+            && let ScalarValue::Uint(raw) = s.as_ref()
+        {
+            self.active = WorkspaceId::from(*raw);
+        }
         // Rebuild while preserving any existing nested state by id-match.
         if let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() {
             let len = self.doc.length(&workspaces_id);
@@ -3637,9 +3641,10 @@ app_id: local, .. })
                     if let Some((Value::Scalar(s), _)) =
                         self.doc.get(&group_entry, "id").ok().flatten()
                         && let ScalarValue::Uint(id) = s.as_ref()
-                            && *id == group_id {
-                                return Some((group_entry, ws_idx, strip_idx, group_idx));
-                            }
+                        && *id == group_id
+                    {
+                        return Some((group_entry, ws_idx, strip_idx, group_idx));
+                    }
                 }
             }
         }
@@ -3682,9 +3687,10 @@ app_id: local, .. })
             let (_, ws_entry) = self.doc.get(&workspaces_id, i).ok().flatten()?;
             if let Some((Value::Scalar(s), _)) = self.doc.get(&ws_entry, "id").ok().flatten()
                 && let ScalarValue::Uint(raw) = s.as_ref()
-                    && *raw == workspace_id.raw() {
-                        return Some(ws_entry);
-                    }
+                && *raw == workspace_id.raw()
+            {
+                return Some(ws_entry);
+            }
         }
         None
     }
@@ -4049,9 +4055,10 @@ app_id: local, .. })
                         if let Some((Value::Scalar(s), _)) =
                             self.doc.get(&tab_entry, "id").ok().flatten()
                             && let ScalarValue::Uint(id) = s.as_ref()
-                                && *id == tab_id {
-                                    return Some((group_entry, tabs_id, tab_entry, t_idx));
-                                }
+                            && *id == tab_id
+                        {
+                            return Some((group_entry, tabs_id, tab_entry, t_idx));
+                        }
                     }
                 }
             }
@@ -4195,10 +4202,11 @@ app_id: local, .. })
                             self.doc.get(&g_entry, "id").ok().flatten(),
                             Some((Value::Scalar(s), _))
                                 if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == group.id)
-                        ) {
-                            cur = Some(gi);
-                            break;
-                        }
+                        )
+                    {
+                        cur = Some(gi);
+                        break;
+                    }
                 }
                 let Some(cur) = cur else { return };
                 let _ = self.doc.delete(&groups_id, cur);
@@ -4744,9 +4752,10 @@ app_id: local, .. })
                         // first remaining sibling so a future re-render
                         // doesn't dereference a stale active id.
                         if group.active_tab == tab_id
-                            && let Some(first) = group.tabs.first() {
-                                group.active_tab = first.id;
-                            }
+                            && let Some(first) = group.tabs.first()
+                        {
+                            group.active_tab = first.id;
+                        }
                         if group.tabs.is_empty() {
                             prune_group_at = Some((ws_idx, strip_idx, group_idx));
                         }
@@ -4961,8 +4970,7 @@ pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
     // that has not been redeemed is not one of them.
     let present = |c: &&Collaborator| c.id != "me" && !c.invited;
     let active = tree.active_workspace();
-    let per_ws = active
-        .map_or(0, |w| w.collaborators.iter().filter(present).count());
+    let per_ws = active.map_or(0, |w| w.collaborators.iter().filter(present).count());
     if per_ws > 0 {
         return per_ws;
     }

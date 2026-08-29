@@ -561,11 +561,7 @@ mod tests {
         reply.parent = Some("m1".into());
         let mut someone_elses = msg("m3", "u_bob", "congrats", 102);
         someone_elses.parent = Some("m1".into());
-        let msgs = [
-            msg("m1", "u_ada", "@Claude x", 100),
-            reply,
-            someone_elses,
-        ];
+        let msgs = [msg("m1", "u_ada", "@Claude x", 100), reply, someone_elses];
         let found = record_of(&msgs, ME, "m1").expect("the agent's own reply");
         assert_eq!(found.id, "m2");
         assert!(record_of(&msgs, ME, "nonexistent").is_none());

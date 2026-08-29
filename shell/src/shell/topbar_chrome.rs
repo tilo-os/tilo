@@ -1066,13 +1066,13 @@ impl Widget for TopBarChrome {
         let has_link = self.status.link.is_some();
         let battery_pct = self.status.battery_percent();
         let pct_label = battery_pct.map(|p| format!("{p}%"));
-        let pct_w = pct_label
-            .as_ref()
-            .map_or(0.0, |s| {
-                f64::from(text_renderer
+        let pct_w = pct_label.as_ref().map_or(0.0, |s| {
+            f64::from(
+                text_renderer
                     .measure_weighted(s, pct_size, None, TextWeight::Semibold)
-                    .0)
-            });
+                    .0,
+            )
+        });
         let mut slots = 0usize;
         if has_volume {
             slots += 1;

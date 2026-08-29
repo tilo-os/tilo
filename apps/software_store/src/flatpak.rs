@@ -320,7 +320,8 @@ pub fn downloads(app_id: &str) -> Option<u64> {
     let url = format!("{}/stats/{}", flathub_api_base(), app_id);
     let resp = http_get(&url)?;
     let json: serde_json::Value = serde_json::from_str(&resp).ok()?;
-    json.get("installs_total").and_then(serde_json::Value::as_u64)
+    json.get("installs_total")
+        .and_then(serde_json::Value::as_u64)
 }
 
 // ---- JSON → model mapping -----------------------------------------
@@ -353,7 +354,9 @@ fn entry_from_search_hit(hit: &serde_json::Value) -> Option<AppEntry> {
         .and_then(|a| a.first())
         .and_then(|v| v.as_str())
         .map_or(Category::Productivity, category_from_appstream);
-    let downloads = hit.get("installs_last_month").and_then(serde_json::Value::as_u64);
+    let downloads = hit
+        .get("installs_last_month")
+        .and_then(serde_json::Value::as_u64);
 
     let mut entry = AppEntry::flathub_stub(&id, &name, &developer, &summary, category);
     if let Some(d) = downloads {
@@ -405,9 +408,10 @@ fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEnt
         .get("releases")
         .and_then(|v| v.as_array())
         .and_then(|a| a.first())
-        && let Some(v) = rel.get("version").and_then(|v| v.as_str()) {
-            entry.latest_version = v.to_string();
-        }
+        && let Some(v) = rel.get("version").and_then(|v| v.as_str())
+    {
+        entry.latest_version = v.to_string();
+    }
     if let Some(sz) = json
         .get("bundle")
         .and_then(|b| b.get("installed_size"))
@@ -539,12 +543,11 @@ fn monogram_for(name: &str) -> String {
     let mut chars = name.chars().filter(|c| c.is_alphanumeric());
     let first = chars.next().unwrap_or('?').to_uppercase().to_string();
     // Second char from a word boundary if present.
-    if let Some(rest) = name
-        .split([' ', '-', '.'])
-        .nth(1)
-        && let Some(c2) = rest.chars().next() {
-            return format!("{first}{}", c2.to_lowercase());
-        }
+    if let Some(rest) = name.split([' ', '-', '.']).nth(1)
+        && let Some(c2) = rest.chars().next()
+    {
+        return format!("{first}{}", c2.to_lowercase());
+    }
     first
 }
 

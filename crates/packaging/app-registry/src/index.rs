@@ -473,9 +473,10 @@ impl RegistryIndex {
             }
             let Ok(ver) = e.semver() else { continue };
             if let Some(req) = req
-                && !req.matches(&ver) {
-                    continue;
-                }
+                && !req.matches(&ver)
+            {
+                continue;
+            }
             if e.verify_publisher().is_err() {
                 continue;
             }

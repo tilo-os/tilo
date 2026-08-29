@@ -205,8 +205,8 @@ impl GitClientApp {
     /// (rename + delete + new file across all three areas, a multi-lane
     /// commit graph) rather than whatever happens to sit around the CWD.
     pub fn new() -> Self {
-        let force_sample = std::env::var("GIT_CLIENT_SAMPLE")
-            .is_ok_and(|v| v != "0" && !v.is_empty());
+        let force_sample =
+            std::env::var("GIT_CLIENT_SAMPLE").is_ok_and(|v| v != "0" && !v.is_empty());
         if force_sample {
             let (model, diffs) = crate::sample::model();
             return Self::from_model(model, diffs);
@@ -273,9 +273,7 @@ impl GitClientApp {
         // frame shows the overlay flap fully revealed over its scrim rather
         // than the closed default a fresh narrow window opens to.
         let mut flap = FlapState::open_when_docked();
-        if std::env::var("GIT_CLIENT_FLAP_OPEN")
-            .is_ok_and(|v| v != "0" && !v.is_empty())
-        {
+        if std::env::var("GIT_CLIENT_FLAP_OPEN").is_ok_and(|v| v != "0" && !v.is_empty()) {
             flap.snap(true);
         }
         let commit_input = TextInput::local()
@@ -436,7 +434,10 @@ impl GitClientApp {
     }
 
     fn load_repo() -> Option<(std::path::PathBuf, RepoModel, DiffMap)> {
-        let path = std::env::var("GIT_CLIENT_REPO").map_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()), std::path::PathBuf::from);
+        let path = std::env::var("GIT_CLIENT_REPO").map_or_else(
+            |_| std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            std::path::PathBuf::from,
+        );
         // Anchor actions on the working directory so later opens are stable
         // even if the CWD changes; fall back to the given path when bare.
         let anchor = crate::repo::workdir(&path).unwrap_or_else(|| path.clone());
@@ -656,7 +657,9 @@ impl GitClientApp {
         let id = format!("{:07x}", self.model.commits.len() * 0x1f7 + 0xa10);
         let message = self.commit_input.value().to_string();
         let summary = message.lines().next().unwrap_or("").to_string();
-        let body = message.split_once('\n').map(|x| x.1)
+        let body = message
+            .split_once('\n')
+            .map(|x| x.1)
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         let new = crate::model::Commit {
@@ -873,10 +876,11 @@ impl GitClientApp {
             Some(title_max),
             TextWeight::Bold,
         );
-        let nw = f64::from(tr
-            .measure_weighted(&self.model.name, 15.0, None, TextWeight::Bold)
-            .0)
-            .min(f64::from(title_max));
+        let nw = f64::from(
+            tr.measure_weighted(&self.model.name, 15.0, None, TextWeight::Bold)
+                .0,
+        )
+        .min(f64::from(title_max));
         let pill_x = title_x + 8.0 + nw;
         // Only paint the branch pill if it still fits left of the tab group.
         if pill_x + 40.0 < tab_group_left {
@@ -1451,9 +1455,10 @@ impl GitClientApp {
             },
         );
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        let lw = f64::from(tr
-            .measure_weighted("Branch", 12.0, None, TextWeight::Medium)
-            .0);
+        let lw = f64::from(
+            tr.measure_weighted("Branch", 12.0, None, TextWeight::Medium)
+                .0,
+        );
         draw::text_weighted(
             scene,
             tr,
@@ -1573,9 +1578,10 @@ impl GitClientApp {
             },
         );
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        let ow = f64::from(tr
-            .measure_weighted("Open", 14.0, None, TextWeight::Semibold)
-            .0);
+        let ow = f64::from(
+            tr.measure_weighted("Open", 14.0, None, TextWeight::Semibold)
+                .0,
+        );
         draw::text_weighted(
             scene,
             tr,
@@ -1841,9 +1847,7 @@ impl GitClientApp {
                 if over_list {
                     self.changes_scroll = (self.changes_scroll - dy).max(0.0);
                 } else {
-                    let max = self
-                        .current_diff()
-                        .map_or(0.0, DiffView::content_height)
+                    let max = self.current_diff().map_or(0.0, DiffView::content_height)
                         - (self.rect.height() - APPBAR_H - 36.0);
                     self.diff_scroll = (self.diff_scroll - dy).clamp(0.0, max.max(0.0));
                 }
@@ -2276,11 +2280,13 @@ impl GitClientApp {
 
         // Esc dismisses an open overlay flap (Adwaita flap behaviour).
         if let Key::Named(NamedKey::Escape) = &ev.logical_key
-            && self.layout_mode() == SplitLayout::Overlay && self.flap_open() {
-                self.flap.close();
-                *handled = true;
-                return;
-            }
+            && self.layout_mode() == SplitLayout::Overlay
+            && self.flap_open()
+        {
+            self.flap.close();
+            *handled = true;
+            return;
+        }
 
         // Global shortcuts: 1/2/3 switch screens.
         if let Key::Character(s) = &ev.logical_key {

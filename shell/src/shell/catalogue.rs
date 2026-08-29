@@ -77,13 +77,15 @@ static PENDING_NOTICES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 fn catalogue_bin_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(explicit) = std::env::var_os("QOS_CATALOGUE_BIN")
-        && !explicit.is_empty() {
-            out.push(PathBuf::from(explicit));
-        }
+        && !explicit.is_empty()
+    {
+        out.push(PathBuf::from(explicit));
+    }
     if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent() {
-            out.push(dir.join("qos-catalogue"));
-        }
+        && let Some(dir) = exe.parent()
+    {
+        out.push(dir.join("qos-catalogue"));
+    }
     out.push(PathBuf::from("/usr/libexec/qos-catalogue"));
     out.push(PathBuf::from("/usr/bin/qos-catalogue"));
     out

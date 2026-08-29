@@ -227,9 +227,10 @@ pub fn select_verifier(
             return VerifierChoice::Fixed(pw);
         }
         if let Some(prog) = helper_override
-            && !prog.trim().is_empty() {
-                return VerifierChoice::Helper(prog);
-            }
+            && !prog.trim().is_empty()
+        {
+            return VerifierChoice::Helper(prog);
+        }
     }
     if helper_installed {
         return VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.to_string());

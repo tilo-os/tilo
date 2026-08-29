@@ -571,11 +571,10 @@ impl CommandPalette {
     /// One height for the whole list, not per row — mixed row heights read
     /// as ragged even when each row is individually well-proportioned.
     fn row_height(&self) -> f64 {
-        let any_subtitle = self.visible.iter().any(|&i| {
-            self.entries
-                .get(i)
-                .is_some_and(|e| e.description.is_some())
-        });
+        let any_subtitle = self
+            .visible
+            .iter()
+            .any(|&i| self.entries.get(i).is_some_and(|e| e.description.is_some()));
         match self.mode {
             PaletteMode::Search if !any_subtitle => ROW_HEIGHT,
             _ => TWO_LINE_ROW_HEIGHT,
@@ -1255,7 +1254,11 @@ impl CommandPalette {
                 &right,
                 size,
                 dim,
-                transform * Affine::translate((footer.x1 - f64::from(sw) - 6.0, cy - f64::from(sh) / 2.0)),
+                transform
+                    * Affine::translate((
+                        footer.x1 - f64::from(sw) - 6.0,
+                        cy - f64::from(sh) / 2.0,
+                    )),
                 None,
             );
         }
@@ -1439,7 +1442,8 @@ impl CommandPalette {
                 kb,
                 desc_size,
                 colors.ink_on(kb_fill, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST),
-                transform * Affine::translate((chip.x0 + 7.0, chip.center().y - f64::from(kh) / 2.0)),
+                transform
+                    * Affine::translate((chip.x0 + 7.0, chip.center().y - f64::from(kh) / 2.0)),
                 None,
             );
             text_right = chip.x0 - 8.0;
@@ -1558,7 +1562,8 @@ impl CommandPalette {
             hint,
             hint_size,
             colors.text_dim,
-            transform * Affine::translate((cx - f64::from(hw) / 2.0, cy + f64::from(title_size) + 6.0)),
+            transform
+                * Affine::translate((cx - f64::from(hw) / 2.0, cy + f64::from(title_size) + 6.0)),
             None,
         );
     }
@@ -1726,7 +1731,8 @@ impl Widget for CommandPalette {
         // pressed by now, and two different chords open this palette at two
         // scopes — one label would misname one of them.
         let text_size = theme.tokens.typography.scale.base;
-        let text_y = layout.input_rect.y0 + (layout.input_rect.height() - f64::from(text_size)) / 2.0;
+        let text_y =
+            layout.input_rect.y0 + (layout.input_rect.height() - f64::from(text_size)) / 2.0;
         let mut tx = layout.input_rect.x0;
         let avail = layout.input_rect.width();
         if let Some(arg) = &self.arg_state {

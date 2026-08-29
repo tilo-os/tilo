@@ -271,7 +271,10 @@ impl Widget for Customizer {
         }
         if let Some(n) = self.actions_node {
             let al = taffy.layout(n).unwrap();
-            let ao = Point::new(o.x + f64::from(al.location.x), o.y + f64::from(al.location.y));
+            let ao = Point::new(
+                o.x + f64::from(al.location.x),
+                o.y + f64::from(al.location.y),
+            );
             if let Ok(children) = taffy.children(n) {
                 for (b, c) in self.buttons.iter_mut().zip(children.iter()) {
                     b.apply_layout(taffy, *c, ao);
@@ -531,20 +534,21 @@ impl Widget for Customizer {
                 button: MouseButton::Left,
                 ..
             } = event
-                && let Some(pt) = self.cursor {
-                    for (tok, r) in &self.chip_rects {
-                        if r.contains(pt) {
-                            crate::doc::put_str(
-                                state,
-                                path,
-                                crate::doc::KEY_COMMAND,
-                                &format!("edittoken:{}", tok.key()),
-                            );
-                            *handled = true;
-                            return;
-                        }
-                    }
+            && let Some(pt) = self.cursor
+        {
+            for (tok, r) in &self.chip_rects {
+                if r.contains(pt) {
+                    crate::doc::put_str(
+                        state,
+                        path,
+                        crate::doc::KEY_COMMAND,
+                        &format!("edittoken:{}", tok.key()),
+                    );
+                    *handled = true;
+                    return;
                 }
+            }
+        }
 
         // Real controls (only when editable).
         if self.editable {
@@ -616,24 +620,25 @@ impl Widget for Customizer {
 
         // Buttons (always active so Duplicate works on presets).
         if let Some(an) = self.actions_node
-            && let Ok(bchildren) = taffy.children(an) {
-                for (b, c) in self.buttons.iter_mut().zip(bchildren.iter()) {
-                    b.handle_event(
-                        event,
-                        scale,
-                        m,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        *c,
-                        taffy,
-                    );
-                    if *handled {
-                        break;
-                    }
+            && let Ok(bchildren) = taffy.children(an)
+        {
+            for (b, c) in self.buttons.iter_mut().zip(bchildren.iter()) {
+                b.handle_event(
+                    event,
+                    scale,
+                    m,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    *c,
+                    taffy,
+                );
+                if *handled {
+                    break;
                 }
             }
+        }
     }
 
     fn name(&self) -> &'static str {

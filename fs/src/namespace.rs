@@ -138,9 +138,10 @@ impl Namespace {
         let mut max_local = 0u64;
         for id in doc.keys(&nodes) {
             if let Some(n) = id.strip_prefix(&prefix)
-                && let Ok(v) = n.parse::<u64>() {
-                    max_local = max_local.max(v + 1);
-                }
+                && let Ok(v) = n.parse::<u64>()
+            {
+                max_local = max_local.max(v + 1);
+            }
         }
         let mut ns = Self {
             doc,
@@ -793,16 +794,17 @@ impl Namespace {
         }
         // POSIX rename replaces the target: if the destination name is occupied, trash it.
         if let Some(existing) = self.child_named(&new_parent_id, new_name)
-            && existing != id {
-                if let Some(h) = self.node_hash(&existing) {
-                    self.set_field(&existing, "deleted_hash", hash_to_hex(&h));
-                }
-                let ep = self
-                    .parent_of(&existing)
-                    .unwrap_or_else(|| ROOT_ID.to_string());
-                self.set_field(&existing, "prev_parent", ep);
-                self.set_field(&existing, "parent", TRASH_ID);
+            && existing != id
+        {
+            if let Some(h) = self.node_hash(&existing) {
+                self.set_field(&existing, "deleted_hash", hash_to_hex(&h));
             }
+            let ep = self
+                .parent_of(&existing)
+                .unwrap_or_else(|| ROOT_ID.to_string());
+            self.set_field(&existing, "prev_parent", ep);
+            self.set_field(&existing, "parent", TRASH_ID);
+        }
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
         self.set_field(&id, "prev_parent", cur);
         self.set_field(&id, "parent", &*new_parent_id);

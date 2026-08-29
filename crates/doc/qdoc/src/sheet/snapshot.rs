@@ -18,7 +18,9 @@ pub enum CellType {
 impl CellType {
     /// The canonical schema string.
     pub fn as_str(self) -> &'static str {
-        use crate::sheet::schema::{CELL_TYPE_EMPTY, CELL_TYPE_NUMBER, CELL_TYPE_TEXT, CELL_TYPE_BOOL, CELL_TYPE_ERROR};
+        use crate::sheet::schema::{
+            CELL_TYPE_BOOL, CELL_TYPE_EMPTY, CELL_TYPE_ERROR, CELL_TYPE_NUMBER, CELL_TYPE_TEXT,
+        };
         match self {
             CellType::Empty => CELL_TYPE_EMPTY,
             CellType::Number => CELL_TYPE_NUMBER,
@@ -29,7 +31,9 @@ impl CellType {
     }
     /// Parses a schema string back into a [`CellType`] (unknown → `Text`, the safe default).
     pub fn from_str(s: &str) -> Self {
-        use crate::sheet::schema::{CELL_TYPE_EMPTY, CELL_TYPE_NUMBER, CELL_TYPE_BOOL, CELL_TYPE_ERROR};
+        use crate::sheet::schema::{
+            CELL_TYPE_BOOL, CELL_TYPE_EMPTY, CELL_TYPE_ERROR, CELL_TYPE_NUMBER,
+        };
         match s {
             CELL_TYPE_EMPTY => CellType::Empty,
             CELL_TYPE_NUMBER => CellType::Number,

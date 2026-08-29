@@ -89,9 +89,10 @@ impl MergeDoc {
                     continue;
                 };
                 if let Ok(Some((Value::Scalar(v), _))) = doc.get(&id, &key)
-                    && let automerge::ScalarValue::Str(s) = v.as_ref() {
-                        out.push((idx, s.to_string()));
-                    }
+                    && let automerge::ScalarValue::Str(s) = v.as_ref()
+                {
+                    out.push((idx, s.to_string()));
+                }
             }
         }
         out.sort_by_key(|(k, _)| *k);

@@ -645,14 +645,18 @@ impl ContactsApp {
             let anchor = self
                 .list_rows
                 .iter()
-                .find(|(rid, _)| *rid == id).map_or_else(|| {
-                    Rect::new(
-                        self.list_rect.x0 + 60.0,
-                        self.list_rect.y0 + 200.0,
-                        self.list_rect.x0 + 60.0,
-                        self.list_rect.y0 + 200.0,
-                    )
-                }, |(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y));
+                .find(|(rid, _)| *rid == id)
+                .map_or_else(
+                    || {
+                        Rect::new(
+                            self.list_rect.x0 + 60.0,
+                            self.list_rect.y0 + 200.0,
+                            self.list_rect.x0 + 60.0,
+                            self.list_rect.y0 + 200.0,
+                        )
+                    },
+                    |(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y),
+                );
             self.popup = Some(Popup::ContextMenu { target: id, anchor });
         }
     }
@@ -1633,9 +1637,10 @@ impl ContactsApp {
         // on a narrow window the buttons crowd in and it would otherwise bleed
         // under the Import button.
         let count_x = self.rect.x0 + PAD;
-        let count_w = f64::from(tr
-            .measure_weighted(&count, 14.0, None, TextWeight::Semibold)
-            .0);
+        let count_w = f64::from(
+            tr.measure_weighted(&count, 14.0, None, TextWeight::Semibold)
+                .0,
+        );
         if count_x + count_w < self.hit.import.x0 - 12.0 {
             tr.draw_text_weighted(
                 scene,
@@ -2146,10 +2151,7 @@ impl ContactsApp {
             None,
             TextWeight::Bold,
         );
-        let fav = self
-            .form
-            .as_ref()
-            .is_some_and(|f| f.draft.favorite);
+        let fav = self.form.as_ref().is_some_and(|f| f.draft.favorite);
         // Favorite toggle pill.
         {
             let r = self.hit.fav_toggle;
@@ -3288,9 +3290,10 @@ impl Widget for ContactsApp {
             self.store.contacts = ContactsDoc::list_contacts(state);
             self.model_heads = heads;
             if let Some(sel) = self.selected
-                && self.store.get(sel).is_none() {
-                    self.selected = self.visible_ids().first().copied();
-                }
+                && self.store.get(sel).is_none()
+            {
+                self.selected = self.visible_ids().first().copied();
+            }
             self.relayout = true;
             self.dirty = true;
         }
@@ -3369,9 +3372,10 @@ impl Widget for ContactsApp {
                     .as_ref()
                     .is_some_and(|l| l.get_rect().contains(self.last_mouse));
                 if let Some(l) = self.website_link.as_mut()
-                    && l.set_hovered(over) {
-                        self.dirty = true;
-                    }
+                    && l.set_hovered(over)
+                {
+                    self.dirty = true;
+                }
             }
         }
 
@@ -3385,25 +3389,26 @@ impl Widget for ContactsApp {
         if (self.export_sel.is_some()
             || self.pending_switch.is_some()
             || self.confirm_delete.is_some())
-            && let WindowEvent::KeyboardInput { event: ke, .. } = event {
-                if ke.state == ElementState::Pressed
-                    && matches!(ke.logical_key, Key::Named(NamedKey::Escape))
-                {
-                    self.handle_key(
-                        ke,
-                        state,
-                        path,
-                        handled,
-                        node_id,
-                        taffy,
-                        modifiers,
-                        scale_factor,
-                        event,
-                    );
-                }
-                *handled = true;
-                return;
+            && let WindowEvent::KeyboardInput { event: ke, .. } = event
+        {
+            if ke.state == ElementState::Pressed
+                && matches!(ke.logical_key, Key::Named(NamedKey::Escape))
+            {
+                self.handle_key(
+                    ke,
+                    state,
+                    path,
+                    handled,
+                    node_id,
+                    taffy,
+                    modifiers,
+                    scale_factor,
+                    event,
+                );
             }
+            *handled = true;
+            return;
+        }
         if self.export_sel.is_some() {
             self.handle_export(event, handled);
             return;
@@ -3552,9 +3557,10 @@ impl Widget for ContactsApp {
     /// app-local presentation, not a shared-doc mutation).
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::ContactSearchProvider::parse_action_id(action_id)
-            && self.store.get(id).is_some() {
-                self.reveal_contact(id);
-            }
+            && self.store.get(id).is_some()
+        {
+            self.reveal_contact(id);
+        }
     }
 
     fn get_rect(&self) -> Rect {
@@ -3566,9 +3572,10 @@ impl Widget for ContactsApp {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.mode == Mode::View
             && let Some(l) = &self.website_link
-                && l.get_rect().contains(point) {
-                    return Some(winit::window::CursorIcon::Pointer);
-                }
+            && l.get_rect().contains(point)
+        {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
         None
     }
 
@@ -3857,7 +3864,9 @@ impl ContactsApp {
                     .and_then(|i| Birthday::parse(i.ti.value()))
                     .or(f.draft.birthday)
             });
-            let (year, month) = if let Some(b) = seed { (b.year().unwrap_or_else(|| date::today().0), b.month()) } else {
+            let (year, month) = if let Some(b) = seed {
+                (b.year().unwrap_or_else(|| date::today().0), b.month())
+            } else {
                 let (y, m, _) = date::today();
                 (y, m)
             };
@@ -3943,12 +3952,10 @@ impl ContactsApp {
         const DOUBLE_CLICK_MS: u128 = 400;
         const DOUBLE_CLICK_RADIUS: f64 = 6.0;
         let now = Instant::now();
-        let is_double = self
-            .last_detail_click
-            .is_some_and(|(t0, p0)| {
-                now.duration_since(t0).as_millis() <= DOUBLE_CLICK_MS
-                    && p.distance(p0) <= DOUBLE_CLICK_RADIUS
-            });
+        let is_double = self.last_detail_click.is_some_and(|(t0, p0)| {
+            now.duration_since(t0).as_millis() <= DOUBLE_CLICK_MS
+                && p.distance(p0) <= DOUBLE_CLICK_RADIUS
+        });
         // Record this click for the next press regardless.
         self.last_detail_click = Some((now, p));
         if !is_double {
@@ -4302,9 +4309,10 @@ impl ContactsApp {
                     self.list_scroll = 0.0;
                     // Keep selection valid.
                     if let Some(sel) = self.selected
-                        && !self.visible_ids().contains(&sel) {
-                            self.selected = self.visible_ids().first().copied();
-                        }
+                        && !self.visible_ids().contains(&sel)
+                    {
+                        self.selected = self.visible_ids().first().copied();
+                    }
                 }
                 self.relayout = true;
             }
@@ -4323,8 +4331,7 @@ impl ContactsApp {
                             // path (same action the view-mode star and Ctrl+K
                             // dispatch), so the list star and the menu label flip
                             // immediately and the change survives a reload.
-                            let new_fav =
-                                !self.store.get(target).is_some_and(|c| c.favorite);
+                            let new_fav = !self.store.get(target).is_some_and(|c| c.favorite);
                             self.perform_action(
                                 state,
                                 crate::actions::set_favorite_action(target.to_string(), new_fav),
@@ -4415,9 +4422,10 @@ impl ContactsApp {
         let (_panel, del, cancel) = self.confirm_geometry();
         let p = self.last_mouse;
         if del.contains(p)
-            && let Some(id) = self.confirm_delete {
-                self.delete_selected(state, id);
-            }
+            && let Some(id) = self.confirm_delete
+        {
+            self.delete_selected(state, id);
+        }
         // Any press inside the modal (delete already handled above, cancel
         // or scrim) dismisses it.
         self.confirm_delete = None;
@@ -4484,13 +4492,14 @@ impl ContactsApp {
         // Row checkbox toggle (whole row is clickable).
         if g.list_body.contains(p) {
             if let Some((id, _, _)) = g.rows.iter().find(|(_, r, _)| r.contains(p))
-                && let Some(set) = &mut self.export_sel {
-                    if set.contains(id) {
-                        set.remove(id);
-                    } else {
-                        set.insert(*id);
-                    }
+                && let Some(set) = &mut self.export_sel
+            {
+                if set.contains(id) {
+                    set.remove(id);
+                } else {
+                    set.insert(*id);
                 }
+            }
             return;
         }
         if g.cancel.contains(p) {
@@ -4506,11 +4515,7 @@ impl ContactsApp {
             let ids: Vec<ContactId> = self
                 .visible_export_ids()
                 .into_iter()
-                .filter(|id| {
-                    self.export_sel
-                        .as_ref()
-                        .is_some_and(|s| s.contains(id))
-                })
+                .filter(|id| self.export_sel.as_ref().is_some_and(|s| s.contains(id)))
                 .collect();
             // Close the selection dialog and hand off to the host Save dialog;
             // the file is written when the portal returns a destination.
@@ -4637,11 +4642,13 @@ impl ContactsApp {
         // Ctrl+S saves in edit mode.
         if ctrl
             && let Key::Character(c) = &ke.logical_key
-                && c.eq_ignore_ascii_case("s") && self.mode == Mode::Edit {
-                    self.save_edit(state);
-                    *handled = true;
-                    return;
-                }
+            && c.eq_ignore_ascii_case("s")
+            && self.mode == Mode::Edit
+        {
+            self.save_edit(state);
+            *handled = true;
+            return;
+        }
 
         // Edit-form keyboard navigation. Tab / Shift+Tab move across the form
         // fields (wrapping); the arrow keys move directionally between fields

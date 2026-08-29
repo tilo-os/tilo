@@ -397,8 +397,8 @@ impl Catalog {
             });
         };
 
-        use Retention::{Hourly, Keep, Daily, Weekly, Monthly};
-        use SnapStatus::{Verifying, Complete, Failed};
+        use Retention::{Daily, Hourly, Keep, Monthly, Weekly};
+        use SnapStatus::{Complete, Failed, Verifying};
         use SnapType::{Auto, Manual};
 
         // --- Today (day 0) ---

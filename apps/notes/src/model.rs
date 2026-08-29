@@ -89,10 +89,7 @@ impl Workspace {
     /// initial value should rename right after creation.
     pub fn create_page(&mut self, parent: Option<PageId>) -> PageId {
         let id = Uuid::new_v4();
-        let order = self
-            .children_of(parent)
-            .last()
-            .map_or(0, |p| p.order + 1);
+        let order = self.children_of(parent).last().map_or(0, |p| p.order + 1);
         self.data.pages.push(PageMeta {
             id,
             title: "Untitled".to_string(),
@@ -140,11 +137,7 @@ impl Workspace {
         }
 
         self.data.pages.retain(|p| !removed_set.contains(&p.id));
-        if self
-            .data
-            .selected
-            .is_some_and(|s| removed_set.contains(&s))
-        {
+        if self.data.selected.is_some_and(|s| removed_set.contains(&s)) {
             self.data.selected = None;
         }
 
@@ -237,9 +230,10 @@ impl Workspace {
         // Cycle guard: a page can't become a child of itself or of one
         // of its own descendants.
         if let Some(np) = new_parent
-            && (np == id || self.is_ancestor(id, np)) {
-                return false;
-            }
+            && (np == id || self.is_ancestor(id, np))
+        {
+            return false;
+        }
         let old_parent = self.get(id).and_then(|p| p.parent);
         // Target sibling order (by id), with `id` removed so we can slot
         // it back in at the requested position.
@@ -374,12 +368,13 @@ impl Workspace {
         let ids: std::collections::HashSet<PageId> = self.data.pages.iter().map(|p| p.id).collect();
         for p in &self.data.pages {
             if let Some(parent) = p.parent
-                && !ids.contains(&parent) {
-                    return Err(format!(
-                        "page {} has parent {} which does not exist",
-                        p.id, parent,
-                    ));
-                }
+                && !ids.contains(&parent)
+            {
+                return Err(format!(
+                    "page {} has parent {} which does not exist",
+                    p.id, parent,
+                ));
+            }
         }
 
         // Group by parent and check the order sequence.
@@ -399,9 +394,10 @@ impl Workspace {
         }
 
         if let Some(sel) = self.data.selected
-            && !ids.contains(&sel) {
-                return Err(format!("selected {sel} does not exist"));
-            }
+            && !ids.contains(&sel)
+        {
+            return Err(format!("selected {sel} does not exist"));
+        }
         Ok(())
     }
 }

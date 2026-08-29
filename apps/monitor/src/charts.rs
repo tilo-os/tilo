@@ -238,7 +238,10 @@ pub fn ring_gauge(
         big,
         big_size,
         colors.text_primary,
-        t * Affine::translate((center.x - f64::from(bw) / 2.0, center.y - f64::from(bh) / 2.0 - 4.0)),
+        t * Affine::translate((
+            center.x - f64::from(bw) / 2.0,
+            center.y - f64::from(bh) / 2.0 - 4.0,
+        )),
         None,
         TextWeight::Bold,
     );
@@ -249,7 +252,10 @@ pub fn ring_gauge(
         small,
         small_size,
         colors.text_dim,
-        t * Affine::translate((center.x - f64::from(sw) / 2.0, center.y + f64::from(bh) / 2.0 - 2.0)),
+        t * Affine::translate((
+            center.x - f64::from(sw) / 2.0,
+            center.y + f64::from(bh) / 2.0 - 2.0,
+        )),
         None,
     );
 }

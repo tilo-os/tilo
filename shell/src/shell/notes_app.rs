@@ -370,11 +370,10 @@ impl Widget for NotesApp {
                     }
                     *handled = true;
                 }
-                ElementState::Released
-                    if self.is_dragging => {
-                        self.is_dragging = false;
-                        *handled = true;
-                    }
+                ElementState::Released if self.is_dragging => {
+                    self.is_dragging = false;
+                    *handled = true;
+                }
                 _ => {}
             },
             WindowEvent::KeyboardInput {
@@ -424,16 +423,17 @@ impl Widget for NotesApp {
                             }
                             "v" => {
                                 if let Some(paste) = clipboard_paste()
-                                    && !paste.is_empty() {
-                                        // Preserve \n, strip other control chars.
-                                        let cleaned: String = paste
-                                            .chars()
-                                            .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
-                                            .collect();
-                                        if !cleaned.is_empty() {
-                                            self.insert_str(state, root, &cleaned);
-                                        }
+                                    && !paste.is_empty()
+                                {
+                                    // Preserve \n, strip other control chars.
+                                    let cleaned: String = paste
+                                        .chars()
+                                        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+                                        .collect();
+                                    if !cleaned.is_empty() {
+                                        self.insert_str(state, root, &cleaned);
                                     }
+                                }
                                 *handled = true;
                                 return;
                             }
@@ -518,9 +518,7 @@ impl Widget for NotesApp {
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         let cur = self.selection.cursor;
-                        let line_start = self.body.text[..cur]
-                            .rfind('\n')
-                            .map_or(0, |i| i + 1);
+                        let line_start = self.body.text[..cur].rfind('\n').map_or(0, |i| i + 1);
                         let col = cur - line_start;
                         let new_pos = if line_start == 0 {
                             0
@@ -546,9 +544,7 @@ impl Widget for NotesApp {
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         let cur = self.selection.cursor;
-                        let line_start = self.body.text[..cur]
-                            .rfind('\n')
-                            .map_or(0, |i| i + 1);
+                        let line_start = self.body.text[..cur].rfind('\n').map_or(0, |i| i + 1);
                         let col = cur - line_start;
                         let line_end = self.body.text[cur..]
                             .find('\n')
@@ -671,12 +667,13 @@ impl Widget for NotesApp {
 
     fn set_state(&mut self, s: &str) {
         if let Some((a, c)) = s.split_once(':')
-            && let (Ok(anchor), Ok(cursor)) = (a.parse::<usize>(), c.parse::<usize>()) {
-                self.selection.anchor = anchor;
-                self.selection.cursor = cursor;
-                self.clamp_cursor();
-                return;
-            }
+            && let (Ok(anchor), Ok(cursor)) = (a.parse::<usize>(), c.parse::<usize>())
+        {
+            self.selection.anchor = anchor;
+            self.selection.cursor = cursor;
+            self.clamp_cursor();
+            return;
+        }
         // Backwards-compat: an older state blob was just the cursor.
         if let Ok(pos) = s.parse::<usize>() {
             self.selection = Selection::collapsed(pos);

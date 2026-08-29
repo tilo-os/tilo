@@ -294,9 +294,10 @@ impl NoteTreeView {
         // If the page being renamed has disappeared (e.g. a delete
         // happened while in rename mode), close the editor.
         if let Some(r) = &self.rename
-            && ws.get(r.page).is_none() {
-                self.rename = None;
-            }
+            && ws.get(r.page).is_none()
+        {
+            self.rename = None;
+        }
         self.dirty = true;
     }
 
@@ -649,18 +650,19 @@ impl Widget for NoteTreeView {
         // If a rename is active, position the embedded editor against
         // the current row rect — it follows the row across resize.
         if let Some(r) = &mut self.rename
-            && let Some(idx) = self.flat_rows.iter().position(|row| row.id == r.page) {
-                let row_rect = self.row_rects[idx];
-                let glyph_x =
-                    row_rect.x0 + ROW_INSET_X + (self.flat_rows[idx].depth as f64) * INDENT_PX;
-                let editor_rect = Rect::new(
-                    glyph_x + GLYPH_WIDTH,
-                    row_rect.y0,
-                    row_rect.x1 - 4.0,
-                    row_rect.y1,
-                );
-                r.input.apply_layout_external(editor_rect);
-            }
+            && let Some(idx) = self.flat_rows.iter().position(|row| row.id == r.page)
+        {
+            let row_rect = self.row_rects[idx];
+            let glyph_x =
+                row_rect.x0 + ROW_INSET_X + (self.flat_rows[idx].depth as f64) * INDENT_PX;
+            let editor_rect = Rect::new(
+                glyph_x + GLYPH_WIDTH,
+                row_rect.y0,
+                row_rect.x1 - 4.0,
+                row_rect.y1,
+            );
+            r.input.apply_layout_external(editor_rect);
+        }
     }
 
     fn draw(
@@ -701,8 +703,10 @@ impl Widget for NoteTreeView {
         } else {
             tokens.colors.surface_white_10
         };
-        let btn =
-            vello::kurbo::RoundedRect::from_rect(self.new_page_btn_rect, f64::from(tokens.radii.sm));
+        let btn = vello::kurbo::RoundedRect::from_rect(
+            self.new_page_btn_rect,
+            f64::from(tokens.radii.sm),
+        );
         scene.fill(vello::peniko::Fill::NonZero, transform, btn_bg, None, &btn);
         // "+" glyph, centred in the button.
         let plus_size = ROW_TEXT_SIZE + 2.0;
@@ -898,33 +902,34 @@ impl Widget for NoteTreeView {
                 from_idx,
                 self.drag.ghost_rect(self.rect.x0, self.rect.x1, &metrics),
             )
-                && let Some(row) = self.flat_rows.get(fi) {
-                    let shape = RoundedRect::from_rect(ghost, f64::from(tokens.radii.sm));
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        tokens.colors.surfaces.overlay.with_alpha_factor(0.85),
-                        None,
-                        &shape,
-                    );
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        theme.accent_primary.with_alpha_factor(0.7),
-                        None,
-                        &shape,
-                    );
-                    let label_x = ghost.x0 + ROW_INSET_X + GLYPH_WIDTH;
-                    let text_y = ghost.y0 + (ROW_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
-                    text_renderer.draw_text(
-                        scene,
-                        &row.title,
-                        ROW_TEXT_SIZE,
-                        tokens.colors.text_primary,
-                        transform * Affine::translate((label_x, text_y)),
-                        Some((ghost.x1 - label_x - 4.0) as f32),
-                    );
-                }
+            && let Some(row) = self.flat_rows.get(fi)
+        {
+            let shape = RoundedRect::from_rect(ghost, f64::from(tokens.radii.sm));
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.surfaces.overlay.with_alpha_factor(0.85),
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.accent_primary.with_alpha_factor(0.7),
+                None,
+                &shape,
+            );
+            let label_x = ghost.x0 + ROW_INSET_X + GLYPH_WIDTH;
+            let text_y = ghost.y0 + (ROW_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
+            text_renderer.draw_text(
+                scene,
+                &row.title,
+                ROW_TEXT_SIZE,
+                tokens.colors.text_primary,
+                transform * Affine::translate((label_x, text_y)),
+                Some((ghost.x1 - label_x - 4.0) as f32),
+            );
+        }
 
         // A single hairline down the sidebar's inner edge separates the
         // page tree from the editor. This replaces the old full-rectangle
@@ -1006,12 +1011,12 @@ impl Widget for NoteTreeView {
                     },
                 ..
             } = event
-            {
-                self.drag.cancel();
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
+        {
+            self.drag.cancel();
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
 
         // Commit an in-progress rename when the user presses OUTSIDE its
         // editor (click-away ends editing), then let the same press fall
@@ -1022,19 +1027,16 @@ impl Widget for NoteTreeView {
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                let inside = self
-                    .rename
-                    .as_ref()
-                    .is_some_and(|r| {
-                        r.input
-                            .get_rect()
-                            .contains(self.last_cursor.unwrap_or(Point::ZERO))
-                    });
-                if !inside {
-                    self.commit_rename();
-                }
+        {
+            let inside = self.rename.as_ref().is_some_and(|r| {
+                r.input
+                    .get_rect()
+                    .contains(self.last_cursor.unwrap_or(Point::ZERO))
+            });
+            if !inside {
+                self.commit_rename();
             }
+        }
 
         // Route everything to the active rename editor first — it
         // owns focus while open. Enter / Escape are handled by us
@@ -1228,14 +1230,11 @@ impl Widget for NoteTreeView {
                     }
                     // Double-click on the label → enter rename mode.
                     let now = std::time::Instant::now();
-                    let is_double = self
-                        .last_click
-                        .as_ref()
-                        .is_some_and(|c| {
-                            c.page == row_id
-                                && now.duration_since(c.at).as_millis() < DOUBLE_CLICK_INTERVAL_MS
-                                && (c.pos.distance(pt)) < DOUBLE_CLICK_RADIUS_PX
-                        });
+                    let is_double = self.last_click.as_ref().is_some_and(|c| {
+                        c.page == row_id
+                            && now.duration_since(c.at).as_millis() < DOUBLE_CLICK_INTERVAL_MS
+                            && (c.pos.distance(pt)) < DOUBLE_CLICK_RADIUS_PX
+                    });
                     self.last_click = Some(ClickRecord {
                         page: row_id,
                         at: now,
@@ -1284,23 +1283,24 @@ impl Widget for NoteTreeView {
                 // siblings. Checked before the plain arrow navigation
                 // below so the modifier picks reorder over move-selection.
                 if mods.contains(ModifiersState::ALT)
-                    && let Some(sel) = self.selected {
-                        match logical_key {
-                            Key::Named(NamedKey::ArrowUp) => {
-                                self.pending_events
-                                    .push(OutEvent::Move { id: sel, delta: -1 });
-                                *handled = true;
-                                return;
-                            }
-                            Key::Named(NamedKey::ArrowDown) => {
-                                self.pending_events
-                                    .push(OutEvent::Move { id: sel, delta: 1 });
-                                *handled = true;
-                                return;
-                            }
-                            _ => {}
+                    && let Some(sel) = self.selected
+                {
+                    match logical_key {
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.pending_events
+                                .push(OutEvent::Move { id: sel, delta: -1 });
+                            *handled = true;
+                            return;
                         }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            self.pending_events
+                                .push(OutEvent::Move { id: sel, delta: 1 });
+                            *handled = true;
+                            return;
+                        }
+                        _ => {}
                     }
+                }
                 match logical_key {
                     // Delete removes the selected page. Backspace is
                     // deliberately NOT bound here: the editor and the page
@@ -1348,11 +1348,12 @@ impl Widget for NoteTreeView {
                     }
                     Key::Named(NamedKey::F2) => {
                         if let Some(sel) = self.selected
-                            && let Some(idx) = self.row_index_of(sel) {
-                                let title = self.flat_rows[idx].title.clone();
-                                self.begin_rename(sel, &title);
-                                *handled = true;
-                            }
+                            && let Some(idx) = self.row_index_of(sel)
+                        {
+                            let title = self.flat_rows[idx].title.clone();
+                            self.begin_rename(sel, &title);
+                            *handled = true;
+                        }
                     }
                     _ => {}
                 }

@@ -731,10 +731,7 @@ impl Pane {
             let selected = st.selected == Some(id) && !st.narrow;
             let hov = rect.contains(st.last_mouse);
 
-            let swipe_dx = self
-                .swipe
-                .filter(|s| s.id == id)
-                .map_or(0.0, |s| s.dx);
+            let swipe_dx = self.swipe.filter(|s| s.id == id).map_or(0.0, |s| s.dx);
             if swipe_dx.abs() > 1.0 {
                 let (col, icon, label, on_left) = if swipe_dx < 0.0 {
                     (c.semantic.warning, Icon::Archive, "Archive", false)
@@ -1571,10 +1568,7 @@ impl Pane {
             Role::Reader => {
                 // The remote-images toggle under an HTML body: opt this message
                 // in to (or back out of) loading remote content.
-                if self
-                    .html_toggle_rect
-                    .is_some_and(|r| r.contains(pt))
-                {
+                if self.html_toggle_rect.is_some_and(|r| r.contains(pt)) {
                     self.html_load_remote = !self.html_load_remote;
                     // Force a reload with the new policy on the next draw.
                     self.html_key = None;
@@ -1840,39 +1834,39 @@ impl Widget for Pane {
             }
             WindowEvent::CursorMoved { .. } => {
                 if self.role == Role::List
-                    && let Some((id, start)) = self.mouse_down_row {
-                        let dx = self.shared.borrow().last_mouse.x - start.x;
-                        if dx.abs() > 6.0 {
-                            self.swipe = Some(SwipeState { id, dx });
-                            self.dirty = true;
-                            self.shared.borrow_mut().dirty = true;
-                        }
+                    && let Some((id, start)) = self.mouse_down_row
+                {
+                    let dx = self.shared.borrow().last_mouse.x - start.x;
+                    if dx.abs() > 6.0 {
+                        self.swipe = Some(SwipeState { id, dx });
+                        self.dirty = true;
+                        self.shared.borrow_mut().dirty = true;
                     }
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            }
-                if self.role == Role::List => {
-                    if let Some(s) = self.swipe.take() {
-                        if s.dx <= -SWIPE_THRESHOLD {
-                            self.shared.borrow_mut().apply_message_action(
-                                state,
-                                s.id,
-                                CtxAction::Archive,
-                            );
-                        } else if s.dx >= SWIPE_THRESHOLD {
-                            self.shared.borrow_mut().apply_message_action(
-                                state,
-                                s.id,
-                                CtxAction::Delete,
-                            );
-                        }
-                        *handled = true;
+            } if self.role == Role::List => {
+                if let Some(s) = self.swipe.take() {
+                    if s.dx <= -SWIPE_THRESHOLD {
+                        self.shared.borrow_mut().apply_message_action(
+                            state,
+                            s.id,
+                            CtxAction::Archive,
+                        );
+                    } else if s.dx >= SWIPE_THRESHOLD {
+                        self.shared.borrow_mut().apply_message_action(
+                            state,
+                            s.id,
+                            CtxAction::Delete,
+                        );
                     }
-                    self.mouse_down_row = None;
+                    *handled = true;
                 }
+                self.mouse_down_row = None;
+            }
             _ => {}
         }
     }

@@ -106,7 +106,9 @@ impl PlayerApp {
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
-        if let Some(path) = open { app.open_path(path) } else {
+        if let Some(path) = open {
+            app.open_path(path)
+        } else {
             // The demo shot must stay hermetic: pin the deterministic
             // synthesized-frame engine so no real GStreamer pipeline is
             // built and the placeholder `demo.local` host is never
@@ -202,8 +204,10 @@ impl PlayerApp {
 
     fn open_path(&mut self, path: PathBuf) {
         let source = source_for_path(&path);
-        self.title = path
-            .file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+        self.title = path.file_name().map_or_else(
+            || path.to_string_lossy().into_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         self.player.open(source);
         self.player.play();
         self.dirty = true;
@@ -258,9 +262,10 @@ impl PlayerApp {
         match collab.role() {
             Role::Host => {
                 if let Some(engine) = self.player.engine()
-                    && let Some(delta) = collab.host_step(engine, now) {
-                        mgr.send(CollabRequest::SyncIncremental { data: delta });
-                    }
+                    && let Some(delta) = collab.host_step(engine, now)
+                {
+                    mgr.send(CollabRequest::SyncIncremental { data: delta });
+                }
             }
             Role::Follower => {
                 if let Some(engine) = self.player.engine_mut() {

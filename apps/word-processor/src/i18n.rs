@@ -135,7 +135,8 @@ fn active_lock() -> &'static RwLock<LanguageIdentifier> {
 /// The currently-active language id.
 fn active_lang() -> LanguageIdentifier {
     active_lock()
-        .read().map_or_else(|_| source_lang(), |l| l.clone())
+        .read()
+        .map_or_else(|_| source_lang(), |l| l.clone())
 }
 
 thread_local! {

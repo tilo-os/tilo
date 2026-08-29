@@ -199,10 +199,11 @@ pub fn parse_mode(args: &[&str]) -> Mode {
             return value_to_mode(value);
         }
         if arg == "--mode"
-            && let Some(value) = iter.next() {
-                return value_to_mode(value);
-            }
-            // Trailing `--mode` with no value: fall through to default.
+            && let Some(value) = iter.next()
+        {
+            return value_to_mode(value);
+        }
+        // Trailing `--mode` with no value: fall through to default.
     }
     Mode::Native
 }
@@ -229,10 +230,11 @@ pub fn parse_backend(args: &[&str]) -> BackendKind {
             return value_to_backend(value);
         }
         if arg == "--backend"
-            && let Some(value) = iter.next() {
-                return value_to_backend(value);
-            }
-            // Trailing `--backend` with no value: fall through to default.
+            && let Some(value) = iter.next()
+        {
+            return value_to_backend(value);
+        }
+        // Trailing `--backend` with no value: fall through to default.
     }
     BackendKind::Winit
 }

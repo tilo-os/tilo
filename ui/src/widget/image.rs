@@ -211,11 +211,15 @@ impl Image {
                 self.cached_image = Some(img);
             }
             Source::Path(path) => {
-                let bytes = if let Ok(b) = std::fs::read(path) { b } else {
+                let bytes = if let Ok(b) = std::fs::read(path) {
+                    b
+                } else {
                     self.source = Source::Failed;
                     return;
                 };
-                let (rgba, width, height) = if let Ok(t) = decode_png(&bytes) { t } else {
+                let (rgba, width, height) = if let Ok(t) = decode_png(&bytes) {
+                    t
+                } else {
                     self.source = Source::Failed;
                     return;
                 };

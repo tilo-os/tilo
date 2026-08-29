@@ -554,7 +554,8 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         for clip in p.clips_on(tid) {
             let cid = clip.id;
             let label = p
-                .media(clip.media).map_or_else(|| format!("Clip {cid}"), |m| m.name.clone());
+                .media(clip.media)
+                .map_or_else(|| format!("Clip {cid}"), |m| m.name.clone());
             let mut cr = Resource::new(format!("video.clip:{cid}"), "video.clip", label);
 
             // Delete + ripple-delete.
@@ -580,13 +581,13 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             if let Some(new_id) = split_project.split_clip(cid, ctx.playhead)
                 && let (Some(left), Some(right)) =
                     (split_project.clip(cid), split_project.clip(new_id))
-                {
-                    cr = cr.with_action(immediate(
-                        "split",
-                        "Split at playhead",
-                        &split_clip_action(left, right),
-                    ));
-                }
+            {
+                cr = cr.with_action(immediate(
+                    "split",
+                    "Split at playhead",
+                    &split_clip_action(left, right),
+                ));
+            }
 
             // Trim in / out to the playhead — only when it lies within the span.
             if clip.covers(ctx.playhead) {

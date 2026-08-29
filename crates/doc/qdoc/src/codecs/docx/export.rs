@@ -221,27 +221,28 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         }
         let image_defaults = images.content_type_defaults();
         if (!overrides.is_empty() || !image_defaults.is_empty())
-            && let Some(ct) = c.get("[Content_Types].xml") {
-                let mut s = String::from_utf8_lossy(ct).into_owned();
-                for (part, ovr) in overrides {
-                    if !s.contains(part) {
-                        inject_before(&mut s, "</Types>", ovr);
-                    }
+            && let Some(ct) = c.get("[Content_Types].xml")
+        {
+            let mut s = String::from_utf8_lossy(ct).into_owned();
+            for (part, ovr) in overrides {
+                if !s.contains(part) {
+                    inject_before(&mut s, "</Types>", ovr);
                 }
-                // Image content-type `Default`s — dedup on `Extension="<ext>"`.
-                for img in &images.images {
-                    let probe = format!(r#"Extension="{}""#, img.ext);
-                    if !s.contains(&probe) {
-                        let (_, media) = image_ext_and_media(&img.bytes);
-                        let def = format!(
-                            r#"<Default Extension="{}" ContentType="{}"/>"#,
-                            img.ext, media
-                        );
-                        inject_before(&mut s, "</Types>", &def);
-                    }
-                }
-                c.set("[Content_Types].xml", s.into_bytes());
             }
+            // Image content-type `Default`s — dedup on `Extension="<ext>"`.
+            for img in &images.images {
+                let probe = format!(r#"Extension="{}""#, img.ext);
+                if !s.contains(&probe) {
+                    let (_, media) = image_ext_and_media(&img.bytes);
+                    let def = format!(
+                        r#"<Default Extension="{}" ContentType="{}"/>"#,
+                        img.ext, media
+                    );
+                    inject_before(&mut s, "</Types>", &def);
+                }
+            }
+            c.set("[Content_Types].xml", s.into_bytes());
+        }
     } else {
         let mut ct = CONTENT_TYPES_BASE.to_string();
         if has_lists {
@@ -289,16 +290,17 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         }
         c.set("_rels/.rels", s.into_bytes());
     } else if (need_core_wireup || need_app_wireup)
-        && let Some(rels) = c.get("_rels/.rels") {
-            let mut s = String::from_utf8_lossy(rels).into_owned();
-            if need_core_wireup && !s.contains("Target=\"docProps/core.xml\"") {
-                inject_before(&mut s, "</Relationships>", CORE_REL);
-            }
-            if need_app_wireup && !s.contains("Target=\"docProps/app.xml\"") {
-                inject_before(&mut s, "</Relationships>", APP_REL);
-            }
-            c.set("_rels/.rels", s.into_bytes());
+        && let Some(rels) = c.get("_rels/.rels")
+    {
+        let mut s = String::from_utf8_lossy(rels).into_owned();
+        if need_core_wireup && !s.contains("Target=\"docProps/core.xml\"") {
+            inject_before(&mut s, "</Relationships>", CORE_REL);
         }
+        if need_app_wireup && !s.contains("Target=\"docProps/app.xml\"") {
+            inject_before(&mut s, "</Relationships>", APP_REL);
+        }
+        c.set("_rels/.rels", s.into_bytes());
+    }
 
     // Needed once there's a numbering, freshly-synthesised styles, a header/footer, and/or a notes part.
     if has_lists
@@ -450,10 +452,11 @@ fn merge_styles_xml(
 /// of every `<w:style>` as the schema requires.
 fn inject_after_styles_open(s: &mut String, frag: &str) {
     if let Some(open) = s.find("<w:styles")
-        && let Some(rel_close) = s[open..].find('>') {
-            let pos = open + rel_close + 1;
-            s.insert_str(pos, frag);
-        }
+        && let Some(rel_close) = s[open..].find('>')
+    {
+        let pos = open + rel_close + 1;
+        s.insert_str(pos, frag);
+    }
 }
 
 /// The `w:styleId` values already declared, so merging doesn't redefine them.
@@ -937,13 +940,14 @@ fn render_runs(
         emit_bookmark_boundaries(&mut out, i);
         // A note-reference placeholder is its own run (no text), independent of the surrounding marks.
         if chars[i] == crate::schema::FIELD_PLACEHOLDER
-            && let Some(note_id) = note_ref_at(marks, i) {
-                if let Some(run) = note_reference_run(&note_id, note_ids, note_kinds) {
-                    out.push_str(&run);
-                }
-                i += 1;
-                continue;
+            && let Some(note_id) = note_ref_at(marks, i)
+        {
+            if let Some(run) = note_reference_run(&note_id, note_ids, note_kinds) {
+                out.push_str(&run);
             }
+            i += 1;
+            continue;
+        }
         let active = marks_at(i, marks);
         let active_change = change_at(marks, i);
         let active_xref = cross_ref_at(marks, i);
@@ -1400,10 +1404,11 @@ fn build_document_xml(
                 // A plain paragraph: a `style` attr emits `<w:pStyle>`; a direct `align` attr still rides as `<w:jc>`.
                 let mut ppr_inner = String::new();
                 if let Some(AttrVal::Str(sid)) = b.attrs.get("style")
-                    && snap.styles.contains_key(sid) {
-                        ppr_inner.push_str(&format!(r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid)));
-                        named_refs.insert(sid.clone());
-                    }
+                    && snap.styles.contains_key(sid)
+                {
+                    ppr_inner.push_str(&format!(r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid)));
+                    named_refs.insert(sid.clone());
+                }
                 ppr_inner.push_str(&jc_xml(b));
                 ppr_inner.push_str(&spacing_xml(b));
                 let ppr = if ppr_inner.is_empty() {

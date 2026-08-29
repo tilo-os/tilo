@@ -570,9 +570,21 @@ impl Widget for ColorPicker {
         let g_fill = Color::from_rgba8(0, self.color.g(), 0, 255);
         let b_fill = Color::from_rgba8(0, 0, self.color.b(), 255);
         for (slider, fill, frac) in [
-            (self.r_slider_rect, r_fill, f64::from(self.color.r()) / 255.0),
-            (self.g_slider_rect, g_fill, f64::from(self.color.g()) / 255.0),
-            (self.b_slider_rect, b_fill, f64::from(self.color.b()) / 255.0),
+            (
+                self.r_slider_rect,
+                r_fill,
+                f64::from(self.color.r()) / 255.0,
+            ),
+            (
+                self.g_slider_rect,
+                g_fill,
+                f64::from(self.color.g()) / 255.0,
+            ),
+            (
+                self.b_slider_rect,
+                b_fill,
+                f64::from(self.color.b()) / 255.0,
+            ),
         ] {
             let track_y0 = slider.y0 + (slider.height() - TRACK_HEIGHT) / 2.0;
             let track_y1 = track_y0 + TRACK_HEIGHT;

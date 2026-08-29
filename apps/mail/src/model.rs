@@ -146,9 +146,10 @@ impl Addr {
     /// of the address, otherwise the full address.
     pub fn display(&self) -> String {
         if let Some(n) = &self.name
-            && !n.is_empty() {
-                return n.clone();
-            }
+            && !n.is_empty()
+        {
+            return n.clone();
+        }
         self.email.clone()
     }
 
@@ -499,8 +500,7 @@ impl AccountConfig {
 
 /// Which representation the compose body is authored in. Persisted so the
 /// user's choice is remembered across compose windows and sessions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ComposeFormat {
     /// WYSIWYG rich text, serialised to an HTML MIME part on send.
     #[default]
@@ -508,7 +508,6 @@ pub enum ComposeFormat {
     /// Plain text, serialised to a `text/plain` MIME part on send.
     Text,
 }
-
 
 impl ComposeFormat {
     pub fn as_key(self) -> &'static str {

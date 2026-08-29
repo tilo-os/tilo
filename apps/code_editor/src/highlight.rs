@@ -221,10 +221,12 @@ fn push_run(spans: &mut Vec<Span>, start: usize, end: usize, role: TokenRole) {
         return;
     }
     if let Some(last) = spans.last_mut()
-        && last.role == role && last.end == start {
-            last.end = end;
-            return;
-        }
+        && last.role == role
+        && last.end == start
+    {
+        last.end = end;
+        return;
+    }
     spans.push(Span { start, end, role });
 }
 

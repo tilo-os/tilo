@@ -123,9 +123,10 @@ impl CrdtTextBody {
             }
             _ => {
                 if let Ok(id) = state.put_object(root, self.key, ObjType::Text)
-                    && !self.text.is_empty() {
-                        let _ = state.splice_text(&id, 0, 0, &self.text);
-                    }
+                    && !self.text.is_empty()
+                {
+                    let _ = state.splice_text(&id, 0, 0, &self.text);
+                }
             }
         }
     }

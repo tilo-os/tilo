@@ -187,9 +187,7 @@ impl StoreItem {
     /// The version the UI advertises as "latest" — the first entry, or
     /// an empty string when the source didn't ship any versions.
     pub fn latest_version(&self) -> &str {
-        self.versions
-            .first()
-            .map_or("", |v| v.version.as_str())
+        self.versions.first().map_or("", |v| v.version.as_str())
     }
 
     /// Which primary action the card should offer this frame.
@@ -260,7 +258,9 @@ impl StoreItem {
     pub fn install_rank(&self) -> u8 {
         if self.installed.is_pinned() {
             2
-        } else { u8::from(self.installed.is_installed()) }
+        } else {
+            u8::from(self.installed.is_installed())
+        }
     }
 
     /// Case-insensitive substring match against name + description.

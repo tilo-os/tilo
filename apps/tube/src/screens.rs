@@ -248,9 +248,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
             .align(Align::Center)
             .push(dim(theme, &v.channel_name, 12.5))
             .push_if(
-                model
-                    .channel(&v.channel_id)
-                    .is_some_and(|c| c.verified),
+                model.channel(&v.channel_id).is_some_and(|c| c.verified),
                 icon(IconKind::Check, 12.0, theme.text_dim),
             ),
     );
@@ -1493,7 +1491,8 @@ pub fn watch(
     // until it lands.
     if model.settings.return_dislike_enabled {
         let label = model
-            .dislikes_of(&v.id).map_or_else(|| "—".to_string(), human_count);
+            .dislikes_of(&v.id)
+            .map_or_else(|| "—".to_string(), human_count);
         meta = meta.push(stat_pill(theme, &label, IconKind::Dislike).id("dislike_pill"));
     }
     let meta = meta.push(

@@ -130,10 +130,8 @@ fn paint_empty_state(
     let btn_h = 34.0_f64;
 
     let (title_w, title_h) = text_renderer.measure(title, title_size, None);
-    let (msg_w, msg_h) = message
-        .map_or((0.0, 0.0), |m| text_renderer.measure(m, msg_size, None));
-    let (act_w, _) = action_label
-        .map_or((0.0, 0.0), |a| text_renderer.measure(a, btn_size, None));
+    let (msg_w, msg_h) = message.map_or((0.0, 0.0), |m| text_renderer.measure(m, msg_size, None));
+    let (act_w, _) = action_label.map_or((0.0, 0.0), |a| text_renderer.measure(a, btn_size, None));
 
     let fit = Fit::choose(
         rect.height(),

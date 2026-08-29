@@ -304,10 +304,8 @@ impl Widget for NavRow {
                     },
                 ..
             } if self.is_focused => {
-                let is_activate = matches!(
-                    key,
-                    Key::Named(NamedKey::Enter | NamedKey::Space)
-                ) || matches!(key, Key::Character(s) if s.as_str() == " ");
+                let is_activate = matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space))
+                    || matches!(key, Key::Character(s) if s.as_str() == " ");
                 if is_activate {
                     self.activate();
                     *handled = true;

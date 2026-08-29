@@ -27,15 +27,13 @@ use ui::widget::toast::{ToastCard, ToastKind};
 use crate::shell::chrome_state::Chrome;
 
 /// Severity tier for a notification, controlling the leading-dot colour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NotificationSeverity {
     #[default]
     Info,
     Warning,
     Error,
 }
-
 
 impl NotificationSeverity {
     pub fn color(self, theme: &Theme) -> vello::peniko::Color {
@@ -487,7 +485,10 @@ impl Widget for NotificationStack {
                 body_size,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((text_x, pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0)),
+                    * Affine::translate((
+                        text_x,
+                        pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0,
+                    )),
                 Some((TOAST_WIDTH - (text_x - pill_rect.x0) - CARD_PADDING_X) as f32),
             );
             stack_min_y = stack_min_y.min(pill_rect.y0);

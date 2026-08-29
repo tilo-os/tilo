@@ -67,11 +67,13 @@ impl SystemStatus {
         match &self.link {
             Some(l) if l.kind == LinkKind::Wired => parts.push(
                 l.name
-                    .clone().map_or_else(|| "Wired".to_string(), |n| format!("Wired: {n}")),
+                    .clone()
+                    .map_or_else(|| "Wired".to_string(), |n| format!("Wired: {n}")),
             ),
             Some(l) if l.kind == LinkKind::Wifi => parts.push(
                 l.name
-                    .clone().map_or_else(|| "Wi-Fi".to_string(), |n| format!("Wi-Fi: {n}")),
+                    .clone()
+                    .map_or_else(|| "Wi-Fi".to_string(), |n| format!("Wi-Fi: {n}")),
             ),
             Some(_) => parts.push("Offline".to_string()),
             None => {}

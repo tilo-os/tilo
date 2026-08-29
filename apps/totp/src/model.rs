@@ -23,8 +23,7 @@ pub type AccountId = Uuid;
 
 /// HMAC hash used by the TOTP construction. Mirrors the `algorithm`
 /// parameter of an `otpauth://` URI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Algorithm {
     #[default]
     Sha1,
@@ -63,7 +62,6 @@ impl Algorithm {
         }
     }
 }
-
 
 /// One 2FA account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,8 +141,7 @@ impl Account {
     /// True when the secret decodes to a non-empty key — a cheap
     /// validity gate the add form uses to enable Save.
     pub fn secret_is_valid(&self) -> bool {
-        crate::totp::decode_secret(&self.secret)
-            .is_some_and(|b| !b.is_empty())
+        crate::totp::decode_secret(&self.secret).is_some_and(|b| !b.is_empty())
     }
 }
 

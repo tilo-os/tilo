@@ -216,9 +216,10 @@ fn build_env(wayland_socket: Option<&Path>) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     for key in INHERITED_ENV {
         if let Some(value) = std::env::var_os(key)
-            && !value.is_empty() {
-                env.insert((*key).to_string(), value.to_string_lossy().to_string());
-            }
+            && !value.is_empty()
+        {
+            env.insert((*key).to_string(), value.to_string_lossy().to_string());
+        }
     }
     // The compositor's socket wins over anything inherited. Both halves must move together:
     // WAYLAND_DISPLAY resolves relative to XDG_RUNTIME_DIR, so mixing sources here is how an

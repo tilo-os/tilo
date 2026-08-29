@@ -517,8 +517,8 @@ impl Widget for Dropdown {
                     let filtered = self.filtered();
                     let list = self.list_rect(filtered.len());
                     if list.contains(pos) {
-                        let vi =
-                            ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor() as isize;
+                        let vi = ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor()
+                            as isize;
                         if vi >= 0 && (vi as usize) < filtered.len() {
                             let vi = vi as usize;
                             if vi != self.highlight {
@@ -539,8 +539,8 @@ impl Widget for Dropdown {
                     let filtered = self.filtered();
                     let list = self.list_rect(filtered.len());
                     if list.contains(pos) {
-                        let vi =
-                            ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor() as isize;
+                        let vi = ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor()
+                            as isize;
                         if vi >= 0 && (vi as usize) < filtered.len() {
                             self.highlight = vi as usize;
                             self.select_highlighted(state, root);
@@ -623,8 +623,10 @@ impl Widget for Dropdown {
                     }
                 } else {
                     // Closed: Enter / Space / Down (or Up) open the list.
-                    if let Key::Named(NamedKey::Enter | NamedKey::Space | NamedKey::ArrowDown |
-NamedKey::ArrowUp) = logical_key {
+                    if let Key::Named(
+                        NamedKey::Enter | NamedKey::Space | NamedKey::ArrowDown | NamedKey::ArrowUp,
+                    ) = logical_key
+                    {
                         self.do_open();
                         *handled = true;
                     }

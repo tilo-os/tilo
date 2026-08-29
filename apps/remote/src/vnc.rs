@@ -420,12 +420,15 @@ mod tests {
 
         let mut got: Option<Framebuffer> = None;
         for _ in 0..200 {
-            if let SessionStatus::Failed(e) = vnc.status() { panic!("vnc connect failed: {e}") }
+            if let SessionStatus::Failed(e) = vnc.status() {
+                panic!("vnc connect failed: {e}")
+            }
             if let Some(fb) = vnc.take_frame()
-                && fb.data.iter().any(|&b| b != 0) {
-                    got = Some(fb);
-                    break;
-                }
+                && fb.data.iter().any(|&b| b != 0)
+            {
+                got = Some(fb);
+                break;
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
 

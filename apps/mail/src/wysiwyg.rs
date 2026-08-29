@@ -321,9 +321,10 @@ impl Wysiwyg {
                 frag = format!("<u>{frag}</u>");
             }
             if let Some(li) = g.link
-                && let Some(href) = block.links.get(li) {
-                    frag = format!("<a href=\"{}\">{frag}</a>", escape_attr(href));
-                }
+                && let Some(href) = block.links.get(li)
+            {
+                frag = format!("<a href=\"{}\">{frag}</a>", escape_attr(href));
+            }
             out.push_str(&frag);
             idx = end;
         }
@@ -768,21 +769,23 @@ impl Wysiwyg {
             }
             // Selection highlight.
             if let Some((sa, sb)) = self.ordered_selection()
-                && bi >= sa.block && bi <= sb.block {
-                    let (s, e) = self.block_selection_bounds(bi, sa, sb);
-                    let x0 = *xs.get(s).unwrap_or(&bx);
-                    let x1 = *xs.get(e).unwrap_or(&x);
-                    if x1 > x0 {
-                        let sel = Rect::new(x0, y, x1, y + f64::from(size) * 1.2);
-                        scene.fill(
-                            vello::peniko::Fill::NonZero,
-                            t,
-                            c.accent[5].with_alpha_factor(0.28),
-                            None,
-                            &sel,
-                        );
-                    }
+                && bi >= sa.block
+                && bi <= sb.block
+            {
+                let (s, e) = self.block_selection_bounds(bi, sa, sb);
+                let x0 = *xs.get(s).unwrap_or(&bx);
+                let x1 = *xs.get(e).unwrap_or(&x);
+                if x1 > x0 {
+                    let sel = Rect::new(x0, y, x1, y + f64::from(size) * 1.2);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        t,
+                        c.accent[5].with_alpha_factor(0.28),
+                        None,
+                        &sel,
+                    );
                 }
+            }
             self.block_rects.push(brect);
             self.glyph_xs.push(xs);
             y += line_h
@@ -818,21 +821,18 @@ impl Wysiwyg {
                 best = i;
             }
         }
-        let glyph = self
-            .glyph_xs
-            .get(best)
-            .map_or(0, |xs| {
-                let mut g = 0;
-                let mut bd = f64::MAX;
-                for (k, &gx) in xs.iter().enumerate() {
-                    let d = (gx - pt.x).abs();
-                    if d < bd {
-                        bd = d;
-                        g = k;
-                    }
+        let glyph = self.glyph_xs.get(best).map_or(0, |xs| {
+            let mut g = 0;
+            let mut bd = f64::MAX;
+            for (k, &gx) in xs.iter().enumerate() {
+                let d = (gx - pt.x).abs();
+                if d < bd {
+                    bd = d;
+                    g = k;
                 }
-                g
-            });
+            }
+            g
+        });
         self.caret = Caret { block: best, glyph };
         self.pending = Style::default();
         self.dirty = true;
@@ -874,28 +874,27 @@ impl Wysiwyg {
             return false;
         };
         // Keyboard shortcuts for inline marks (Ctrl-B/I/U).
-        if ctrl
-            && let Key::Character(ch) = logical_key {
-                match ch.to_ascii_lowercase().as_str() {
-                    "b" => {
-                        self.toggle_inline(InlineMark::Bold);
-                        return true;
-                    }
-                    "i" => {
-                        self.toggle_inline(InlineMark::Italic);
-                        return true;
-                    }
-                    "u" => {
-                        self.toggle_inline(InlineMark::Underline);
-                        return true;
-                    }
-                    "a" => {
-                        self.select_all();
-                        return true;
-                    }
-                    _ => {}
+        if ctrl && let Key::Character(ch) = logical_key {
+            match ch.to_ascii_lowercase().as_str() {
+                "b" => {
+                    self.toggle_inline(InlineMark::Bold);
+                    return true;
                 }
+                "i" => {
+                    self.toggle_inline(InlineMark::Italic);
+                    return true;
+                }
+                "u" => {
+                    self.toggle_inline(InlineMark::Underline);
+                    return true;
+                }
+                "a" => {
+                    self.select_all();
+                    return true;
+                }
+                _ => {}
             }
+        }
         match logical_key {
             Key::Named(NamedKey::Backspace) => {
                 self.backspace();

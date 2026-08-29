@@ -387,18 +387,20 @@ fn classify(
             _ => {}
         }
 
-        if let Some(s) = slot_of(doc, &p) { if let Some(actor) = later.get(&s) {
-            if kept_seen.insert(s.clone()) {
-                kept.push(KeptSlot {
-                    by: authors.resolve(actor),
-                    slot: s,
-                    actor_hex: actor.clone(),
-                });
+        if let Some(s) = slot_of(doc, &p) {
+            if let Some(actor) = later.get(&s) {
+                if kept_seen.insert(s.clone()) {
+                    kept.push(KeptSlot {
+                        by: authors.resolve(actor),
+                        slot: s,
+                        actor_hex: actor.clone(),
+                    });
+                }
+            } else {
+                reverted_slots.insert(s);
+                writable.push(p);
             }
         } else {
-            reverted_slots.insert(s);
-            writable.push(p);
-        } } else {
             structural += 1;
             writable.push(p);
         }

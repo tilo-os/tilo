@@ -293,11 +293,15 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
 }
 
 fn render_image(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
-    let hash = if let Some(AttrVal::Str(s)) = block.attrs.get("blob") { s.clone() } else {
+    let hash = if let Some(AttrVal::Str(s)) = block.attrs.get("blob") {
+        s.clone()
+    } else {
         placeholder(layout, "image (no blob)");
         return;
     };
-    let bytes = if let Some(b) = snap.blobs.get(&hash) { b } else {
+    let bytes = if let Some(b) = snap.blobs.get(&hash) {
+        b
+    } else {
         placeholder(layout, "image (missing blob)");
         return;
     };
@@ -332,7 +336,12 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
     if rows.is_empty() {
         return;
     }
-    let ncols = rows.iter().map(std::vec::Vec::len).max().unwrap_or(1).max(1);
+    let ncols = rows
+        .iter()
+        .map(std::vec::Vec::len)
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let col_w = TEXT_W / ncols as f32;
     let row_h = BODY_LEADING + 2.0 * TABLE_PAD;
 

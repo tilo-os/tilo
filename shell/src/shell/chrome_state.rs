@@ -477,9 +477,10 @@ impl ChromeState {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
             if !trimmed.is_empty()
-                && let Some(ws) = self.tree_mut().active_workspace_mut() {
-                    ws.name = trimmed.to_string();
-                }
+                && let Some(ws) = self.tree_mut().active_workspace_mut()
+            {
+                ws.name = trimmed.to_string();
+            }
             self.bump();
         }
     }

@@ -569,10 +569,10 @@ impl Widget for RichTextEditor {
         };
         let inner_w = (width - 2.0 * PAD as f32 - indent).max(1.0);
         self.ensure_layout(text_renderer, inner_w);
-        let text_h = self
-            .layout
-            .as_ref()
-            .map_or(self.base_font_size * 1.4, super::super::richtext::RichTextLayout::height);
+        let text_h = self.layout.as_ref().map_or(
+            self.base_font_size * 1.4,
+            super::super::richtext::RichTextLayout::height,
+        );
         taffy::Size {
             width,
             height: text_h + 2.0 * PAD as f32,
@@ -636,7 +636,8 @@ impl Widget for RichTextEditor {
             if r.start < r.end {
                 let sel = theme.accent_primary.with_alpha_factor(0.30);
                 for (x0, y0, x1, y1) in layout.selection_rects(r.start, r.end) {
-                    let rect = Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
+                    let rect =
+                        Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
                     scene.fill(Fill::NonZero, t, sel, None, &rect);
                 }
             }

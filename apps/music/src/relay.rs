@@ -34,7 +34,9 @@ impl Relay {
     /// up to it.
     pub fn new() -> Self {
         let path = storage::doc_path();
-        let mut doc = if let Some(d) = storage::load_from(&path) { d } else {
+        let mut doc = if let Some(d) = storage::load_from(&path) {
+            d
+        } else {
             let mut d = AutoCommit::new();
             doc::seed(&mut d, &Library::default(), &Playback::default());
             d

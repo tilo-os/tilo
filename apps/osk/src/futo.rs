@@ -57,9 +57,10 @@ impl FutoSwipeModel {
     pub fn default_load() -> Option<Self> {
         for dir in candidate_dirs() {
             if dir.join(ENCODER).exists()
-                && let Some(m) = Self::load(&dir) {
-                    return Some(m);
-                }
+                && let Some(m) = Self::load(&dir)
+            {
+                return Some(m);
+            }
         }
         None
     }
@@ -157,9 +158,13 @@ mod tests {
         for (id, rect) in geom {
             if let Some(key) = layout.key(*id)
                 && let crate::layout::KeyAction::Char(s) = &key.action
-                    && s.chars().eq(std::iter::once(c)) {
-                        return Point::new(f64::midpoint(rect.x0, rect.x1), f64::midpoint(rect.y0, rect.y1));
-                    }
+                && s.chars().eq(std::iter::once(c))
+            {
+                return Point::new(
+                    f64::midpoint(rect.x0, rect.x1),
+                    f64::midpoint(rect.y0, rect.y1),
+                );
+            }
         }
         panic!("no key for {c}");
     }

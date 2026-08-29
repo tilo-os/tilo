@@ -89,7 +89,11 @@ impl<'a> DocStore<'a> {
                 .await?;
             change_hashes.push(*h.as_bytes());
         }
-        let heads: Vec<String> = doc.get_heads().iter().map(std::string::ToString::to_string).collect();
+        let heads: Vec<String> = doc
+            .get_heads()
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         let parent = self.latest().map(|v| *v.manifest_hash.as_bytes());
         let version = self.history.len() as u64;
         let time_ms = now_ms();

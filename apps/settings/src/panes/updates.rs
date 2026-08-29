@@ -506,7 +506,11 @@ impl UpdatesPane {
             }
             (Some(target), true) => {
                 out.push(format!("Roll back to {target}?"));
-                out.extend(ROLLBACK_CAVEATS.iter().map(std::string::ToString::to_string));
+                out.extend(
+                    ROLLBACK_CAVEATS
+                        .iter()
+                        .map(std::string::ToString::to_string),
+                );
                 out.push("Roll back and restart later".into());
             }
         }
@@ -515,7 +519,10 @@ impl UpdatesPane {
 
     /// The "How updates work" captions, in order.
     pub fn help_lines(&self) -> Vec<String> {
-        HOW_UPDATES_WORK.iter().map(std::string::ToString::to_string).collect()
+        HOW_UPDATES_WORK
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect()
     }
 
     pub fn status(&self) -> &UpdateStatus {
@@ -564,7 +571,10 @@ impl UpdatesPane {
                     "Release channel",
                     Box::new(
                         Dropdown::new(
-                            CHANNELS.iter().map(std::string::ToString::to_string).collect(),
+                            CHANNELS
+                                .iter()
+                                .map(std::string::ToString::to_string)
+                                .collect(),
                             CHANNEL_KEY,
                         )
                         .with_id("updates.channel")

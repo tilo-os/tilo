@@ -100,7 +100,9 @@ impl PowerBridge {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BridgeInner> {
-        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

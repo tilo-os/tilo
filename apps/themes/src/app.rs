@@ -266,7 +266,13 @@ impl ThemesApp {
         let btn = Rect::new(bx, by, bx + s, by + s);
         self.toggle_rect = btn;
 
-        draw::fill_rrect(scene, t, btn, f64::from(theme.tokens.radii.md), theme.bg_app);
+        draw::fill_rrect(
+            scene,
+            t,
+            btn,
+            f64::from(theme.tokens.radii.md),
+            theme.bg_app,
+        );
         draw::stroke_rrect(
             scene,
             t,
@@ -450,24 +456,26 @@ impl ThemesApp {
     fn delete_theme(&mut self, id: &str, state: &mut AutoCommit, path: &ObjId) {
         let catalog = doc::load_catalog(state, path).unwrap_or_default();
         if let Some(idx) = catalog.iter().position(|s| s.id == id)
-            && !catalog[idx].builtin && catalog.len() > 1 {
-                let name = catalog[idx].name.clone();
-                self.perform_action(state, crate::actions::delete_custom_theme_action(id));
-                // Move the selection onto a surviving theme: the row that slides
-                // into `idx`, or the new last row when `idx` was the tail.
-                let survivors: Vec<String> = catalog
-                    .iter()
-                    .filter(|s| s.id != id)
-                    .map(|s| s.id.clone())
-                    .collect();
-                let next = survivors
-                    .get(idx.min(survivors.len().saturating_sub(1)))
-                    .cloned()
-                    .unwrap_or_default();
-                doc::put_str(state, path, doc::KEY_SELECTED, &next);
-                self.status = format!("Deleted “{name}”");
-                self.structure_dirty = true;
-            }
+            && !catalog[idx].builtin
+            && catalog.len() > 1
+        {
+            let name = catalog[idx].name.clone();
+            self.perform_action(state, crate::actions::delete_custom_theme_action(id));
+            // Move the selection onto a surviving theme: the row that slides
+            // into `idx`, or the new last row when `idx` was the tail.
+            let survivors: Vec<String> = catalog
+                .iter()
+                .filter(|s| s.id != id)
+                .map(|s| s.id.clone())
+                .collect();
+            let next = survivors
+                .get(idx.min(survivors.len().saturating_sub(1)))
+                .cloned()
+                .unwrap_or_default();
+            doc::put_str(state, path, doc::KEY_SELECTED, &next);
+            self.status = format!("Deleted “{name}”");
+            self.structure_dirty = true;
+        }
     }
 
     /// The last action an affordance dispatched through [`Self::perform_action`],
@@ -596,7 +604,12 @@ impl Widget for ThemesApp {
             // LOAD: spec → controls; rebuild the colour picker.
             let spec = catalog[idx].clone();
             doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(spec.radius_norm));
-            doc::put_f64(state, path, doc::KEY_ED_SPACING, f64::from(spec.spacing_norm));
+            doc::put_f64(
+                state,
+                path,
+                doc::KEY_ED_SPACING,
+                f64::from(spec.spacing_norm),
+            );
             doc::put_str(state, path, doc::KEY_ED_FONT, &spec.font);
             doc::put_str(state, path, doc::KEY_ED_NAME, &spec.name);
             self.customizer.load_picker(spec.token(edit_token));
@@ -610,9 +623,10 @@ impl Widget for ThemesApp {
                 catalog[idx].spacing_norm = (s as f32).clamp(0.0, 1.0);
             }
             if let Some(f) = doc::get_str(state, path, doc::KEY_ED_FONT)
-                && FONTS.contains(&f.as_str()) {
-                    catalog[idx].font = f;
-                }
+                && FONTS.contains(&f.as_str())
+            {
+                catalog[idx].font = f;
+            }
             // Inline sidebar rename: a non-empty edited name replaces the
             // theme's name (empty is ignored so a mid-edit clear can't wipe it).
             if let Some(n) = doc::get_str(state, path, doc::KEY_ED_NAME) {
@@ -627,7 +641,12 @@ impl Widget for ThemesApp {
             // Built-in preset: pin the controls to the read-only values.
             let spec = catalog[idx].clone();
             doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(spec.radius_norm));
-            doc::put_f64(state, path, doc::KEY_ED_SPACING, f64::from(spec.spacing_norm));
+            doc::put_f64(
+                state,
+                path,
+                doc::KEY_ED_SPACING,
+                f64::from(spec.spacing_norm),
+            );
             doc::put_str(state, path, doc::KEY_ED_FONT, &spec.font);
             doc::put_str(state, path, doc::KEY_ED_NAME, &spec.name);
         }
@@ -884,9 +903,15 @@ impl Widget for ThemesApp {
 
         if let (Some(tb), Some(actions)) = (self.topbar_node, self.topbar_actions_node) {
             let tbl = taffy.layout(tb).unwrap();
-            let tb_o = Point::new(o.x + f64::from(tbl.location.x), o.y + f64::from(tbl.location.y));
+            let tb_o = Point::new(
+                o.x + f64::from(tbl.location.x),
+                o.y + f64::from(tbl.location.y),
+            );
             let al = taffy.layout(actions).unwrap();
-            let a_o = Point::new(tb_o.x + f64::from(al.location.x), tb_o.y + f64::from(al.location.y));
+            let a_o = Point::new(
+                tb_o.x + f64::from(al.location.x),
+                tb_o.y + f64::from(al.location.y),
+            );
             if let Ok(children) = taffy.children(actions) {
                 for (b, c) in self.topbar_buttons.iter_mut().zip(children.iter()) {
                     b.apply_layout(taffy, *c, a_o);
@@ -896,7 +921,10 @@ impl Widget for ThemesApp {
 
         if let Some(content) = self.content_node {
             let cl = taffy.layout(content).unwrap();
-            let c_o = Point::new(o.x + f64::from(cl.location.x), o.y + f64::from(cl.location.y));
+            let c_o = Point::new(
+                o.x + f64::from(cl.location.x),
+                o.y + f64::from(cl.location.y),
+            );
             if layout == SplitLayout::Overlay {
                 // Collapsed: preview stacked above customizer, both offset up
                 // by the scroll so the taller-than-viewport content is fully
@@ -1126,30 +1154,33 @@ impl Widget for ThemesApp {
 
         // Collapsed layout: the wheel scrolls the preview+customizer stack
         // (unless the overlay gallery is open, which owns input while up).
-        if overlay && !gallery_open
-            && let WindowEvent::MouseWheel { delta, .. } = event {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -*y * 60.0,
-                    MouseScrollDelta::PixelDelta(pp) => -pp.y as f32,
-                };
-                let max = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
-                self.scroll = (self.scroll + f64::from(dy)).clamp(0.0, max);
-                *handled = true;
-                return;
-            }
+        if overlay
+            && !gallery_open
+            && let WindowEvent::MouseWheel { delta, .. } = event
+        {
+            let dy = match delta {
+                MouseScrollDelta::LineDelta(_, y) => -*y * 60.0,
+                MouseScrollDelta::PixelDelta(pp) => -pp.y as f32,
+            };
+            let max = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
+            self.scroll = (self.scroll + f64::from(dy)).clamp(0.0, max);
+            *handled = true;
+            return;
+        }
 
         // Esc dismisses an open overlay gallery before anything else sees it.
-        if overlay && gallery_open
+        if overlay
+            && gallery_open
             && let WindowEvent::KeyboardInput {
                 event: key_event, ..
             } = event
-                && key_event.state == ElementState::Pressed
-                    && key_event.logical_key == Key::Named(NamedKey::Escape)
-                {
-                    self.gallery_flap.close();
-                    *handled = true;
-                    return;
-                }
+            && key_event.state == ElementState::Pressed
+            && key_event.logical_key == Key::Named(NamedKey::Escape)
+        {
+            self.gallery_flap.close();
+            *handled = true;
+            return;
+        }
 
         // The hamburger toggle (overlay only) summons / dismisses the gallery.
         if overlay
@@ -1158,19 +1189,19 @@ impl Widget for ThemesApp {
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                if self.toggle_rect.contains(self.last_cursor) {
-                    self.gallery_flap.toggle(SplitLayout::Overlay);
-                    *handled = true;
-                    return;
-                }
-                // Tapping the scrim (content, outside the flap) dismisses it.
-                if gallery_open && !self.gallery_overlay_rect.contains(self.last_cursor) {
-                    self.gallery_flap.close();
-                    *handled = true;
-                    return;
-                }
+        {
+            if self.toggle_rect.contains(self.last_cursor) {
+                self.gallery_flap.toggle(SplitLayout::Overlay);
+                *handled = true;
+                return;
             }
+            // Tapping the scrim (content, outside the flap) dismisses it.
+            if gallery_open && !self.gallery_overlay_rect.contains(self.last_cursor) {
+                self.gallery_flap.close();
+                *handled = true;
+                return;
+            }
+        }
 
         for (b, c) in self.topbar_buttons.iter_mut().zip(
             self.topbar_actions_node
@@ -1198,38 +1229,40 @@ impl Widget for ThemesApp {
         // flap is open. While open, any pointer press landing inside the flap
         // is consumed so it can't fall through to the content beneath.
         if (!overlay || gallery_open)
-            && let Some(n) = self.gallery_node {
-                self.gallery.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                if *handled {
-                    // Selecting a theme from the open flap dismisses it so the
-                    // narrow window returns to the preview + customizer (the
-                    // master→detail return).
-                    if overlay {
-                        self.gallery_flap.close();
-                    }
-                    return;
+            && let Some(n) = self.gallery_node
+        {
+            self.gallery.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            if *handled {
+                // Selecting a theme from the open flap dismisses it so the
+                // narrow window returns to the preview + customizer (the
+                // master→detail return).
+                if overlay {
+                    self.gallery_flap.close();
                 }
-                if overlay
-                    && let WindowEvent::MouseInput {
-                        state: ElementState::Pressed,
-                        button: MouseButton::Left,
-                        ..
-                    } = event
-                        && self.gallery_overlay_rect.contains(self.last_cursor) {
-                            *handled = true;
-                            return;
-                        }
+                return;
             }
+            if overlay
+                && let WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } = event
+                && self.gallery_overlay_rect.contains(self.last_cursor)
+            {
+                *handled = true;
+                return;
+            }
+        }
         if let Some(n) = self.customizer_node {
             self.customizer.handle_event(
                 event,

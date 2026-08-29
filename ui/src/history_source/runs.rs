@@ -148,7 +148,9 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
         };
         let at = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
-            .map_or(UNIX_EPOCH, |ms| UNIX_EPOCH + Duration::from_millis(ms as u64));
+            .map_or(UNIX_EPOCH, |ms| {
+                UNIX_EPOCH + Duration::from_millis(ms as u64)
+            });
         let mut steps = Vec::new();
         if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&rec, "steps") {
             for i in 0..doc.length(&list) {

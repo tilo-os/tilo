@@ -804,17 +804,20 @@ impl BlockEditor {
         };
         let (new_kind, changed) = match &b.kind {
             BlockKind::Bullet { indent } => {
-                let next = (i16::from(*indent) + i16::from(delta)).clamp(0, i16::from(MAX_LIST_INDENT)) as u8;
+                let next = (i16::from(*indent) + i16::from(delta))
+                    .clamp(0, i16::from(MAX_LIST_INDENT)) as u8;
                 let changed = next != *indent;
                 (BlockKind::Bullet { indent: next }, changed)
             }
             BlockKind::Numbered { indent } => {
-                let next = (i16::from(*indent) + i16::from(delta)).clamp(0, i16::from(MAX_LIST_INDENT)) as u8;
+                let next = (i16::from(*indent) + i16::from(delta))
+                    .clamp(0, i16::from(MAX_LIST_INDENT)) as u8;
                 let changed = next != *indent;
                 (BlockKind::Numbered { indent: next }, changed)
             }
             BlockKind::Checklist { indent, done } => {
-                let next = (i16::from(*indent) + i16::from(delta)).clamp(0, i16::from(MAX_LIST_INDENT)) as u8;
+                let next = (i16::from(*indent) + i16::from(delta))
+                    .clamp(0, i16::from(MAX_LIST_INDENT)) as u8;
                 let changed = next != *indent;
                 (
                     BlockKind::Checklist {
@@ -1995,10 +1998,9 @@ impl Widget for BlockEditor {
             && c.as_str() == "/"
             && let Some(focused_idx) = self.focused
         {
-            let can_open = self
-                .blocks
-                .get(focused_idx)
-                .is_some_and(|b| !matches!(b.kind, BlockKind::CodeBlock { .. }) && b.kind.is_editable());
+            let can_open = self.blocks.get(focused_idx).is_some_and(|b| {
+                !matches!(b.kind, BlockKind::CodeBlock { .. }) && b.kind.is_editable()
+            });
             if can_open {
                 let caret_byte = self
                     .blocks

@@ -461,9 +461,10 @@ impl CallerMap {
 
     pub fn lookup(&self, dbus_unique_name: &str) -> Option<PortalCaller> {
         if let Ok(forced) = self.forced.lock()
-            && let Some(c) = forced.as_ref() {
-                return Some(c.clone());
-            }
+            && let Some(c) = forced.as_ref()
+        {
+            return Some(c.clone());
+        }
         let m = self.inner.lock().ok()?;
         m.get(dbus_unique_name).cloned()
     }
@@ -479,7 +480,10 @@ impl CallerMap {
 /// Shared sub-flow every interface uses: lookup or prompt, return the
 /// outcome. Kept here so "Always-grant skips the prompt" is asserted by one test all three interfaces share.
 pub mod flow {
-    use super::{PortalContext, PortalCaller, CapabilityKind, Capability, PromptOutcome, GRANT_ALWAYS, GRANT_ONCE};
+    use super::{
+        Capability, CapabilityKind, GRANT_ALWAYS, GRANT_ONCE, PortalCaller, PortalContext,
+        PromptOutcome,
+    };
 
     pub async fn resolve(
         ctx: &PortalContext,
@@ -496,10 +500,11 @@ pub mod flow {
             Ok(outcome) => {
                 // Persist Session/Always — Once is treated as one-shot.
                 if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE) {
-                        let cap = super::with_scope(cap_template, scope);
-                        ctx.grants.insert(&caller, cap);
-                    }
+                    && !matches!(scope, GRANT_ONCE)
+                {
+                    let cap = super::with_scope(cap_template, scope);
+                    ctx.grants.insert(&caller, cap);
+                }
                 outcome
             }
             // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.

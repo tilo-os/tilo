@@ -396,12 +396,13 @@ impl Widget for CardGrid {
         available: taffy::Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let width = known
-            .width
-            .map_or(match available.width {
+        let width = known.width.map_or(
+            match available.width {
                 taffy::AvailableSpace::Definite(w) => f64::from(w),
                 _ => self.min_card_w,
-            }, f64::from);
+            },
+            f64::from,
+        );
         let columns = self.columns_for_width(width);
         let height = self.content_height(columns);
         taffy::Size {

@@ -212,9 +212,10 @@ pub const RUNTIME_DIR_ENV: &str = "QOS_RUNTIME_BUNDLE_DIR";
 /// `$XDG_DATA_HOME/qos-runtime`.
 pub fn bundle_root() -> Result<PathBuf, BundleError> {
     if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV)
-        && !dir.is_empty() {
-            return Ok(PathBuf::from(dir));
-        }
+        && !dir.is_empty()
+    {
+        return Ok(PathBuf::from(dir));
+    }
     Ok(dirs::data_dir()
         .ok_or(BundleError::NoDataDir)?
         .join("qos-runtime"))
@@ -525,12 +526,13 @@ pub fn verify_bundle_with(
 
     // Optional arch policy.
     if let Some(required) = opts.require_arch.as_deref()
-        && manifest.arch != required {
-            return Err(BundleError::ArchMismatch {
-                actual: manifest.arch,
-                host: required.to_string(),
-            });
-        }
+        && manifest.arch != required
+    {
+        return Err(BundleError::ArchMismatch {
+            actual: manifest.arch,
+            host: required.to_string(),
+        });
+    }
 
     // Recompute per-file hashes and compare against disk: a listed file
     // missing on disk is corruption; an unlisted file present is suspect
@@ -601,12 +603,13 @@ pub fn verify_bundle_with(
         }
 
         if let Some(required) = opts.require_publisher.as_deref()
-            && !eq_hex_ignore_case(publisher_hex, required) {
-                return Err(BundleError::PublisherMismatch {
-                    required: required.to_string(),
-                    actual: publisher_hex.to_string(),
-                });
-            }
+            && !eq_hex_ignore_case(publisher_hex, required)
+        {
+            return Err(BundleError::PublisherMismatch {
+                required: required.to_string(),
+                actual: publisher_hex.to_string(),
+            });
+        }
     }
 
     Ok(manifest)

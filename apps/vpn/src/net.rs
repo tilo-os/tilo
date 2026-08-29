@@ -51,7 +51,9 @@ pub fn parse_wg_transfer(out: &str) -> Option<Transfer> {
         let _peer = cols.next();
         let rx = cols.next();
         let tx = cols.next();
-        let (rx, tx) = if let (Some(rx), Some(tx)) = (rx, tx) { (rx, tx) } else {
+        let (rx, tx) = if let (Some(rx), Some(tx)) = (rx, tx) {
+            (rx, tx)
+        } else {
             // Whitespace fallback.
             let mut ws = line.split_whitespace();
             let _ = ws.next();
@@ -182,8 +184,10 @@ pub fn read_transfer(conn: &Connection) -> Option<Transfer> {
 /// config path avoids counting an unrelated tunnel). `None` if `pgrep` is
 /// unavailable.
 pub fn openvpn_running(conn: &Connection) -> Option<bool> {
-    let needle = conn
-        .config_path().map_or_else(|| format!("{}.ovpn", conn.name), std::string::ToString::to_string);
+    let needle = conn.config_path().map_or_else(
+        || format!("{}.ovpn", conn.name),
+        std::string::ToString::to_string,
+    );
     let out = Command::new("pgrep").args(["-f", &needle]).output().ok()?;
     match out.status.code() {
         Some(0) => Some(true),  // at least one matching process

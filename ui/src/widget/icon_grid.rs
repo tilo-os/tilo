@@ -221,12 +221,13 @@ impl Widget for IconGrid {
     ) -> taffy::Size<f32> {
         // known wins, else the definite available width, else enough
         // for one cell.
-        let width = known
-            .width
-            .map_or(match available.width {
+        let width = known.width.map_or(
+            match available.width {
                 taffy::AvailableSpace::Definite(w) => f64::from(w),
                 _ => self.cell_w,
-            }, f64::from);
+            },
+            f64::from,
+        );
         let columns = self.columns_for_width(width);
         self.columns = columns;
         let height = self.content_height(columns);
@@ -406,9 +407,7 @@ impl Widget for IconGrid {
                     Key::Named(NamedKey::ArrowRight) => {
                         Some(cur.map_or(0, |c| (c + 1).min(len - 1)))
                     }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        Some(cur.map_or(0, |c| c.saturating_sub(1)))
-                    }
+                    Key::Named(NamedKey::ArrowLeft) => Some(cur.map_or(0, |c| c.saturating_sub(1))),
                     Key::Named(NamedKey::ArrowDown) => {
                         Some(cur.map_or(0, |c| (c + cols).min(len - 1)))
                     }

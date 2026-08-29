@@ -366,7 +366,9 @@ impl TypstApp {
     /// Get-or-create the `root["source"]` Text object, seeding it with the
     /// current sample the first time it's created.
     fn ensure_source_obj(&self, doc: &mut AutoCommit) -> ObjId {
-        if let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "source") { id } else {
+        if let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "source") {
+            id
+        } else {
             let id = doc
                 .put_object(&ROOT, "source", ObjType::Text)
                 .expect("put_object source on root never fails");
@@ -419,10 +421,11 @@ impl TypstApp {
             return;
         };
         if let Some(res) = w.poll()
-            && res.seq >= self.applied_seq {
-                self.applied_seq = res.seq;
-                self.apply_output(res.output);
-            }
+            && res.seq >= self.applied_seq
+        {
+            self.applied_seq = res.seq;
+            self.apply_output(res.output);
+        }
     }
 
     fn apply_output(&mut self, out: CompileOutput) {
@@ -483,7 +486,8 @@ impl TypstApp {
         }
         let name = self
             .documents
-            .get(self.current).map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
+            .get(self.current)
+            .map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
         self.io = Some((
             crate::portal::PendingIo::SaveTyp,
             crate::portal::request_save(&name),
@@ -522,7 +526,8 @@ impl TypstApp {
         }
         let stem = self
             .documents
-            .get(self.current).map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
+            .get(self.current)
+            .map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
         let pdf_name = std::path::Path::new(&stem)
             .with_extension("pdf")
             .to_string_lossy()
@@ -569,7 +574,8 @@ impl TypstApp {
     ) -> Result<PathBuf, String> {
         let stem = self
             .documents
-            .get(self.current).map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
+            .get(self.current)
+            .map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
         let pdf_name = std::path::Path::new(&stem)
             .with_extension("pdf")
             .to_string_lossy()
@@ -613,7 +619,8 @@ impl TypstApp {
         let idx = if let Some(i) = self
             .documents
             .iter()
-            .position(|d| d.name == name && d.from_disk) {
+            .position(|d| d.name == name && d.from_disk)
+        {
             self.documents[i].source = src;
             i
         } else {
@@ -767,7 +774,9 @@ impl TypstApp {
     }
 
     fn compiling(&self) -> bool {
-        self.worker.as_ref().is_some_and(super::worker::CompileWorker::in_flight)
+        self.worker
+            .as_ref()
+            .is_some_and(super::worker::CompileWorker::in_flight)
     }
 
     /// Compute every pane rect from a content rect. Split out from
@@ -1021,7 +1030,10 @@ impl TypstApp {
             &zlabel,
             PILL_FONT,
             c.text_dim,
-            t * Affine::translate((zr.x0 + 8.0, y + (PILL_H - f64::from(PILL_FONT) * 1.25) / 2.0)),
+            t * Affine::translate((
+                zr.x0 + 8.0,
+                y + (PILL_H - f64::from(PILL_FONT) * 1.25) / 2.0,
+            )),
             None,
             TextWeight::Medium,
         );
@@ -1106,7 +1118,8 @@ impl TypstApp {
 
         let name = self
             .documents
-            .get(self.current).map_or_else(|| "untitled".into(), |d| d.name.clone());
+            .get(self.current)
+            .map_or_else(|| "untitled".into(), |d| d.name.clone());
         let base = if with_index && multi {
             format!("{name}   {}/{}", self.current + 1, self.documents.len())
         } else {
@@ -1369,7 +1382,10 @@ impl TypstApp {
                 lbl,
                 PILL_FONT,
                 c.text_primary,
-                t * Affine::translate((row.x0 + 10.0, y + (row_h - f64::from(PILL_FONT) * 1.25) / 2.0)),
+                t * Affine::translate((
+                    row.x0 + 10.0,
+                    y + (row_h - f64::from(PILL_FONT) * 1.25) / 2.0,
+                )),
                 None,
             );
             self.menu_hits.push((act, row));
@@ -2096,7 +2112,8 @@ mod tests {
     fn hit(app: &TypstApp, action: TbAction) -> Rect {
         app.toolbar_hits
             .iter()
-            .find(|(a, _)| *a == action).map_or_else(|| panic!("toolbar action not drawn"), |(_, r)| *r)
+            .find(|(a, _)| *a == action)
+            .map_or_else(|| panic!("toolbar action not drawn"), |(_, r)| *r)
     }
 
     fn center(r: Rect) -> Point {
@@ -2611,7 +2628,9 @@ mod tests {
             ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
         app.status_bubble_right =
             ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
-        let past = now.checked_sub(std::time::Duration::from_millis(10)).unwrap();
+        let past = now
+            .checked_sub(std::time::Duration::from_millis(10))
+            .unwrap();
         app.status_bubble_left.poke(past);
         app.status_bubble_right.poke(past);
         app.mouse = Point::new(5.0, 5.0);

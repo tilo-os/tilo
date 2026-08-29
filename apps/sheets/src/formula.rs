@@ -222,11 +222,13 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
                 k += 1;
             }
             let is_call = k < chars.len() && chars[k] == '(';
-            if !prev_numish && !is_call
-                && let Some(shifted) = offset_ref_token(&token, dcol, drow) {
-                    out.push_str(&shifted);
-                    continue;
-                }
+            if !prev_numish
+                && !is_call
+                && let Some(shifted) = offset_ref_token(&token, dcol, drow)
+            {
+                out.push_str(&shifted);
+                continue;
+            }
             out.push_str(&token);
             continue;
         }
@@ -751,7 +753,7 @@ impl<'a> Engine<'a> {
         let Some(ord) = ord else {
             return CellValue::Error(FormulaError::Value);
         };
-        use std::cmp::Ordering::{Equal, Less, Greater};
+        use std::cmp::Ordering::{Equal, Greater, Less};
         let res = match op {
             BinOp::Eq => ord == Equal,
             BinOp::Ne => ord != Equal,
@@ -1139,9 +1141,11 @@ impl<'a> Engine<'a> {
                         let mut total = 0.0;
                         for (i, keep) in mask.iter().enumerate() {
                             if *keep
-                                && let Some(n) = vals.get(i).and_then(super::model::CellValue::as_number) {
-                                    total += n;
-                                }
+                                && let Some(n) =
+                                    vals.get(i).and_then(super::model::CellValue::as_number)
+                            {
+                                total += n;
+                            }
                         }
                         CellValue::Number(total)
                     }
@@ -1158,10 +1162,12 @@ impl<'a> Engine<'a> {
                         let (mut sum, mut cnt) = (0.0, 0usize);
                         for (i, keep) in mask.iter().enumerate() {
                             if *keep
-                                && let Some(n) = vals.get(i).and_then(super::model::CellValue::as_number) {
-                                    sum += n;
-                                    cnt += 1;
-                                }
+                                && let Some(n) =
+                                    vals.get(i).and_then(super::model::CellValue::as_number)
+                            {
+                                sum += n;
+                                cnt += 1;
+                            }
                         }
                         if cnt == 0 {
                             CellValue::Error(FormulaError::Div0)
@@ -1398,9 +1404,10 @@ impl<'a> Engine<'a> {
         let mut total = 0.0;
         for (i, v) in probe.iter().enumerate() {
             if criterion_matches(v, &crit)
-                && let Some(n) = sum_vals.get(i).and_then(super::model::CellValue::as_number) {
-                    total += n;
-                }
+                && let Some(n) = sum_vals.get(i).and_then(super::model::CellValue::as_number)
+            {
+                total += n;
+            }
         }
         CellValue::Number(total)
     }
@@ -1431,10 +1438,11 @@ impl<'a> Engine<'a> {
         let (mut sum, mut cnt) = (0.0, 0usize);
         for (i, v) in probe.iter().enumerate() {
             if criterion_matches(v, &crit)
-                && let Some(n) = vals.get(i).and_then(super::model::CellValue::as_number) {
-                    sum += n;
-                    cnt += 1;
-                }
+                && let Some(n) = vals.get(i).and_then(super::model::CellValue::as_number)
+            {
+                sum += n;
+                cnt += 1;
+            }
         }
         if cnt == 0 {
             CellValue::Error(FormulaError::Div0)
@@ -1608,10 +1616,7 @@ impl<'a> Engine<'a> {
         }
         let approx = args
             .get(3)
-            .is_none_or(|a| {
-                self.eval_expr(a)
-                    .as_number() != Some(0.0)
-            });
+            .is_none_or(|a| self.eval_expr(a).as_number() != Some(0.0));
         let mut best: Option<u32> = None;
         for r in tl.1..=br.1 {
             let probe = self.eval_cell((tl.0, r));
@@ -1656,10 +1661,7 @@ impl<'a> Engine<'a> {
         }
         let approx = args
             .get(3)
-            .is_none_or(|a| {
-                self.eval_expr(a)
-                    .as_number() != Some(0.0)
-            });
+            .is_none_or(|a| self.eval_expr(a).as_number() != Some(0.0));
         let mut best: Option<u32> = None;
         for c in tl.0..=br.0 {
             let probe = self.eval_cell((c, tl.1));
@@ -1968,10 +1970,9 @@ fn format_number_code(n: f64, code: &str) -> String {
     let percent = code.contains('%');
     let value = if percent { n * 100.0 } else { n };
     let grouping = code.contains(',');
-    let decimals = code
-        .split('.')
-        .nth(1)
-        .map_or(0, |frac| frac.chars().filter(|c| *c == '0' || *c == '#').count());
+    let decimals = code.split('.').nth(1).map_or(0, |frac| {
+        frac.chars().filter(|c| *c == '0' || *c == '#').count()
+    });
     let mut out = if grouping {
         crate::model::format_thousands(value, decimals)
     } else {
@@ -2095,9 +2096,10 @@ fn parse_literal(raw: &str) -> CellValue {
     }
     // Accept a leading currency/percent for convenience.
     if let Some(p) = trimmed.strip_suffix('%')
-        && let Ok(n) = p.trim().parse::<f64>() {
-            return CellValue::Number(n / 100.0);
-        }
+        && let Ok(n) = p.trim().parse::<f64>()
+    {
+        return CellValue::Number(n / 100.0);
+    }
     match trimmed.to_uppercase().as_str() {
         "TRUE" => CellValue::Bool(true),
         "FALSE" => CellValue::Bool(false),
@@ -2198,7 +2200,7 @@ fn unit_of(expr: &Expr, formats: &HashMap<Addr, CellFormat>) -> Unit {
 
 /// Combine two operand units under a binary operator.
 fn combine(op: BinOp, l: Unit, r: Unit) -> Unit {
-    use BinOp::{Eq, Ne, Lt, Gt, Le, Ge, Concat, Div, Mul, Pow, Add, Sub};
+    use BinOp::{Add, Concat, Div, Eq, Ge, Gt, Le, Lt, Mul, Ne, Pow, Sub};
     // Comparisons and concat yield bare scalars/booleans/text.
     if matches!(op, Eq | Ne | Lt | Gt | Le | Ge | Concat) {
         return Unit::Scalar;
