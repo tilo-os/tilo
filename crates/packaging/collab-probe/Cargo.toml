@@ -13,3 +13,6 @@ runtime-collab = { path = "../../runtime/runtime-collab" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 automerge.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+
+[lints]
+workspace = true

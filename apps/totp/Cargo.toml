@@ -85,3 +85,6 @@ zeroize.workspace = true
 # real rqrr detect+decode path, not a mock. Already in the lockfile.
 qrcode.workspace = true
 image = { workspace = true, features = ["png", "jpeg"] }
+
+[lints]
+workspace = true

@@ -55,3 +55,6 @@ ed25519-dalek = { workspace = true, features = ["serde"] }
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[lints]
+workspace = true

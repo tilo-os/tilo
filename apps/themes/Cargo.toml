@@ -26,3 +26,6 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
+
+[lints]
+workspace = true

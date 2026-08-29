@@ -8,3 +8,6 @@ description = "Semantic HTML export/preview for qdoc DocSnapshot documents (qOS)
 qdoc = { path = "../qdoc" }
 # No base64 crate: data-URI encoding is hand-rolled in `base64.rs` (~30 LOC) so
 # adding qdoc-html stays lockfile-stable, matching qdoc-pdf's "no new deps" stance.
+
+[lints]
+workspace = true

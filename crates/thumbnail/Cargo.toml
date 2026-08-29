@@ -46,3 +46,6 @@ media = { path = "../media", optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+
+[lints]
+workspace = true
