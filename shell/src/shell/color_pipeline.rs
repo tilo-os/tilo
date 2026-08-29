@@ -428,9 +428,11 @@ pub fn plan_surface_op(
             if surface_hdr {
                 let mut config = HdrTonemapConfig::default();
                 if let Some(peak) = source_hdr_peak_nits
-                    && peak.is_finite() && peak > 0.0 {
-                        config.source_peak_nits = peak;
-                    }
+                    && peak.is_finite()
+                    && peak > 0.0
+                {
+                    config.source_peak_nits = peak;
+                }
                 config.target_peak_nits = output.max_luminance_nits;
                 SurfaceColorOp::TonemapHdrToSdr { config }
             } else {

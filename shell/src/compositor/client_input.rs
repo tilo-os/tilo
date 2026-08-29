@@ -551,15 +551,15 @@ pub fn evdev_keycode(key: &KeyEvent) -> Option<u32> {
     // Only an identified physical key carries a trustworthy scancode: winit maps `PhysicalKey::Unidentified` to `KEY_UNKNOWN` (240), which would otherwise make every synthesised keystroke a dead key.
     if let PhysicalKey::Code(code) = key.physical_key
         && let Some(scancode) = code.to_scancode()
-            && scancode != 0 {
-                return Some(scancode);
-            }
+        && scancode != 0
+    {
+        return Some(scancode);
+    }
     evdev_from_logical(&key.logical_key)
 }
 
 /// Logical-key → evdev keycode fallback. Values are from `linux/input-event-codes.h`.
 pub fn evdev_from_logical(key: &Key) -> Option<u32> {
-    
     match key {
         Key::Named(n) => match n {
             NamedKey::Escape => Some(1),
@@ -1195,7 +1195,10 @@ fn insert_foreign_group(
         .and_then(|sid| ws.strips.iter().position(|s| s.id == sid))
         .unwrap_or(0);
     let strip = ws.strips.get_mut(idx)?;
-    let resolved = app_id.map_or_else(|| format!("anon-{surface_id}"), std::string::ToString::to_string);
+    let resolved = app_id.map_or_else(
+        || format!("anon-{surface_id}"),
+        std::string::ToString::to_string,
+    );
     let tab = Tab {
         id: next_id(),
         title: foreign_tab_title(&resolved),
@@ -1276,11 +1279,12 @@ fn rename_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64, new_app_id: &st
                         surface_id: s,
                         app_id,
                     } = &mut tab.tile
-                        && *s == surface_id {
-                            *app_id = new_app_id.to_string();
-                            tab.title = foreign_tab_title(new_app_id);
-                            return true;
-                        }
+                        && *s == surface_id
+                    {
+                        *app_id = new_app_id.to_string();
+                        tab.title = foreign_tab_title(new_app_id);
+                        return true;
+                    }
                 }
             }
         }

@@ -688,9 +688,10 @@ impl ui::widget::Widget for SnippetsApp {
     /// unused.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::SnippetSearchProvider::parse_action_id(action_id)
-            && self.library.get(id).is_some() {
-                self.open_snippet(id);
-            }
+            && self.library.get(id).is_some()
+        {
+            self.open_snippet(id);
+        }
     }
 
     fn build_layout(
@@ -881,28 +882,29 @@ impl ui::widget::Widget for SnippetsApp {
                 // Cmd/Ctrl-F focuses search; Cmd/Ctrl-N new snippet;
                 // Cmd/Ctrl-C copies the open snippet.
                 if (mods.control_key() || mods.super_key())
-                    && let Key::Character(ch) = logical_key {
-                        match ch.to_lowercase().as_str() {
-                            "f" => {
-                                self.search_focused = true;
-                                *handled = true;
-                                return;
-                            }
-                            "n" => {
-                                self.new_snippet(state);
-                                *handled = true;
-                                return;
-                            }
-                            "c" => {
-                                if let Some(id) = self.open {
-                                    self.copy(id, state);
-                                }
-                                *handled = true;
-                                return;
-                            }
-                            _ => {}
+                    && let Key::Character(ch) = logical_key
+                {
+                    match ch.to_lowercase().as_str() {
+                        "f" => {
+                            self.search_focused = true;
+                            *handled = true;
+                            return;
                         }
+                        "n" => {
+                            self.new_snippet(state);
+                            *handled = true;
+                            return;
+                        }
+                        "c" => {
+                            if let Some(id) = self.open {
+                                self.copy(id, state);
+                            }
+                            *handled = true;
+                            return;
+                        }
+                        _ => {}
                     }
+                }
 
                 if self.search_focused {
                     self.handle_search_key(logical_key, handled);

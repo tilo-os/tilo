@@ -279,17 +279,17 @@ fn load_list(name: &str, url: &str) -> Option<String> {
     let path = cache_dir().map(|d| d.join(name));
 
     if let Some(p) = &path
-        && let Ok(meta) = std::fs::metadata(p) {
-            let fresh = meta
-                .modified()
-                .ok()
-                .and_then(|m| m.elapsed().ok())
-                .is_some_and(|age| age < CACHE_MAX_AGE);
-            if fresh
-                && let Ok(text) = std::fs::read_to_string(p) {
-                    return Some(text);
-                }
+        && let Ok(meta) = std::fs::metadata(p)
+    {
+        let fresh = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age < CACHE_MAX_AGE);
+        if fresh && let Ok(text) = std::fs::read_to_string(p) {
+            return Some(text);
         }
+    }
 
     match reqwest::blocking::get(url)
         .and_then(reqwest::blocking::Response::error_for_status)

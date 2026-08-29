@@ -110,9 +110,10 @@ impl SnippetsDoc {
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
             if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
-                && let ScalarValue::Str(s) = v.as_ref() {
-                    out.push(s.to_string());
-                }
+                && let ScalarValue::Str(s) = v.as_ref()
+            {
+                out.push(s.to_string());
+            }
         }
         out
     }

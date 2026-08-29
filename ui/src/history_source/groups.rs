@@ -67,7 +67,9 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         let by = str_at(doc, &rec, "by");
         let created = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
-            .map_or(UNIX_EPOCH, |ms| UNIX_EPOCH + Duration::from_millis(ms as u64));
+            .map_or(UNIX_EPOCH, |ms| {
+                UNIX_EPOCH + Duration::from_millis(ms as u64)
+            });
         out.push(NamedRange {
             id: key.clone(),
             label,

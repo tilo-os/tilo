@@ -658,13 +658,11 @@ impl ChatApp {
     /// idempotent add or remove — the single source of truth both the reaction
     /// chip and the emoji picker resolve to.
     pub(crate) fn reaction_toggle_action(&self, msg: &str, emoji: &str) -> ChatAction {
-        let reacting = self
-            .message(msg)
-            .is_some_and(|m| {
-                m.reactions
-                    .iter()
-                    .any(|r| r.emoji == emoji && r.reacted_by(&self.me.id))
-            });
+        let reacting = self.message(msg).is_some_and(|m| {
+            m.reactions
+                .iter()
+                .any(|r| r.emoji == emoji && r.reacted_by(&self.me.id))
+        });
         if reacting {
             actions::remove_reaction_action(&self.active_channel, msg, emoji, &self.me.id)
         } else {
@@ -678,7 +676,8 @@ impl ChatApp {
         let author = self.user_name(&m.author);
         let snippet: String = if m.text.trim().is_empty() {
             m.attachment
-                .as_ref().map_or_else(|| "(no text)".to_string(), |a| a.name().to_string())
+                .as_ref()
+                .map_or_else(|| "(no text)".to_string(), |a| a.name().to_string())
         } else {
             m.text.trim().chars().take(40).collect()
         };
@@ -850,7 +849,11 @@ impl ChatApp {
             if self.mic.is_none() {
                 self.mic = crate::audio::MicCapture::new();
             }
-            let packets = self.mic.as_mut().map(super::audio::MicCapture::poll).unwrap_or_default();
+            let packets = self
+                .mic
+                .as_mut()
+                .map(super::audio::MicCapture::poll)
+                .unwrap_or_default();
             for pkt in packets {
                 let seq = self.next_media_seq();
                 self.media.transport_mut().send(MediaObject {
@@ -888,19 +891,20 @@ impl ChatApp {
                 _ => None,
             };
             if let Some(nalus) = nalus
-                && !nalus.is_empty() {
-                    // Feed the host tile's VideoPlayer so this peer sees its own
-                    // camera (the surface yields its placeholder to a real frame).
-                    self.video.feed_frame(&nalus);
-                    let seq = self.next_media_seq();
-                    self.media.transport_mut().send(MediaObject {
-                        sender: me.clone(),
-                        kind: TrackKind::Video,
-                        seq,
-                        pts: Duration::from_millis(seq * 33),
-                        payload: nalus,
-                    });
-                }
+                && !nalus.is_empty()
+            {
+                // Feed the host tile's VideoPlayer so this peer sees its own
+                // camera (the surface yields its placeholder to a real frame).
+                self.video.feed_frame(&nalus);
+                let seq = self.next_media_seq();
+                self.media.transport_mut().send(MediaObject {
+                    sender: me.clone(),
+                    kind: TrackKind::Video,
+                    seq,
+                    pts: Duration::from_millis(seq * 33),
+                    payload: nalus,
+                });
+            }
         } else {
             self.camera = None;
             self.cam_encoder = None;
@@ -1369,9 +1373,9 @@ impl ChatApp {
                 .into_iter()
                 .find(|c| c.kind == model::ChannelKind::Text)
                 .map(|c| c.id.clone())
-            {
-                self.active_channel = first;
-            }
+        {
+            self.active_channel = first;
+        }
         // Unread is per-peer derived state, not stored: the channel in view is
         // always read (0); every other channel shows its top-level messages
         // beyond this peer's read watermark. The watermark itself is advanced
@@ -1459,7 +1463,8 @@ impl ChatApp {
         let mut in_voice: HashMap<&str, String> = HashMap::new();
         for (ch_id, members) in &self.voice_members {
             let ch_name = self
-                .channel(ch_id).map_or_else(|| ch_id.clone(), |c| c.name.clone());
+                .channel(ch_id)
+                .map_or_else(|| ch_id.clone(), |c| c.name.clone());
             for m in members {
                 in_voice.insert(m.user.as_str(), ch_name.clone());
             }
@@ -1626,19 +1631,21 @@ impl ChatApp {
     pub(crate) fn ensure_selection(&mut self) -> bool {
         let mut ws_changed = false;
         if !self.workspaces.iter().any(|w| w.id == self.active_ws)
-            && let Some(first) = self.workspaces.first() {
-                self.active_ws = first.id.clone();
-                self.active_channel.clear();
-                ws_changed = true;
-            }
+            && let Some(first) = self.workspaces.first()
+        {
+            self.active_ws = first.id.clone();
+            self.active_channel.clear();
+            ws_changed = true;
+        }
         // Drop a stale open thread whose parent isn't in this workspace.
         if let Some(t) = self.thread_open.clone()
-            && self.message(&t).is_none() {
-                self.thread_open = None;
-                if self.focus == Focus::Thread {
-                    self.focus = Focus::Main;
-                }
+            && self.message(&t).is_none()
+        {
+            self.thread_open = None;
+            if self.focus == Focus::Thread {
+                self.focus = Focus::Main;
             }
+        }
         ws_changed
     }
 
@@ -1806,10 +1813,7 @@ impl Widget for ChatApp {
             }
         };
         let video_node = taffy.new_leaf(video_style).unwrap();
-        node_map.insert(
-            video_node,
-            &raw mut self.video as *mut dyn Widget,
-        );
+        node_map.insert(video_node, &raw mut self.video as *mut dyn Widget);
         self.video_node = Some(video_node);
 
         let root = taffy
@@ -2034,14 +2038,15 @@ impl Widget for ChatApp {
     /// unused — the same fields the sidebar's own channel click sets.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::ChannelSearchProvider::parse_action_id(action_id)
-            && let Some(ws) = self.channel(&id).map(|c| c.workspace.clone()) {
-                self.active_ws = ws;
-                self.active_channel = id;
-                self.thread_open = None;
-                self.scroll = 0.0;
-                self.focus = Focus::Main;
-                self.caret = 0;
-            }
+            && let Some(ws) = self.channel(&id).map(|c| c.workspace.clone())
+        {
+            self.active_ws = ws;
+            self.active_channel = id;
+            self.thread_open = None;
+            self.scroll = 0.0;
+            self.focus = Focus::Main;
+            self.caret = 0;
+        }
     }
 
     fn name(&self) -> &'static str {

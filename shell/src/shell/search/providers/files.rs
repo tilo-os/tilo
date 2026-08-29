@@ -228,30 +228,30 @@ impl SearchProvider for FilesProvider {
 
         // Content hits from tantivy, deduped against name hits so a file
         // matching both only shows once (the higher score wins).
-        if want_file
-            && let Some(idx) = self.tantivy.as_ref() {
-                let content_hits = idx.query(ctx.needle, MAX_RESULTS);
-                for hit in content_hits {
-                    if seen.contains(&hit.path) {
-                        continue;
-                    }
-                    if out.len() >= MAX_RESULTS {
-                        break;
-                    }
-                    let display = hit
-                        .path
-                        .strip_prefix(&self.home).map_or_else(|_| hit.path.display().to_string(), |p| format!("~/{}", p.display()));
-                    let entry = NameEntry {
-                        path: hit.path.clone(),
-                        facts: NameFacts::new(&display, None),
-                        display,
-                        is_dir: false,
-                    };
-                    // Clamp BM25 into the band the name scale reserves for it.
-                    let content = hit.score.clamp(CONTENT_SCORE_MIN, CONTENT_SCORE_MAX);
-                    out.push(make_result(&entry, content, hit.snippet));
+        if want_file && let Some(idx) = self.tantivy.as_ref() {
+            let content_hits = idx.query(ctx.needle, MAX_RESULTS);
+            for hit in content_hits {
+                if seen.contains(&hit.path) {
+                    continue;
                 }
+                if out.len() >= MAX_RESULTS {
+                    break;
+                }
+                let display = hit.path.strip_prefix(&self.home).map_or_else(
+                    |_| hit.path.display().to_string(),
+                    |p| format!("~/{}", p.display()),
+                );
+                let entry = NameEntry {
+                    path: hit.path.clone(),
+                    facts: NameFacts::new(&display, None),
+                    display,
+                    is_dir: false,
+                };
+                // Clamp BM25 into the band the name scale reserves for it.
+                let content = hit.score.clamp(CONTENT_SCORE_MIN, CONTENT_SCORE_MAX);
+                out.push(make_result(&entry, content, hit.snippet));
             }
+        }
 
         // Final ordering across both backends: score, then shallower path.
         // Content hits clamp into a narrow band, so ties are common.
@@ -293,7 +293,10 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
 }
 
 fn file_title(path: &Path) -> String {
-    path.file_name().map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().to_string())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |s| s.to_string_lossy().to_string(),
+    )
 }
 
 /// Bounds for a content hit, at the level of a path-only name hit
@@ -537,16 +540,15 @@ fn is_word_boundary(b: &[u8], i: usize) -> bool {
 fn vendor_penalty(lower_path: &str, leaf_lower: &str, stem_len: usize) -> i32 {
     let mut p = 0;
     if let Some(ext) = extension_of(leaf_lower, stem_len)
-        && ASSET_EXTS.contains(&ext) {
-            p += PENALTY_ASSET_EXT;
-        }
+        && ASSET_EXTS.contains(&ext)
+    {
+        p += PENALTY_ASSET_EXT;
+    }
     if is_generated_leaf(leaf_lower) {
         p += PENALTY_GENERATED_LEAF;
     }
     // Parent components only — a directory *named* `vendor` is a fine answer.
-    let parent = lower_path
-        .rsplit_once('/')
-        .map_or("", |(head, _)| head);
+    let parent = lower_path.rsplit_once('/').map_or("", |(head, _)| head);
     if parent.split('/').any(|c| VENDOR_DIRS.contains(&c)) {
         p += PENALTY_VENDOR_DIR;
     }
@@ -645,9 +647,7 @@ fn leaf_tier(needle: &str, leaf: &str, stem_len: usize, tokens: &[(u16, u16)]) -
 /// Tier for a match that missed the filename but landed up the path.
 /// Reached only once the path is known to contain the needle.
 fn path_tier(needle: &str, lower_path: &str) -> (i32, usize) {
-    let parent = lower_path
-        .rsplit_once('/')
-        .map_or("", |(head, _)| head);
+    let parent = lower_path.rsplit_once('/').map_or("", |(head, _)| head);
     let mut best = (STRUCT_PATH_SUBSTRING, lower_path.len());
     for comp in parent.split('/') {
         if comp == needle {
@@ -816,7 +816,10 @@ fn should_skip(path: &Path, home: &Path) -> bool {
 }
 
 fn display_path(home: &Path, path: &Path) -> String {
-    path.strip_prefix(home).map_or_else(|_| path.display().to_string(), |rel| format!("~/{}", rel.display()))
+    path.strip_prefix(home).map_or_else(
+        |_| path.display().to_string(),
+        |rel| format!("~/{}", rel.display()),
+    )
 }
 
 #[cfg(test)]

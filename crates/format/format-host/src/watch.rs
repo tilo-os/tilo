@@ -39,9 +39,9 @@ pub fn spawn_watcher(router: Router, registry_path: PathBuf) -> anyhow::Result<(
                     .paths
                     .iter()
                     .any(|p| p.file_name() == Some(&registry_name))
-                {
-                    let _ = tx.blocking_send(());
-                }
+            {
+                let _ = tx.blocking_send(());
+            }
         })?
     };
     watcher.watch(&watch_dir, RecursiveMode::NonRecursive)?;

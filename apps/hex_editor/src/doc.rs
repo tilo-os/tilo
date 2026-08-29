@@ -137,13 +137,15 @@ impl HexDoc {
             model.move_to(c.max(0) as usize, false);
         }
         if let Some(m) = Self::read_meta_str(doc, "mode")
-            && (m == "ins") != (model.mode() == EditMode::Insert) {
-                model.toggle_mode();
-            }
+            && (m == "ins") != (model.mode() == EditMode::Insert)
+        {
+            model.toggle_mode();
+        }
         if let Some(e) = Self::read_meta_str(doc, "endian")
-            && (e == "be") != (model.endian() == Endian::Big) {
-                model.toggle_endian();
-            }
+            && (e == "be") != (model.endian() == Endian::Big)
+        {
+            model.toggle_endian();
+        }
         Some(model)
     }
 }

@@ -303,9 +303,10 @@ impl RemoteInputFirewall {
             return Some(Denial::SessionLocked);
         }
         if let Some(last) = self.last_local_input
-            && now.saturating_duration_since(last) < PHYSICAL_PRIORITY_WINDOW {
-                return Some(Denial::PhysicalPriority);
-            }
+            && now.saturating_duration_since(last) < PHYSICAL_PRIORITY_WINDOW
+        {
+            return Some(Denial::PhysicalPriority);
+        }
         None
     }
 

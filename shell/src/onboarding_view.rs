@@ -168,7 +168,9 @@ impl OnboardingView {
             );
         }
         let minted = self.flow.minted();
-        let fingerprint = minted.map(super::onboarding::MintedIdentity::grouped_fingerprint).unwrap_or_default();
+        let fingerprint = minted
+            .map(super::onboarding::MintedIdentity::grouped_fingerprint)
+            .unwrap_or_default();
         let path = minted
             .map(|m| m.path.display().to_string())
             .unwrap_or_default();
@@ -345,9 +347,10 @@ impl Widget for OnboardingView {
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
-                && let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
+        }
     }
 
     fn draw(
@@ -378,19 +381,20 @@ impl Widget for OnboardingView {
     ) {
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
-                && let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

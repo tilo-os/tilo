@@ -310,9 +310,10 @@ pub fn fold_inbound(
         };
         // Only rooms this session is in — an access rule.
         if let PresenceKey::Workspace { id: room } = &key
-            && !member_of(room) {
-                continue;
-            }
+            && !member_of(room)
+        {
+            continue;
+        }
         // Spelled from the handle, never `entry.user`'s unverified claim.
         let user = format!("peer@{}", entry.peer);
 

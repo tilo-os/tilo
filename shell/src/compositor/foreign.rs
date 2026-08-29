@@ -389,7 +389,10 @@ pub enum CaptureOutcome {
 
 impl ForeignFrameStore {
     fn with_entry<R>(&self, id: SurfaceId, f: impl FnOnce(&mut ForeignEntry) -> R) -> R {
-        let mut guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(guard.entry(id).or_insert_with(ForeignEntry::new))
     }
 
@@ -431,7 +434,9 @@ impl ForeignFrameStore {
                 }
             }
             Err(ReadbackError::DmaBufUnsupported) => {
-                if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer) { self.capture_dmabuf(id, dmabuf) } else {
+                if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer) {
+                    self.capture_dmabuf(id, dmabuf)
+                } else {
                     let msg = "buffer is neither wl_shm nor dmabuf".to_string();
                     self.note_failure(id, msg.clone());
                     CaptureOutcome::Failed(msg)
@@ -556,19 +561,28 @@ impl ForeignFrameStore {
 
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
-        let mut guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&id);
     }
 
     /// Current frame counter for `id`; `0` when nothing has landed.
     pub fn frame_seq(&self, id: SurfaceId) -> u64 {
-        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&id).map_or(0, |e| e.seq)
     }
 
     /// Copy out the current frame, or `None` when the surface has no pixels staged.
     pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
-        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
         if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
             return None;
@@ -585,14 +599,20 @@ impl ForeignFrameStore {
     /// it; `None` when nothing has landed. Exists so a harness can compare
     /// what the client drew against the tab it was drawn into — disagreeing is what a visibly resizing window *is*, unlike a frame counter alone.
     pub fn frame_size(&self, id: SurfaceId) -> Option<(u32, u32)> {
-        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
         (e.width > 0 && e.height > 0).then_some((e.width, e.height))
     }
 
     /// Whether `id`'s window has been shown — the latched answer from [`Self::mark_presented`], read without changing it.
     pub fn is_presented(&self, id: SurfaceId) -> bool {
-        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&id).is_some_and(|e| e.presented)
     }
 
@@ -601,7 +621,10 @@ impl ForeignFrameStore {
     /// by [`ForeignSurfaceWidget::opening`] before painting the
     /// placeholder card; `presented` wins, so this goes false and stays false — a watched-away placeholder must not return.
     pub fn is_opening(&self, id: SurfaceId) -> bool {
-        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
             .get(&id)
             .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
@@ -631,7 +654,10 @@ impl ForeignFrameStore {
     /// [`OPENING_CONFIGURE_GRACE`] since adopted. Read only by
     /// [`flush_configures`], to decide when to configure anyway; no entry means not adopted, not waiting on anything.
     pub fn opening_wait_expired(&self, id: SurfaceId) -> bool {
-        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
             .get(&id)
             .is_some_and(|e| e.first_seen.elapsed() >= OPENING_CONFIGURE_GRACE)
@@ -639,7 +665,10 @@ impl ForeignFrameStore {
 
     /// Reason the last capture failed, if any.
     pub fn last_error(&self, id: SurfaceId) -> Option<String> {
-        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&id).and_then(|e| e.last_error.clone())
     }
 
@@ -652,7 +681,10 @@ impl ForeignFrameStore {
 
     /// The tab rectangle last published by [`Self::note_placement`].
     pub fn placement(&self, id: SurfaceId) -> Option<Rect> {
-        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&id).and_then(|e| e.placement)
     }
 
@@ -926,7 +958,12 @@ impl Widget for ForeignSurfaceWidget {
         };
         let x = origin.x + f64::from(l.location.x);
         let y = origin.y + f64::from(l.location.y);
-        self.rect = Rect::new(x, y, x + f64::from(l.size.width), y + f64::from(l.size.height));
+        self.rect = Rect::new(
+            x,
+            y,
+            x + f64::from(l.size.width),
+            y + f64::from(l.size.height),
+        );
         // Publish the laid-out rect so the configure pass can tell the client what resolution to render at — the shell-to-wayland seam.
         if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
             store().note_placement(self.surface_id, self.rect);
@@ -949,38 +986,38 @@ impl Widget for ForeignSurfaceWidget {
         let clip = RoundedRect::from_rect(self.rect, radius);
 
         if let Some(image) = self.cached.clone()
-            && let Some(dst) = self.fit_rect(image.width, image.height) {
-                // Neutral backdrop so letterbox bands (and client transparency) read as compositor surface, not whatever the tile card painted.
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.base,
-                    None,
-                    &clip,
-                );
-                let sx = dst.width() / f64::from(image.width);
-                let sy = dst.height() / f64::from(image.height);
-                let brush_transform = transform
-                    * Affine::translate((dst.x0, dst.y0))
-                    * Affine::scale_non_uniform(sx, sy);
-                let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    transform,
-                    &clip,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    brush_transform,
-                    &brush,
-                    None,
-                    &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
-                );
-                scene.pop_layer();
-                return;
-            }
+            && let Some(dst) = self.fit_rect(image.width, image.height)
+        {
+            // Neutral backdrop so letterbox bands (and client transparency) read as compositor surface, not whatever the tile card painted.
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.base,
+                None,
+                &clip,
+            );
+            let sx = dst.width() / f64::from(image.width);
+            let sy = dst.height() / f64::from(image.height);
+            let brush_transform =
+                transform * Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(sx, sy);
+            let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &clip,
+            );
+            scene.fill(
+                Fill::NonZero,
+                brush_transform,
+                &brush,
+                None,
+                &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
+            );
+            scene.pop_layer();
+            return;
+        }
 
         let (headline, detail) = self.unshowable_text();
         // Fixed ramp indices were a guess about which way round the card
@@ -1208,11 +1245,13 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
                 for group in &mut strip.window_groups {
                     for tab in &mut group.tabs {
                         if let ShellTile::Foreign { app_id, surface_id } = &mut tab.tile
-                            && *surface_id == want.surface_id && *app_id != want.app_id {
-                                *app_id = want.app_id.clone();
-                                tab.title = want.title.clone();
-                                changed = true;
-                            }
+                            && *surface_id == want.surface_id
+                            && *app_id != want.app_id
+                        {
+                            *app_id = want.app_id.clone();
+                            tab.title = want.title.clone();
+                            changed = true;
+                        }
                     }
                 }
             }

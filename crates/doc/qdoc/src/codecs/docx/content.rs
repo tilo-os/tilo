@@ -90,10 +90,11 @@ fn start_block(
 
 fn append(doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str) {
     if let Some(b) = cur
-        && !txt.is_empty() {
-            doc.splice_text(b, *cur_len, 0, txt);
-            *cur_len += txt.chars().count();
-        }
+        && !txt.is_empty()
+    {
+        doc.splice_text(b, *cur_len, 0, txt);
+        *cur_len += txt.chars().count();
+    }
 }
 
 pub(crate) fn parse_body(
@@ -299,10 +300,9 @@ pub(crate) fn parse_body(
                             dr.page_relative = true;
                         }
                     }
-                    b"a:blip"
-                        if dr.rel.is_none() => {
-                            dr.rel = attr_val(e, b"r:embed").or_else(|| attr_val(e, b"r:link"));
-                        }
+                    b"a:blip" if dr.rel.is_none() => {
+                        dr.rel = attr_val(e, b"r:embed").or_else(|| attr_val(e, b"r:link"));
+                    }
                     _ => {}
                 },
                 Event::End(e) if e.name().as_ref() == b"w:drawing" => {
@@ -327,13 +327,15 @@ pub(crate) fn parse_body(
                         };
                         doc.set_attr(&id, "anchor", anchor);
                         if let Some(w) = dr.width
-                            && w > 0 {
-                                doc.set_attr(&id, "width", w);
-                            }
+                            && w > 0
+                        {
+                            doc.set_attr(&id, "width", w);
+                        }
                         if let Some(h) = dr.height
-                            && h > 0 {
-                                doc.set_attr(&id, "height", h);
-                            }
+                            && h > 0
+                        {
+                            doc.set_attr(&id, "height", h);
+                        }
                         if let Some(w) = dr.wrap {
                             doc.set_attr(&id, "wrap", w.as_str());
                         }
@@ -438,41 +440,46 @@ pub(crate) fn parse_body(
                     let map = if is_foot { foot_map } else { end_map };
                     if let Some(docx_id) = attr_val(&e, b"w:id")
                         && let Some(note_id) = map.get(&docx_id)
-                            && let Some(b) = cur.clone() {
-                                let idx = cur_len;
-                                append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
-                                note_refs.push((b, idx, note_id.clone()));
-                            }
+                        && let Some(b) = cur.clone()
+                    {
+                        let idx = cur_len;
+                        append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
+                        note_refs.push((b, idx, note_id.clone()));
+                    }
                 }
                 b"w:commentRangeStart" if in_body && cur.is_some() => {
                     // The start of a commented range: remember the char index; the matching `w:commentRangeEnd` records the end.
                     if let Some(docx_id) = attr_val(&e, b"w:id")
                         && let Some(cid) = comment_map.get(&docx_id)
-                            && let Some(b) = cur.clone() {
-                                open_comments.insert(docx_id, (cid.clone(), b, cur_len));
-                            }
+                        && let Some(b) = cur.clone()
+                    {
+                        open_comments.insert(docx_id, (cid.clone(), b, cur_len));
+                    }
                 }
                 b"w:commentRangeEnd" if in_body => {
                     // Closes a commented range: anchor a `comment` mark over `[start, cur_len)`.
                     if let Some(docx_id) = attr_val(&e, b"w:id")
-                        && let Some((cid, b, start)) = open_comments.remove(&docx_id) {
-                            comment_ranges.push((b, start, cur_len, cid));
-                        }
+                        && let Some((cid, b, start)) = open_comments.remove(&docx_id)
+                    {
+                        comment_ranges.push((b, start, cur_len, cid));
+                    }
                 }
                 b"w:bookmarkStart" if in_body && cur.is_some() => {
                     // Opens a bookmark's range: remember name + start index. Word's built-in `_GoBack` bookmark has no useful name, so it's skipped.
                     if let (Some(id), Some(name), Some(b)) =
                         (attr_val(&e, b"w:id"), attr_val(&e, b"w:name"), cur.clone())
-                        && name != "_GoBack" {
-                            open_bookmarks.insert(id, (b, cur_len, name));
-                        }
+                        && name != "_GoBack"
+                    {
+                        open_bookmarks.insert(id, (b, cur_len, name));
+                    }
                 }
                 b"w:bookmarkEnd" if in_body => {
                     // Closes a bookmark's range: anchor a `bookmark` mark valued with the name.
                     if let Some(id) = attr_val(&e, b"w:id")
-                        && let Some((b, start, name)) = open_bookmarks.remove(&id) {
-                            bookmark_ranges.push((b, start, cur_len, name));
-                        }
+                        && let Some((b, start, name)) = open_bookmarks.remove(&id)
+                    {
+                        bookmark_ranges.push((b, start, cur_len, name));
+                    }
                 }
                 // `w:commentReference` carries no range info (defined by start/end), so it's ignored.
                 _ if in_rpr => {
@@ -480,12 +487,13 @@ pub(crate) fn parse_body(
                         run_marks.retain(|(k2, _)| k2 != &k);
                         run_marks.push((k, v));
                     } else if e.name().as_ref() == b"w:rStyle"
-                        && let Some(name) = attr_val(&e, b"w:val") {
-                            for (k, v) in reg.text_marks(&name) {
-                                run_marks.retain(|(k2, _)| k2 != &k);
-                                run_marks.push((k, v));
-                            }
+                        && let Some(name) = attr_val(&e, b"w:val")
+                    {
+                        for (k, v) in reg.text_marks(&name) {
+                            run_marks.retain(|(k2, _)| k2 != &k);
+                            run_marks.push((k, v));
                         }
+                    }
                 }
                 _ if in_body && cur.is_none() && table_id.is_none() => {
                     let raw = s[pos_before..reader.buffer_position() as usize].to_string();
@@ -508,9 +516,10 @@ pub(crate) fn parse_body(
                 b"w:ins" | b"w:del" => {
                     // Close the tracked-change wrapper: anchor an `ins`/`del` mark over `[start, cur_len)`.
                     if let Some((cid, kind, block, start)) = change.take()
-                        && let Some(b) = block {
-                            change_ranges.push((b, start, cur_len, kind, cid));
-                        }
+                        && let Some(b) = block
+                    {
+                        change_ranges.push((b, start, cur_len, kind, cid));
+                    }
                 }
                 b"w:r" => {
                     in_run = false;
@@ -524,9 +533,10 @@ pub(crate) fn parse_body(
                 b"w:hyperlink" => {
                     // Close the cross-reference: anchor a `link` mark valued `#name` over `[start, cur_len)`.
                     if let Some((value, block, start)) = hyperlink.take()
-                        && let Some(b) = block {
-                            cross_refs.push((b, start, cur_len, value));
-                        }
+                        && let Some(b) = block
+                    {
+                        cross_refs.push((b, start, cur_len, value));
+                    }
                 }
                 b"w:p" if table_id.is_none() => {
                     flush_para_marks!();
@@ -544,16 +554,15 @@ pub(crate) fn parse_body(
                 _ => {}
             },
             Event::Text(t) => {
-                if in_t
-                    && let Some(b) = cur.as_ref() {
-                        let txt = t
-                            .xml10_content()
-                            .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
-                        if !txt.is_empty() {
-                            doc.splice_text(b, cur_len, 0, &txt);
-                            cur_len += txt.chars().count();
-                        }
+                if in_t && let Some(b) = cur.as_ref() {
+                    let txt = t
+                        .xml10_content()
+                        .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                    if !txt.is_empty() {
+                        doc.splice_text(b, cur_len, 0, &txt);
+                        cur_len += txt.chars().count();
                     }
+                }
             }
             Event::Eof => break,
             _ => {}
@@ -615,8 +624,7 @@ pub(crate) fn parse_body(
 
 /// The character length of a body block's text (0 if absent).
 fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
-    crate::model::block_text(doc.doc, doc.c, block_id)
-        .map_or(0, |t| t.chars().count())
+    crate::model::block_text(doc.doc, doc.c, block_id).map_or(0, |t| t.chars().count())
 }
 
 #[cfg(test)]

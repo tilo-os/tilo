@@ -149,8 +149,7 @@ impl MailEngine for StubEngine {
                 });
             }
             EngineRequest::Send { account, draft } => {
-                let from =
-                    crate::model::Addr::new(account.display_name.clone(), account.email);
+                let from = crate::model::Addr::new(account.display_name.clone(), account.email);
                 match build_mime(&from, &draft) {
                     Ok(bytes) => {
                         let _ = out.send(EngineEvent::Sent {
@@ -217,7 +216,10 @@ pub mod live {
     use accounts::{AccountId, SecretVault};
     use futures::TryStreamExt;
 
-    use super::{AccountConfig, Folder, Message, Draft, build_mime, MailEngine, EngineRequest, Sender, EngineEvent};
+    use super::{
+        AccountConfig, Draft, EngineEvent, EngineRequest, Folder, MailEngine, Message, Sender,
+        build_mime,
+    };
     // AccountConfig / Draft / Folder / Message / Sender / build_mime come via
     // `super::*`; these are the names the parent doesn't already bring in.
     use crate::model::{Addr, AuthMethod};

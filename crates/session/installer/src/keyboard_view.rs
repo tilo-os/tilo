@@ -104,17 +104,19 @@ impl KeyboardView {
 
         // Shifted glyph (corner), drawn first / dim so the base reads clear.
         if let Some(s) = shift
-            && !s.is_empty() && s != glyph {
-                let sf = (font * 0.72).max(7.0);
-                text_renderer.draw_text(
-                    scene,
-                    s,
-                    sf,
-                    theme.text_dim,
-                    transform * Affine::translate((key.x0 + 3.0, key.y0 + 1.0)),
-                    None,
-                );
-            }
+            && !s.is_empty()
+            && s != glyph
+        {
+            let sf = (font * 0.72).max(7.0);
+            text_renderer.draw_text(
+                scene,
+                s,
+                sf,
+                theme.text_dim,
+                transform * Affine::translate((key.x0 + 3.0, key.y0 + 1.0)),
+                None,
+            );
+        }
 
         if !glyph.is_empty() {
             let (gw, gh) = text_renderer.measure(glyph, font, None);
@@ -136,9 +138,10 @@ impl Widget for KeyboardView {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Re-resolve every sync so the preview tracks the dropdown live.
         if let Some(name) = Self::read_value(state, root, self.value_path.as_str())
-            && let Some(l) = layouts::by_display_name(&name) {
-                self.layout = l;
-            }
+            && let Some(l) = layouts::by_display_name(&name)
+        {
+            self.layout = l;
+        }
     }
 
     fn build_layout(

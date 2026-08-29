@@ -776,9 +776,7 @@ impl ActivityTimeline {
             return 0..0;
         }
         let first = self.row_at_offset(self.scroll_y).unwrap_or(0);
-        let last = self
-            .row_at_offset(self.scroll_y + vp)
-            .map_or(n, |i| i + 1);
+        let last = self.row_at_offset(self.scroll_y + vp).map_or(n, |i| i + 1);
         first.min(n)..last.min(n)
     }
 
@@ -1351,9 +1349,11 @@ impl ActivityTimeline {
         let short_size = (text_size - 2.0).max(10.0);
         let short = entry.author.identity_short.as_str();
         let slot_end = row.x0 + author_slot_w - 6.0;
-        let full_name_w = f64::from(text_renderer
-            .measure(entry.author.name.as_str(), text_size, None)
-            .0);
+        let full_name_w = f64::from(
+            text_renderer
+                .measure(entry.author.name.as_str(), text_size, None)
+                .0,
+        );
         // The hash is shown out of whatever the name leaves over, and
         // dropped rather than truncating the name.
         let short_w = if compact || short.is_empty() {
@@ -1630,7 +1630,10 @@ impl ActivityTimeline {
                         transform,
                         colors.accent[4],
                         None,
-                        &Circle::new(Point::new(dot_x, title_y + f64::from(title_size) / 2.0), 3.0),
+                        &Circle::new(
+                            Point::new(dot_x, title_y + f64::from(title_size) / 2.0),
+                            3.0,
+                        ),
                     );
                 }
             }
@@ -1764,9 +1767,9 @@ impl ActivityTimeline {
         } else {
             format!("author:{}", self.author_query)
         };
-        let author_full_w = (f64::from(text_renderer.measure(&author_label, chip_text_size, None).0)
-            + 16.0)
-            .min(strip.width() * 0.45);
+        let author_full_w =
+            (f64::from(text_renderer.measure(&author_label, chip_text_size, None).0) + 16.0)
+                .min(strip.width() * 0.45);
         let chips_budget = (strip.width() - author_full_w - 8.0).max(0.0);
 
         let measure_run = |tr: &mut TextRenderer, short: bool| -> f64 {
@@ -2183,10 +2186,9 @@ impl Widget for ActivityTimeline {
                 && !modifiers.state().super_key() =>
             {
                 let _ = logical_key;
-                let outcome = self
-                    .naming
-                    .as_mut()
-                    .map_or(NameFieldOutcome::Ignored, |n| n.field.handle_event(event, modifiers));
+                let outcome = self.naming.as_mut().map_or(NameFieldOutcome::Ignored, |n| {
+                    n.field.handle_event(event, modifiers)
+                });
                 match outcome {
                     NameFieldOutcome::Commit(_) => {
                         self.commit_naming();

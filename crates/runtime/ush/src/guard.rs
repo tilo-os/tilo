@@ -264,7 +264,8 @@ pub fn quarantine_add(path: &Path, quarantine_dir: &Path) -> std::io::Result<Pat
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(quarantine_dir)?;
     let name = path
-        .file_name().map_or_else(|| "unnamed".into(), |n| n.to_string_lossy().into_owned());
+        .file_name()
+        .map_or_else(|| "unnamed".into(), |n| n.to_string_lossy().into_owned());
     // Keep the original location in the stored name: restoring has to put it
     // back where it came from, and a bare basename cannot say where that was.
     let encoded = path.to_string_lossy().replace('/', "%2F");

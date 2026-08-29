@@ -472,21 +472,21 @@ impl Widget for PlacesSidebar {
             if let (Some(fi), Some(ghost)) = (
                 from_idx,
                 favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics),
-            )
-                && let Some(fav) = favs.favorites.get(fi) {
-                    self.draw_row(
-                        scene,
-                        transform,
-                        tr,
-                        theme,
-                        ghost,
-                        fav.icon(),
-                        &fav.label,
-                        false,
-                        false,
-                        true,
-                    );
-                }
+            ) && let Some(fav) = favs.favorites.get(fi)
+            {
+                self.draw_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    ghost,
+                    fav.icon(),
+                    &fav.label,
+                    false,
+                    false,
+                    true,
+                );
+            }
         }
     }
 
@@ -568,14 +568,12 @@ impl Widget for PlacesSidebar {
                     push(&self.sink, FileCommand::ReorderFavorite { from, to });
                     *handled = true;
                 } else {
-                    if !was_active
-                        && let Some(i) = pressed {
-                            let path =
-                                self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
-                            if let Some(p) = path {
-                                push(&self.sink, FileCommand::Navigate(p));
-                            }
+                    if !was_active && let Some(i) = pressed {
+                        let path = self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
+                        if let Some(p) = path {
+                            push(&self.sink, FileCommand::Navigate(p));
                         }
+                    }
                     *handled = true;
                 }
             }

@@ -48,18 +48,19 @@ impl Router {
         let current = self.providers.read().clone();
         for entry in &reg.providers {
             if let Some(existing) = current.get(&entry.package)
-                && existing.entry.wasm == entry.wasm {
-                    // Same wasm file → reuse the loaded component, refresh
-                    // the registry metadata.
-                    next.insert(
-                        entry.package.clone(),
-                        ActiveProvider {
-                            entry: entry.clone(),
-                            component: existing.component.clone(),
-                        },
-                    );
-                    continue;
-                }
+                && existing.entry.wasm == entry.wasm
+            {
+                // Same wasm file → reuse the loaded component, refresh
+                // the registry metadata.
+                next.insert(
+                    entry.package.clone(),
+                    ActiveProvider {
+                        entry: entry.clone(),
+                        component: existing.component.clone(),
+                    },
+                );
+                continue;
+            }
             let comp = LoadedComponent::from_path(&self.engine, &entry.wasm)
                 .map_err(|e| anyhow::anyhow!("loading provider {}: {e:#}", entry.package))?;
             next.insert(
@@ -109,18 +110,19 @@ impl Router {
     pub fn detect(&self, head: &[u8], hint: &str) -> (format_provider_wit::Detected, String) {
         if !hint.is_empty()
             && let Some(p) = self.best_for_mime(hint)
-                && let Ok(d) = p.component.detect(head) {
-                    return (
-                        format_provider_wit::Detected {
-                            confidence: format_provider_wit::Confidence {
-                                tier: d.confidence.tier,
-                                score: d.confidence.score,
-                            },
-                            mime: d.mime,
-                        },
-                        p.entry.package,
-                    );
-                }
+            && let Ok(d) = p.component.detect(head)
+        {
+            return (
+                format_provider_wit::Detected {
+                    confidence: format_provider_wit::Confidence {
+                        tier: d.confidence.tier,
+                        score: d.confidence.score,
+                    },
+                    mime: d.mime,
+                },
+                p.entry.package,
+            );
+        }
         let providers = self.providers.read().clone();
         let mut keys: Vec<&String> = providers.keys().collect();
         keys.sort();

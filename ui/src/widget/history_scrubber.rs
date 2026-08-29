@@ -1171,7 +1171,9 @@ impl Widget for HistoryScrubber {
             let outcome = self
                 .naming
                 .as_mut()
-                .map_or(NameFieldOutcome::Ignored, |(_, f)| f.handle_event(event, modifiers));
+                .map_or(NameFieldOutcome::Ignored, |(_, f)| {
+                    f.handle_event(event, modifiers)
+                });
             match outcome {
                 NameFieldOutcome::Commit(_) => {
                     self.commit_naming();
@@ -1309,7 +1311,8 @@ impl Widget for HistoryScrubber {
                             };
                             self.groups
                                 .iter()
-                                .find(|g| raw >= g.start && raw <= g.end).map_or_else(|| self.tick_at_x(self.last_cursor.x), |g| g.end)
+                                .find(|g| raw >= g.start && raw <= g.end)
+                                .map_or_else(|| self.tick_at_x(self.last_cursor.x), |g| g.end)
                         } else {
                             self.tick_at_x(self.last_cursor.x)
                         };

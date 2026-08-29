@@ -432,9 +432,7 @@ impl AddAccountPanel {
         if secret.is_empty() {
             return Err("Enter a secret key".to_string());
         }
-        if crate::totp::decode_secret(&secret)
-            .is_none_or(|b| b.is_empty())
-        {
+        if crate::totp::decode_secret(&secret).is_none_or(|b| b.is_empty()) {
             return Err("That secret isn\u{2019}t valid base32".to_string());
         }
         let issuer = self.issuer.value().trim().to_string();

@@ -83,9 +83,15 @@ pub fn parse_lsblk(json: &Value) -> Vec<Drive> {
             continue; // skip empty loop / nbd shells
         }
         let name = str_field(dev, "name").unwrap_or_default();
-        let rota = dev.get("rota").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let rota = dev
+            .get("rota")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let tran = str_field(dev, "tran");
-        let removable = dev.get("rm").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let removable = dev
+            .get("rm")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let kind = DriveKind::from_lsblk(&name, rota, tran.as_deref());
 
         let mut partitions = Vec::new();
@@ -98,18 +104,19 @@ pub fn parse_lsblk(json: &Value) -> Vec<Drive> {
         // represent it as a single full-span "partition" instead of showing
         // the whole device as blank/unallocated.
         if partitions.is_empty()
-            && let Some(fstype) = str_field(dev, "fstype") {
-                let used = dev.get("fsused").and_then(as_u64).filter(|&u| u <= size);
-                partitions.push(Partition {
-                    name: name.clone(),
-                    size,
-                    fstype: Some(fstype),
-                    label: str_field(dev, "label"),
-                    mountpoint: str_field(dev, "mountpoint"),
-                    used,
-                    uuid: str_field(dev, "uuid"),
-                });
-            }
+            && let Some(fstype) = str_field(dev, "fstype")
+        {
+            let used = dev.get("fsused").and_then(as_u64).filter(|&u| u <= size);
+            partitions.push(Partition {
+                name: name.clone(),
+                size,
+                fstype: Some(fstype),
+                label: str_field(dev, "label"),
+                mountpoint: str_field(dev, "mountpoint"),
+                used,
+                uuid: str_field(dev, "uuid"),
+            });
+        }
 
         drives.push(Drive {
             model: str_field(dev, "model").unwrap_or_else(|| name.clone()),
@@ -200,7 +207,9 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
     let poh = json
         .pointer("/power_on_time/hours")
         .and_then(serde_json::Value::as_i64);
-    let cycles = json.pointer("/power_cycle_count").and_then(serde_json::Value::as_i64);
+    let cycles = json
+        .pointer("/power_cycle_count")
+        .and_then(serde_json::Value::as_i64);
     let pct_used = json
         .pointer("/nvme_smart_health_information_log/percentage_used")
         .and_then(serde_json::Value::as_i64);
@@ -262,7 +271,10 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
 
     // NVMe health log → a few synthetic attribute rows.
     if let Some(log) = json.pointer("/nvme_smart_health_information_log") {
-        if let Some(spare) = log.get("available_spare").and_then(serde_json::Value::as_i64) {
+        if let Some(spare) = log
+            .get("available_spare")
+            .and_then(serde_json::Value::as_i64)
+        {
             attrs.push(SmartAttr {
                 id: 5,
                 name: "Available Spare".into(),

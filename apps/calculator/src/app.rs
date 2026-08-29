@@ -481,11 +481,12 @@ impl CalculatorApp {
                 self.model_dirty = true;
             }
         } else if let Some(hi) = self.calc.history_at(p)
-            && let Some(e) = self.model.history.get(hi).cloned() {
-                self.model.expr = e.expr;
-                self.model.after_equals = false;
-                self.model_dirty = true;
-            }
+            && let Some(e) = self.model.history.get(hi).cloned()
+        {
+            self.model.expr = e.expr;
+            self.model.after_equals = false;
+            self.model_dirty = true;
+        }
     }
 
     fn on_press_g2(&mut self, p: Point, double: bool, doc: &mut AutoCommit) {
@@ -646,24 +647,23 @@ impl CalculatorApp {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
         // Ctrl+digit always switches mode, from any screen.
-        if ctrl
-            && let WKey::Character(s) = key {
-                match s.as_str() {
-                    "1" => {
-                        self.set_mode(Mode::Calc);
-                        return;
-                    }
-                    "2" => {
-                        self.set_mode(Mode::Graph2d);
-                        return;
-                    }
-                    "3" => {
-                        self.set_mode(Mode::Graph3d);
-                        return;
-                    }
-                    _ => {}
+        if ctrl && let WKey::Character(s) = key {
+            match s.as_str() {
+                "1" => {
+                    self.set_mode(Mode::Calc);
+                    return;
                 }
+                "2" => {
+                    self.set_mode(Mode::Graph2d);
+                    return;
+                }
+                "3" => {
+                    self.set_mode(Mode::Graph3d);
+                    return;
+                }
+                _ => {}
             }
+        }
 
         // The graph editors own a real math field; route their input there.
         match self.model.mode {

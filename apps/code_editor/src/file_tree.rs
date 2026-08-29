@@ -328,19 +328,18 @@ impl Widget for FileTree {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseWheel { delta, .. }
-                if self.rect.contains(self.last_cursor) => {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * ROW_HEIGHT,
-                        MouseScrollDelta::PixelDelta(p) => p.y,
-                    };
-                    let content = self.row_meta.len() as f64 * ROW_HEIGHT;
-                    let view = (self.rect.height() - HEADER_HEIGHT).max(0.0);
-                    let max = (content - view).max(0.0);
-                    self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
-                    self.dirty = true;
-                    *handled = true;
-                }
+            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.last_cursor) => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * ROW_HEIGHT,
+                    MouseScrollDelta::PixelDelta(p) => p.y,
+                };
+                let content = self.row_meta.len() as f64 * ROW_HEIGHT;
+                let view = (self.rect.height() - HEADER_HEIGHT).max(0.0);
+                let max = (content - view).max(0.0);
+                self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
+                self.dirty = true;
+                *handled = true;
+            }
             _ => {}
         }
     }

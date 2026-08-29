@@ -162,9 +162,10 @@ impl ConnectionsDoc {
         let target = id.to_string();
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, i)
-                && str_field(doc, &row, "id").as_deref() == Some(target.as_str()) {
-                    return Some((i, row));
-                }
+                && str_field(doc, &row, "id").as_deref() == Some(target.as_str())
+            {
+                return Some((i, row));
+            }
         }
         None
     }

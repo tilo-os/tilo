@@ -1795,9 +1795,7 @@ impl SlidesApp {
             y += 30.0;
 
             header(labels, &mut y, "LAYOUT");
-            let cur_layout = self
-                .slide()
-                .map_or(Layout::TitleContent, |s| s.layout);
+            let cur_layout = self.slide().map_or(Layout::TitleContent, |s| s.layout);
             y = self.wrap_pills(
                 buttons,
                 x0,
@@ -1810,9 +1808,7 @@ impl SlidesApp {
             y += 10.0;
 
             header(labels, &mut y, "BACKGROUND");
-            let cur_bg = self
-                .slide()
-                .map_or(Background::Surface, |s| s.background);
+            let cur_bg = self.slide().map_or(Background::Surface, |s| s.background);
             y = self.wrap_pills(
                 buttons,
                 x0,
@@ -2062,9 +2058,11 @@ impl SlidesApp {
                 self.set_sel_str(doc, "stroke", &role);
                 // Give a freshly-stroked shape a sensible default width.
                 if let Some(el) = self.selected_element()
-                    && role != "none" && el.stroke_width < 1.0 {
-                        self.set_sel_f64(doc, "stroke_width", 4.0);
-                    }
+                    && role != "none"
+                    && el.stroke_width < 1.0
+                {
+                    self.set_sel_f64(doc, "stroke_width", 4.0);
+                }
             }
             Hit::ToggleBold => {
                 if let Some(el) = self.selected_element() {
@@ -2576,13 +2574,14 @@ impl SlidesApp {
             return;
         }
         if let Some(id) = self.sel.clone()
-            && self.caret > 0 {
-                SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret - 1, 1, "");
-                self.caret -= 1;
-                self.sel_anchor = self.caret;
-                self.mark();
-                self.reload(doc);
-            }
+            && self.caret > 0
+        {
+            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret - 1, 1, "");
+            self.caret -= 1;
+            self.sel_anchor = self.caret;
+            self.mark();
+            self.reload(doc);
+        }
     }
 
     /// Forward-delete: remove the selection if any, else the char after the
@@ -2610,11 +2609,12 @@ impl SlidesApp {
             return;
         }
         if let Some(id) = self.sel.clone()
-            && self.caret < len {
-                SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 1, "");
-                self.mark();
-                self.reload(doc);
-            }
+            && self.caret < len
+        {
+            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 1, "");
+            self.mark();
+            self.reload(doc);
+        }
     }
 
     fn cur_text_len(&self) -> usize {
@@ -2712,11 +2712,7 @@ impl SlidesApp {
                         ..
                     },
                 ..
-            } if matches!(
-                logical_key,
-                Key::Named(NamedKey::Enter | NamedKey::Escape)
-            ) =>
-            {
+            } if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
                 self.commit_title_edit(state);
                 return true;
             }
@@ -4102,9 +4098,10 @@ impl SlidesApp {
         let alpha = self.transition_alpha();
         if let Some((from, _)) = self.transition
             && alpha < 1.0
-                && let Some(prev) = self.deck.slides.get(from) {
-                    render::draw_slide(scene, t, tr, theme, &pal, prev, dest, 0.0, &self.images);
-                }
+            && let Some(prev) = self.deck.slides.get(from)
+        {
+            render::draw_slide(scene, t, tr, theme, &pal, prev, dest, 0.0, &self.images);
+        }
         if alpha < 1.0 {
             // Mid cross-fade → paint live inside the alpha layer (it animates,
             // so caching would gain nothing and the layer transform matters).
@@ -5156,9 +5153,10 @@ impl Widget for SlidesApp {
         }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
         if let Some((_, t)) = self.transition
-            && t.elapsed().as_millis() >= TRANSITION_MS {
-                self.transition = None;
-            }
+            && t.elapsed().as_millis() >= TRANSITION_MS
+        {
+            self.transition = None;
+        }
         // Reconcile the rail flap with the current width (so resizing across
         // the breakpoint returns to the layout default) and advance its eased
         // reveal using real elapsed time, frame-rate independent.
@@ -5205,10 +5203,10 @@ impl Widget for SlidesApp {
             let chrome = self.compute_chrome();
             match kind {
                 DemoMenu::Element => {
-                    let p = self
-                        .selected_element().map_or_else(|| chrome.slide_dest.center(), |el| {
-                            render::element_dest(chrome.slide_dest, chrome.scale, el).center()
-                        });
+                    let p = self.selected_element().map_or_else(
+                        || chrome.slide_dest.center(),
+                        |el| render::element_dest(chrome.slide_dest, chrome.scale, el).center(),
+                    );
                     self.open_element_menu(p);
                 }
                 DemoMenu::Slide => {
@@ -5217,7 +5215,8 @@ impl Widget for SlidesApp {
                     let p = chrome
                         .thumbs
                         .iter()
-                        .find(|(i, _)| *i == self.cur_slide).map_or_else(|| Point::new(120.0, 220.0), |(_, r)| r.center());
+                        .find(|(i, _)| *i == self.cur_slide)
+                        .map_or_else(|| Point::new(120.0, 220.0), |(_, r)| r.center());
                     self.page_sidebar.on_right_press(p);
                     let _ = self.page_sidebar.take_events();
                 }
@@ -5521,10 +5520,11 @@ impl Widget for SlidesApp {
     /// Navigation is app-local presentation, so the doc args are unused.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::SlideSearchProvider::parse_action_id(action_id)
-            && let Some(idx) = self.deck.index_of(id) {
-                self.goto_slide(idx);
-                self.scroll_rail_to_current();
-            }
+            && let Some(idx) = self.deck.index_of(id)
+        {
+            self.goto_slide(idx);
+            self.scroll_rail_to_current();
+        }
     }
 }
 
@@ -5607,9 +5607,10 @@ impl SlidesApp {
         // Scrollbar-thumb drags don't need slide-space mapping — resolve them
         // first (they can be live in overview mode, where there is no canvas).
         if let Drag::ScrollOverview {
-                start_y,
-                orig_scroll,
-            } = self.drag.clone() {
+            start_y,
+            orig_scroll,
+        } = self.drag.clone()
+        {
             let (area, _, max_scroll) = self.compute_overview();
             self.overview_scroll =
                 scroll_from_thumb_drag(area, orig_scroll, max_scroll, p.y - start_y);
@@ -5628,17 +5629,16 @@ impl SlidesApp {
             } => {
                 let dx = sp.x - start.x;
                 let dy = sp.y - start.y;
-                let (w, h) = self
-                    .selected_element()
-                    .map_or((0.0, 0.0), |e| (e.w, e.h));
+                let (w, h) = self.selected_element().map_or((0.0, 0.0), |e| (e.w, e.h));
                 let thr = SNAP_PX / s.max(0.0001);
                 let (nx, ny, guides) = self.snapped_move(&id, orig_x + dx, orig_y + dy, w, h, thr);
                 self.active_guides = guides;
                 if let Some(slide) = self.deck.slides.get_mut(self.cur_slide)
-                    && let Some(el) = slide.element_mut(&id) {
-                        el.x = nx;
-                        el.y = ny;
-                    }
+                    && let Some(el) = slide.element_mut(&id)
+                {
+                    el.x = nx;
+                    el.y = ny;
+                }
             }
             Drag::Resize {
                 id,
@@ -5681,12 +5681,13 @@ impl SlidesApp {
                     h = min;
                 }
                 if let Some(slide) = self.deck.slides.get_mut(self.cur_slide)
-                    && let Some(el) = slide.element_mut(&id) {
-                        el.x = x;
-                        el.y = y;
-                        el.w = w;
-                        el.h = h;
-                    }
+                    && let Some(el) = slide.element_mut(&id)
+                {
+                    el.x = x;
+                    el.y = y;
+                    el.w = w;
+                    el.h = h;
+                }
             }
             // `ScrollOverview` is resolved above; everything else is a no-op here.
             _ => {}
@@ -5721,15 +5722,15 @@ impl SlidesApp {
                 area,
                 self.overview_scroll.clamp(0.0, max_scroll),
                 max_scroll,
-            )
-                && thumb.contains(p) {
-                    self.drag = Drag::ScrollOverview {
-                        start_y: p.y,
-                        orig_scroll: self.overview_scroll.clamp(0.0, max_scroll),
-                    };
-                    *handled = true;
-                    return;
-                }
+            ) && thumb.contains(p)
+            {
+                self.drag = Drag::ScrollOverview {
+                    start_y: p.y,
+                    orig_scroll: self.overview_scroll.clamp(0.0, max_scroll),
+                };
+                *handled = true;
+                return;
+            }
             for (i, rect) in thumbs {
                 if rect.contains(p) {
                     self.apply_hit(doc, Hit::OpenSlide(i));
@@ -5863,20 +5864,21 @@ impl SlidesApp {
         let s = chrome.scale;
         // Resize handle of the current selection?
         if let Some(el) = self.selected_element().cloned()
-            && !self.editing_text {
-                for (h, hr) in self.handles_of(dest, s, &el) {
-                    if hr.contains(p) {
-                        self.drag = Drag::Resize {
-                            id: el.id.clone(),
-                            handle: h,
-                            start: self.to_slide(dest, s, p),
-                            orig: (el.x, el.y, el.w, el.h),
-                        };
-                        *handled = true;
-                        return;
-                    }
+            && !self.editing_text
+        {
+            for (h, hr) in self.handles_of(dest, s, &el) {
+                if hr.contains(p) {
+                    self.drag = Drag::Resize {
+                        id: el.id.clone(),
+                        handle: h,
+                        start: self.to_slide(dest, s, p),
+                        orig: (el.x, el.y, el.w, el.h),
+                    };
+                    *handled = true;
+                    return;
                 }
             }
+        }
         // Hit-test elements front-to-back.
         let mut picked: Option<Id> = None;
         if let Some(slide) = self.slide() {
@@ -5897,12 +5899,9 @@ impl SlidesApp {
                 .is_some_and(|e| e.kind == ElementKind::Text);
             // Double-click = same element, pressed again quickly and near
             // the first press.
-            let double = self
-                .last_click
-                .as_ref()
-                .is_some_and(|(cid, t, cp)| {
-                    cid == &id && t.elapsed().as_millis() < 400 && cp.distance(p) < 6.0
-                });
+            let double = self.last_click.as_ref().is_some_and(|(cid, t, cp)| {
+                cid == &id && t.elapsed().as_millis() < 400 && cp.distance(p) < 6.0
+            });
             self.last_click = Some((id.clone(), std::time::Instant::now(), p));
             self.editing_notes = false;
 
@@ -6079,9 +6078,10 @@ impl SlidesApp {
             taffy,
         );
         if let Some(idx) = self.ctx_menu.take_selection()
-            && let Some(Some(hit)) = self.ctx_hits.get(idx).cloned() {
-                self.apply_hit(state, hit);
-            }
+            && let Some(Some(hit)) = self.ctx_hits.get(idx).cloned()
+        {
+            self.apply_hit(state, hit);
+        }
         true
     }
 
@@ -6149,9 +6149,10 @@ impl SlidesApp {
                 button: MouseButton::Left,
                 ..
             } = event
-                && self.fill_picker.get_rect().contains(self.last_mouse) {
-                    Widget::set_focus(&mut self.fill_picker, true);
-                }
+                && self.fill_picker.get_rect().contains(self.last_mouse)
+            {
+                Widget::set_focus(&mut self.fill_picker, true);
+            }
             if let Some(col) = self.fill_picker.take_changed() {
                 self.set_sel_str(state, "fill", &crate::model::color_to_hex(col));
             }
@@ -6277,14 +6278,15 @@ impl SlidesApp {
                 && self
                     .slide_delete_zone(self.rail_rect())
                     .contains(self.last_mouse)
-                && let Some(from) = self.page_sidebar.drag_from() {
-                    self.page_sidebar.on_escape(); // cancel the reorder cleanly
-                    self.page_sidebar.take_events();
-                    self.rail_scroll = self.page_sidebar.scroll();
-                    self.apply_rail_event(doc, PageSidebarEvent::Delete(from));
-                    *handled = true;
-                    return;
-                }
+                && let Some(from) = self.page_sidebar.drag_from()
+            {
+                self.page_sidebar.on_escape(); // cancel the reorder cleanly
+                self.page_sidebar.take_events();
+                self.rail_scroll = self.page_sidebar.scroll();
+                self.apply_rail_event(doc, PageSidebarEvent::Delete(from));
+                *handled = true;
+                return;
+            }
             let was_click = !self.page_sidebar.is_dragging();
             self.page_sidebar.on_release();
             self.apply_rail_events(doc);
@@ -6402,13 +6404,16 @@ impl SlidesApp {
             return;
         }
         // `?` opens help from any non-text context.
-        if !self.editing_text && !self.editing_notes && !self.editing_title
+        if !self.editing_text
+            && !self.editing_notes
+            && !self.editing_title
             && let Key::Character(c) = key
-                && c.as_str() == "?" {
-                    self.show_help = true;
-                    *handled = true;
-                    return;
-                }
+            && c.as_str() == "?"
+        {
+            self.show_help = true;
+            *handled = true;
+            return;
+        }
 
         // Esc dismisses an open overlay flap first (when not editing text).
         if self.mode == Mode::Edit
@@ -6475,8 +6480,13 @@ impl SlidesApp {
             // Any blank screen resumes on the first navigation/control key
             // other than its own toggle (handled per-key below).
             match key {
-                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown | NamedKey::Space |
-NamedKey::Enter | NamedKey::PageDown) => {
+                Key::Named(
+                    NamedKey::ArrowRight
+                    | NamedKey::ArrowDown
+                    | NamedKey::Space
+                    | NamedKey::Enter
+                    | NamedKey::PageDown,
+                ) => {
                     if self.blank.is_blanked() {
                         self.blank = Blank::None;
                     } else {
@@ -6484,8 +6494,12 @@ NamedKey::Enter | NamedKey::PageDown) => {
                     }
                     *handled = true;
                 }
-                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp | NamedKey::PageUp |
-NamedKey::Backspace) => {
+                Key::Named(
+                    NamedKey::ArrowLeft
+                    | NamedKey::ArrowUp
+                    | NamedKey::PageUp
+                    | NamedKey::Backspace,
+                ) => {
                     if self.blank.is_blanked() {
                         self.blank = Blank::None;
                     } else {
@@ -6546,10 +6560,11 @@ NamedKey::Backspace) => {
                 // Jump to slide N (1-9) by number.
                 Key::Character(c) => {
                     if let Some(d) = c.chars().next().and_then(|ch| ch.to_digit(10))
-                        && d >= 1 {
-                            self.goto_slide((d as usize) - 1);
-                            *handled = true;
-                        }
+                        && d >= 1
+                    {
+                        self.goto_slide((d as usize) - 1);
+                        *handled = true;
+                    }
                 }
                 _ => {}
             }
@@ -6673,10 +6688,12 @@ NamedKey::Backspace) => {
                 }
                 _ => {
                     if let Some(txt) = text
-                        && !txt.is_empty() && !ctrl {
-                            self.insert_text(doc, txt);
-                            *handled = true;
-                        }
+                        && !txt.is_empty()
+                        && !ctrl
+                    {
+                        self.insert_text(doc, txt);
+                        *handled = true;
+                    }
                 }
             }
             return;

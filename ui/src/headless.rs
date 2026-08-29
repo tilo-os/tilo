@@ -769,8 +769,12 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
             "click_at" => {
                 let xy = val.as_array().ok_or("click_at takes [x, y]")?;
                 Action::ClickAt(
-                    xy.first().and_then(serde_json::Value::as_f64).ok_or("click_at x")?,
-                    xy.get(1).and_then(serde_json::Value::as_f64).ok_or("click_at y")?,
+                    xy.first()
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or("click_at x")?,
+                    xy.get(1)
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or("click_at y")?,
                 )
             }
             "key" => Action::Key(val.as_str().ok_or("key takes a string")?.to_string()),

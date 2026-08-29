@@ -572,7 +572,10 @@ mod tests {
         let l = KeyboardLayout::qwerty();
         let area = Rect::new(0.0, 0.0, 1000.0, 320.0);
         let rects = key_rects(&l, area, ShiftState::Off);
-        assert_eq!(rects.len(), l.rows.iter().map(std::vec::Vec::len).sum::<usize>());
+        assert_eq!(
+            rects.len(),
+            l.rows.iter().map(std::vec::Vec::len).sum::<usize>()
+        );
 
         // Row 0 (10 equal keys) spans the full width with no gaps.
         let row0: Vec<_> = rects.iter().filter(|(id, _)| id.row == 0).collect();

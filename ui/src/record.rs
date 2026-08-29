@@ -354,7 +354,10 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
 /// records the room references. Removing a reference stops future changes
 /// flowing; it cannot un-share bytes a peer already synced.
 pub mod room {
-    use super::{AutoCommit, ObjId, ReadDoc, ROOT, INDEX, Value, ObjType, Transactable, RecordId, RecordKind, str_at, RecordCheckout, RecordSet};
+    use super::{
+        AutoCommit, INDEX, ObjId, ObjType, ROOT, ReadDoc, RecordCheckout, RecordId, RecordKind,
+        RecordSet, Transactable, Value, str_at,
+    };
 
     fn index_obj(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, INDEX) {
@@ -413,8 +416,7 @@ pub mod room {
 
     /// Whether this room references `id`.
     pub fn holds(doc: &AutoCommit, id: &RecordId) -> bool {
-        index_ro(doc)
-            .is_some_and(|idx| matches!(doc.get(&idx, id.as_str()), Ok(Some(_))))
+        index_ro(doc).is_some_and(|idx| matches!(doc.get(&idx, id.as_str()), Ok(Some(_))))
     }
 
     /// Every record this room references.
@@ -451,12 +453,11 @@ pub mod room {
         references(room)
             .into_iter()
             .filter(|c| {
-                docs.peek(&c.id)
-                    .is_some_and(|d| {
-                        super::references(d)
-                            .iter()
-                            .any(|r| &r.target == target && r.relation == relation)
-                    })
+                docs.peek(&c.id).is_some_and(|d| {
+                    super::references(d)
+                        .iter()
+                        .any(|r| &r.target == target && r.relation == relation)
+                })
             })
             .collect()
     }
@@ -643,7 +644,9 @@ impl RecordSet {
             }
         }
 
-        let incoming = if let Some(slot) = self.open.get_mut(&want.id) { slot.doc.take().unwrap_or_else(AutoCommit::new) } else {
+        let incoming = if let Some(slot) = self.open.get_mut(&want.id) {
+            slot.doc.take().unwrap_or_else(AutoCommit::new)
+        } else {
             let (mut doc, autosave) = self.load(&want.id);
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(

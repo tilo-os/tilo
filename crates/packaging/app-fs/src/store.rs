@@ -245,7 +245,8 @@ pub struct CounterSnapshot {
 impl<S: BlobStore> BlobStore for CountingStore<S> {
     fn get_range(&self, hash: &[u8; 32], offset: u64, len: u32) -> Result<Vec<u8>, BlobError> {
         self.range_calls.fetch_add(1, Ordering::SeqCst);
-        self.bytes_requested.fetch_add(u64::from(len), Ordering::SeqCst);
+        self.bytes_requested
+            .fetch_add(u64::from(len), Ordering::SeqCst);
         self.inner.get_range(hash, offset, len)
     }
 

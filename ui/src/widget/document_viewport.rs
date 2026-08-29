@@ -581,9 +581,9 @@ impl ViewportState {
     /// re-deriving the clock. The first call returns `0.0`.
     pub fn frame_dt(&mut self) -> f64 {
         let now = Instant::now();
-        let dt = self
-            .last_tick
-            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT));
+        let dt = self.last_tick.map_or(0.0, |t| {
+            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
+        });
         self.last_tick = Some(now);
         dt
     }

@@ -190,9 +190,9 @@ impl ApiTesterAction {
                         .requests
                         .iter_mut()
                         .find(|r| r.id.to_string() == *request_id)
-                    {
-                        r.name = name.clone();
-                    }
+                {
+                    r.name = name.clone();
+                }
             }
             ApiTesterAction::DeleteRequest {
                 collection_id,

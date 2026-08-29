@@ -413,7 +413,8 @@ pub fn resolv_bind(base: &Path) -> Option<(PathBuf, PathBuf)> {
     }
     // The guest-visible path is the resolved one with the base stripped off.
     let inside = resolved
-        .strip_prefix(base).map_or_else(|_| resolved.clone(), |p| PathBuf::from("/").join(p));
+        .strip_prefix(base)
+        .map_or_else(|_| resolved.clone(), |p| PathBuf::from("/").join(p));
     Some((resolved, inside))
 }
 

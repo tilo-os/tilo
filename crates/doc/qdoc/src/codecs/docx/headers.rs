@@ -171,18 +171,13 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     fldsimple_depth += 1;
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
                     if is_page_instr(&instr)
-                        && let Some(b) = cur.clone() {
-                            let start = cur_len;
-                            doc.splice_text_in(
-                                region,
-                                &b,
-                                cur_len,
-                                0,
-                                &FIELD_PLACEHOLDER.to_string(),
-                            );
-                            cur_len += 1;
-                            field_marks.push((b, start));
-                        }
+                        && let Some(b) = cur.clone()
+                    {
+                        let start = cur_len;
+                        doc.splice_text_in(region, &b, cur_len, 0, &FIELD_PLACEHOLDER.to_string());
+                        cur_len += 1;
+                        field_marks.push((b, start));
+                    }
                 }
                 _ => {}
             },
@@ -202,18 +197,13 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                 b"w:fldSimple" => {
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
                     if is_page_instr(&instr)
-                        && let Some(b) = cur.clone() {
-                            let start = cur_len;
-                            doc.splice_text_in(
-                                region,
-                                &b,
-                                cur_len,
-                                0,
-                                &FIELD_PLACEHOLDER.to_string(),
-                            );
-                            cur_len += 1;
-                            field_marks.push((b, start));
-                        }
+                        && let Some(b) = cur.clone()
+                    {
+                        let start = cur_len;
+                        doc.splice_text_in(region, &b, cur_len, 0, &FIELD_PLACEHOLDER.to_string());
+                        cur_len += 1;
+                        field_marks.push((b, start));
+                    }
                 }
                 b"w:fldChar" => {
                     match attr_w_val(&e, b"w:fldCharType").as_deref() {
@@ -257,12 +247,15 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     if field_in_progress && is_page_instr(&txt) {
                         field_pending = true;
                     }
-                } else if in_t && !field_skip_text && fldsimple_depth == 0
+                } else if in_t
+                    && !field_skip_text
+                    && fldsimple_depth == 0
                     && let Some(b) = cur.clone()
-                        && !txt.is_empty() {
-                            doc.splice_text_in(region, &b, cur_len, 0, &txt);
-                            cur_len += txt.chars().count();
-                        }
+                    && !txt.is_empty()
+                {
+                    doc.splice_text_in(region, &b, cur_len, 0, &txt);
+                    cur_len += txt.chars().count();
+                }
             }
             Event::End(e) => match e.name().as_ref() {
                 b"w:t" => in_t = false,

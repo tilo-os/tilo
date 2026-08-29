@@ -143,7 +143,10 @@ pub fn workspace_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a P
 /// same location, and somebody who clicks the one to reach the other must
 /// not find it has been renamed on the way.
 pub fn workspace_label(root: &Path) -> String {
-    root.file_name().map_or_else(|| "Workspace".to_string(), |n| n.to_string_lossy().into_owned())
+    root.file_name().map_or_else(
+        || "Workspace".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 #[derive(Clone, Debug)]

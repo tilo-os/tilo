@@ -803,9 +803,10 @@ impl MapsApp {
             }
         }
         if let Some(mr) = self.menu_rect()
-            && mr.contains(p) {
-                return Some((mr, "Menu"));
-            }
+            && mr.contains(p)
+        {
+            return Some((mr, "Menu"));
+        }
         let of = self.overflow_rect();
         if of.contains(p) {
             return Some((of, "More"));
@@ -1002,9 +1003,11 @@ impl MapsApp {
             },
             Some(fr),
         ) = (event, self.download_field_rect)
-            && fr.contains(self.last_mouse) && !self.download_input.is_editing() {
-                self.download_input.begin_edit();
-            }
+            && fr.contains(self.last_mouse)
+            && !self.download_input.is_editing()
+        {
+            self.download_input.begin_edit();
+        }
         let mut doc = AutoCommit::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
@@ -1198,7 +1201,9 @@ impl MapsApp {
     /// otherwise the current map centre (an honest "from here"), labelled as
     /// such — we never invent a specific "your location" without a real fix.
     fn resolve_origin(&mut self) -> crate::model::LatLon {
-        if let Some(o) = self.model.origin { o } else {
+        if let Some(o) = self.model.origin {
+            o
+        } else {
             self.model.origin_name = "Map centre".to_string();
             self.model.center
         }
@@ -1758,10 +1763,11 @@ impl MapsApp {
     /// for road routes.
     fn fit_current(&mut self) {
         if let Some(route) = self.model.route.clone()
-            && route.geometry.len() >= 2 {
-                self.fit_points(&route.geometry);
-                return;
-            }
+            && route.geometry.len() >= 2
+        {
+            self.fit_points(&route.geometry);
+            return;
+        }
         let journey = self.selected_journey_geometry();
         if journey.len() >= 2 {
             self.fit_points(&journey);
@@ -1872,9 +1878,10 @@ impl MapsApp {
         }
         let view = self.viewport_bounds();
         if let Some(prev) = self.poi_fetched_bounds
-            && bounds_contains(prev, view) {
-                return; // still inside the last fetch — reuse the cache
-            }
+            && bounds_contains(prev, view)
+        {
+            return; // still inside the last fetch — reuse the cache
+        }
         let bounds = self.padded_viewport_bounds();
         self.poi_fetched_bounds = Some(bounds);
         self.poi_generation += 1;
@@ -1957,10 +1964,11 @@ impl MapsApp {
         v.truncate(NEARBY_MAX);
         if let Some(sel) = self.selected_poi.clone()
             && !v.iter().any(|p| p.id == sel)
-                && let Some(p) = self.pois.iter().find(|p| p.id == sel).cloned() {
-                    v.pop();
-                    v.insert(0, p);
-                }
+            && let Some(p) = self.pois.iter().find(|p| p.id == sel).cloned()
+        {
+            v.pop();
+            v.insert(0, p);
+        }
         v
     }
 
@@ -2016,10 +2024,9 @@ impl MapsApp {
             let r = if selected { 13.0 } else { 9.0 };
             let center = Point::new(anchor.x, anchor.y - h);
             let d = center.distance(p);
-            if d <= r + 5.0
-                && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
-                    best = Some((d, place.id.clone()));
-                }
+            if d <= r + 5.0 && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                best = Some((d, place.id.clone()));
+            }
         }
         best.map(|(_, id)| id)
     }
@@ -2081,10 +2088,11 @@ impl MapsApp {
                 },
                 NetMsg::ReverseGeocode(r) => {
                     if let Ok(label) = r
-                        && !label.is_empty() {
-                            // Refine the device-location origin's label in place.
-                            self.model.origin_name = label;
-                        }
+                        && !label.is_empty()
+                    {
+                        // Refine the device-location origin's label in place.
+                        self.model.origin_name = label;
+                    }
                 }
                 NetMsg::Route(r) => match r {
                     Ok(route) => {
@@ -2117,9 +2125,10 @@ impl MapsApp {
                                 self.pois = found;
                                 // Drop the open card if its POI is gone.
                                 if let Some(sel) = &self.selected_poi
-                                    && !self.pois.iter().any(|p| &p.id == sel) {
-                                        self.selected_poi = None;
-                                    }
+                                    && !self.pois.iter().any(|p| &p.id == sel)
+                                {
+                                    self.selected_poi = None;
+                                }
                                 if self.model.status.contains("Loading places") {
                                     self.model.status = format!("{n} places nearby");
                                 }
@@ -2468,9 +2477,10 @@ impl MapsApp {
         // map (mode-coloured lines + transfer pucks) when Transit is the active
         // mode. Only the highlighted option is drawn to keep the map legible.
         if self.model.mode.is_transit()
-            && let Some(j) = self.model.transit.get(self.model.transit_choice) {
-                canvas::draw_transit(scene, t, &proj, j, theme, &pal, clip);
-            }
+            && let Some(j) = self.model.transit.get(self.model.transit_choice)
+        {
+            canvas::draw_transit(scene, t, &proj, j, theme, &pal, clip);
+        }
         // Live POI marker layer (Overpass) — our own themed category markers
         // over the basemap, decluttered and under the user's saved/selected
         // pins.
@@ -5009,7 +5019,8 @@ impl MapsApp {
         let right = content.x1;
         let to = if self.model.dest_name.is_empty() {
             self.model
-                .selected_place().map_or_else(|| "destination".to_string(), |p| p.name.clone())
+                .selected_place()
+                .map_or_else(|| "destination".to_string(), |p| p.name.clone())
         } else {
             self.model.dest_name.clone()
         };
@@ -5317,11 +5328,7 @@ impl Widget for MapsApp {
             self.loaded = true;
             self.dirty = false;
             self.persist_deadline = None;
-        } else if self.dirty
-            && self
-                .persist_deadline
-                .is_none_or(|d| Instant::now() >= d)
-        {
+        } else if self.dirty && self.persist_deadline.is_none_or(|d| Instant::now() >= d) {
             // The view has settled (or a non-gesture change had no deadline):
             // flush the whole model once. Coalescing lives in `mark_dirty`.
             MapsDoc::save(state, &self.model);

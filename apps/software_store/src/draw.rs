@@ -17,7 +17,8 @@ use vello::peniko::{Color, Fill};
 /// tile) without hard-coding any literal.
 pub fn mix(a: Color, b: Color, t: f64) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let lerp = |x: u8, y: u8| -> u8 { (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8 };
+    let lerp =
+        |x: u8, y: u8| -> u8 { (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8 };
     Color::from_rgba8(
         lerp(a.r(), b.r()),
         lerp(a.g(), b.g()),

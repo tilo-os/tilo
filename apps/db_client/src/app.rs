@@ -432,12 +432,13 @@ impl Widget for DbClientApp {
             // Open a connection the local user just added, once it has landed
             // back through the reconcile.
             if let Some(id) = self.pending_connect_id
-                && let Some(idx) = self.session.connections.iter().position(|c| c.id == id) {
-                    self.session.active = idx;
-                    self.session.connect_active();
-                    self.pending_connect_id = None;
-                    self.dirty = true;
-                }
+                && let Some(idx) = self.session.connections.iter().position(|c| c.id == id)
+            {
+                self.session.active = idx;
+                self.session.connect_active();
+                self.pending_connect_id = None;
+                self.dirty = true;
+            }
         }
 
         self.editor.sync(state);
@@ -670,11 +671,12 @@ impl Widget for DbClientApp {
                         return;
                     }
                     if let Key::Character(c) = logical_key
-                        && c.eq_ignore_ascii_case("n") {
-                            self.modal.open_new();
-                            *handled = true;
-                            return;
-                        }
+                        && c.eq_ignore_ascii_case("n")
+                    {
+                        self.modal.open_new();
+                        *handled = true;
+                        return;
+                    }
                 }
                 // Esc closes the snippet menu, then dismisses an open overlay
                 // flap (in docked mode Esc leaves the sidebar untouched).
@@ -873,49 +875,52 @@ impl DbClientApp {
 
             // Header click → sort.
             if let Some(col) = self.grid.header_hit(c)
-                && let Some(res) = &self.session.query_result {
-                    self.grid.sort_by(col, res);
-                    *handled = true;
-                    return;
-                }
+                && let Some(res) = &self.session.query_result
+            {
+                self.grid.sort_by(col, res);
+                *handled = true;
+                return;
+            }
         }
 
         // Data tab grid sorting + paging.
         if self.session.tab == MainTab::Data
             && let Some(col) = self.data_grid.header_hit(c)
-                && let Some(res) = &self.session.data_result {
-                    self.data_grid.sort_by(col, res);
-                    *handled = true;
-                    return;
-                }
+            && let Some(res) = &self.session.data_result
+        {
+            self.data_grid.sort_by(col, res);
+            *handled = true;
+            return;
+        }
 
         // Schema tree (a sidebar widget — gated like the rest of the sidebar).
         if self.sidebar_interactive()
-            && let Some(click) = self.tree.hit(c) {
-                match click {
-                    TreeClick::ToggleTable(name) => {
-                        self.tree.toggle(&name);
-                    }
-                    TreeClick::SelectTable(name) => {
-                        self.session.select_table(&name);
-                        // Auto-switch to Data when picking a table from the tree.
-                        if self.session.tab == MainTab::Structure {
-                            // keep structure
-                        }
-                        self.tree.set_selected(&name);
-                        // On a narrow window the sidebar is an overlay; pick a
-                        // table and the flap steps aside to reveal its rows.
-                        if self.split_layout() == SplitLayout::Overlay {
-                            self.flap.close();
-                        }
-                    }
-                    TreeClick::ToggleSchema(name) => self.tree.toggle_schema(&name),
+            && let Some(click) = self.tree.hit(c)
+        {
+            match click {
+                TreeClick::ToggleTable(name) => {
+                    self.tree.toggle(&name);
                 }
-                self.relayout();
-                self.dirty = true;
-                *handled = true;
-                return;
+                TreeClick::SelectTable(name) => {
+                    self.session.select_table(&name);
+                    // Auto-switch to Data when picking a table from the tree.
+                    if self.session.tab == MainTab::Structure {
+                        // keep structure
+                    }
+                    self.tree.set_selected(&name);
+                    // On a narrow window the sidebar is an overlay; pick a
+                    // table and the flap steps aside to reveal its rows.
+                    if self.split_layout() == SplitLayout::Overlay {
+                        self.flap.close();
+                    }
+                }
+                TreeClick::ToggleSchema(name) => self.tree.toggle_schema(&name),
             }
+            self.relayout();
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
 
         // Click into the editor body focuses it (editor handles caret).
         if self.session.tab == MainTab::Query && self.editor.rect().contains(c) {

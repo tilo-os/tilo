@@ -252,10 +252,12 @@ impl MainPanel {
     /// the user's in-flight typing.
     pub fn set_title(&mut self, title: Option<String>) {
         if let Some(t) = title
-            && !self.title_label.is_editing() && self.title_label.value() != t {
-                self.title_label.set_value(&t);
-                self.dirty = true;
-            }
+            && !self.title_label.is_editing()
+            && self.title_label.value() != t
+        {
+            self.title_label.set_value(&t);
+            self.dirty = true;
+        }
     }
 
     /// Currently displayed page id, if any.

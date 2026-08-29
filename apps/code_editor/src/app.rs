@@ -771,10 +771,11 @@ impl CodeApp {
         match active {
             Some((node, lang)) => {
                 if (self.bound_node != Some(node) || !self.editor.is_bound())
-                    && let Some(text) = EditorDoc::buffer_text(doc, node) {
-                        self.editor.bind(text, lang);
-                        self.bound_node = Some(node);
-                    }
+                    && let Some(text) = EditorDoc::buffer_text(doc, node)
+                {
+                    self.editor.bind(text, lang);
+                    self.bound_node = Some(node);
+                }
             }
             None => {
                 if self.bound_node.is_some() {
@@ -930,10 +931,7 @@ impl CodeApp {
             lsp_working: self.lsp_status.is_working(),
             notice: notice.text,
             notice_is_error: notice.is_error,
-            dirty: self
-                .session
-                .active_buffer()
-                .is_some_and(|b| b.dirty),
+            dirty: self.session.active_buffer().is_some_and(|b| b.dirty),
         });
         // Surface the floating status bubble only on a real change to the label
         // (a caret move, a save flip, an indexing tick) — refresh_status runs
@@ -1006,7 +1004,9 @@ impl CodeApp {
                 let detail = self
                     .session
                     .project
-                    .path_of(*id).rsplit_once('/').map_or("", |x| x.0)
+                    .path_of(*id)
+                    .rsplit_once('/')
+                    .map_or("", |x| x.0)
                     .to_string();
                 entries.push(Entry {
                     label: node.name.clone(),
@@ -1329,7 +1329,8 @@ impl CodeApp {
     fn request_save_as(&mut self, node: TreeId) {
         let suggested = self
             .session
-            .buffer_of(node).map_or_else(|| "untitled.txt".to_string(), |b| b.name.clone());
+            .buffer_of(node)
+            .map_or_else(|| "untitled.txt".to_string(), |b| b.name.clone());
         self.portal_intent = Some(PortalIntent::SaveAs(node));
         self.portal = Some(
             ui::portal::PickRequest::save("Save file as", "Save", &suggested)
@@ -1381,8 +1382,10 @@ impl CodeApp {
             Some(PortalIntent::OpenFolder) => self.open_project_dir(&path),
             Some(PortalIntent::OpenFile) => self.open_disk_file(&path),
             Some(PortalIntent::SaveAs(node)) => {
-                let name = path
-                    .file_name().map_or_else(|| "untitled".to_string(), |s| s.to_string_lossy().to_string());
+                let name = path.file_name().map_or_else(
+                    || "untitled".to_string(),
+                    |s| s.to_string_lossy().to_string(),
+                );
                 self.session.project.set_file_path(node, &path, &name);
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.path = Some(path.clone());
@@ -2048,9 +2051,10 @@ impl CodeApp {
 
     /// Mirror the search state into the panel.
     fn push_search_state(&mut self) {
-        let query = self
-            .search_job
-            .as_ref().map_or_else(|| self.last_search_needle.clone(), |j| j.query().needle.clone());
+        let query = self.search_job.as_ref().map_or_else(
+            || self.last_search_needle.clone(),
+            |j| j.query().needle.clone(),
+        );
         self.panel.set_search(SearchState {
             query,
             rows: self
@@ -2140,7 +2144,10 @@ impl CodeApp {
 
     /// LSP `languageId` string for a language (the server's expected token).
     fn language_id(lang: crate::model::Language) -> &'static str {
-        use crate::model::Language::{Rust, Python, TypeScript, JavaScript, Go, C, Cpp, Toml, Json, Yaml, Html, Css, Markdown, Shell, PlainText};
+        use crate::model::Language::{
+            C, Cpp, Css, Go, Html, JavaScript, Json, Markdown, PlainText, Python, Rust, Shell,
+            Toml, TypeScript, Yaml,
+        };
         match lang {
             Rust => "rust",
             Python => "python",
@@ -2281,7 +2288,11 @@ impl CodeApp {
                 crate::lsp::LspEvent::Initialized => {
                     // Only claim ready if nothing is still in flight; the
                     // initialize response usually lands before indexing starts.
-                    if !self.lsp.as_ref().is_some_and(super::lsp::LspClient::is_busy) {
+                    if !self
+                        .lsp
+                        .as_ref()
+                        .is_some_and(super::lsp::LspClient::is_busy)
+                    {
                         self.lsp_status = LspStatus::Ready {
                             server: self.lsp_server_name(),
                         };
@@ -2298,8 +2309,10 @@ impl CodeApp {
     }
 
     fn lsp_server_name(&self) -> String {
-        self.lsp
-            .as_ref().map_or_else(|| "Language server".to_string(), |c| c.server_name().to_string())
+        self.lsp.as_ref().map_or_else(
+            || "Language server".to_string(),
+            |c| c.server_name().to_string(),
+        )
     }
 
     /// Push the active buffer's LSP diagnostics into the editor's inline model
@@ -2406,7 +2419,9 @@ impl CodeApp {
     /// failed to spawn). Used by `--shots` staging and the embed tests to read
     /// the live shell session without a GPU scene.
     pub fn shots_terminal_grid_text(&self) -> Option<String> {
-        self.terminal.as_ref().map(terminal::TerminalWidget::grid_text)
+        self.terminal
+            .as_ref()
+            .map(terminal::TerminalWidget::grid_text)
     }
 
     /// Stage the find bar over the active buffer with a real query, so the shot
@@ -2646,10 +2661,11 @@ impl Widget for CodeApp {
         // A jump queued by a search hit or a cross-file definition lands once
         // the target buffer is actually bound.
         if let Some((line, col)) = self.pending_jump
-            && self.editor.is_bound() {
-                self.editor.move_caret_to(line, col);
-                self.pending_jump = None;
-            }
+            && self.editor.is_bound()
+        {
+            self.editor.move_caret_to(line, col);
+            self.pending_jump = None;
+        }
 
         // Pump the embedded terminal: its `sync` drains the PTY reader and
         // reflects it into the grid (the plain `ui::App` loop never calls
@@ -2670,17 +2686,17 @@ impl Widget for CodeApp {
                 .active_buffer()
                 .map(|b| b.node)
                 .zip(self.lsp_uri.clone())
-            {
-                let text = EditorDoc::read_buffer(state, node).unwrap_or_default();
-                if text != self.lsp_sent_text {
-                    self.lsp_version += 1;
-                    let version = self.lsp_version;
-                    if let Some(c) = self.lsp.as_mut() {
-                        c.did_change(&uri, version, &text);
-                    }
-                    self.lsp_sent_text = text;
+        {
+            let text = EditorDoc::read_buffer(state, node).unwrap_or_default();
+            if text != self.lsp_sent_text {
+                self.lsp_version += 1;
+                let version = self.lsp_version;
+                if let Some(c) = self.lsp.as_mut() {
+                    c.did_change(&uri, version, &text);
                 }
+                self.lsp_sent_text = text;
             }
+        }
         self.poll_lsp();
 
         self.check_disk_staleness();
@@ -3043,11 +3059,12 @@ impl Widget for CodeApp {
         // The palette, when open, owns all keyboard input.
         if self.palette.is_visible()
             && let WindowEvent::KeyboardInput { .. } = event
-                && self.palette.handle_key(event) {
-                    *handled = true;
-                    self.drain_child_events(state);
-                    return;
-                }
+            && self.palette.handle_key(event)
+        {
+            *handled = true;
+            self.drain_child_events(state);
+            return;
+        }
 
         // Track the cursor (MouseInput carries no coords) so the hamburger and
         // scrim hit-tests below have a position to work with.
@@ -3077,9 +3094,9 @@ impl Widget for CodeApp {
                     .iter()
                     .find(|(_, r)| r.contains(self.last_cursor))
                     .copied()
-                {
-                    self.resolve_close_prompt(state, choice);
-                }
+            {
+                self.resolve_close_prompt(state, choice);
+            }
             *handled = true;
             return;
         }
@@ -3087,7 +3104,8 @@ impl Widget for CodeApp {
         let overlay = self.sidebar_layout() == SplitLayout::Overlay;
 
         // Esc dismisses an open overlay flap before anything else sees it.
-        if overlay && self.sidebar_open()
+        if overlay
+            && self.sidebar_open()
             && let WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -3097,11 +3115,11 @@ impl Widget for CodeApp {
                     },
                 ..
             } = event
-            {
-                self.flap.close();
-                *handled = true;
-                return;
-            }
+        {
+            self.flap.close();
+            *handled = true;
+            return;
+        }
 
         // Left-click routing for the overlay-specific affordances.
         if let WindowEvent::MouseInput {
@@ -3199,9 +3217,9 @@ impl Widget for CodeApp {
                     .iter()
                     .find(|(_, r)| r.contains(self.last_cursor))
                     .copied()
-                {
-                    self.resolve_conflict(state, choice);
-                }
+            {
+                self.resolve_conflict(state, choice);
+            }
             *handled = true;
             return;
         }
@@ -3209,24 +3227,25 @@ impl Widget for CodeApp {
         // The find bar takes keyboard input while it is open (its fields own
         // typing; Enter and Escape are its transport).
         if self.find.is_visible()
-            && let Some(n) = self.find_node {
-                let before = *handled;
-                self.find.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                self.drain_find_events(state);
-                if *handled && !before {
-                    return;
-                }
+            && let Some(n) = self.find_node
+        {
+            let before = *handled;
+            self.find.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            self.drain_find_events(state);
+            if *handled && !before {
+                return;
             }
+        }
 
         // Terminal input capture: while the Terminal dock tab shows a live
         // terminal, a click in its content region focuses the shell and routes
@@ -3285,34 +3304,35 @@ impl Widget for CodeApp {
             SplitLayout::Docked => self.flap.reveal() > 0.001,
             SplitLayout::Overlay => self.sidebar_open(),
         };
-        if sidebar_active
-            && let Some(n) = self.sidebar_node {
-                self.sidebar.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-            }
+        if sidebar_active && let Some(n) = self.sidebar_node {
+            self.sidebar.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
 
         // While the overlay sidebar is open, it captures pointer presses over
         // its area so clicks don't leak to the content behind it (the tree only
         // self-marks `handled` on a row hit — empty rows would otherwise fall
         // through). The scrim outside it was already handled above.
-        if overlay && self.sidebar_open()
+        if overlay
+            && self.sidebar_open()
             && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } = event
-                && self.overlay_sidebar_rect.contains(self.last_cursor) {
-                    *handled = true;
-                }
+            && self.overlay_sidebar_rect.contains(self.last_cursor)
+        {
+            *handled = true;
+        }
 
         if let Some(n) = self.tabs_node {
             self.tabs.handle_event(
@@ -3328,19 +3348,20 @@ impl Widget for CodeApp {
             );
         }
         if self.panel_visible
-            && let Some(n) = self.panel_node {
-                self.panel.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-            }
+            && let Some(n) = self.panel_node
+        {
+            self.panel.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
         if let Some(n) = self.editor_node {
             self.editor.handle_event(
                 event,

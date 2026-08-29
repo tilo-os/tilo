@@ -79,9 +79,9 @@ pub fn fetch_h264(
     // A single bounded prefix from byte 0 spans the init segment (`ftyp`+`moov`
     // with the `avcC`) and the first media fragment(s). Never ask past the known
     // content length or the server's per-request cap.
-    let end = handle
-        .content_length
-        .map_or(MAX_PREFIX_BYTES, |len| MAX_PREFIX_BYTES.min(len.saturating_sub(1)));
+    let end = handle.content_length.map_or(MAX_PREFIX_BYTES, |len| {
+        MAX_PREFIX_BYTES.min(len.saturating_sub(1))
+    });
 
     let url = with_range(&handle.url, 0, end);
     let resp = client

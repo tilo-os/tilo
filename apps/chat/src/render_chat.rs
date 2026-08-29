@@ -17,7 +17,10 @@ use ui::widget::Avatar;
 
 use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
-use crate::paint::{legible_on, band_at_least, blend_toward, palette_color, fill_circle, fill_rect, fill_round, text, truncate_to, label, hline, stroke_circle, stroke_round, push_clip};
+use crate::paint::{
+    band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label, legible_on,
+    palette_color, push_clip, stroke_circle, stroke_round, text, truncate_to,
+};
 
 /// Body text size for a message. Shared by the measure and the draw so a
 /// mention-carrying row reserves exactly the height it paints.
@@ -687,7 +690,12 @@ impl ChatApp {
             } else if ch.unread > 0 {
                 let txt = ch.unread.to_string();
                 let (bw, _) = tr.measure(&txt, 11.0, None);
-                let badge = Rect::new(row.x1 - f64::from(bw) - 22.0, y + 7.0, row.x1 - 8.0, y + 25.0);
+                let badge = Rect::new(
+                    row.x1 - f64::from(bw) - 22.0,
+                    y + 7.0,
+                    row.x1 - 8.0,
+                    y + 25.0,
+                );
                 fill_round(scene, tf, badge, 9.0, c.accent[5]);
                 label(
                     scene,
@@ -800,7 +808,12 @@ impl ChatApp {
             TextWeight::Regular,
             Some((w - 8.0) as f32),
         );
-        let caret = Rect::new(x + f64::from(tw) + 1.0, y, x + f64::from(tw) + 2.4, y + 16.0);
+        let caret = Rect::new(
+            x + f64::from(tw) + 1.0,
+            y,
+            x + f64::from(tw) + 2.4,
+            y + 16.0,
+        );
         fill_rect(scene, tf, caret, c.border_focus);
         ChatApp::push_hit(hits, box_r, Hit::RenameConfirm);
     }
@@ -1134,9 +1147,10 @@ impl ChatApp {
         let mut y = (start_y + self.scroll).clamp(min_start, max_start);
 
         // date divider
-        let dl = self
-            .messages
-            .first().map_or_else(|| "Today".into(), |m| model::day_label(m.ts, crate::doc::NOW));
+        let dl = self.messages.first().map_or_else(
+            || "Today".into(),
+            |m| model::day_label(m.ts, crate::doc::NOW),
+        );
         let (dw, _) = tr.measure(&dl, 11.5, None);
         let dcy = y + divider_h / 2.0;
         hline(
@@ -1203,7 +1217,9 @@ impl ChatApp {
             Some(Attachment::Image { w, h, .. }) => {
                 image_thumb_size(*w, *h, f64::from(text_w)).1 + 24.0
             }
-            Some(Attachment::Video { w, h, .. }) => video_card_size(*w, *h, f64::from(text_w)).1 + 24.0,
+            Some(Attachment::Video { w, h, .. }) => {
+                video_card_size(*w, *h, f64::from(text_w)).1 + 24.0
+            }
         };
         let react_h = if m.reactions.is_empty() { 0.0 } else { 32.0 };
         // While editing, the "(edited)" marker is suppressed in favour of the
@@ -1254,9 +1270,9 @@ impl ChatApp {
 
         if rm.show_header {
             let u = self.user(&m.author).cloned();
-            let (initials, cidx, status) = u
-                .as_ref()
-                .map_or(("?".into(), 0, None), |u| (u.initials.clone(), u.color_idx, Some(u.status)));
+            let (initials, cidx, status) = u.as_ref().map_or(("?".into(), 0, None), |u| {
+                (u.initials.clone(), u.color_idx, Some(u.status))
+            });
             draw_avatar(
                 scene,
                 tf,
@@ -1398,7 +1414,12 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let editing_text = self.editing.as_ref().map_or("", |(_, t)| t.as_str());
         let box_h = rm.body_h + EDIT_BOX_PAD;
-        let er = Rect::new(text_x - 8.0, *y, text_x + f64::from(text_w) + 8.0, *y + box_h);
+        let er = Rect::new(
+            text_x - 8.0,
+            *y,
+            text_x + f64::from(text_w) + 8.0,
+            *y + box_h,
+        );
         fill_round(scene, tf, er, 10.0, c.neutral[2]);
         stroke_round(scene, tf, er, 10.0, c.border_focus, 1.6);
         if editing_text.is_empty() {
@@ -1427,7 +1448,8 @@ impl ChatApp {
             );
         }
         let prefix = &editing_text[..char_to_byte(editing_text, self.caret)];
-        let cx = (text_x + f64::from(tr.measure(prefix, 15.0, None).0)).min(text_x + f64::from(text_w));
+        let cx =
+            (text_x + f64::from(tr.measure(prefix, 15.0, None).0)).min(text_x + f64::from(text_w));
         fill_rect(
             scene,
             tf,
@@ -2287,10 +2309,7 @@ impl ChatApp {
             tf,
             &self.user_name(&m.author),
             13.5,
-            palette_color(
-                theme,
-                self.user(&m.author).map_or(0, |u| u.color_idx),
-            ),
+            palette_color(theme, self.user(&m.author).map_or(0, |u| u.color_idx)),
             tx,
             yy,
             TextWeight::Semibold,

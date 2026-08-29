@@ -2,7 +2,17 @@
 //! in any host's automerge doc (e.g. `ui::State.doc`), not only an owned [`crate::Document`].
 
 use crate::document::{DocError, MarkSpan};
-use crate::schema::{NOTE_KIND_FOOTNOTE, NOTE_KIND_ENDNOTE, KEY_SCHEMA, SCHEMA_ID, KEY_SCHEMA_VERSION, SCHEMA_VERSION, KEY_BLOCKS, KEY_STYLES, KEY_PRESERVED, KEY_META, KEY_BLOBS, KEY_NOTES, KEY_COMMENTS, KEY_CHANGES, KEY_HEADER, KEY_FOOTER, NOTE_BLOCKS, NOTE_KIND, COMMENT_BLOCKS, COMMENT_AUTHOR, COMMENT_DATE, MARK_COMMENT, MARK_BOOKMARK, HEADING_REF_PREFIX, CHANGE_AUTHOR, CHANGE_DATE, CHANGE_KIND, MARK_INS, MARK_DEL, BLOB_MIME, BLOB_LEN, BLOB_W, BLOB_H, BLOCK_ORDER, META_COLUMNS, DEFAULT_COLUMNS, META_COLUMN_GAP, META_LANGUAGE, KEY_PROPS, BLOCK_KIND, BLOCK_TEXT, PRESERVED_SEG_ORD, PRESERVED_SEG_BYTES, BLOCK_ATTRS, ATTR_BLOB_MIME, ATTR_BLOB_BYTES, ATTR_BLOB_W, ATTR_BLOB_H, BLOCK_CHILDREN, FIELD_PLACEHOLDER, MARK_FIELD, FIELD_PAGE_NUMBER, MARK_NOTE_REF, CROSS_REF_PREFIX, MARK_LINK};
+use crate::schema::{
+    ATTR_BLOB_BYTES, ATTR_BLOB_H, ATTR_BLOB_MIME, ATTR_BLOB_W, BLOB_H, BLOB_LEN, BLOB_MIME, BLOB_W,
+    BLOCK_ATTRS, BLOCK_CHILDREN, BLOCK_KIND, BLOCK_ORDER, BLOCK_TEXT, CHANGE_AUTHOR, CHANGE_DATE,
+    CHANGE_KIND, COMMENT_AUTHOR, COMMENT_BLOCKS, COMMENT_DATE, CROSS_REF_PREFIX, DEFAULT_COLUMNS,
+    FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, HEADING_REF_PREFIX, KEY_BLOBS, KEY_BLOCKS, KEY_CHANGES,
+    KEY_COMMENTS, KEY_FOOTER, KEY_HEADER, KEY_META, KEY_NOTES, KEY_PRESERVED, KEY_PROPS,
+    KEY_SCHEMA, KEY_SCHEMA_VERSION, KEY_STYLES, MARK_BOOKMARK, MARK_COMMENT, MARK_DEL, MARK_FIELD,
+    MARK_INS, MARK_LINK, MARK_NOTE_REF, META_COLUMN_GAP, META_COLUMNS, META_LANGUAGE, NOTE_BLOCKS,
+    NOTE_KIND, NOTE_KIND_ENDNOTE, NOTE_KIND_FOOTNOTE, PRESERVED_SEG_BYTES, PRESERVED_SEG_ORD,
+    SCHEMA_ID, SCHEMA_VERSION,
+};
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
@@ -149,9 +159,10 @@ pub fn next_counter_for(doc: &AutoCommit, c: &Containers, actor_hex: &str) -> u6
     let mut next = 0u64;
     let mut bump = |id: &str| {
         if let Some(rest) = id.strip_prefix(&prefix)
-            && let Ok(n) = rest.parse::<u64>() {
-                next = next.max(n + 1);
-            }
+            && let Ok(n) = rest.parse::<u64>()
+        {
+            next = next.max(n + 1);
+        }
     };
     for id in blocks_in_order(doc, c) {
         bump(&id);
@@ -248,9 +259,10 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
         // The genesis has no dependencies, so it applies to any document, and a
         // replica already holding it is unaffected: same hash, one copy kept.
         if doc.load_incremental(genesis()).is_ok()
-            && let Ok(adopted) = open(doc, root) {
-                return adopted;
-            }
+            && let Ok(adopted) = open(doc, root)
+        {
+            return adopted;
+        }
         // Falling back to a private schema would reintroduce exactly the
         // silent-loss conflict the genesis exists to prevent, so say so.
         tracing::error!(
@@ -344,10 +356,7 @@ const CONTAINER_KEYS: &[&str] = &[
 pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
     CONTAINER_KEYS
         .iter()
-        .filter(|key| {
-            doc.get_all(root, **key)
-                .is_ok_and(|found| found.len() > 1)
-        })
+        .filter(|key| doc.get_all(root, **key).is_ok_and(|found| found.len() > 1))
         .map(|key| (*key).to_string())
         .collect()
 }
@@ -636,12 +645,13 @@ pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::Bookm
     for bid in blocks_in_order(doc, c) {
         for m in marks(doc, c, &bid) {
             if m.name == MARK_BOOKMARK
-                && let crate::document::MarkValue::Str(name) = &m.value {
-                    out.push(crate::snapshot::BookmarkView {
-                        name: name.clone(),
-                        range: (bid.clone(), m.start, m.end),
-                    });
-                }
+                && let crate::document::MarkValue::Str(name) = &m.value
+            {
+                out.push(crate::snapshot::BookmarkView {
+                    name: name.clone(),
+                    range: (bid.clone(), m.start, m.end),
+                });
+            }
         }
     }
     out.sort_by(|a, b| {
@@ -941,7 +951,10 @@ pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
 /// Round-trips through the `.odt` default-paragraph-style `fo:language`/`fo:country` and `.docx` `docDefaults` `w:lang`.
 pub fn language(doc: &AutoCommit, c: &Containers) -> Option<String> {
     match doc.get(&c.meta, META_LANGUAGE) {
-        Ok(Some((v, _))) => v.to_str().filter(|s| !s.is_empty()).map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v
+            .to_str()
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -969,9 +982,10 @@ pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
     if let Some(props) = props_obj(doc, c) {
         for k in doc.keys(&props) {
             if let Ok(Some((v, _))) = doc.get(&props, &k)
-                && let Some(s) = v.to_str() {
-                    out.insert(k, s.to_string());
-                }
+                && let Some(s) = v.to_str()
+            {
+                out.insert(k, s.to_string());
+            }
         }
     }
     out
@@ -1325,7 +1339,9 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
                     continue;
                 }
             };
-            let meta = if let Some(m) = cache.get(&hash) { m.clone() } else {
+            let meta = if let Some(m) = cache.get(&hash) {
+                m.clone()
+            } else {
                 let m = blob_meta(doc, c, &hash).unwrap_or_default();
                 cache.insert(hash.clone(), m.clone());
                 m
@@ -1566,12 +1582,13 @@ impl DocMut<'_> {
     /// yet — it will rebuild from the (already-updated) document on next use.
     fn forget_order(&mut self, container: &ObjId, id: &str) {
         if let Some(co) = self.ids.order.by_container.get_mut(container)
-            && let Some(old) = co.by_id.remove(id) {
-                co.entries.remove(&OrderKey {
-                    key: old,
-                    id: id.to_string(),
-                });
-            }
+            && let Some(old) = co.by_id.remove(id)
+        {
+            co.entries.remove(&OrderKey {
+                key: old,
+                id: id.to_string(),
+            });
+        }
     }
 
     // NOTE: DocMut does NOT commit the automerge transaction — the host owns the transaction boundary.
@@ -2018,16 +2035,18 @@ impl DocMut<'_> {
             crate::snapshot::ChangeKind::Ins => {
                 // Keep the text; just remove the revision mark over its range.
                 if let Some((b, start, end)) = range
-                    && end > start {
-                        self.remove_mark(&b, start, end, MARK_INS);
-                    }
+                    && end > start
+                {
+                    self.remove_mark(&b, start, end, MARK_INS);
+                }
             }
             crate::snapshot::ChangeKind::Del => {
                 // Remove the struck text (the `del` mark goes with it).
                 if let Some((b, start, end)) = range
-                    && end > start {
-                        self.splice_text(&b, start, (end - start) as isize, "");
-                    }
+                    && end > start
+                {
+                    self.splice_text(&b, start, (end - start) as isize, "");
+                }
             }
         }
         self.remove_change_record(change_id);
@@ -2045,16 +2064,18 @@ impl DocMut<'_> {
             crate::snapshot::ChangeKind::Ins => {
                 // Undo the insertion: delete the inserted text.
                 if let Some((b, start, end)) = range
-                    && end > start {
-                        self.splice_text(&b, start, (end - start) as isize, "");
-                    }
+                    && end > start
+                {
+                    self.splice_text(&b, start, (end - start) as isize, "");
+                }
             }
             crate::snapshot::ChangeKind::Del => {
                 // Keep the text; just drop the deletion mark over its range.
                 if let Some((b, start, end)) = range
-                    && end > start {
-                        self.remove_mark(&b, start, end, MARK_DEL);
-                    }
+                    && end > start
+                {
+                    self.remove_mark(&b, start, end, MARK_DEL);
+                }
             }
         }
         self.remove_change_record(change_id);
@@ -2364,8 +2385,12 @@ impl DocMut<'_> {
             let _ = self
                 .doc
                 .put(&d, BLOB_LEN, ScalarValue::Int(meta.len as i64));
-            let _ = self.doc.put(&d, BLOB_W, ScalarValue::Int(i64::from(meta.w)));
-            let _ = self.doc.put(&d, BLOB_H, ScalarValue::Int(i64::from(meta.h)));
+            let _ = self
+                .doc
+                .put(&d, BLOB_W, ScalarValue::Int(i64::from(meta.w)));
+            let _ = self
+                .doc
+                .put(&d, BLOB_H, ScalarValue::Int(i64::from(meta.h)));
         }
         hash
     }
@@ -2597,7 +2622,7 @@ mod genesis_detection_tests {
 #[cfg(test)]
 mod region_tests {
     use super::*;
-    
+
     use automerge::{AutoCommit, ROOT};
 
     #[test]

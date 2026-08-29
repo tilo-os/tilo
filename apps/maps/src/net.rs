@@ -167,9 +167,10 @@ pub fn region_from_json(item: &Value) -> Option<RegionHit> {
             )
         });
     // A short locality subtitle: the display name minus the leading name.
-    let context = place
-        .address
-        .split_once(',').map_or_else(|| place.address.clone(), |(_, rest)| rest.trim().to_string());
+    let context = place.address.split_once(',').map_or_else(
+        || place.address.clone(),
+        |(_, rest)| rest.trim().to_string(),
+    );
     Some(RegionHit {
         name: place.name,
         context,

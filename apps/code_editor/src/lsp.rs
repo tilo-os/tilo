@@ -523,9 +523,10 @@ impl LspClient {
                             }
                         }
                         if let Some(ev) = routed.event
-                            && tx.send(ev).is_err() {
-                                break;
-                            }
+                            && tx.send(ev).is_err()
+                        {
+                            break;
+                        }
                     } else {
                         let _ = tx.send(LspEvent::Exited);
                         break;
@@ -553,8 +554,10 @@ impl LspClient {
         // `window.workDoneProgress` is the capability that makes indexing
         // visible: without it the server never sends `$/progress`, and a
         // multi-minute index is silent.
-        let folder_name = root
-            .file_name().map_or_else(|| root.display().to_string(), |s| s.to_string_lossy().to_string());
+        let folder_name = root.file_name().map_or_else(
+            || root.display().to_string(),
+            |s| s.to_string_lossy().to_string(),
+        );
         client.send_request_raw(
             "initialize",
             json!({

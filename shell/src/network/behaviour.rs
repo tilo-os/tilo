@@ -55,7 +55,7 @@ pub fn peer_salt_from_keypair(kp: &libp2p::identity::Keypair) -> u16 {
     let h = fnv1a_64(&bytes);
     // Fold the 64-bit hash down to 16 bits by XOR'ing the four 16-bit
     // slices — keeps every output bit a function of every input bit, roughly uniform collisions.
-    
+
     (h as u16) ^ ((h >> 16) as u16) ^ ((h >> 32) as u16) ^ ((h >> 48) as u16)
 }
 

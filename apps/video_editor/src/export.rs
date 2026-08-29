@@ -196,7 +196,8 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
     if let Some(full) = std::env::var_os("QOS_VE_EXPORT_OUT") {
         return std::path::PathBuf::from(full);
     }
-    let dir = std::env::var_os("QOS_VE_EXPORT_DIR").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+    let dir = std::env::var_os("QOS_VE_EXPORT_DIR")
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     dir.join(settings.suggested_filename(&project.name))
 }
 

@@ -169,7 +169,8 @@ impl SidebarWheelChrome {
 
 fn workspace_initial(name: &str) -> String {
     name.chars()
-        .next().map_or_else(|| "·".to_string(), |c| c.to_ascii_uppercase().to_string())
+        .next()
+        .map_or_else(|| "·".to_string(), |c| c.to_ascii_uppercase().to_string())
 }
 
 impl Widget for SidebarWheelChrome {

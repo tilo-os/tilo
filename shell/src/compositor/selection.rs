@@ -190,9 +190,7 @@ fn record_client_text(store: &SharedSelection, target: Target, text: Option<Stri
 
 /// Whether the compositor currently owns `target` (i.e. answers `receive` from the mirror).
 fn compositor_owns(store: &SharedSelection, target: Target) -> bool {
-    store
-        .lock()
-        .is_ok_and(|s| s.slot(target).compositor_owned)
+    store.lock().is_ok_and(|s| s.slot(target).compositor_owned)
 }
 
 /// A selection change seen but not yet mirrored. smithay raises
@@ -252,11 +250,17 @@ pub struct DragLabel(Arc<Mutex<Option<String>>>);
 
 impl DragLabel {
     pub fn set(&self, label: Option<String>) {
-        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = label;
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = label;
     }
 
     pub fn get(&self) -> Option<String> {
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -319,9 +323,10 @@ impl ChromeDrag {
     pub fn new(paths: Vec<std::path::PathBuf>) -> Self {
         let mut mime_types = vec![URI_LIST_MIME.to_string()];
         if let [single] = paths.as_slice()
-            && let Some(mime) = mime_for_path(single) {
-                mime_types.push(mime.to_string());
-            }
+            && let Some(mime) = mime_for_path(single)
+        {
+            mime_types.push(mime.to_string());
+        }
         Self { paths, mime_types }
     }
 
@@ -825,9 +830,10 @@ impl ClientDndGrabHandler for State {
         // Then ask for the name from the URI list the source is already offering —
         // turns "Image" into "photo.png" on screen.
         if let Some(source) = source.as_ref()
-            && mimes.iter().any(|m| m == URI_LIST_MIME) {
-                request_dragged_name(source, self.selection.dnd_label.clone());
-            }
+            && mimes.iter().any(|m| m == URI_LIST_MIME)
+        {
+            request_dragged_name(source, self.selection.dnd_label.clone());
+        }
         // The drag icon is a client surface with the `dnd_icon` role, but qOS
         // doesn't composite it — the compositor draws its own drag feedback, and a
         // client icon would sit outside the strip layout. Recording it just keeps

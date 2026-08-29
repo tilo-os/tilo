@@ -106,15 +106,18 @@ impl qos_actions::Action for VpnAction {
             VpnAction::RenameConnection { id, name } => {
                 let name = name.trim();
                 if let Some(c) = vault.get(*id)
-                    && !name.is_empty() && c.name != name {
-                        VpnDoc::set_name(doc, *id, name.to_string());
-                    }
+                    && !name.is_empty()
+                    && c.name != name
+                {
+                    VpnDoc::set_name(doc, *id, name.to_string());
+                }
             }
             VpnAction::SetConnTor { id, on } => {
                 if let Some(c) = vault.get(*id)
-                    && c.tor != *on {
-                        VpnDoc::set_conn_tor(doc, *id, *on);
-                    }
+                    && c.tor != *on
+                {
+                    VpnDoc::set_conn_tor(doc, *id, *on);
+                }
             }
             VpnAction::SetTorGlobal { on } => {
                 if vault.tor_global != *on {

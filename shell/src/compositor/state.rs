@@ -816,7 +816,9 @@ impl State {
                 self.inject_seat_key(keycode as u32, pressed, serial, time)
             }
             RemoteAction::KeyboardKeysym { keysym, pressed } => {
-                if let Some(kc) = self.keysym_to_keycode(keysym as u32) { self.inject_seat_key(kc, pressed, serial, time) } else {
+                if let Some(kc) = self.keysym_to_keycode(keysym as u32) {
+                    self.inject_seat_key(kc, pressed, serial, time)
+                } else {
                     tracing::debug!(
                         keysym,
                         "RemoteDesktop: keysym has no keycode in the active layout; dropped"
@@ -860,9 +862,7 @@ impl State {
             // xkb keycodes start at 8 (evdev 0 == xkb 8); 8..=255 covers a standard keyboard's key range.
             for raw in 8u32..=255 {
                 let kc: Keycode = raw.into();
-                if xkb
-                    .raw_syms_for_key_in_layout(kc, layout).contains(&target)
-                {
+                if xkb.raw_syms_for_key_in_layout(kc, layout).contains(&target) {
                     return Some(raw);
                 }
             }
@@ -945,18 +945,19 @@ impl RemoteInputSink for State {
                 if prev != Some(target)
                     && let (Some(resolver), Some(keyboard)) =
                         (&self.surface_resolver, self.seat.get_keyboard())
-                    {
-                        let target_surface = resolver(target);
-                        keyboard.set_focus(self, target_surface, serial);
-                    }
+                {
+                    let target_surface = resolver(target);
+                    keyboard.set_focus(self, target_surface, serial);
+                }
             }
             InputEvent::PointerLeave { surface: _ } => {
                 // Release the peer's grab, only clearing keyboard focus if this peer actually held it — an unentered `PointerLeave` is a no-op.
                 let prev = self.remote_seats.seat_mut(peer).leave();
                 if prev.is_some()
-                    && let Some(keyboard) = self.seat.get_keyboard() {
-                        keyboard.set_focus(self, None, serial);
-                    }
+                    && let Some(keyboard) = self.seat.get_keyboard()
+                {
+                    keyboard.set_focus(self, None, serial);
+                }
             }
             InputEvent::Key {
                 keysym,

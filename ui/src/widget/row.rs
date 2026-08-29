@@ -245,7 +245,10 @@ impl Widget for Row {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(std::convert::AsRef::as_ref).collect()
+        self.children
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

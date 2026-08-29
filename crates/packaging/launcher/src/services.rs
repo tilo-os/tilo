@@ -107,10 +107,13 @@ pub enum ServiceError {
 
 /// Discover `$XDG_RUNTIME_DIR/qos/services/`.
 pub fn services_root() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+        || {
             let uid = unsafe { libc::geteuid() };
             PathBuf::from(format!("/run/user/{uid}"))
-        }, PathBuf::from);
+        },
+        PathBuf::from,
+    );
     runtime.join("qos/services")
 }
 

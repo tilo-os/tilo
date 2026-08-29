@@ -308,10 +308,9 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 // its own event, splitting the surrounding text. Fold it back into
                 // the active run so a literal `&`, `<` or `>` survives the round
                 // trip instead of vanishing at the split.
-                if in_text_p
-                    && let Some(ch) = resolve_entity(&r) {
-                        p_buf.push(ch);
-                    }
+                if in_text_p && let Some(ch) = resolve_entity(&r) {
+                    p_buf.push(ch);
+                }
                 continue;
             }
             Ok(Event::End(end)) => {

@@ -152,9 +152,7 @@ impl LogEntry {
     /// `YYYY-MM-DD HH:MM:SS.mmm UTC` — the verbose detail-pane stamp.
     pub fn timestamp_full(&self) -> String {
         let (y, mo, d, hh, mm, ss, milli) = civil(self.realtime_us);
-        format!(
-            "{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03} UTC"
-        )
+        format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03} UTC")
     }
 
     /// `HH:MM:SS` for compact contexts.

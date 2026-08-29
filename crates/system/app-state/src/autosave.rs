@@ -125,8 +125,7 @@ impl Autosave {
             return;
         }
         self.sent = doc.get_heads();
-        self.base = std::fs::metadata(&self.document)
-            .map_or(0, |m| m.len() as usize);
+        self.base = std::fs::metadata(&self.document).map_or(0, |m| m.len() as usize);
         self.appended = 0;
     }
 

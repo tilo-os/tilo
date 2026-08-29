@@ -981,12 +981,13 @@ impl Core {
             && let (Some(loc), Some(chip)) = (
                 self.model.locations.get(i),
                 self.reorder.ghost_rect(x, x + w, &metrics),
-            ) {
-                let sh =
-                    RoundedRect::from_rect(chip.inset(-2.0), f64::from(theme.tokens.radii.md) + 2.0);
-                scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 60), None, &sh);
-                self.draw_chip(scene, t, tr, theme, chip, loc, i, units);
-            }
+            )
+        {
+            let sh =
+                RoundedRect::from_rect(chip.inset(-2.0), f64::from(theme.tokens.radii.md) + 2.0);
+            scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 60), None, &sh);
+            self.draw_chip(scene, t, tr, theme, chip, loc, i, units);
+        }
     }
 
     /// The reorderable saved-place list's geometry this frame, for the
@@ -1334,10 +1335,12 @@ impl Core {
             button: MouseButton::Left,
             ..
         } = event
-            && !self.search.is_editing() && self.search_field_rect.contains(self.last_mouse) {
-                self.begin_search();
-                return true;
-            }
+            && !self.search.is_editing()
+            && self.search_field_rect.contains(self.last_mouse)
+        {
+            self.begin_search();
+            return true;
+        }
 
         // While editing, the shared Autocomplete owns typing + arrow/Enter/Esc
         // navigation of the geocoded matches.
@@ -2068,27 +2071,28 @@ impl Core {
         let track = Rect::new(band.x0, hcard.y1 - 12.0, band.x1, hcard.y1 - 6.0);
         self.hourly_track = track;
         if hmetrics.overflows()
-            && let Some(thumb) = self.hourly_bar.thumb_rect(track, hmetrics) {
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    c.neutral[2].with_alpha_factor(0.5),
-                    None,
-                    &RoundedRect::from_rect(track, 3.0),
-                );
-                let thumb_color = if self.hourly_bar.is_active() {
-                    c.text_dim
-                } else {
-                    c.text_dim.with_alpha_factor(0.7)
-                };
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    thumb_color,
-                    None,
-                    &RoundedRect::from_rect(thumb, 3.0),
-                );
-            }
+            && let Some(thumb) = self.hourly_bar.thumb_rect(track, hmetrics)
+        {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.neutral[2].with_alpha_factor(0.5),
+                None,
+                &RoundedRect::from_rect(track, 3.0),
+            );
+            let thumb_color = if self.hourly_bar.is_active() {
+                c.text_dim
+            } else {
+                c.text_dim.with_alpha_factor(0.7)
+            };
+            scene.fill(
+                Fill::NonZero,
+                t,
+                thumb_color,
+                None,
+                &RoundedRect::from_rect(thumb, 3.0),
+            );
+        }
 
         y += HOURLY_CARD_H + SECTION_GAP;
 
@@ -2687,7 +2691,9 @@ impl Core {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 48.0, f64::from(*y) * 48.0),
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        (f64::from(*x) * 48.0, f64::from(*y) * 48.0)
+                    }
                     MouseScrollDelta::PixelDelta(p) => (p.x / scale_factor, p.y / scale_factor),
                 };
                 // Over the strip: scroll it horizontally. A horizontal delta
@@ -3065,13 +3071,17 @@ fn day_extra_labels(d: &DayForecast, snap: &WeatherSnapshot, units: Units) -> (S
 
 fn weekday(date: &str) -> String {
     use chrono::NaiveDate;
-    NaiveDate::parse_from_str(date, "%Y-%m-%d").map_or_else(|_| date.to_string(), |d| d.format("%a").to_string())
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_or_else(|_| date.to_string(), |d| d.format("%a").to_string())
 }
 
 fn fmt_date(iso: &str) -> String {
     use chrono::NaiveDate;
     let date_part = iso.get(0..10).unwrap_or(iso);
-    NaiveDate::parse_from_str(date_part, "%Y-%m-%d").map_or_else(|_| date_part.to_string(), |d| d.format("%a, %b %d").to_string())
+    NaiveDate::parse_from_str(date_part, "%Y-%m-%d").map_or_else(
+        |_| date_part.to_string(),
+        |d| d.format("%a, %b %d").to_string(),
+    )
 }
 
 fn uv_word(uv: f64) -> &'static str {

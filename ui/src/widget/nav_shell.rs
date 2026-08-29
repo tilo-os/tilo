@@ -655,9 +655,9 @@ impl NavShell {
     /// (HIG §5).
     fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let now = Instant::now();
-        let dt = self
-            .last_tick
-            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT));
+        let dt = self.last_tick.map_or(0.0, |t| {
+            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
+        });
         self.last_tick = Some(now);
 
         let a = self.sidebar_flap.tick(self.sidebar_split_layout(), dt);
@@ -1120,10 +1120,7 @@ impl Widget for NavShell {
         self.animating
             || self.overview.needs_idle_sync()
             || self.detail.as_ref().is_some_and(|d| d.needs_idle_sync())
-            || self
-                .sidebar
-                .as_ref()
-                .is_some_and(|s| s.needs_idle_sync())
+            || self.sidebar.as_ref().is_some_and(|s| s.needs_idle_sync())
     }
 }
 

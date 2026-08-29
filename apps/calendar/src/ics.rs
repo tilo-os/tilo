@@ -141,9 +141,10 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<Event>, usize) {
             // Scan the alarm for a TRIGGER:-PTnM.
             while i < lines.len() && lines[i].trim() != "END:VALARM" {
                 if let Some((k, v)) = split_prop(&lines[i])
-                    && k.starts_with("TRIGGER") {
-                        reminder = parse_trigger_minutes(&v);
-                    }
+                    && k.starts_with("TRIGGER")
+                {
+                    reminder = parse_trigger_minutes(&v);
+                }
                 i += 1;
             }
             i += 1;
@@ -220,10 +221,9 @@ fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
                         _ => Priority::None,
                     }
                 }
-                "PERCENT-COMPLETE"
-                    if val.trim() == "100" => {
-                        done = true;
-                    }
+                "PERCENT-COMPLETE" if val.trim() == "100" => {
+                    done = true;
+                }
                 _ => {}
             }
         }
@@ -315,9 +315,10 @@ fn split_prop(line: &str) -> Option<(String, String)> {
 
 fn parse_cal_datetime(key: &str, val: &str) -> (NaiveDateTime, bool) {
     if (key.contains("VALUE=DATE") || val.len() == 8)
-        && let Some(d) = parse_cal_date(val) {
-            return (d.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap()), true);
-        }
+        && let Some(d) = parse_cal_date(val)
+    {
+        return (d.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap()), true);
+    }
     let clean = val.trim_end_matches('Z');
     if let Ok(dt) = NaiveDateTime::parse_from_str(clean, DT_LOCAL) {
         return (dt, false);

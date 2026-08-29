@@ -929,8 +929,10 @@ impl PresenceCtx {
             if self.is_own_identity(&cursor.user_id) || !cursor.painted_by_window() {
                 continue;
             }
-            let target =
-                vello::kurbo::Point::new(f64::from(cursor.position[0]), f64::from(cursor.position[1]));
+            let target = vello::kurbo::Point::new(
+                f64::from(cursor.position[0]),
+                f64::from(cursor.position[1]),
+            );
             let Some(mist) = edge_mist_for(viewport, target) else {
                 continue;
             };
@@ -995,7 +997,8 @@ impl PresenceCtx {
             f32::from(b) / 255.0,
             alpha.clamp(0.0, 1.0),
         ];
-        let label = display_name.map_or_else(|| self.display_name(&uid), std::string::ToString::to_string);
+        let label =
+            display_name.map_or_else(|| self.display_name(&uid), std::string::ToString::to_string);
         if let Some(existing) = self
             .remote_cursors
             .iter_mut()
@@ -1061,7 +1064,9 @@ impl PresenceCtx {
         key: PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) -> RemotePresenceEffect {
-        use crate::collaboration::PresencePayload::{Arrived, Pointer, Caret, Selection, Typing, Left};
+        use crate::collaboration::PresencePayload::{
+            Arrived, Caret, Left, Pointer, Selection, Typing,
+        };
 
         // A frame this session published, handed back: another app the same
         // person has open. Nothing about it is painted, but `Arrived` still

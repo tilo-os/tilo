@@ -356,12 +356,8 @@ impl Widget for ConflictBanner {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = p;
-                let new_review = self
-                    .review_chip_rect()
-                    .is_some_and(|r| r.contains(p));
-                let new_dismiss = self
-                    .dismiss_chip_rect()
-                    .is_some_and(|r| r.contains(p));
+                let new_review = self.review_chip_rect().is_some_and(|r| r.contains(p));
+                let new_dismiss = self.dismiss_chip_rect().is_some_and(|r| r.contains(p));
                 if new_review != self.review_hovered || new_dismiss != self.dismiss_hovered {
                     self.review_hovered = new_review;
                     self.dismiss_hovered = new_dismiss;

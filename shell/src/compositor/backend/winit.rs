@@ -53,7 +53,9 @@ fn initial_size() -> (u32, u32) {
         .split_once(['x', 'X'])
         .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)))
         .filter(|(w, h): &(u32, u32)| *w > 0 && *h > 0);
-    if let Some(size) = parsed { size } else {
+    if let Some(size) = parsed {
+        size
+    } else {
         eprintln!(
             "nirios compositor: {SIZE_ENV}={raw:?} is not a usable WxH; \
              using {INITIAL_WIDTH}x{INITIAL_HEIGHT}"

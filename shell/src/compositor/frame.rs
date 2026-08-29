@@ -571,20 +571,22 @@ impl FrameBuilder {
         // `focus_target` but the widget itself would never see
         // `set_focus(true)`, leaving rendering in the unfocused state.
         if let Some(new_id) = focus_target
-            && prior_focus != Some(new_id) {
-                if let Some(old_id) = prior_focus
-                    && let Some(&w_ptr) = self.node_map.get(&old_id) {
-                        unsafe {
-                            (*w_ptr).set_focus(false);
-                        }
-                    }
-                if let Some(&w_ptr) = self.node_map.get(&new_id) {
-                    unsafe {
-                        (*w_ptr).set_focus(true);
-                    }
+            && prior_focus != Some(new_id)
+        {
+            if let Some(old_id) = prior_focus
+                && let Some(&w_ptr) = self.node_map.get(&old_id)
+            {
+                unsafe {
+                    (*w_ptr).set_focus(false);
                 }
-                *focus = Some(new_id);
             }
+            if let Some(&w_ptr) = self.node_map.get(&new_id) {
+                unsafe {
+                    (*w_ptr).set_focus(true);
+                }
+            }
+            *focus = Some(new_id);
+        }
         handled
     }
 

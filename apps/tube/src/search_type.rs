@@ -79,11 +79,13 @@ impl SearchHit {
 
     /// The app's router calls this when the framework activates a hit.
     pub fn parse_watch_link(link: &str) -> Option<String> {
-        link.strip_prefix("tube://watch/").map(std::string::ToString::to_string)
+        link.strip_prefix("tube://watch/")
+            .map(std::string::ToString::to_string)
     }
 
     pub fn parse_channel_link(link: &str) -> Option<String> {
-        link.strip_prefix("tube://channel/").map(std::string::ToString::to_string)
+        link.strip_prefix("tube://channel/")
+            .map(std::string::ToString::to_string)
     }
 }
 

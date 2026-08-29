@@ -238,9 +238,10 @@ impl BrowserWidget {
     /// on the first frame.
     fn bootstrap_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if state.get(root, URL_PATH).ok().flatten().is_none()
-            && let Ok(obj_id) = state.put_object(root, URL_PATH, ObjType::Text) {
-                let _ = state.splice_text(&obj_id, 0, 0, self.initial_url);
-            }
+            && let Ok(obj_id) = state.put_object(root, URL_PATH, ObjType::Text)
+        {
+            let _ = state.splice_text(&obj_id, 0, 0, self.initial_url);
+        }
         for flag in [BACK_FLAG, FORWARD_FLAG, RELOAD_FLAG, SETTINGS_FLAG] {
             if state.get(root, flag).ok().flatten().is_none() {
                 let _ = state.put(root, flag, false);
@@ -379,16 +380,18 @@ impl BrowserWidget {
         }
         let mut changed = false;
         if let Some(v) = intents.adblock_enabled
-            && v != self.settings.adblock_enabled {
-                self.settings.adblock_enabled = v;
-                self.set_adblock(v);
-                changed = true;
-            }
+            && v != self.settings.adblock_enabled
+        {
+            self.settings.adblock_enabled = v;
+            self.set_adblock(v);
+            changed = true;
+        }
         if let Some(v) = intents.clear_on_exit
-            && v != self.settings.clear_on_exit {
-                self.settings.clear_on_exit = v;
-                changed = true;
-            }
+            && v != self.settings.clear_on_exit
+        {
+            self.settings.clear_on_exit = v;
+            changed = true;
+        }
         if changed && !self.headless {
             self.settings.save();
         }
@@ -576,9 +579,10 @@ impl Widget for BrowserWidget {
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
-                && let Some(&child_node) = children.first() {
-                    c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-                }
+            && let Some(&child_node) = children.first()
+        {
+            c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+        }
         // Anchor the suggestion dropdown flush under the address input.
         if let Some(r) = self.address_input_rect() {
             self.suggestions
@@ -678,31 +682,32 @@ impl Widget for BrowserWidget {
 
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
-                && let Some(&child_node) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        child_node,
-                        taffy,
-                    );
-                }
+            && let Some(&child_node) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
+        }
 
         // Enter in the focused address bar submits it (no suggestion picked).
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
-                && key.logical_key == WKey::Named(WNamedKey::Enter)
-                && self.url_input_focused()
-            {
-                self.navigate_to_input(state, path);
-                self.suggestions.clear();
-                self.last_query = None;
-                *handled = true;
-            }
+            && key.logical_key == WKey::Named(WNamedKey::Enter)
+            && self.url_input_focused()
+        {
+            self.navigate_to_input(state, path);
+            self.suggestions.clear();
+            self.last_query = None;
+            *handled = true;
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

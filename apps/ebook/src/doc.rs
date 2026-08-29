@@ -175,8 +175,9 @@ impl BooksDoc {
                     &Self::scalar_str(doc, &e, "kind").unwrap_or_else(|| "default".into()),
                 ),
                 name: Self::scalar_str(doc, &e, "name").unwrap_or_else(|| id.clone()),
-                size_mult: Self::scalar_f64(doc, &e, "size_mult")
-                    .map_or(1.0, |v| (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX)),
+                size_mult: Self::scalar_f64(doc, &e, "size_mult").map_or(1.0, |v| {
+                    (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX)
+                }),
                 shown: Self::scalar_bool(doc, &e, "shown").unwrap_or(true),
                 id,
             });

@@ -358,8 +358,7 @@ fn render_one_frame(
     let t_present = present_dbg.then(Instant::now);
     surface_texture.present();
     if present_dbg {
-        let present_us = t_present
-            .map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e6);
+        let present_us = t_present.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e6);
         eprintln!(
             "present-frame {frame_ix}: encode={:.0}us acquire={:.0}us submit={:.0}us present={:.0}us  ({}x{})",
             encode_us.unwrap_or(0.0),

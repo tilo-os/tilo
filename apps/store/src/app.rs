@@ -507,9 +507,10 @@ impl StoreApp {
         for item in &self.items {
             let pin_key = format!("{}{}", PIN_CLICK_KEY_PREFIX, item.id);
             if take_bool_edge(state, path, &pin_key)
-                && let Some(action) = item.pin_action() {
-                    secondary.push((item.id.clone(), action));
-                }
+                && let Some(action) = item.pin_action()
+            {
+                secondary.push((item.id.clone(), action));
+            }
             let rm_key = format!("{}{}", REMOVE_CLICK_KEY_PREFIX, item.id);
             if take_bool_edge(state, path, &rm_key) {
                 // The item decides *how* it is removed. A Flatpak
@@ -582,9 +583,10 @@ impl Widget for StoreApp {
         // A source-filter chip parked its segment index in the shared
         // cell during the last `handle_event`; adopt it now.
         if let Some(idx) = self.filter_click.take()
-            && let Some(f) = SourceFilter::ALL.get(idx).copied() {
-                self.set_active_filter(f);
-            }
+            && let Some(f) = SourceFilter::ALL.get(idx).copied()
+        {
+            self.set_active_filter(f);
+        }
         // Seed the search box's backing `Text` object *before* the
         // children sync so the `TextInput` resolves a real object to
         // splice keystrokes into (it binds to an existing `Text` but
@@ -635,9 +637,10 @@ impl Widget for StoreApp {
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
-            && let Some(&child_node) = children.first() {
-                root.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-            }
+            && let Some(&child_node) = children.first()
+        {
+            root.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+        }
     }
 
     fn draw(
@@ -708,19 +711,20 @@ impl Widget for StoreApp {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node_id))
-            && let Some(&child_node) = children.first() {
-                root.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    child_node,
-                    taffy,
-                );
-            }
+            && let Some(&child_node) = children.first()
+        {
+            root.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -749,10 +753,7 @@ impl Widget for StoreApp {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .root
-            .as_mut()
-            .is_some_and(|r| r.take_structure_dirty());
+        let child = self.root.as_mut().is_some_and(|r| r.take_structure_dirty());
         own || child
     }
 

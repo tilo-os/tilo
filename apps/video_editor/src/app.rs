@@ -843,10 +843,9 @@ impl VideoEditorApp {
     /// selected). Snaps the result to the frame grid.
     fn nudge_selected(&mut self, doc: &mut AutoCommit, dt: f64) {
         let Some(id) = self.selected else { return };
-        let new_start = self
-            .project
-            .clip(id)
-            .map_or(0.0, |c| snap_to_frame((c.start + dt).max(0.0), self.project.fps));
+        let new_start = self.project.clip(id).map_or(0.0, |c| {
+            snap_to_frame((c.start + dt).max(0.0), self.project.fps)
+        });
         self.project.move_clip(id, new_start);
         self.dispatch_clip(doc, id);
     }
@@ -966,11 +965,7 @@ impl VideoEditorApp {
             TrackKind::Audio
         };
         let track = self.ensure_track_of_kind(doc, kind);
-        let start = self
-            .project
-            .clips_on(track)
-            .last()
-            .map_or(0.0, |c| c.end());
+        let start = self.project.clips_on(track).last().map_or(0.0, |c| c.end());
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(doc, id);
         self.selected = Some(id);
@@ -1000,9 +995,11 @@ impl VideoEditorApp {
     fn update_bin_drag(&mut self) {
         let mouse = self.last_mouse;
         if let Some(bd) = self.bin_drag.as_mut()
-            && !bd.active && bd.origin.distance(mouse) > BIN_DRAG_THRESHOLD {
-                bd.active = true;
-            }
+            && !bd.active
+            && bd.origin.distance(mouse) > BIN_DRAG_THRESHOLD
+        {
+            bd.active = true;
+        }
     }
 
     /// The lane under the current cursor while a bin drag is live, as
@@ -1192,9 +1189,10 @@ impl VideoEditorApp {
             .map(|c| c.id)
             .collect();
         if let Some(sel) = self.selected
-            && clip_ids.contains(&sel) {
-                self.selected = None;
-            }
+            && clip_ids.contains(&sel)
+        {
+            self.selected = None;
+        }
         self.actions.dispatch(
             doc,
             VIDEO_EDITOR_ACTION_TYPE,
@@ -1254,9 +1252,10 @@ impl VideoEditorApp {
             .collect();
         // Keep the in-memory selection consistent before the reload.
         if let Some(sel) = self.selected
-            && clip_ids.contains(&sel) {
-                self.selected = None;
-            }
+            && clip_ids.contains(&sel)
+        {
+            self.selected = None;
+        }
         self.actions.dispatch(
             doc,
             VIDEO_EDITOR_ACTION_TYPE,
@@ -1287,9 +1286,10 @@ impl VideoEditorApp {
             let n = self.import_files(doc, &paths);
             self.import_notice = Some(import_summary(n, paths.len()));
             if self.auto_place_imports
-                && let Some(mid) = self.selected_media {
-                    self.ensure_track_and_place(doc, mid);
-                }
+                && let Some(mid) = self.selected_media
+            {
+                self.ensure_track_and_place(doc, mid);
+            }
         }
         let mut clear = false;
         let mut outcome = None;
@@ -1334,7 +1334,8 @@ impl VideoEditorApp {
         let resolved = crate::media::resolve(&path.to_string_lossy());
         let stored = crate::media::stored_path_for_import(&resolved.abs_path);
         let name = path
-            .file_name().map_or_else(|| stored.clone(), |n| n.to_string_lossy().into_owned());
+            .file_name()
+            .map_or_else(|| stored.clone(), |n| n.to_string_lossy().into_owned());
         let palette = (self.project.media.len() as u8) % 7;
         let item = MediaItem {
             id: Uuid::new_v4(),
@@ -1549,8 +1550,18 @@ impl VideoEditorApp {
         for (i, rect) in seg(x0, x1, FrameRate::ALL.len(), y).into_iter().enumerate() {
             l.fps.push((FrameRate::ALL[i], rect));
         }
-        l.cancel = Rect::new(x0, card.y1 - 50.0, f64::midpoint(x0, x1) - 6.0, card.y1 - 18.0);
-        l.confirm = Rect::new(f64::midpoint(x0, x1) + 6.0, card.y1 - 50.0, x1, card.y1 - 18.0);
+        l.cancel = Rect::new(
+            x0,
+            card.y1 - 50.0,
+            f64::midpoint(x0, x1) - 6.0,
+            card.y1 - 18.0,
+        );
+        l.confirm = Rect::new(
+            f64::midpoint(x0, x1) + 6.0,
+            card.y1 - 50.0,
+            x1,
+            card.y1 - 18.0,
+        );
         l
     }
 
@@ -1611,11 +1622,10 @@ impl VideoEditorApp {
             }
             ShotScenario::DragToTimeline => {
                 // A video bin item mid-drag over the V1 lane.
-                let item = self.bin_item_rects(r).into_iter().find(|(m, _)| {
-                    self.project
-                        .media(*m)
-                        .is_some_and(|mm| mm.kind.is_visual())
-                });
+                let item = self
+                    .bin_item_rects(r)
+                    .into_iter()
+                    .find(|(m, _)| self.project.media(*m).is_some_and(|mm| mm.kind.is_visual()));
                 let lane = self
                     .lane_rects(r)
                     .into_iter()
@@ -1729,14 +1739,16 @@ impl Widget for VideoEditorApp {
         self.drain_import(state);
         // Drop a stale selection if the clip vanished (e.g. remote delete).
         if let Some(id) = self.selected
-            && self.project.clip(id).is_none() {
-                self.selected = None;
-            }
+            && self.project.clip(id).is_none()
+        {
+            self.selected = None;
+        }
         // Drop a rename / menu whose target media vanished (e.g. remote delete).
         if let Some((mid, _)) = &self.bin_rename
-            && self.project.media(*mid).is_none() {
-                self.bin_rename = None;
-            }
+            && self.project.media(*mid).is_none()
+        {
+            self.bin_rename = None;
+        }
         match self.menu_target {
             Some(MenuTarget::Media(mid)) if self.project.media(mid).is_none() => {
                 self.bin_menu.close();
@@ -1749,9 +1761,10 @@ impl Widget for VideoEditorApp {
             _ => {}
         }
         if let Some(bd) = self.bin_drag
-            && self.project.media(bd.media).is_none() {
-                self.bin_drag = None;
-            }
+            && self.project.media(bd.media).is_none()
+        {
+            self.bin_drag = None;
+        }
         self.ensure_initial_selection();
         // Keep audio waveforms current: drain completed background computes, then
         // request (off-thread) or warm (synchronous, for --shots) each source.
@@ -1990,10 +2003,11 @@ impl Widget for VideoEditorApp {
             button: MouseButton::Right,
             ..
         } = event
-            && (self.open_bin_menu_at_cursor(&r) || self.open_track_menu_at_cursor(&r)) {
-                *handled = true;
-                return;
-            }
+            && (self.open_bin_menu_at_cursor(&r) || self.open_track_menu_at_cursor(&r))
+        {
+            *handled = true;
+            return;
+        }
         match event {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
@@ -2294,10 +2308,11 @@ impl VideoEditorApp {
         }
         // Empty-bin "Import media" affordance.
         if let Some(btn) = self.empty_bin_import_rect(r)
-            && btn.contains(p) {
-                self.trigger_import();
-                return;
-            }
+            && btn.contains(p)
+        {
+            self.trigger_import();
+            return;
+        }
         // While the bin is an open overlay, a click on the scrim (anywhere
         // outside the flap and the topbar toggle) dismisses it — matching the
         // flap kernel's scrim/Esc behaviour.
@@ -2435,19 +2450,21 @@ impl VideoEditorApp {
         // memory; the final value is dispatched as one action on mouse-up
         // (see `commit_drag`), so a slider interaction is one undo step.
         if let Some(track) = l.opacity
-            && hit_slider(track, p) {
-                self.drag = Some(Drag::Opacity);
-                let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.preview_edit(|c| c.opacity = v);
-                return;
-            }
+            && hit_slider(track, p)
+        {
+            self.drag = Some(Drag::Opacity);
+            let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            self.preview_edit(|c| c.opacity = v);
+            return;
+        }
         if let Some(track) = l.volume
-            && hit_slider(track, p) {
-                self.drag = Some(Drag::Volume);
-                let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.preview_edit(|c| c.volume = v);
-                return;
-            }
+            && hit_slider(track, p)
+        {
+            self.drag = Some(Drag::Volume);
+            let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            self.preview_edit(|c| c.volume = v);
+            return;
+        }
         // Colour-grade sliders.
         for (track, field, drag) in [
             (l.brightness, FilterField::Brightness, Drag::Brightness),
@@ -2455,16 +2472,17 @@ impl VideoEditorApp {
             (l.saturation, FilterField::Saturation, Drag::Saturation),
         ] {
             if let Some(track) = track
-                && hit_slider(track, p) {
-                    self.drag = Some(drag);
-                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.preview_edit(move |c| match field {
-                        FilterField::Brightness => c.filters.brightness = v,
-                        FilterField::Contrast => c.filters.contrast = v,
-                        FilterField::Saturation => c.filters.saturation = v,
-                    });
-                    return;
-                }
+                && hit_slider(track, p)
+            {
+                self.drag = Some(drag);
+                let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                self.preview_edit(move |c| match field {
+                    FilterField::Brightness => c.filters.brightness = v,
+                    FilterField::Contrast => c.filters.contrast = v,
+                    FilterField::Saturation => c.filters.saturation = v,
+                });
+                return;
+            }
         }
         // Fade in / out sliders (value in seconds, 0..clip-duration).
         let max = self
@@ -2472,19 +2490,21 @@ impl VideoEditorApp {
             .and_then(|id| self.project.clip(id))
             .map_or(0.0, super::model::Clip::duration);
         if let Some(track) = l.fade_in
-            && hit_slider(track, p) {
-                self.drag = Some(Drag::FadeIn);
-                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
-                return;
-            }
+            && hit_slider(track, p)
+        {
+            self.drag = Some(Drag::FadeIn);
+            let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
+            return;
+        }
         if let Some(track) = l.fade_out
-            && hit_slider(track, p) {
-                self.drag = Some(Drag::FadeOut);
-                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
-                return;
-            }
+            && hit_slider(track, p)
+        {
+            self.drag = Some(Drag::FadeOut);
+            let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
+            return;
+        }
         for (t, rect) in &l.transitions {
             if rect.contains(p) {
                 self.set_transition(state, *t);
@@ -2612,19 +2632,13 @@ impl VideoEditorApp {
             Drag::TrimIn { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self
-                    .project
-                    .clip(id)
-                    .map_or(0.0, |c| target - c.start);
+                let delta = self.project.clip(id).map_or(0.0, |c| target - c.start);
                 self.project.trim_in(id, delta);
             }
             Drag::TrimOut { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self
-                    .project
-                    .clip(id)
-                    .map_or(0.0, |c| target - c.end());
+                let delta = self.project.clip(id).map_or(0.0, |c| target - c.end());
                 self.project.trim_out(id, delta);
             }
             Drag::Opacity => {
@@ -3197,10 +3211,11 @@ impl VideoEditorApp {
                 #[cfg(feature = "decode")]
                 {
                     if self.preview_decoder.frame_media() == Some(media)
-                        && let Some(f) = self.preview_decoder.frame() {
-                            blit_frame(scene, tf, f, canvas);
-                            showed_real = true;
-                        }
+                        && let Some(f) = self.preview_decoder.frame()
+                    {
+                        blit_frame(scene, tf, f, canvas);
+                        showed_real = true;
+                    }
                 }
                 if !showed_real {
                     // `base` is already graded + faded; build a representative
@@ -3625,7 +3640,8 @@ impl VideoEditorApp {
         let tag = Rect::new(x0, top + 36.0, x0 + 6.0, top + 64.0);
         fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0);
         let name = media
-            .as_ref().map_or_else(|| "clip".into(), |m| m.name.clone());
+            .as_ref()
+            .map_or_else(|| "clip".into(), |m| m.name.clone());
         text_w(
             scene,
             tr,
@@ -4150,7 +4166,9 @@ impl VideoEditorApp {
         // playhead timecode tag in ruler
         let tag = timecode(self.playhead, self.project.fps);
         let (tw, _) = tr.measure_weighted(&tag, 10.0, None, TextWeight::Bold);
-        let tagx = (px + 6.0).min(r.ruler.x1 - f64::from(tw) - 8.0).max(r.ruler.x0);
+        let tagx = (px + 6.0)
+            .min(r.ruler.x1 - f64::from(tw) - 8.0)
+            .max(r.ruler.x0);
         let tagrect = Rect::new(
             tagx - 3.0,
             r.ruler.y0 + 2.0,
@@ -4269,10 +4287,7 @@ impl VideoEditorApp {
                 }
             } else {
                 let color = lighten(base, 0.3);
-                let media_dur = self
-                    .project
-                    .media(clip.media)
-                    .map_or(0.0, |m| m.duration);
+                let media_dur = self.project.media(clip.media).map_or(0.0, |m| m.duration);
                 if let Some(peaks) = self.waveforms.peaks(clip.media) {
                     // Real waveform: map the clip's source window into the peaks.
                     draw_waveform(

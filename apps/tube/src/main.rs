@@ -1672,9 +1672,7 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
             channel.subscribers,
             channel.verified,
             uploads.len(),
-            uploads
-                .first()
-                .map_or("<none>", |v| v.title.as_str())
+            uploads.first().map_or("<none>", |v| v.title.as_str())
         ),
         Ok(_) => {}
         Err(e) => eprintln!("  channel_videos failed: {e}"),
@@ -1784,7 +1782,8 @@ fn run_bench_scroll(
         let id = m
             .videos
             .iter()
-            .find(|v| !v.comments.is_empty()).map_or_else(|| m.videos[0].id.clone(), |v| v.id.clone());
+            .find(|v| !v.comments.is_empty())
+            .map_or_else(|| m.videos[0].id.clone(), |v| v.id.clone());
         if let Some(v) = m.videos.iter_mut().find(|v| v.id == id) {
             let base = v.comments.clone();
             let mut i = 0usize;
@@ -1930,8 +1929,12 @@ fn run_bench_scroll(
 
             let t = Instant::now();
             let mut scene = Scene::new();
-            let prev =
-                presence.push_viewport(vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
+            let prev = presence.push_viewport(vello::kurbo::Rect::new(
+                0.0,
+                0.0,
+                f64::from(w),
+                f64::from(h),
+            ));
             widget.draw_with_presence(
                 &mut scene,
                 Affine::IDENTITY,

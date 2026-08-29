@@ -1018,12 +1018,13 @@ impl Widget for FileView {
         available: taffy::Size<taffy::AvailableSpace>,
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let width = known
-            .width
-            .map_or(match available.width {
+        let width = known.width.map_or(
+            match available.width {
                 taffy::AvailableSpace::Definite(w) => f64::from(w),
                 _ => self.cell_w() + 2.0 * self.pad_x(),
-            }, f64::from);
+            },
+            f64::from,
+        );
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(width);
         }
@@ -1072,24 +1073,25 @@ impl Widget for FileView {
             ViewMode::Grid => self.draw_grid(scene, transform, tr, theme, vp),
         }
         if self.is_focused
-            && let Some(i) = self.selection.primary() {
-                let r = match self.mode {
-                    ViewMode::List => {
-                        let row = self.list_row_rect(i);
-                        Rect::new(row.x0 + 6.0, row.y0 + 2.0, row.x1 - 6.0, row.y1 - 2.0)
-                    }
-                    ViewMode::Grid => self.cell_rect(i),
-                };
-                if !cull(vp, r) {
-                    scene.stroke(
-                        &Stroke::new(2.0),
-                        transform,
-                        theme.border_focus,
-                        None,
-                        &RoundedRect::from_rect(r, ROW_RADIUS),
-                    );
+            && let Some(i) = self.selection.primary()
+        {
+            let r = match self.mode {
+                ViewMode::List => {
+                    let row = self.list_row_rect(i);
+                    Rect::new(row.x0 + 6.0, row.y0 + 2.0, row.x1 - 6.0, row.y1 - 2.0)
                 }
+                ViewMode::Grid => self.cell_rect(i),
+            };
+            if !cull(vp, r) {
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    theme.border_focus,
+                    None,
+                    &RoundedRect::from_rect(r, ROW_RADIUS),
+                );
             }
+        }
     }
 
     fn handle_event(
@@ -1116,10 +1118,11 @@ impl Widget for FileView {
                 // carries the row(s) and, on release, moves them onto a folder
                 // (or pins a folder to the sidebar).
                 if let Some((start, path, is_dir)) = self.pressed_row.clone()
-                    && pt.distance(start) > DRAG_THRESHOLD {
-                        push(&self.sink, FileCommand::BeginDrag { path, is_dir });
-                        self.pressed_row = None;
-                    }
+                    && pt.distance(start) > DRAG_THRESHOLD
+                {
+                    push(&self.sink, FileCommand::BeginDrag { path, is_dir });
+                    self.pressed_row = None;
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1151,21 +1154,23 @@ impl Widget for FileView {
                     // A plain press on any row arms a potential drag (move onto a
                     // folder, or pin a folder to the sidebar). A modifier press is
                     // extending the selection, not starting a drag.
-                    if !ctrl && !shift
-                        && let Some(entry) = self.entries.get(i) {
-                            self.pressed_row =
-                                Some((self.last_cursor, entry.path.clone(), entry.is_dir));
-                            // The app arms the same drag: this view may be
-                            // rebuilt before the pointer moves.
-                            push(
-                                &self.sink,
-                                FileCommand::ArmDrag {
-                                    path: entry.path.clone(),
-                                    is_dir: entry.is_dir,
-                                    at: self.last_cursor,
-                                },
-                            );
-                        }
+                    if !ctrl
+                        && !shift
+                        && let Some(entry) = self.entries.get(i)
+                    {
+                        self.pressed_row =
+                            Some((self.last_cursor, entry.path.clone(), entry.is_dir));
+                        // The app arms the same drag: this view may be
+                        // rebuilt before the pointer moves.
+                        push(
+                            &self.sink,
+                            FileCommand::ArmDrag {
+                                path: entry.path.clone(),
+                                is_dir: entry.is_dir,
+                                at: self.last_cursor,
+                            },
+                        );
+                    }
                     *handled = true;
                 }
             }
@@ -1248,9 +1253,10 @@ impl Widget for FileView {
                 ..Default::default()
             });
         if let Some(i) = primary
-            && i < self.entries.len() {
-                node = node.with_position(i + 1, self.entries.len());
-            }
+            && i < self.entries.len()
+        {
+            node = node.with_position(i + 1, self.entries.len());
+        }
         Some(node)
     }
 }

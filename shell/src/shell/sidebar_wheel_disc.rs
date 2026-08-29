@@ -1445,9 +1445,9 @@ impl Widget for SidebarWheelDisc {
         // stays stable, and a long stall just resumes rather than
         // exploding.
         let now = std::time::Instant::now();
-        let dt = self
-            .last_update_at
-            .map_or(1.0 / 60.0, |prev| (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0));
+        let dt = self.last_update_at.map_or(1.0 / 60.0, |prev| {
+            (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0)
+        });
         self.last_update_at = Some(now);
         let mut keep = self.advance(dt);
         // Clears the sub-detent residual `wheel_accumulator` once the

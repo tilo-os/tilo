@@ -257,8 +257,9 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
                 let shade = lerp(pal.ridge, pal.ground, layer as f32 / 3.0);
                 for x in 0..w {
                     let t = x as f32 / w as f32 * std::f32::consts::PI * (2.0 + layer as f32);
-                    let ridge =
-                        base as f32 - (t + f32::from(seed)).sin() * amp - (t * 1.7).cos() * amp * 0.4;
+                    let ridge = base as f32
+                        - (t + f32::from(seed)).sin() * amp
+                        - (t * 1.7).cos() * amp * 0.4;
                     for y in (ridge as i32)..horizon {
                         buf.put(x, y, shade.0, shade.1, shade.2);
                     }

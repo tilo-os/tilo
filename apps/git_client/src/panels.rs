@@ -268,9 +268,10 @@ impl PanelsView {
             None,
             TextWeight::Semibold,
         );
-        let cw = f64::from(tr
-            .measure_weighted(title, 13.0, None, TextWeight::Semibold)
-            .0);
+        let cw = f64::from(
+            tr.measure_weighted(title, 13.0, None, TextWeight::Semibold)
+                .0,
+        );
         draw::pill(
             scene,
             tr,
@@ -442,10 +443,10 @@ impl PanelsView {
                 Color::from_rgba8(a.r(), a.g(), a.b(), 220),
                 None,
             );
-            let nw = f64::from(tr
-                .measure_weighted(&tag.name, 12.0, None, TextWeight::Medium)
-                .0)
-                + 20.0;
+            let nw = f64::from(
+                tr.measure_weighted(&tag.name, 12.0, None, TextWeight::Medium)
+                    .0,
+            ) + 20.0;
             let tw = f64::from(draw::mono_width(tr, &tag.target, 11.0));
             draw::mono(
                 scene,

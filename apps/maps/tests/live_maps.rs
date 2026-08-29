@@ -40,8 +40,7 @@ fn map_region() -> Rect {
 }
 
 fn live_enabled() -> bool {
-    std::env::var("MAPS_LIVE")
-        .is_ok_and(|v| v != "0" && !v.is_empty())
+    std::env::var("MAPS_LIVE").is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
 fn skip(name: &str) {

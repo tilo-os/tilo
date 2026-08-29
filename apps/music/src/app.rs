@@ -2330,10 +2330,7 @@ impl MusicApp {
         self.live_results = Some((query.clone(), ordered));
         // A brand-new query resets the tab to the curated mix; re-running the
         // same query (debounce/Enter) keeps the user's chosen tab.
-        let same_query = self
-            .live_bundle
-            .as_ref()
-            .is_some_and(|(q, _)| q == &query);
+        let same_query = self.live_bundle.as_ref().is_some_and(|(q, _)| q == &query);
         if !same_query {
             self.search_tab = SearchTab::All;
         }
@@ -2634,8 +2631,9 @@ impl MusicApp {
         // spinner (the per-frame `advance_downloads` recomputes the same frac).
         for (i, frac) in [0.25_f64, 0.55, 0.85].iter().enumerate() {
             if let Some(id) = ids.get(i) {
-                let start =
-                    Instant::now().checked_sub(std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac)).unwrap();
+                let start = Instant::now()
+                    .checked_sub(std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac))
+                    .unwrap();
                 self.downloads.insert(id.clone(), start);
                 self.lib
                     .cache
@@ -3259,7 +3257,8 @@ impl MusicApp {
     /// networking disabled for a headless render). Returns whether it ran.
     fn maybe_prefetch(&mut self) -> bool {
         let stable = self
-            .force_metered.map_or_else(crate::net::connection_is_stable, |m| !m);
+            .force_metered
+            .map_or_else(crate::net::connection_is_stable, |m| !m);
         if !self.allow_network || !stable {
             return false;
         }
@@ -3311,10 +3310,8 @@ impl MusicApp {
         // Read once (not per frame).
         use std::sync::OnceLock;
         static NOCACHE: OnceLock<bool> = OnceLock::new();
-        let nocache = *NOCACHE.get_or_init(|| {
-            std::env::var("QOS_MUSIC_NOCACHE")
-                .is_ok_and(|v| !v.is_empty())
-        });
+        let nocache = *NOCACHE
+            .get_or_init(|| std::env::var("QOS_MUSIC_NOCACHE").is_ok_and(|v| !v.is_empty()));
         if !nocache
             && let Some((cached_q, res)) = &self.search_cache
             && cached_q == q

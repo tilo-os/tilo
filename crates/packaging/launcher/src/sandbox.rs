@@ -694,9 +694,10 @@ pub fn parse_unix_path_bus_address(addr: &str) -> Option<String> {
         };
         for kv in rest.split(',') {
             if let Some(path) = kv.strip_prefix("path=")
-                && !path.is_empty() {
-                    return Some(path.to_string());
-                }
+                && !path.is_empty()
+            {
+                return Some(path.to_string());
+            }
         }
     }
     None

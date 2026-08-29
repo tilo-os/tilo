@@ -144,9 +144,10 @@ impl VideoStreamReceiver {
         let mut out = Vec::new();
         for ev in events {
             if let ReceiverEvent::Frame(frame) = ev
-                && let Some(decoded) = self.decoder.decode(&frame.payload) {
-                    out.push(decoded);
-                }
+                && let Some(decoded) = self.decoder.decode(&frame.payload)
+            {
+                out.push(decoded);
+            }
         }
         out
     }
