@@ -1193,10 +1193,10 @@ impl Widget for IdentityFlow {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
         match self.current {
             IdentityFlowScreen::CreateIdentity => self.create_identity.apply_layout(taffy, node, origin),
@@ -1275,12 +1275,11 @@ impl Widget for IdentityFlow {
         // Seed the recovery-share screen's mnemonic display from the new record.
         if matches!(self.current, IdentityFlowScreen::CreateIdentity)
             && matches!(outcome, ScreenOutcome::Advance)
+            && let Some(record) = self.create_identity.last_record()
         {
-            if let Some(record) = self.create_identity.last_record() {
-                self.recovery_share.seed_from_record(record);
-                self.recovery_verify
-                    .seed_mnemonic(self.recovery_share.mnemonic().to_string());
-            }
+            self.recovery_share.seed_from_record(record);
+            self.recovery_verify
+                .seed_mnemonic(self.recovery_share.mnemonic().to_string());
         }
         self.advance(outcome);
     }
@@ -1674,8 +1673,8 @@ mod tests {
             pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
         // Each processes the other's round-1, producing round-2 replies
         // addressed to the peer.
-        let host_outgoing = host_session.receive_round1(&[pairer_round1.clone()]).unwrap();
-        let pairer_outgoing = pairer_session.receive_round1(&[host_round1.clone()]).unwrap();
+        let host_outgoing = host_session.receive_round1(std::slice::from_ref(&pairer_round1)).unwrap();
+        let pairer_outgoing = pairer_session.receive_round1(std::slice::from_ref(&host_round1)).unwrap();
         let host_to_pairer = host_outgoing.into_iter().find(|(i, _)| *i == 2).unwrap().1;
         let pairer_to_host = pairer_outgoing.into_iter().find(|(i, _)| *i == 1).unwrap().1;
         host_session.receive_round2(&[pairer_to_host]).unwrap();

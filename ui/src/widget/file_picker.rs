@@ -97,16 +97,13 @@ pub enum FilePickerOutcome {
 /// Open picks existing files (multi-select); Save adds a filename field
 /// whose contents resolve to `current_dir/<name>`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum FilePickerMode {
+    #[default]
     Open,
     Save,
 }
 
-impl Default for FilePickerMode {
-    fn default() -> Self {
-        FilePickerMode::Open
-    }
-}
 
 pub struct FilePicker {
     rect: Rect,
@@ -895,6 +892,10 @@ impl FilePicker {
     }
 }
 
+// Standard immediate-mode paint-helper signature for this vello renderer
+// (scene + transform + text_renderer + theme, plus this draw's own
+// content); every parameter is independently load-bearing.
+#[allow(clippy::too_many_arguments)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,

@@ -591,11 +591,11 @@ impl Widget for ColorPicker {
                             self.sync_input();
                         }
                     }
-                } else if *el_state == ElementState::Released {
-                    if self.drag_target.is_some() {
-                        self.drag_target = None;
-                        *handled = true;
-                    }
+                } else if *el_state == ElementState::Released
+                    && self.drag_target.is_some()
+                {
+                    self.drag_target = None;
+                    *handled = true;
                 }
             }
             _ => {}
@@ -614,13 +614,13 @@ impl Widget for ColorPicker {
                 None
             }
         });
-        if let Some(new_text) = dirty {
-            if let Some(parsed) = parse_hex(&new_text) {
-                let r = parsed.r();
-                let g = parsed.g();
-                let b = parsed.b();
-                self.set_rgb(r, g, b);
-            }
+        if let Some(new_text) = dirty
+            && let Some(parsed) = parse_hex(&new_text)
+        {
+            let r = parsed.r();
+            let g = parsed.g();
+            let b = parsed.b();
+            self.set_rgb(r, g, b);
         }
     }
 

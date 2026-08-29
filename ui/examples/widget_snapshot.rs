@@ -122,8 +122,8 @@ impl Widget for TinyText {
     ) -> Size<f32> {
         let (w, h) = tr.measure(&self.text, 14.0, None);
         Size {
-            width: w as f32 + 12.0,
-            height: h as f32 + 10.0,
+            width: w + 12.0,
+            height: h + 10.0,
         }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -228,7 +228,7 @@ fn main() {
     let row_gap = 28.0_f64;
 
     // Helper: place a single widget at (col_idx, y) with a label.
-    let mut place = |scene: &mut Scene,
+    let place = |scene: &mut Scene,
                      tr: &mut TextRenderer,
                      doc: &mut AutoCommit,
                      col_idx: usize,

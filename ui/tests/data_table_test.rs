@@ -169,7 +169,7 @@ fn data_table_virtualization_windows_rows() {
     t.set_viewport(500.0, 24.0);        // 500px tall, 24px row height
     t.set_scroll_y(4800.0);             // scrolled down 200 rows
     let (start, end) = t.visible_row_range();
-    assert!(start >= 195 && start <= 205, "start={start}");
+    assert!((195..=205).contains(&start), "start={start}");
     // (viewport / row_height) + small overscan
     assert!(end - start >= 20 && end - start <= 32, "range size = {}", end - start);
 }

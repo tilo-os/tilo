@@ -7,7 +7,7 @@
 //!     gate.
 //!   - 8 panels × 20 rows = ~160 cached leaves (Text + Button
 //!     + Avatar + Badge in rotation) — exercises the per-widget
-//!     `Scene::append` path.
+//!       `Scene::append` path.
 //!   - A footer with extra Avatars / Badges + a ToggleGroup so
 //!     a click target is always within reach.
 //!

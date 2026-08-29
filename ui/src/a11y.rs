@@ -313,6 +313,7 @@ impl AccessNode {
 /// via `QOS_A11Y_*` env vars. Defaults are all-off so existing single-user
 /// setups are unaffected until a user opts in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub struct A11ySettings {
     /// Use a high-contrast theme track (see [`Theme::high_contrast`]).
     ///
@@ -326,15 +327,6 @@ pub struct A11ySettings {
     pub screen_reader: bool,
 }
 
-impl Default for A11ySettings {
-    fn default() -> Self {
-        Self {
-            high_contrast: false,
-            reduce_motion: false,
-            screen_reader: false,
-        }
-    }
-}
 
 /// WCAG 2.1 relative luminance of an sRGB colour, in `[0.0, 1.0]`. Alpha is
 /// ignored (colours are assumed opaque for contrast purposes).

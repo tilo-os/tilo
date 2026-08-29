@@ -103,7 +103,7 @@ impl Peer {
 /// - `SyncIncremental` → `CRDTIncremental`
 /// - `SyncCRDT` → `CRDTUpdate`
 /// - `Presence` → `RemotePresenceUpdate` (attributed to the sender's id,
-///    so the receiving peer knows *who* the cursor/caret belongs to)
+///   so the receiving peer knows *who* the cursor/caret belongs to)
 /// - `Hello` is not fanned out
 pub fn pump(relay: &mut MemoryRelay) {
     let pending = std::mem::take(&mut relay.pending_out);
@@ -170,7 +170,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                 // with an empty, exhausted batch.
                 if let Some(inbox) = inboxes.get_mut(&from) {
                     inbox.push_back(CollabEvent::ScrollbackBatch {
-                        artifact: artifact.clone(),
+                        artifact,
                         ops: Vec::new(),
                         exhausted: true,
                     });

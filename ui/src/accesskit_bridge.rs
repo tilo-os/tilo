@@ -292,10 +292,10 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
         ak.set_description(desc.clone());
     }
     // Never expose a protected (password) value, even if the widget mistakenly populated one.
-    if !access.state.protected {
-        if let Some(value) = &access.value {
-            ak.set_value(value.clone());
-        }
+    if !access.state.protected
+        && let Some(value) = &access.value
+    {
+        ak.set_value(value.clone());
     }
 
     if let Role::Heading { level } = access.role {
@@ -337,11 +337,11 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
                 });
             }
         }
-        Role::TextInput | Role::MultilineTextInput => {
-            if !access.state.read_only && !access.state.disabled {
-                ak.add_action(AkAction::SetValue);
-                ak.add_action(AkAction::SetTextSelection);
-            }
+        Role::TextInput | Role::MultilineTextInput
+            if !access.state.read_only && !access.state.disabled =>
+        {
+            ak.add_action(AkAction::SetValue);
+            ak.add_action(AkAction::SetTextSelection);
         }
         _ => {}
     }

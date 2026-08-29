@@ -17,6 +17,9 @@ pub enum IconDescriptor {
     Named(String),
 }
 
+/// An [`AppCommand::invoke`] handler.
+pub type AppCommandInvoke = Box<dyn Fn(&mut automerge::AutoCommit, &automerge::ObjId) + Send + Sync>;
+
 /// A command palette entry contributed by an app. Invoked with a mutable
 /// CRDT handle and the app's root `ObjId` so the command can mutate state
 /// directly (matching `quick-ui`'s direct-mutation event model).
@@ -24,7 +27,7 @@ pub struct AppCommand {
     pub id: String,
     pub label: String,
     pub shortcut: Option<String>,
-    pub invoke: Box<dyn Fn(&mut automerge::AutoCommit, &automerge::ObjId) + Send + Sync>,
+    pub invoke: AppCommandInvoke,
 }
 
 impl std::fmt::Debug for AppCommand {

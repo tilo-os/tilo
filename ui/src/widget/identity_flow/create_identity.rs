@@ -83,6 +83,12 @@ pub struct CreateIdentityScreen {
     last_cursor: Point,
 }
 
+impl Default for CreateIdentityScreen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CreateIdentityScreen {
     pub fn new() -> Self {
         Self {
@@ -157,6 +163,11 @@ impl CreateIdentityScreen {
     }
 
     /// Returns `ScreenOutcome::Advance` only on a successful submit.
+    // Mirrors `Widget::handle_event`'s parameter list on purpose --
+    // this is invoked from the trait impl, forwarding the same event,
+    // scale, modifiers, CRDT handle, and out-params the screen host
+    // received; bundling it would mean bundling the trait method too.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -263,10 +274,10 @@ impl Widget for CreateIdentityScreen {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
         let card_w = 520.0;
         let card_h = 440.0;

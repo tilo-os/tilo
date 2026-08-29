@@ -43,7 +43,7 @@ use ui::widget::{
 };
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point};
 use vello::peniko::{
     Blob, Color, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
@@ -162,6 +162,12 @@ fn build_tree() -> Box<dyn Widget> {
     )))
 }
 
+// One call site: this is the whole benchmark's "run one entire frame" step,
+// and each parameter is a distinct piece of frame state (widget tree,
+// layout engine, render targets, timing out-param). Bundling would trade
+// named parameters for an equally large ad-hoc struct with no behavioural
+// change.
+#[allow(clippy::too_many_arguments)]
 fn full_redraw(
     root: &mut Box<dyn Widget>,
     taffy: &mut TaffyTree<()>,

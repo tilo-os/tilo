@@ -346,8 +346,8 @@ impl Widget for Toolbar {
             Orientation::Vertical => self.rect.y0,
         };
 
-        for i in 0..n_visible {
-            let extent = if matches!(self.items[i], ToolbarItem::Spacer) {
+        for (i, item) in self.items.iter().take(n_visible).enumerate() {
+            let extent = if matches!(item, ToolbarItem::Spacer) {
                 per_spacer
             } else {
                 measured_axes[i]
@@ -548,11 +548,11 @@ impl Widget for Toolbar {
             } => {
                 let n_visible = self.visible_count.min(self.items.len());
                 for i in 0..n_visible {
-                    if self.item_hover.get(i).copied().unwrap_or(false) {
-                        if let ToolbarItem::Button { on_click, .. } = &mut self.items[i] {
-                            on_click();
-                            *handled = true;
-                        }
+                    if self.item_hover.get(i).copied().unwrap_or(false)
+                        && let ToolbarItem::Button { on_click, .. } = &mut self.items[i]
+                    {
+                        on_click();
+                        *handled = true;
                     }
                 }
                 if self.overflow_hover && self.has_overflow() {

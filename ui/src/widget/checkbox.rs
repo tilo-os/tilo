@@ -89,12 +89,11 @@ impl Checkbox {
 
 impl Widget for Checkbox {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str()) {
-            if let Value::Scalar(s) = val {
-                if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                    self.is_checked = *b;
-                }
-            }
+        if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str())
+            && let Value::Scalar(s) = val
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+        {
+            self.is_checked = *b;
         }
     }
 
@@ -113,10 +112,10 @@ impl Widget for Checkbox {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
     }
 
@@ -184,17 +183,17 @@ impl Widget for Checkbox {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
-                if self.is_hovered && *element_state == ElementState::Pressed {
-                    *handled = true;
-                    *focus_target = Some(node_id);
-                    let new_val = !self.is_checked;
-                    let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
-                    // Update the local cache now so accessibility() reflects the
-                    // new state this same frame — otherwise the focus narration
-                    // triggered by this click would speak the pre-click state.
-                    self.is_checked = new_val;
-                }
+            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. }
+                if self.is_hovered && *element_state == ElementState::Pressed =>
+            {
+                *handled = true;
+                *focus_target = Some(node_id);
+                let new_val = !self.is_checked;
+                let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
+                // Update the local cache now so accessibility() reflects the
+                // new state this same frame — otherwise the focus narration
+                // triggered by this click would speak the pre-click state.
+                self.is_checked = new_val;
             }
             _ => {}
         }
@@ -296,19 +295,18 @@ impl Widget for Checkbox {
         if presence.should_cull(self.get_rect()) { return; }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }

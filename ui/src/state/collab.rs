@@ -12,6 +12,12 @@ pub struct CollaborationState {
     pub cursors: HashMap<String, RemoteCursor>,
 }
 
+impl Default for CollaborationState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CollaborationState {
     pub fn new() -> Self {
         Self {

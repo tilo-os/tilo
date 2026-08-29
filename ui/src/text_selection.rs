@@ -314,32 +314,32 @@ fn clipboard_fallback() -> &'static Mutex<(Option<String>, Option<String>)> {
 
 /// Write `text` to `target`, trying each backend in priority order.
 fn write_selection(target: ClipboardTarget, text: &str) {
-    if let Some(backend) = clipboard_backend() {
-        if backend.set_text(target, text) {
-            return;
-        }
+    if let Some(backend) = clipboard_backend()
+        && backend.set_text(target, text)
+    {
+        return;
     }
-    if let Some(cb) = arboard_clipboard() {
-        if let Ok(mut handle) = cb.lock() {
-            let wrote = match target {
-                ClipboardTarget::Clipboard => handle.set_text(text.to_string()).is_ok(),
-                #[cfg(target_os = "linux")]
-                ClipboardTarget::Primary => {
-                    use arboard::{LinuxClipboardKind, SetExtLinux};
-                    handle
-                        .set()
-                        .clipboard(LinuxClipboardKind::Primary)
-                        .text(text.to_string())
-                        .is_ok()
-                }
-                // No primary selection outside Linux; the regular clipboard is
-                // the closest honest equivalent.
-                #[cfg(not(target_os = "linux"))]
-                ClipboardTarget::Primary => handle.set_text(text.to_string()).is_ok(),
-            };
-            if wrote {
-                return;
+    if let Some(cb) = arboard_clipboard()
+        && let Ok(mut handle) = cb.lock()
+    {
+        let wrote = match target {
+            ClipboardTarget::Clipboard => handle.set_text(text.to_string()).is_ok(),
+            #[cfg(target_os = "linux")]
+            ClipboardTarget::Primary => {
+                use arboard::{LinuxClipboardKind, SetExtLinux};
+                handle
+                    .set()
+                    .clipboard(LinuxClipboardKind::Primary)
+                    .text(text.to_string())
+                    .is_ok()
             }
+            // No primary selection outside Linux; the regular clipboard is
+            // the closest honest equivalent.
+            #[cfg(not(target_os = "linux"))]
+            ClipboardTarget::Primary => handle.set_text(text.to_string()).is_ok(),
+        };
+        if wrote {
+            return;
         }
     }
     warn_fallback_once("copy");
@@ -356,23 +356,23 @@ fn read_selection(target: ClipboardTarget) -> Option<String> {
     if let Some(backend) = clipboard_backend() {
         return backend.text(target);
     }
-    if let Some(cb) = arboard_clipboard() {
-        if let Ok(mut handle) = cb.lock() {
-            return match target {
-                ClipboardTarget::Clipboard => handle.get_text().ok(),
-                #[cfg(target_os = "linux")]
-                ClipboardTarget::Primary => {
-                    use arboard::{GetExtLinux, LinuxClipboardKind};
-                    handle
-                        .get()
-                        .clipboard(LinuxClipboardKind::Primary)
-                        .text()
-                        .ok()
-                }
-                #[cfg(not(target_os = "linux"))]
-                ClipboardTarget::Primary => handle.get_text().ok(),
-            };
-        }
+    if let Some(cb) = arboard_clipboard()
+        && let Ok(mut handle) = cb.lock()
+    {
+        return match target {
+            ClipboardTarget::Clipboard => handle.get_text().ok(),
+            #[cfg(target_os = "linux")]
+            ClipboardTarget::Primary => {
+                use arboard::{GetExtLinux, LinuxClipboardKind};
+                handle
+                    .get()
+                    .clipboard(LinuxClipboardKind::Primary)
+                    .text()
+                    .ok()
+            }
+            #[cfg(not(target_os = "linux"))]
+            ClipboardTarget::Primary => handle.get_text().ok(),
+        };
     }
     warn_fallback_once("paste");
     let fb = clipboard_fallback().lock().ok()?;

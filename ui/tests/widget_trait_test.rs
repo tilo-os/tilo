@@ -14,7 +14,7 @@ fn widget_defaults_for_collab_methods() {
 #[test]
 fn draw_takes_presence_ctx() {
     // compile-time assertion that draw signature is what we expect.
-    fn _assert_draw_sig<W: Widget>() {
+    fn _assert_draw_sig() {
         fn _call<W: Widget>(
             w: &mut W,
             scene: &mut vello::Scene,

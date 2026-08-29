@@ -30,6 +30,15 @@
 //! [`open_migrating`] once with that legacy path; the old document is
 //! merged in, so the migration is safe to run repeatedly.
 
+// `app_state::StoreError` (144+ bytes) is what makes every `Result<_,
+// StoreError>` in this module large. Shrinking it means editing the
+// `app_state` crate; boxing it here instead means changing the return
+// type of these `pub fn`s, a public-API change that ripples to every
+// crate that calls into `ui::persist` (`shell` included). Neither is a
+// same-crate lint fix, so the size is accepted rather than exempted
+// function-by-function.
+#![allow(clippy::result_large_err)]
+
 use std::path::Path;
 use std::time::Duration;
 

@@ -177,6 +177,10 @@ impl Avatar {
 
     /// [`Avatar::draw_at`] preceded by a separator ring, for overlapping
     /// avatars in a cluster.
+    // Standard immediate-mode paint-helper signature for this vello
+    // renderer (scene + transform + text_renderer + theme, plus this
+    // draw's own content); every parameter is independently load-bearing.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_ringed_at(
         scene: &mut Scene,
         transform: Affine,
@@ -199,6 +203,10 @@ impl Avatar {
     /// [`Avatar::draw_ringed_at`], but a neutral `fill` and a
     /// non-truncated `"+{count}"` label, since it reads as "N more people"
     /// rather than another identity. `count == 0` paints nothing.
+    // Standard immediate-mode paint-helper signature for this vello
+    // renderer (scene + transform + text_renderer + theme, plus this
+    // draw's own content); every parameter is independently load-bearing.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_overflow_at(
         scene: &mut Scene,
         transform: Affine,

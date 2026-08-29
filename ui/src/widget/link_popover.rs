@@ -125,7 +125,7 @@ impl LinkPopover {
 
     pub fn height(&self) -> f64 {
         PADDING_Y * 2.0
-            + ROW_HEIGHT * self.visible.len().min(MAX_VISIBLE_ROWS).max(1) as f64
+            + ROW_HEIGHT * self.visible.len().clamp(1, MAX_VISIBLE_ROWS) as f64
     }
 
     pub fn rect(&self) -> Rect {

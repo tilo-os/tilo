@@ -216,10 +216,10 @@ impl<Id: Clone> DragController<Id> {
     /// to the ghost while the list scrolls under a held drag.
     pub fn sync_insertion(&mut self, metrics: &ListMetrics) {
         let axis = self.axis;
-        if let Some(s) = self.session.as_mut() {
-            if s.active {
-                s.target = target_for(axis, s, metrics);
-            }
+        if let Some(s) = self.session.as_mut()
+            && s.active
+        {
+            s.target = target_for(axis, s, metrics);
         }
     }
 

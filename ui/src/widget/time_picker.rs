@@ -39,12 +39,15 @@ const COLON_WIDTH: f32 = 8.0;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TimeCell { Hours, Minutes, Seconds }
 
+/// `(hours, minutes, seconds)`.
+type TimeChange = Box<dyn FnMut(u8, u8, Option<u8>)>;
+
 /// Three-spinner time picker. See module docs.
 pub struct TimePicker {
     hours: u8,           // 0..=23
     minutes: u8,         // 0..=59
     seconds: Option<u8>, // Some(0..=59) only when explicitly enabled
-    on_change: Option<Box<dyn FnMut(u8, u8, Option<u8>)>>,
+    on_change: Option<TimeChange>,
     rect: Rect,
     hour_rect: Rect,     // populated in apply_layout
     minute_rect: Rect,

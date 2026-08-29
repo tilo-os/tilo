@@ -28,6 +28,12 @@ pub struct Row {
     cache_rect: vello::kurbo::Rect,
 }
 
+impl Default for Row {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Row {
     pub fn new() -> Self {
         Self {
@@ -114,7 +120,7 @@ impl Widget for Row {
                     height: length(theme.gap_standard),
                 },
                 size: taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: taffy::Dimension::auto(),
                 },
                 ..Default::default()
@@ -206,6 +212,10 @@ impl Widget for Row {
     fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
     fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
 
+    // `.any` would short-circuit and skip `take_structure_dirty()` on later
+    // children once one reports dirty, leaving their flags uncleared --
+    // the non-short-circuiting `.fold` below is required, not incidental.
+    #[allow(clippy::unnecessary_fold)]
     fn take_structure_dirty(&mut self) -> bool {
         self.children
             .iter_mut()
@@ -262,19 +272,18 @@ impl Widget for Row {
             presence.viewport.set(prev_vp);
         }
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }

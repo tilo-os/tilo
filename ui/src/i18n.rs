@@ -52,9 +52,19 @@ thread_local! {
     static MANAGER: std::cell::RefCell<Option<I18nManager>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Parse a BCP-47 locale tag, falling back to `en-US` on a malformed value
+/// (e.g. a garbled system locale) rather than panicking the whole app over
+/// a string it didn't choose. The fallback literal is a compile-time
+/// constant known to parse, so this can't recurse into failure.
+fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
+    locale
+        .parse()
+        .unwrap_or_else(|_| "en-US".parse().expect("\"en-US\" is a valid BCP-47 tag"))
+}
+
 impl I18nManager {
     pub fn init(locale: &str) {
-        let lang_id: LanguageIdentifier = locale.parse().expect("Parsing failed");
+        let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
         let mut manager = I18nManager {
             bundles: HashMap::new(),
             current_locale: lang_id.clone(),
@@ -73,7 +83,7 @@ impl I18nManager {
     }
 
     pub fn add_resource(locale: &str, ftl_source: String) {
-        let lang_id: LanguageIdentifier = locale.parse().expect("Parsing failed");
+        let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
         let res = FluentResource::try_new(ftl_source).expect("Failed to parse an FTL resource.");
         
         MANAGER.with(|m| {
@@ -89,7 +99,7 @@ impl I18nManager {
     }
 
     pub fn set_locale(locale: &str) {
-        let lang_id: LanguageIdentifier = locale.parse().expect("Parsing failed");
+        let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
         MANAGER.with(|m| {
             if let Some(mgr) = m.borrow_mut().as_mut() {
                 mgr.current_locale = lang_id;
@@ -99,15 +109,13 @@ impl I18nManager {
 
     pub fn lookup(key: &str, args: Option<&FluentArgs>) -> String {
         MANAGER.with(|m| {
-            if let Some(mgr) = m.borrow().as_ref() {
-                if let Some(bundle) = mgr.bundles.get(&mgr.current_locale) {
-                    if let Some(msg) = bundle.get_message(key) {
-                        if let Some(pattern) = msg.value() {
-                            let mut errors = vec![];
-                            return bundle.format_pattern(pattern, args, &mut errors).to_string();
-                        }
-                    }
-                }
+            if let Some(mgr) = m.borrow().as_ref()
+                && let Some(bundle) = mgr.bundles.get(&mgr.current_locale)
+                && let Some(msg) = bundle.get_message(key)
+                && let Some(pattern) = msg.value()
+            {
+                let mut errors = vec![];
+                return bundle.format_pattern(pattern, args, &mut errors).to_string();
             }
             key.to_string()
         })

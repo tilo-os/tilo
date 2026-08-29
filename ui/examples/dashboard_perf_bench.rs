@@ -10,7 +10,7 @@
 //!     exactly one widget per event, so only that widget's cache
 //!     should invalidate.
 //!   -  5 % clicks on a ToggleGroup — mutates `selected`, re-
-//!     emits the picker, every other widget hits its cache.
+//!      emits the picker, every other widget hits its cache.
 //!   -  5 % "complex" events (spinner-style animation ticks where
 //!      every animating widget marks itself dirty).
 //!
@@ -163,6 +163,12 @@ struct Phase {
     total_us: u128,
 }
 
+// One call site: this is the whole benchmark's "run one entire frame" step,
+// and each parameter is a distinct piece of frame state (widget tree,
+// layout engine, render targets, timing out-param). Bundling would trade
+// named parameters for an equally large ad-hoc struct with no behavioural
+// change.
+#[allow(clippy::too_many_arguments)]
 fn full_draw(
     root: &mut Box<dyn Widget>,
     taffy: &mut TaffyTree<()>,

@@ -85,7 +85,7 @@ fn layout_at(
 }
 
 /// y0 of the button Row (second child of the Column).
-fn row_top(root: &Box<dyn Widget>) -> f64 {
+fn row_top(root: &dyn Widget) -> f64 {
     root.children()[1].get_rect().y0
 }
 
@@ -158,10 +158,10 @@ fn narrowing_window_reflows_content_downward() {
     let mut h = Harness::new();
 
     h.layout(900.0);
-    let wide_row_top = row_top(&h.root);
+    let wide_row_top = row_top(h.root.as_ref());
 
     h.layout(160.0);
-    let narrow_row_top = row_top(&h.root);
+    let narrow_row_top = row_top(h.root.as_ref());
 
     assert!(
         narrow_row_top > wide_row_top,

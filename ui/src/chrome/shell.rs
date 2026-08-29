@@ -487,7 +487,7 @@ pub fn panel_shadow(
     ring.extend(outer.path_elements(0.1));
     ring.extend(RoundedRect::from_rect(rect, radius).path_elements(0.1));
     scene.push_layer(Fill::EvenOdd, BlendMode::default(), 1.0, transform, &ring);
-    let mut token = e.clone();
+    let mut token = *e;
     token.color = token.color.with_alpha_factor(intensity.clamp(0.0, 1.0));
     crate::surface::shadow(scene, transform, rect, radius, &token);
     scene.pop_layer();
