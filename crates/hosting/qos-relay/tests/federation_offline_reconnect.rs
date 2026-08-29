@@ -109,7 +109,10 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
     r2_first.add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
     // Wait for the handshake + hello exchange to complete.
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    drop(r2_first);
+    // Close, rather than drop: a dropped relay leaves relay1 believing
+    // r2 is still subscribed until the QUIC idle timeout, which is far
+    // longer than any outage this test can afford to sit through.
+    r2_first.shutdown().await;
     // Give relay1 a moment to observe the subscription drop.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
