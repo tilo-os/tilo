@@ -58,8 +58,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("tabmenu") => Box::new(|a, _d| a.shots_open_tab_menu()),
             Some("fbarselect") => Box::new(|a, _d| a.shots_formula_bar_select()),
             Some("commandpalette") => Box::new(|a, _d| a.shots_open_command_palette()),
-            Some("fillseries") => Box::new(|a, d| a.shots_fill_series(d)),
-            Some("pasteformula") => Box::new(|a, d| a.shots_paste_formula(d)),
+            Some("fillseries") => Box::new(sheets::SheetsApp::shots_fill_series),
+            Some("pasteformula") => Box::new(sheets::SheetsApp::shots_paste_formula),
             _ => Box::new(|_a, _d| {}),
         };
         render_shot_to_png(app, viewport, &out, setup)?;
@@ -132,7 +132,7 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 }
 
 /// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut app: sheets::SheetsApp,
     viewport: (u32, u32),

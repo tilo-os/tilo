@@ -28,17 +28,14 @@ use crate::shell::chrome_state::Chrome;
 
 /// Severity tier for a notification, controlling the leading-dot colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum NotificationSeverity {
+    #[default]
     Info,
     Warning,
     Error,
 }
 
-impl Default for NotificationSeverity {
-    fn default() -> Self {
-        Self::Info
-    }
-}
 
 impl NotificationSeverity {
     pub fn color(self, theme: &Theme) -> vello::peniko::Color {
@@ -79,7 +76,7 @@ pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 /// `critical`-urgency (freedesktop spec: must not time out). A long
 /// finite duration rather than `Option<Duration>` keeps the expiry
 /// arithmetic a single code path.
-pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(24 * 3600);
+pub const PERSISTENT_DISMISS: Duration = Duration::from_hours(24);
 
 /// In/out animation duration; matches `overlay_host.rs`'s modal entry timing.
 const ANIM_MS: u64 = 220;
@@ -336,7 +333,7 @@ impl NotificationStack {
             1.0
         };
         let alpha = (enter * exit).clamp(0.0, 1.0);
-        let slide_dx = (1.0 - enter as f64) * TOAST_WIDTH;
+        let slide_dx = (1.0 - f64::from(enter)) * TOAST_WIDTH;
         (alpha, slide_dx)
     }
 }
@@ -367,7 +364,7 @@ impl Widget for NotificationStack {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -392,7 +389,7 @@ impl Widget for NotificationStack {
         let (snapshot, locked, dnd, history_count): (Vec<Notification>, bool, bool, usize) = {
             let ch = self.chrome.borrow();
             (
-                ch.notifications().iter().cloned().collect(),
+                ch.notifications().to_vec(),
                 ch.session_locked(),
                 ch.dnd(),
                 ch.notification_history_count(),
@@ -406,7 +403,7 @@ impl Widget for NotificationStack {
 
         let title_size = theme.tokens.typography.scale.sm;
         let body_size = theme.tokens.typography.scale.xs;
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
 
         let x0_rest = self.viewport.x1 - EDGE_INSET - TOAST_WIDTH;
         let mut y = self.viewport.y0 + EDGE_INSET;
@@ -439,7 +436,7 @@ impl Widget for NotificationStack {
                 transform
                     * Affine::translate((
                         card_rect.x0 + CARD_PADDING_X,
-                        card_rect.y0 + (TOAST_HEIGHT - title_size as f64) / 2.0,
+                        card_rect.y0 + (TOAST_HEIGHT - f64::from(title_size)) / 2.0,
                     )),
                 Some((TOAST_WIDTH - CARD_PADDING_X * 2.0) as f32),
             );
@@ -490,7 +487,7 @@ impl Widget for NotificationStack {
                 body_size,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((text_x, pill_rect.y0 + (pill_h - body_size as f64) / 2.0)),
+                    * Affine::translate((text_x, pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0)),
                 Some((TOAST_WIDTH - (text_x - pill_rect.x0) - CARD_PADDING_X) as f32),
             );
             stack_min_y = stack_min_y.min(pill_rect.y0);
@@ -498,7 +495,7 @@ impl Widget for NotificationStack {
             y += pill_h + TOAST_GAP;
         }
 
-        for n in snapshot.iter() {
+        for n in &snapshot {
             let (alpha, slide_dx) = Self::animation_state(n, now);
             if alpha <= 0.0 {
                 y += TOAST_HEIGHT + TOAST_GAP;
@@ -563,7 +560,7 @@ impl Widget for NotificationStack {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NotificationStack"
     }
 

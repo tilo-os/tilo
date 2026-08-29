@@ -68,11 +68,10 @@ fn scan_dir_memoised(
     let key = (dir.to_path_buf(), filter_tag);
     {
         let cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");
-        if let Some((entries, captured)) = cache.get(&key) {
-            if captured.elapsed() < SCAN_MEMO_TTL {
+        if let Some((entries, captured)) = cache.get(&key)
+            && captured.elapsed() < SCAN_MEMO_TTL {
                 return entries.clone();
             }
-        }
     }
     // Slow path: actually walk the directory.
     #[cfg(test)]
@@ -81,11 +80,10 @@ fn scan_dir_memoised(
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if filter(name) {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && filter(name) {
                     out.push(path);
                 }
-            }
         }
     }
     let mut cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");
@@ -238,7 +236,7 @@ impl SandboxProfile {
     pub fn grant_microphone(&mut self) {
         let runtime_dir =
             std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{}", self.uid));
-        let pipewire_path = std::path::PathBuf::from(format!("{}/pipewire-0", runtime_dir));
+        let pipewire_path = std::path::PathBuf::from(format!("{runtime_dir}/pipewire-0"));
         if pipewire_path.exists() {
             self.binds_rw.push((pipewire_path.clone(), pipewire_path));
         }

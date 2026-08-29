@@ -313,7 +313,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
             boundaries.push(s.range.end);
         }
     }
-    boundaries.sort();
+    boundaries.sort_unstable();
     boundaries.dedup();
     let mut out = Vec::with_capacity(boundaries.len());
     for w in boundaries.windows(2) {

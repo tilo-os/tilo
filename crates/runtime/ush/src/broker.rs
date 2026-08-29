@@ -455,13 +455,12 @@ impl Broker {
     pub fn restart_requested(&self) -> bool {
         self.state
             .lock()
-            .map(|s| s.restart_requested)
-            .unwrap_or(false)
+            .is_ok_and(|s| s.restart_requested)
     }
 
     /// Did the guest ask for its layer to be destroyed?
     pub fn burn_requested(&self) -> bool {
-        self.state.lock().map(|s| s.burn_requested).unwrap_or(false)
+        self.state.lock().is_ok_and(|s| s.burn_requested)
     }
 
     /// Packages installed with `--one-time` that the session must undo.

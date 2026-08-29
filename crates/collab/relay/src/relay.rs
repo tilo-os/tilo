@@ -44,7 +44,7 @@ impl RateLimiter {
             .window
             .entry((topic.to_string(), peer))
             .or_insert((now, 0));
-        if now.duration_since(entry.0) >= Duration::from_secs(60) {
+        if now.duration_since(entry.0) >= Duration::from_mins(1) {
             *entry = (now, 0);
         }
         if entry.1 >= cap {
@@ -97,7 +97,7 @@ impl Relay {
                 RelayBehaviour::new(key)
                     .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e })
             })?
-            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(300)))
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_mins(5)))
             .build();
 
         for addr in &config.listen {

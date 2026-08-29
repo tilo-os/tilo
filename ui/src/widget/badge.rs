@@ -125,8 +125,8 @@ impl Widget for Badge {
         // Height is twice the dot radius, so the dot fits perfectly inside a
         // single-character pill. Text/count width is a rough approximation —
         // the real width is recomputed in `draw`, so this is just a layout hint.
-        let dot_radius = theme.tokens.spacing.s2 as f64;
-        let pad_x = theme.tokens.spacing.s2 as f64;
+        let dot_radius = f64::from(theme.tokens.spacing.s2);
+        let pad_x = f64::from(theme.tokens.spacing.s2);
         let height = dot_radius * 2.0;
         let width = match &self.content {
             BadgeContent::Dot => height,
@@ -146,17 +146,17 @@ impl Widget for Badge {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
@@ -194,20 +194,20 @@ impl Widget for Badge {
 
         match &self.content {
             BadgeContent::Dot => {
-                let radius = theme.tokens.spacing.s2 as f64;
+                let radius = f64::from(theme.tokens.spacing.s2);
                 let circle = Circle::new(self.rect.center(), radius);
                 cached.fill(vello::peniko::Fill::NonZero, transform, bg, None, &circle);
             }
             BadgeContent::Count(_) | BadgeContent::Text(_) => {
-                let radius = theme.tokens.radii.full as f64;
+                let radius = f64::from(theme.tokens.radii.full);
                 let pill = RoundedRect::from_rect(self.rect, radius);
                 cached.fill(vello::peniko::Fill::NonZero, transform, bg, None, &pill);
 
                 if let Some(label) = self.display_text() {
                     let text_size = theme.tokens.typography.scale.xs;
                     let (tw, th) = text_renderer.measure(&label, text_size, None);
-                    let tx = self.rect.center().x - tw as f64 / 2.0;
-                    let ty = self.rect.center().y - th as f64 / 2.0;
+                    let tx = self.rect.center().x - f64::from(tw) / 2.0;
+                    let ty = self.rect.center().y - f64::from(th) / 2.0;
                     text_renderer.draw_text(
                         &mut cached,
                         &label,
@@ -253,7 +253,7 @@ impl Widget for Badge {
         // Badges are purely informational — no input handling.
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Badge"
     }
 

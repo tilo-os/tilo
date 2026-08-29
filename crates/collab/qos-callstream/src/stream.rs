@@ -98,7 +98,7 @@ impl SurfaceFrame {
 /// Framing errors surfaced by [`SurfaceFrame::decode`].
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum FrameError {
-    /// The length prefix exceeded u32::MAX; in practice the header was corrupt.
+    /// The length prefix exceeded `u32::MAX`; in practice the header was corrupt.
     #[error("frame length {0} overflowed u32")]
     LengthOverflow(usize),
 }
@@ -205,17 +205,17 @@ impl SurfaceStreamSender {
     /// Cumulative drop count for a subscriber; 0 if not subscribed.
     pub fn drops_for(&self, peer: PeerId) -> u64 {
         let subs = self.subscribers.lock().expect("subscribers");
-        subs.get(&peer).map(|q| q.drops()).unwrap_or(0)
+        subs.get(&peer).map_or(0, SubscriberQueue::drops)
     }
 
     pub fn total_drops(&self) -> u64 {
         let subs = self.subscribers.lock().expect("subscribers");
-        subs.values().map(|q| q.drops()).sum()
+        subs.values().map(SubscriberQueue::drops).sum()
     }
 
     pub fn pending_for(&self, peer: PeerId) -> usize {
         let subs = self.subscribers.lock().expect("subscribers");
-        subs.get(&peer).map(|q| q.frames.len()).unwrap_or(0)
+        subs.get(&peer).map_or(0, |q| q.frames.len())
     }
 }
 

@@ -13,7 +13,7 @@
 //! # Architecture
 //! * [`model`] — the [`model::Account`] / [`model::Vault`] data, the
 //!   `otpauth://` URI parser, and the theme-derived account palette.
-//! * [`totp`] — RFC 6238 code generation on the RustCrypto HMAC/SHA
+//! * [`totp`] — RFC 6238 code generation on the `RustCrypto` HMAC/SHA
 //!   primitives, plus period timing for the ring.
 //! * [`doc`] — the Automerge mirror of the vault (CRDT-native state).
 //! * [`ring`] — the custom [`ring::CountdownRing`] widget (arc → Vello).

@@ -10,7 +10,7 @@
 // reducing complexity.
 #![allow(clippy::too_many_arguments)]
 
-use super::*;
+use super::{CacheState, Widget, Action, Rect, Instant, Scene, Affine, fill_rrect, Fill, rrect, MusicApp, AutoCommit, ObjId, TaffyTree, Theme, HashMap, NodeId, Style, Size, Dimension, Point, TextRenderer, PresenceCtx, PermissionContext, Drag, View, is_live_id, is_live_album_id, is_live_playlist_id, art, Circle, TextWeight, draw_text, HEADER_H, NOWPLAYING_H, icon, Icon, elide, Stroke, Color, HomeSection, HomeItemKind, AlbumPage, ArtistPage, PlaylistPage, lyrics, SearchTab, RepeatMode};
 
 use vello::kurbo::Shape;
 use vello::peniko::BlendMode;
@@ -104,7 +104,7 @@ const BAR_SWIPE_PX: f64 = 56.0;
 
 // Vertical-center a single text line of `size` within a row of height `h`.
 fn vy(top: f64, h: f64, size: f32) -> f64 {
-    top + (h - size as f64 * 1.25) / 2.0
+    top + (h - f64::from(size) * 1.25) / 2.0
 }
 
 /// Column x-positions for a single track row within its usable `[left, right]`
@@ -166,8 +166,8 @@ pub(super) fn lyrics_layout(body: Rect, band_top: f64, band_bottom: f64) -> Lyri
         let card_x0 = body.x0 + pad;
         let card_x1 = card_x0 + col_w;
         let art_side = (col_w - 48.0).clamp(180.0, 300.0);
-        let art_cx = (card_x0 + card_x1) / 2.0;
-        let art_cy = (band_top + band_bottom) / 2.0 - 30.0;
+        let art_cx = f64::midpoint(card_x0, card_x1);
+        let art_cy = f64::midpoint(band_top, band_bottom) - 30.0;
         let art = Rect::new(
             art_cx - art_side / 2.0,
             art_cy - art_side / 2.0,
@@ -258,12 +258,12 @@ fn draw_skeleton_block(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: &P
 impl Widget for MusicApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.ensure_seeded(state);
-        if !self.playback_loaded {
-            self.reload(state);
-            self.audio.set_volume(self.pb.volume as f32 / 100.0);
-            self.playback_loaded = true;
-        } else {
+        if self.playback_loaded {
             self.reload_library(state);
+        } else {
+            self.reload(state);
+            self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
+            self.playback_loaded = true;
         }
         // Progress any in-flight offline downloads (and re-apply their live
         // progress on top of the just-reloaded terminal cache states).
@@ -328,7 +328,7 @@ impl Widget for MusicApp {
                 ..Default::default()
             })
             .expect("a leaf on a fresh taffy tree");
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -337,10 +337,10 @@ impl Widget for MusicApp {
             .layout(node)
             .expect("apply_layout runs against the same tree + node build_layout returned");
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -480,10 +480,10 @@ impl Widget for MusicApp {
                 // (caret placement, drag-select, double-click word). Also switch
                 // to the Search view + focus it so typing lands there.
                 if self.search_input.get_rect().contains(self.mouse) {
-                    if self.view != View::Search {
-                        self.dispatch(Action::FocusSearch, state);
-                    } else {
+                    if self.view == View::Search {
                         self.search_input.set_focus(true);
+                    } else {
+                        self.dispatch(Action::FocusSearch, state);
                     }
                     self.forward_to_search(event, scale_factor, modifiers, state);
                     self.dirty = true;
@@ -532,7 +532,7 @@ impl Widget for MusicApp {
                     let hit = self.hit_test(self.mouse);
                     let swipeable = matches!(
                         hit,
-                        None | Some(Action::Nav(View::Lyrics)) | Some(Action::Nav(View::Album(_)))
+                        None | Some(Action::Nav(View::Lyrics | View::Album(_)))
                     );
                     if swipeable {
                         self.bar_press = Some((self.mouse, hit));
@@ -584,7 +584,7 @@ impl Widget for MusicApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 let max = (self.content_height - self.body_rect.height()).max(0.0);
@@ -641,7 +641,7 @@ impl Widget for MusicApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MusicApp"
     }
 
@@ -912,8 +912,8 @@ impl MusicApp {
                 scene,
                 t,
                 &initials,
-                center.x - tw as f64 / 2.0,
-                center.y - th as f64 / 2.0,
+                center.x - f64::from(tw) / 2.0,
+                center.y - f64::from(th) / 2.0,
                 sz,
                 c.text.multiply_alpha(0.95),
                 TextWeight::Bold,
@@ -1062,7 +1062,7 @@ impl MusicApp {
             // Three-line hamburger.
             let lw = 15.0;
             for i in 0..3 {
-                let ly = cx.y - 5.0 + i as f64 * 5.0;
+                let ly = cx.y - 5.0 + f64::from(i) * 5.0;
                 fill_rrect(
                     scene,
                     t,
@@ -1337,9 +1337,7 @@ impl MusicApp {
             View::Lyrics => "Lyrics".into(),
             View::Album(id) => self
                 .album_pages
-                .get(id)
-                .map(|p| p.title.clone())
-                .unwrap_or_else(|| self.lib.album_title(id).to_string()),
+                .get(id).map_or_else(|| self.lib.album_title(id).to_string(), |p| p.title.clone()),
             View::Artist(id) => self
                 .artist_pages
                 .get(id)
@@ -1582,7 +1580,7 @@ impl MusicApp {
 
         // Heading (centred).
         let head = "Your music starts here";
-        let hw = tr.measure_weighted(head, 25.0, None, TextWeight::Bold).0 as f64;
+        let hw = f64::from(tr.measure_weighted(head, 25.0, None, TextWeight::Bold).0);
         draw_text(
             tr,
             scene,
@@ -1608,9 +1606,9 @@ impl MusicApp {
             } else {
                 format!("{cur} {w}")
             };
-            if tr
+            if f64::from(tr
                 .measure_weighted(&cand, 14.0, None, TextWeight::Regular)
-                .0 as f64
+                .0)
                 > maxw
                 && !cur.is_empty()
             {
@@ -1624,7 +1622,7 @@ impl MusicApp {
             lines.push(cur);
         }
         for line in &lines {
-            let lw = tr.measure_weighted(line, 14.0, None, TextWeight::Regular).0 as f64;
+            let lw = f64::from(tr.measure_weighted(line, 14.0, None, TextWeight::Regular).0);
             draw_text(
                 tr,
                 scene,
@@ -1644,9 +1642,9 @@ impl MusicApp {
         // Primary action: Search (the one thing to do from an empty Home).
         let bh = 44.0;
         let label = "Search";
-        let labelw = tr
+        let labelw = f64::from(tr
             .measure_weighted(label, 15.0, None, TextWeight::Semibold)
-            .0 as f64;
+            .0);
         let group = 18.0 + 10.0 + labelw;
         let bw = (group + 48.0).max(150.0);
         let btn = Rect::new(cx - bw / 2.0, yy, cx + bw / 2.0, yy + bh);
@@ -1785,7 +1783,7 @@ impl MusicApp {
                     scene,
                     t,
                     &title,
-                    cx + (card_w - tw as f64) / 2.0,
+                    cx + (card_w - f64::from(tw)) / 2.0,
                     cy + card_w + 8.0,
                     14.0,
                     c.text,
@@ -1797,7 +1795,7 @@ impl MusicApp {
                     scene,
                     t,
                     &sub,
-                    cx + (card_w - sw as f64) / 2.0,
+                    cx + (card_w - f64::from(sw)) / 2.0,
                     cy + card_w + 28.0,
                     12.0,
                     c.dim,
@@ -1998,7 +1996,7 @@ impl MusicApp {
                 scene,
                 t,
                 &name,
-                cx + (card_w - nw as f64) / 2.0,
+                cx + (card_w - f64::from(nw)) / 2.0,
                 cy + d + 8.0,
                 14.0,
                 c.text,
@@ -2012,7 +2010,7 @@ impl MusicApp {
                 scene,
                 t,
                 &genre,
-                cx + (card_w - gw as f64) / 2.0,
+                cx + (card_w - f64::from(gw)) / 2.0,
                 cy + d + 26.0,
                 12.0,
                 c.dim,
@@ -2408,7 +2406,7 @@ impl MusicApp {
                         // (just started) and a near-full turn (almost done).
                         let spin = anim_time() * (std::f64::consts::TAU / 1.1);
                         let sweep = std::f64::consts::FRAC_PI_2
-                            + (std::f64::consts::TAU - std::f64::consts::FRAC_PI_2) * f as f64;
+                            + (std::f64::consts::TAU - std::f64::consts::FRAC_PI_2) * f64::from(f);
                         let arc =
                             vello::kurbo::Arc::new(center, (radius, radius), spin, sweep, 0.0);
                         scene.stroke(
@@ -2433,14 +2431,14 @@ impl MusicApp {
 
                 // Duration (hidden when unknown — some live sources omit it).
                 if tk.dur > 0 {
-                    let dur = ui::format::timecode(tk.dur as u64);
+                    let dur = ui::format::timecode(u64::from(tk.dur));
                     let (dw, _) = tr.measure_weighted(&dur, 13.0, None, TextWeight::Regular);
                     draw_text(
                         tr,
                         scene,
                         t,
                         &dur,
-                        dur_x + (48.0 - dw as f64),
+                        dur_x + (48.0 - f64::from(dw)),
                         vy(y, row_h, 13.0),
                         13.0,
                         c.dim,
@@ -2540,7 +2538,7 @@ impl MusicApp {
         let ph = self.push_hit(
             play,
             Action::Play {
-                queue: queue.clone(),
+                queue,
                 index: 0,
             },
         );
@@ -2743,7 +2741,7 @@ impl MusicApp {
             let artist = al
                 .map(|a| self.lib.artist_name(&a.artist_id).to_string())
                 .unwrap_or_default();
-            let year = al.map(|a| a.year).unwrap_or(0);
+            let year = al.map_or(0, |a| a.year);
             let ids: Vec<String> = self
                 .lib
                 .album_tracks(id)
@@ -2934,7 +2932,7 @@ impl MusicApp {
         icon::draw(scene, t, Icon::Disc, center, 30.0, c.dim);
         yy += 2.0 * r + 28.0;
         let head = format!("Couldn't load this {kind}");
-        let hw = tr.measure_weighted(&head, 20.0, None, TextWeight::Bold).0 as f64;
+        let hw = f64::from(tr.measure_weighted(&head, 20.0, None, TextWeight::Bold).0);
         draw_text(
             tr,
             scene,
@@ -2949,7 +2947,7 @@ impl MusicApp {
         );
         yy += 34.0;
         let sub = "Check your connection and try again.";
-        let sw = tr.measure_weighted(sub, 14.0, None, TextWeight::Regular).0 as f64;
+        let sw = f64::from(tr.measure_weighted(sub, 14.0, None, TextWeight::Regular).0);
         draw_text(
             tr,
             scene,
@@ -3041,7 +3039,7 @@ impl MusicApp {
             let ar = self.lib.artist(id);
             let name = ar.map(|a| a.name.clone()).unwrap_or_default();
             let genre = ar.map(|a| a.genre.clone()).unwrap_or_default();
-            let listeners = ar.map(|a| a.monthly_listeners).unwrap_or(0);
+            let listeners = ar.map_or(0, |a| a.monthly_listeners);
             let mut top: Vec<&crate::model::Track> = self
                 .lib
                 .tracks
@@ -3216,9 +3214,9 @@ impl MusicApp {
                 } else {
                     format!("{line} {word}")
                 };
-                if tr
+                if f64::from(tr
                     .measure_weighted(&cand, 13.0, None, TextWeight::Regular)
-                    .0 as f64
+                    .0)
                     > maxw
                     && !line.is_empty()
                 {
@@ -3314,7 +3312,7 @@ impl MusicApp {
             "{} · {} songs · {}",
             desc,
             ids.len(),
-            ui::format::timecode(total as u64)
+            ui::format::timecode(u64::from(total))
         );
         let mut y = self.draw_detail_header(
             scene,
@@ -3790,14 +3788,14 @@ impl MusicApp {
                     let rh = self.push_hit(square_around(rc, 26.0), Action::RemoveFromQueue(abs));
                     draw_x(scene, t, rc, if rh { c.accent } else { c.dim });
                 }
-                let dur = ui::format::timecode(tk.dur as u64);
+                let dur = ui::format::timecode(u64::from(tk.dur));
                 let (dw, _) = tr.measure_weighted(&dur, 13.0, None, TextWeight::Regular);
                 draw_text(
                     tr,
                     scene,
                     t,
                     &dur,
-                    dur_x + (40.0 - dw as f64),
+                    dur_x + (40.0 - f64::from(dw)),
                     vy(y, row_h, 13.0),
                     13.0,
                     c.dim,
@@ -3825,7 +3823,7 @@ impl MusicApp {
         y += 16.0;
         let cached = self.lib.downloaded_tracks();
         let count = cached.len();
-        let total_s: u64 = cached.iter().map(|tk| tk.duration_s as u64).sum();
+        let total_s: u64 = cached.iter().map(|tk| u64::from(tk.duration_s)).sum();
         let ids: Vec<String> = cached.iter().map(|tk| tk.id.clone()).collect();
 
         // Stat banner: only real facts — how many tracks are marked to keep
@@ -3902,7 +3900,7 @@ impl MusicApp {
         let total_s: u64 = ids
             .iter()
             .filter_map(|id| self.lib.track(id))
-            .map(|tk| tk.duration_s as u64)
+            .map(|tk| u64::from(tk.duration_s))
             .sum();
 
         // Banner with a heart sigil.
@@ -4067,7 +4065,7 @@ impl MusicApp {
                 scene,
                 t,
                 msg,
-                body.x0 + (body.width() - tw as f64) / 2.0,
+                body.x0 + (body.width() - f64::from(tw)) / 2.0,
                 body.center().y,
                 15.0,
                 c.dim,
@@ -4082,7 +4080,7 @@ impl MusicApp {
             let tag = "SYNCED";
             let (tw, _) = tr.measure_weighted(tag, 10.0, None, TextWeight::Semibold);
             let pill = Rect::new(
-                body.x1 - pad - tw as f64 - 20.0,
+                body.x1 - pad - f64::from(tw) - 20.0,
                 top - 2.0,
                 body.x1 - pad,
                 top + 18.0,
@@ -4122,7 +4120,7 @@ impl MusicApp {
                 scene,
                 t,
                 &tk.title,
-                cx - tw as f64 / 2.0,
+                cx - f64::from(tw) / 2.0,
                 art.y1 + 30.0,
                 20.0,
                 c.text,
@@ -4135,7 +4133,7 @@ impl MusicApp {
                 scene,
                 t,
                 &tk.artist,
-                cx - aw as f64 / 2.0,
+                cx - f64::from(aw) / 2.0,
                 art.y1 + 56.0,
                 14.0,
                 c.dim,
@@ -4182,8 +4180,8 @@ impl MusicApp {
                 scene,
                 t,
                 msg,
-                region.x0 + (region.width() - tw as f64) / 2.0,
-                (band_top + band_bot) / 2.0,
+                region.x0 + (region.width() - f64::from(tw)) / 2.0,
+                f64::midpoint(band_top, band_bot),
                 15.0,
                 c.dim,
                 TextWeight::Regular,
@@ -4244,7 +4242,7 @@ impl MusicApp {
                 line.text.as_str()
             };
             let (tw, _) = tr.measure_weighted(text, size, Some(maxw as f32), weight);
-            let x = region.x0 + (region.width() - tw as f64) / 2.0;
+            let x = region.x0 + (region.width() - f64::from(tw)) / 2.0;
             draw_text(
                 tr,
                 scene,
@@ -4668,7 +4666,7 @@ impl MusicApp {
             }
             let label = tab.label();
             let (tw, _) = tr.measure_weighted(label, 13.0, None, TextWeight::Semibold);
-            let w = tw as f64 + 30.0;
+            let w = f64::from(tw) + 30.0;
             let pill = Rect::new(x, y, x + w, y + h);
             let active = self.search_tab == tab;
             let hov = self.push_hit(pill, Action::SelectSearchTab(tab));
@@ -4913,7 +4911,7 @@ impl MusicApp {
         let pill = Rect::new(
             rect.x0 + 20.0,
             pill_y - 4.0,
-            rect.x0 + 20.0 + pw as f64 + 24.0,
+            rect.x0 + 20.0 + f64::from(pw) + 24.0,
             pill_y + 20.0,
         );
         fill_rrect(scene, t, pill, 12.0, c.white10);
@@ -5156,7 +5154,7 @@ impl MusicApp {
         let center = Rect::new(r.x0 + 300.0, r.y0, r.x1 - right_w, r.y1);
 
         // Transport buttons.
-        let cxm = (center.x0 + center.x1) / 2.0;
+        let cxm = f64::midpoint(center.x0, center.x1);
         let btn_y = r.y0 + 30.0;
         let spacing = 44.0;
         // shuffle
@@ -5254,7 +5252,7 @@ impl MusicApp {
             scene,
             t,
             &elapsed,
-            bar_x0 - ew as f64 - 10.0,
+            bar_x0 - f64::from(ew) - 10.0,
             bar_y - 6.0,
             11.0,
             c.dim,
@@ -5392,7 +5390,7 @@ impl MusicApp {
     /// the collapsed-volume popover.
     fn draw_volume_slider(&mut self, scene: &mut Scene, t: Affine, c: &Palette, hit: Rect) {
         self.volume_rect = hit;
-        let vol = self.pb.volume as f64 / 100.0;
+        let vol = f64::from(self.pb.volume) / 100.0;
         let vbar_y = hit.center().y;
         let x0 = hit.x0;
         let x1 = hit.x1;
@@ -5476,7 +5474,7 @@ impl MusicApp {
             scene,
             t,
             &pct,
-            panel.x1 - 16.0 - pw_txt as f64,
+            panel.x1 - 16.0 - f64::from(pw_txt),
             vy(panel.y0, ph, 12.0),
             12.0,
             c.dim,
@@ -5549,7 +5547,7 @@ impl MusicApp {
                 t,
                 c.text,
                 None,
-                &Circle::new(Point::new(fillx, (track_top + track_bottom) / 2.0), 6.0),
+                &Circle::new(Point::new(fillx, f64::midpoint(track_top, track_bottom)), 6.0),
             );
         }
         self.volume_rect = Rect::ZERO;
@@ -5659,8 +5657,8 @@ impl MusicApp {
     fn draw_toast(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette) {
         if let Some((msg, _)) = self.toast.clone() {
             let (tw, _) = tr.measure_weighted(&msg, 13.0, None, TextWeight::Medium);
-            let w = tw as f64 + 40.0;
-            let x = (self.rect.x1 + self.rect.x0) / 2.0 - w / 2.0;
+            let w = f64::from(tw) + 40.0;
+            let x = f64::midpoint(self.rect.x1, self.rect.x0) - w / 2.0;
             let yb = self.rect.y1 - NOWPLAYING_H - 56.0;
             let rect = Rect::new(x, yb, x + w, yb + 38.0);
             fill_rrect(scene, t, rect, 19.0, c.toast_bg);
@@ -5769,7 +5767,7 @@ impl MusicApp {
     /// Register a click target that only counts when visible inside the body
     /// viewport (so scrolled-away rows don't catch clicks under the chrome).
     fn body_hit(&mut self, rect: Rect, action: Action) -> bool {
-        let cy = (rect.y0 + rect.y1) / 2.0;
+        let cy = f64::midpoint(rect.y0, rect.y1);
         if cy < self.body_rect.y0 || cy > self.body_rect.y1 {
             return false;
         }

@@ -74,8 +74,8 @@ pub fn is_enabled() -> bool {
 }
 
 /// Shape every entry of [`CANONICAL_STRINGS`] through the supplied
-/// FontSystem. Populates the internal shape / fallback caches so the
-/// first real draw against the same FontSystem short-circuits at those
+/// `FontSystem`. Populates the internal shape / fallback caches so the
+/// first real draw against the same `FontSystem` short-circuits at those
 /// cache lookups.
 ///
 /// Returns the number of glyph runs emitted across every buffer —

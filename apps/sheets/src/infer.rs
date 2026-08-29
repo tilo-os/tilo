@@ -68,25 +68,23 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
     }
 
     // Percent: a trailing `%`.
-    if let Some(body) = trimmed.strip_suffix('%') {
-        if let Some(n) = parse_number_loose(body.trim()) {
+    if let Some(body) = trimmed.strip_suffix('%')
+        && let Some(n) = parse_number_loose(body.trim()) {
             // Store the underlying fraction; Percent format multiplies by 100.
             return Inferred {
                 raw: trim_float(n / 100.0),
                 format: CellFormat::Percent,
             };
         }
-    }
 
     // Currency: a leading or trailing currency symbol/code.
-    if let Some((cur, amount)) = strip_currency(trimmed, default_currency) {
-        if let Some(n) = parse_number_loose(amount) {
+    if let Some((cur, amount)) = strip_currency(trimmed, default_currency)
+        && let Some(n) = parse_number_loose(amount) {
             return Inferred {
                 raw: trim_float(n),
                 format: CellFormat::Currency(cur),
             };
         }
-    }
 
     // Date / time literals.
     if let Some(serial) = parse_date(trimmed) {
@@ -104,14 +102,13 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
 
     // Number with grouping separators (`1,234.5`) → store the bare number,
     // adopt the Number format so the grouping shows on render.
-    if has_grouping(trimmed) {
-        if let Some(n) = parse_number_loose(trimmed) {
+    if has_grouping(trimmed)
+        && let Some(n) = parse_number_loose(trimmed) {
             return Inferred {
                 raw: trim_float(n),
                 format: CellFormat::Number,
             };
         }
-    }
 
     // Plain number (no grouping) → keep raw, leave General so integers
     // stay clean. The grid still right-aligns it.
@@ -154,11 +151,10 @@ fn has_grouping(s: &str) -> bool {
     // A comma flanked by digits, e.g. "1,234" or "12,000.50".
     let bytes: Vec<char> = s.chars().collect();
     for (i, c) in bytes.iter().enumerate() {
-        if *c == ',' && i > 0 && i + 1 < bytes.len() {
-            if bytes[i - 1].is_ascii_digit() && bytes[i + 1].is_ascii_digit() {
+        if *c == ',' && i > 0 && i + 1 < bytes.len()
+            && bytes[i - 1].is_ascii_digit() && bytes[i + 1].is_ascii_digit() {
                 return true;
             }
-        }
     }
     false
 }
@@ -172,16 +168,14 @@ fn strip_currency(s: &str, default_currency: Currency) -> Option<(Currency, &str
     for code in [
         "CHF", "EUR", "USD", "GBP", "JPY", "CAD", "AUD", "CNY", "INR",
     ] {
-        if let Some(rest) = s.strip_prefix(code) {
-            if let Some(c) = Currency::from_code(code) {
+        if let Some(rest) = s.strip_prefix(code)
+            && let Some(c) = Currency::from_code(code) {
                 return Some((c, rest.trim_start()));
             }
-        }
-        if let Some(rest) = s.strip_suffix(code) {
-            if let Some(c) = Currency::from_code(code) {
+        if let Some(rest) = s.strip_suffix(code)
+            && let Some(c) = Currency::from_code(code) {
                 return Some((c, rest.trim_end()));
             }
-        }
     }
     // Single-glyph symbols.
     let symbols = ["$", "\u{20AC}", "\u{00A3}", "\u{00A5}", "\u{20B9}"];
@@ -210,13 +204,11 @@ fn resolve_symbol(sym: &str, default_currency: Currency) -> Currency {
 /// Parse an ISO / US / EU date literal into an Excel serial.
 fn parse_date(s: &str) -> Option<f64> {
     // ISO: YYYY-MM-DD
-    if let Some((y, rest)) = split_int(s, '-') {
-        if let Some((m, d)) = split_two(rest, '-') {
-            if valid_ymd(y, m, d) {
+    if let Some((y, rest)) = split_int(s, '-')
+        && let Some((m, d)) = split_two(rest, '-')
+            && valid_ymd(y, m, d) {
                 return Some(date_to_serial(y, m as u32, d as u32));
             }
-        }
-    }
     // Slash forms: try US (M/D/Y) and EU (D/M/Y). Prefer the one that is
     // unambiguously valid; if both are valid, US wins (matching the ISO
     // default style we render in).
@@ -307,7 +299,7 @@ fn trim_float(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         return format!("{}", n as i64);
     }
-    let s = format!("{:.10}", n);
+    let s = format!("{n:.10}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 

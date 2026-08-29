@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 /// The embedded English word list.
 ///
-/// Source: the system `hunspell` en_US spelling dictionary
+/// Source: the system `hunspell` `en_US` spelling dictionary
 /// (`/usr/share/hunspell/en_US.dic`, the SCOWL-derived list shipped by Fedora),
 /// used as an oracle to validate a lowercased/normalised pass over the much
 /// larger but noisier `/usr/share/dict/words` (`linux.words`). Every candidate

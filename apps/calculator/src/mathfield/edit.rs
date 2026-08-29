@@ -5,7 +5,7 @@
 //! The caret is a [`Path`] (a real position in the structured model), never a
 //! `|` character in the content. A selection is an anchor path + the caret;
 //! both must share the same row (selections don't span structure boundaries,
-//! matching GeoGebra), so a selection is represented as a `(steps, a..b)`
+//! matching `GeoGebra`), so a selection is represented as a `(steps, a..b)`
 //! range over one row.
 
 use super::model::{MathExpr, Node, Path, Row, Slot, node_slots};
@@ -89,28 +89,25 @@ impl Editor {
 
     /// Move left one atom. Steps out of / into structures GeoGebra-style.
     pub fn move_left(&mut self, extend: bool) {
-        if !extend {
-            if let Some(sel) = self.selection() {
+        if !extend
+            && let Some(sel) = self.selection() {
                 // Collapse to the left edge instead of moving past it.
                 self.caret.offset = sel.lo();
                 self.anchor = None;
                 return;
             }
-        }
         self.pre_move(extend);
         if self.caret.offset > 0 {
             // Step into the structure to the left if it has an entry slot.
             let idx = self.caret.offset - 1;
-            if let Some(node) = self.row().get(idx).cloned() {
-                if !extend {
-                    if let Some(slot) = enter_from_right(&node) {
+            if let Some(node) = self.row().get(idx).cloned()
+                && !extend
+                    && let Some(slot) = enter_from_right(&node) {
                         self.caret.steps.push((idx, slot));
                         let inner = self.row_len();
                         self.caret.offset = inner;
                         return;
                     }
-                }
-            }
             self.caret.offset -= 1;
         } else if !self.caret.steps.is_empty() && !extend {
             // At row start: pop out to the left of the owning node.
@@ -121,26 +118,23 @@ impl Editor {
 
     /// Move right one atom.
     pub fn move_right(&mut self, extend: bool) {
-        if !extend {
-            if let Some(sel) = self.selection() {
+        if !extend
+            && let Some(sel) = self.selection() {
                 self.caret.offset = sel.hi();
                 self.anchor = None;
                 return;
             }
-        }
         self.pre_move(extend);
         let len = self.row_len();
         if self.caret.offset < len {
             let idx = self.caret.offset;
-            if let Some(node) = self.row().get(idx).cloned() {
-                if !extend {
-                    if let Some(slot) = enter_from_left(&node) {
+            if let Some(node) = self.row().get(idx).cloned()
+                && !extend
+                    && let Some(slot) = enter_from_left(&node) {
                         self.caret.steps.push((idx, slot));
                         self.caret.offset = 0;
                         return;
                     }
-                }
-            }
             self.caret.offset += 1;
         } else if !self.caret.steps.is_empty() && !extend {
             // At row end: pop out to the right of the owning node.
@@ -166,8 +160,8 @@ impl Editor {
         // structure's vertically-stacked slots.
         if let Some(&(idx, slot)) = self.caret.steps.last() {
             let parent_steps = &self.caret.steps[..self.caret.steps.len() - 1];
-            if let Some(parent_row) = self.expr.row_at(parent_steps) {
-                if let Some(node) = parent_row.get(idx) {
+            if let Some(parent_row) = self.expr.row_at(parent_steps)
+                && let Some(node) = parent_row.get(idx) {
                     let slots = node_slots(node);
                     if let Some(pos) = slots.iter().position(|s| *s == slot) {
                         let target = if up {
@@ -181,14 +175,13 @@ impl Editor {
                             let new_slot = slots[tp];
                             let mut steps = parent_steps.to_vec();
                             steps.push((idx, new_slot));
-                            let new_len = self.expr.row_at(&steps).map(|r| r.len()).unwrap_or(0);
+                            let new_len = self.expr.row_at(&steps).map_or(0, std::vec::Vec::len);
                             self.caret.steps = steps;
                             self.caret.offset = self.caret.offset.min(new_len);
                             return;
                         }
                     }
                 }
-            }
             // Can't move within this structure: step out toward the target dir.
             if let Some(&(pidx, _)) = self.caret.steps.last() {
                 self.caret.steps.pop();
@@ -298,7 +291,7 @@ impl Editor {
     // -- deletion ------------------------------------------------------------
 
     /// Backspace: delete selection, else the atom before the caret. At the
-    /// front of a structure's box, unwrap that structure (GeoGebra style).
+    /// front of a structure's box, unwrap that structure (`GeoGebra` style).
     pub fn backspace(&mut self) {
         if self.delete_selection() {
             return;
@@ -457,13 +450,11 @@ impl Editor {
     /// groups balanced so this just exits.
     fn skip_or_insert_close(&mut self) {
         self.delete_selection();
-        if let Some(&(idx, slot)) = self.caret.steps.last() {
-            if matches!(slot, Slot::Body | Slot::Arg | Slot::Radicand) {
+        if let Some(&(idx, slot)) = self.caret.steps.last()
+            && matches!(slot, Slot::Body | Slot::Arg | Slot::Radicand) {
                 self.caret.steps.pop();
                 self.caret.offset = idx + 1;
-                return;
             }
-        }
         // Not inside a group: ignore stray close to keep the tree balanced.
     }
 
@@ -551,13 +542,12 @@ impl Editor {
         let mut s = String::new();
         let mut i = self.caret.offset;
         while i > 0 {
-            if let Node::Char(c) = &row[i - 1] {
-                if c.is_ascii_alphabetic() {
+            if let Node::Char(c) = &row[i - 1]
+                && c.is_ascii_alphabetic() {
                     s.insert(0, *c);
                     i -= 1;
                     continue;
                 }
-            }
             break;
         }
         s
@@ -573,13 +563,11 @@ impl Editor {
                 return false;
             }
             // char before the run must not be a letter
-            if off > n {
-                if let Node::Char(c) = &row[off - n - 1] {
-                    if c.is_ascii_alphabetic() {
+            if off > n
+                && let Node::Char(c) = &row[off - n - 1]
+                    && c.is_ascii_alphabetic() {
                         return false;
                     }
-                }
-            }
             true
         }
     }

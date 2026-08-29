@@ -453,7 +453,7 @@ impl LspClient {
         };
         Some((
             prog.to_string(),
-            args.iter().map(|s| s.to_string()).collect(),
+            args.iter().map(std::string::ToString::to_string).collect(),
         ))
     }
 
@@ -513,26 +513,22 @@ impl LspClient {
             .spawn(move || {
                 let mut reader = MessageReader::new(BufReader::new(stdout));
                 loop {
-                    match reader.next_message() {
-                        Ok(Some(msg)) => {
-                            let routed = route_message(&msg, &reader_pending);
-                            if let Some(reply) = routed.reply {
-                                let bytes = encode(&reply);
-                                if let Ok(mut w) = reader_stdin.lock() {
-                                    let _ = w.write_all(&bytes);
-                                    let _ = w.flush();
-                                }
-                            }
-                            if let Some(ev) = routed.event {
-                                if tx.send(ev).is_err() {
-                                    break;
-                                }
+                    if let Ok(Some(msg)) = reader.next_message() {
+                        let routed = route_message(&msg, &reader_pending);
+                        if let Some(reply) = routed.reply {
+                            let bytes = encode(&reply);
+                            if let Ok(mut w) = reader_stdin.lock() {
+                                let _ = w.write_all(&bytes);
+                                let _ = w.flush();
                             }
                         }
-                        Ok(None) | Err(_) => {
-                            let _ = tx.send(LspEvent::Exited);
-                            break;
-                        }
+                        if let Some(ev) = routed.event
+                            && tx.send(ev).is_err() {
+                                break;
+                            }
+                    } else {
+                        let _ = tx.send(LspEvent::Exited);
+                        break;
                     }
                 }
             })
@@ -558,9 +554,7 @@ impl LspClient {
         // visible: without it the server never sends `$/progress`, and a
         // multi-minute index is silent.
         let folder_name = root
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| root.display().to_string());
+            .file_name().map_or_else(|| root.display().to_string(), |s| s.to_string_lossy().to_string());
         client.send_request_raw(
             "initialize",
             json!({
@@ -800,8 +794,7 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
                         .get("params")
                         .and_then(|p| p.get("items"))
                         .and_then(Value::as_array)
-                        .map(|a| a.len())
-                        .unwrap_or(1);
+                        .map_or(1, std::vec::Vec::len);
                     Value::Array(vec![Value::Null; n])
                 }
                 // Accepting a dynamic registration, a progress token, or an

@@ -192,8 +192,8 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
 
     // Workspace-level: save the selected place, only offered when one is
     // selected and not already saved.
-    if let Some(sel) = model.selected_place() {
-        if !sel.saved {
+    if let Some(sel) = model.selected_place()
+        && !sel.saved {
             root = root.with_action(immediate(
                 "save-place",
                 format!("Save {}", sel.name),
@@ -203,7 +203,6 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 },
             ));
         }
-    }
 
     // Workspace-level: clear every offline area, only when some exist.
     if !model.regions.is_empty() {

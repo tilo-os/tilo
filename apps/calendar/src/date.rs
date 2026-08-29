@@ -13,14 +13,14 @@ use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 /// month starting on a Sunday).
 pub fn month_grid(anchor: NaiveDate) -> Vec<NaiveDate> {
     let first = anchor.with_day(1).unwrap();
-    let offset = first.weekday().num_days_from_monday() as i64;
+    let offset = i64::from(first.weekday().num_days_from_monday());
     let start = first - Duration::days(offset);
     (0..42).map(|i| start + Duration::days(i)).collect()
 }
 
 /// Monday at the start of the ISO week containing `date`.
 pub fn week_start(date: NaiveDate) -> NaiveDate {
-    date - Duration::days(date.weekday().num_days_from_monday() as i64)
+    date - Duration::days(i64::from(date.weekday().num_days_from_monday()))
 }
 
 /// The seven dates Mon..Sun of the week containing `date`.

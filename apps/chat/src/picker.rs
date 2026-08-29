@@ -15,9 +15,7 @@ use std::path::{Path, PathBuf};
 
 /// Where the picker browses: the P2P workspace mount by default.
 pub fn attach_dir() -> PathBuf {
-    std::env::var_os("QOS_CHAT_ATTACH_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/workspace"))
+    std::env::var_os("QOS_CHAT_ATTACH_DIR").map_or_else(|| PathBuf::from("/var/workspace"), PathBuf::from)
 }
 
 /// One selectable file in the picker.
@@ -87,7 +85,7 @@ pub fn list_media(dir: &Path) -> Vec<PickEntry> {
 fn list_filtered(dir: &Path, accept: fn(&str) -> bool) -> Vec<PickEntry> {
     let mut out = Vec::new();
     collect(dir, 1, accept, &mut out);
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out.truncate(60);
     out
 }
@@ -112,7 +110,7 @@ fn collect(dir: &Path, depth: usize, accept: fn(&str) -> bool, out: &mut Vec<Pic
         if !accept(&name) {
             continue;
         }
-        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let size = entry.metadata().map_or(0, |m| m.len());
         let is_video = is_video_name(&name);
         out.push(PickEntry {
             path,

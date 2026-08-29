@@ -397,9 +397,9 @@ impl Catalog {
             });
         };
 
-        use Retention::*;
-        use SnapStatus::*;
-        use SnapType::*;
+        use Retention::{Hourly, Keep, Daily, Weekly, Monthly};
+        use SnapStatus::{Verifying, Complete, Failed};
+        use SnapType::{Auto, Manual};
 
         // --- Today (day 0) ---
         push(
@@ -667,7 +667,7 @@ impl Catalog {
         let mut v: Vec<&Snapshot> = self
             .snapshots
             .iter()
-            .filter(|s| source_id.map(|id| s.source_id == id).unwrap_or(true))
+            .filter(|s| source_id.map_or(true, |id| s.source_id == id))
             .collect();
         v.sort_by(|a, b| a.day.cmp(&b.day).then(b.time.cmp(&a.time)));
         v

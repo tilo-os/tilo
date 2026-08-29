@@ -14,7 +14,7 @@ pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
 /// and most widget draw paths blend in.
 pub(crate) fn mix8(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let l = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+    let l = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
@@ -26,8 +26,8 @@ fn with_a(c: Color, a: u8) -> Color {
 /// nothing about how it reads (`white/20` differs over black vs white), so
 /// every derivation below measures the composite, never the token.
 fn composite(over: Color, ground: Color) -> Color {
-    let a = over.a() as f32 / 255.0;
-    let ch = |o: u8, g: u8| ((o as f32) * a + (g as f32) * (1.0 - a)).round() as u8;
+    let a = f32::from(over.a()) / 255.0;
+    let ch = |o: u8, g: u8| (f32::from(o) * a + f32::from(g) * (1.0 - a)).round() as u8;
     Color::from_rgb8(
         ch(over.r(), ground.r()),
         ch(over.g(), ground.g()),
@@ -226,13 +226,13 @@ impl Colors {
 /// — the point here is *separation*, which the cheap conversion does fine.
 fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
     let (r, g, b) = (
-        c.r() as f32 / 255.0,
-        c.g() as f32 / 255.0,
-        c.b() as f32 / 255.0,
+        f32::from(c.r()) / 255.0,
+        f32::from(c.g()) / 255.0,
+        f32::from(c.b()) / 255.0,
     );
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
-    let l = (max + min) / 2.0;
+    let l = f32::midpoint(max, min);
     let d = max - min;
     if d <= f32::EPSILON {
         return (0.0, 0.0, l);

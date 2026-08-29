@@ -234,17 +234,17 @@ impl WordProcessor {
             }
             return String::new();
         }
-        if !blocks.contains(&self.caret.block) {
+        if blocks.contains(&self.caret.block) {
+            let len = self.region_block_len(state, &self.caret.block);
+            if self.caret.offset > len {
+                self.caret.offset = len;
+            }
+        } else {
             self.caret = Caret {
                 block: blocks[0].clone(),
                 offset: 0,
             };
             self.selection_anchor = None;
-        } else {
-            let len = self.region_block_len(state, &self.caret.block);
-            if self.caret.offset > len {
-                self.caret.offset = len;
-            }
         }
         self.caret.block.clone()
     }
@@ -265,8 +265,7 @@ impl WordProcessor {
     pub fn has_selection(&self) -> bool {
         self.selection_anchor
             .as_ref()
-            .map(|a| a != &self.caret)
-            .unwrap_or(false)
+            .is_some_and(|a| a != &self.caret)
     }
 
     /// Selection endpoints in document order, if non-empty.
@@ -749,8 +748,7 @@ impl WordProcessor {
             .blocks
             .iter()
             .find(|b| b.id == block_id)
-            .map(|b| matches!(b.attrs.get(key), Some(qdoc::AttrVal::Bool(true))))
-            .unwrap_or(false);
+            .is_some_and(|b| matches!(b.attrs.get(key), Some(qdoc::AttrVal::Bool(true))));
         let next = !cur;
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut {
@@ -809,13 +807,13 @@ impl WordProcessor {
                     let (s, e) = (base + m.start, base + m.end);
                     match &m.value {
                         qdoc::document::MarkValue::Bool(v) => {
-                            dm.add_mark(&block_id, s, e, &m.name, *v)
+                            dm.add_mark(&block_id, s, e, &m.name, *v);
                         }
                         qdoc::document::MarkValue::Int(n) => {
-                            dm.add_mark(&block_id, s, e, &m.name, *n)
+                            dm.add_mark(&block_id, s, e, &m.name, *n);
                         }
                         qdoc::document::MarkValue::Str(st) => {
-                            dm.add_mark(&block_id, s, e, &m.name, st.as_str())
+                            dm.add_mark(&block_id, s, e, &m.name, st.as_str());
                         }
                     }
                 }
@@ -923,8 +921,7 @@ impl WordProcessor {
                 snap.blocks
                     .iter()
                     .find(|b| &b.id == id)
-                    .map(|b| b.kind != "cell")
-                    .unwrap_or(true)
+                    .is_none_or(|b| b.kind != "cell")
             })
             .collect();
         if let Some(ids) = self.ids.as_mut() {
@@ -973,13 +970,12 @@ impl WordProcessor {
         snap.blocks
             .iter()
             .find(|b| b.id == self.caret.block)
-            .map(|b| {
+            .is_some_and(|b| {
                 matches!(
                     b.attrs.get("page_break_before"),
                     Some(qdoc::AttrVal::Bool(true))
                 )
             })
-            .unwrap_or(false)
     }
 
     /// Set the `page_break_before` attr on the caret's block (forcing pagination
@@ -1237,8 +1233,7 @@ impl WordProcessor {
         let mut ids = qdoc::model::change_ids(state, c);
         ids.sort_by_key(|id| {
             qdoc::model::change_range(state, c, id)
-                .map(|(b, s, _)| (pos(&b), s))
-                .unwrap_or((usize::MAX, usize::MAX))
+                .map_or((usize::MAX, usize::MAX), |(b, s, _)| (pos(&b), s))
         });
         ids
     }
@@ -1326,8 +1321,7 @@ impl WordProcessor {
                 snap.blocks
                     .iter()
                     .find(|b| &b.id == id)
-                    .map(|b| b.kind != "cell")
-                    .unwrap_or(true)
+                    .is_none_or(|b| b.kind != "cell")
             })
             .collect()
     }
@@ -1441,7 +1435,7 @@ impl WordProcessor {
         snap.blocks
             .iter()
             .find(|b| b.id == self.caret.block)
-            .map(|b| match b.attrs.get("line_spacing") {
+            .map_or(1.0, |b| match b.attrs.get("line_spacing") {
                 // A non-finite or non-positive value (a malformed import, or a
                 // remote peer's action) is not a usable multiplier — fall back
                 // like an unset attr rather than propagating it.
@@ -1449,7 +1443,6 @@ impl WordProcessor {
                 Some(qdoc::AttrVal::Int(n)) if *n > 0 => *n as f64,
                 _ => 1.0,
             })
-            .unwrap_or(1.0)
     }
 
     // ---- ruler: per-block indents + tab stops --------------------------------
@@ -1470,12 +1463,11 @@ impl WordProcessor {
         snap.blocks
             .iter()
             .find(|b| b.id == block)
-            .map(|b| match b.attrs.get(key) {
+            .map_or(0.0, |b| match b.attrs.get(key) {
                 Some(qdoc::AttrVal::Float(f)) => *f,
                 Some(qdoc::AttrVal::Int(n)) => *n as f64,
                 _ => 0.0,
             })
-            .unwrap_or(0.0)
     }
 
     /// The left / hanging indent (px) of an arbitrary block — the `indent` attr,
@@ -1679,8 +1671,8 @@ impl WordProcessor {
                 let img = dm.insert_block(Some(&block), "image");
                 dm.set_attr(&img, "blob", hash.as_str());
                 if let Some((w, h)) = intrinsic {
-                    dm.set_attr(&img, "width", w as i64);
-                    dm.set_attr(&img, "height", h as i64);
+                    dm.set_attr(&img, "width", i64::from(w));
+                    dm.set_attr(&img, "height", i64::from(h));
                 }
                 // A paragraph after the image carries the split-off tail and hosts
                 // the caret so editing continues beneath the image.
@@ -1728,8 +1720,7 @@ impl WordProcessor {
         cells
             .iter()
             .find(|(id, _, _)| id == &self.caret.block)
-            .map(|(_, r, c)| (*r, *c))
-            .unwrap_or((0, 0))
+            .map_or((0, 0), |(_, r, c)| (*r, *c))
     }
 
     /// Add a row below the caret's row (toolbar `+Row`).
@@ -1935,7 +1926,7 @@ impl WordProcessor {
             return false;
         };
         // Cells in row-major order (row, then col) — the navigation order.
-        let mut ordered: Vec<(String, usize, usize)> = cells.clone();
+        let mut ordered: Vec<(String, usize, usize)> = cells;
         ordered.sort_by_key(|(_, r, c)| (*r, *c));
         let Some(pos) = ordered
             .iter()
@@ -2272,8 +2263,7 @@ impl WordProcessor {
 
     fn region_block_len(&self, state: &AutoCommit, block: &str) -> usize {
         self.region_block_text(state, block)
-            .map(|t| t.chars().count())
-            .unwrap_or(0)
+            .map_or(0, |t| t.chars().count())
     }
 
     /// Whether a boolean mark covers `[start,end)` of a block in the active region.
@@ -2293,12 +2283,11 @@ impl WordProcessor {
             r => qdoc::model::materialize_region(state, c, r)
                 .into_iter()
                 .find(|b| b.id == block)
-                .map(|b| {
+                .is_some_and(|b| {
                     b.marks
                         .iter()
                         .any(|m| m.name == name && m.start <= start && m.end >= end)
-                })
-                .unwrap_or(false),
+                }),
         }
     }
 
@@ -2459,18 +2448,18 @@ impl WordProcessor {
                     qdoc::document::MarkValue::Bool(v) => dm.add_mark(block, start, end, name, v),
                     qdoc::document::MarkValue::Int(n) => dm.add_mark(block, start, end, name, n),
                     qdoc::document::MarkValue::Str(s) => {
-                        dm.add_mark(block, start, end, name, s.as_str())
+                        dm.add_mark(block, start, end, name, s.as_str());
                     }
                 },
                 r => match value {
                     qdoc::document::MarkValue::Bool(v) => {
-                        dm.add_mark_in(r, block, start, end, name, v)
+                        dm.add_mark_in(r, block, start, end, name, v);
                     }
                     qdoc::document::MarkValue::Int(n) => {
-                        dm.add_mark_in(r, block, start, end, name, n)
+                        dm.add_mark_in(r, block, start, end, name, n);
                     }
                     qdoc::document::MarkValue::Str(s) => {
-                        dm.add_mark_in(r, block, start, end, name, s.as_str())
+                        dm.add_mark_in(r, block, start, end, name, s.as_str());
                     }
                 },
             }
@@ -2665,12 +2654,9 @@ impl WordProcessor {
             r => qdoc::model::materialize_region(state, c, r),
         };
         let b = views.iter().find(|b| b.id == block);
-        let kind = b
-            .map(|b| b.kind.clone())
-            .unwrap_or_else(|| "paragraph".into());
+        let kind = b.map_or_else(|| "paragraph".into(), |b| b.kind.clone());
         let ordered = b
-            .map(|b| matches!(b.attrs.get("ordered"), Some(qdoc::AttrVal::Bool(true))))
-            .unwrap_or(false);
+            .is_some_and(|b| matches!(b.attrs.get("ordered"), Some(qdoc::AttrVal::Bool(true))));
         let level = b.and_then(|b| match b.attrs.get("level") {
             Some(qdoc::AttrVal::Int(n)) => Some(*n),
             _ => None,

@@ -151,7 +151,7 @@ pub fn f64_in(
 ) -> f64 {
     doc.get(section)
         .and_then(|s| s.get(key))
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .filter(|v| range.contains(v))
         .unwrap_or(default)
 }
@@ -167,7 +167,7 @@ pub fn str_at<'a>(doc: &'a Map<String, Value>, section: &str, key: &str) -> Opti
 pub fn bool_at(doc: &Map<String, Value>, section: &str, key: &str) -> Option<bool> {
     doc.get(section)
         .and_then(|s| s.get(key))
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
 }
 
 #[cfg(test)]

@@ -137,11 +137,10 @@ impl Namespace {
         let prefix = format!("{author}/");
         let mut max_local = 0u64;
         for id in doc.keys(&nodes) {
-            if let Some(n) = id.strip_prefix(&prefix) {
-                if let Ok(v) = n.parse::<u64>() {
+            if let Some(n) = id.strip_prefix(&prefix)
+                && let Ok(v) = n.parse::<u64>() {
                     max_local = max_local.max(v + 1);
                 }
-            }
         }
         let mut ns = Self {
             doc,
@@ -212,7 +211,7 @@ impl Namespace {
         self.doc
             .sync()
             .generate_sync_message(state)
-            .map(|m| m.encode())
+            .map(automerge::sync::Message::encode)
     }
 
     pub fn sync_receive(
@@ -248,8 +247,7 @@ impl Namespace {
     fn kind_of(&self, id: &str) -> NodeKind {
         self.node(id)
             .and_then(|o| read_str(&self.doc, &o, "kind"))
-            .map(|k| NodeKind::from_str(&k))
-            .unwrap_or(NodeKind::File)
+            .map_or(NodeKind::File, |k| NodeKind::from_str(&k))
     }
 
     fn set_field(&mut self, id: &str, key: &str, val: impl Into<ScalarValue>) {
@@ -341,7 +339,7 @@ impl Namespace {
     }
 
     pub fn id_for_ino(&self, ino: u64) -> Option<&str> {
-        self.ino_to_id.get(&ino).map(|s| s.as_str())
+        self.ino_to_id.get(&ino).map(std::string::String::as_str)
     }
 
     /// Absolute path of `ino` within the mount — `"/"` for the root, `"/a/b/c"`
@@ -794,8 +792,8 @@ impl Namespace {
             return false;
         }
         // POSIX rename replaces the target: if the destination name is occupied, trash it.
-        if let Some(existing) = self.child_named(&new_parent_id, new_name) {
-            if existing != id {
+        if let Some(existing) = self.child_named(&new_parent_id, new_name)
+            && existing != id {
                 if let Some(h) = self.node_hash(&existing) {
                     self.set_field(&existing, "deleted_hash", hash_to_hex(&h));
                 }
@@ -805,7 +803,6 @@ impl Namespace {
                 self.set_field(&existing, "prev_parent", ep);
                 self.set_field(&existing, "parent", TRASH_ID);
             }
-        }
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
         self.set_field(&id, "prev_parent", cur);
         self.set_field(&id, "parent", &*new_parent_id);

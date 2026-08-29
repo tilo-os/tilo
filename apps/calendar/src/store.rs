@@ -69,8 +69,7 @@ pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
         let is_ics = path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("ics"))
-            .unwrap_or(false);
+            .is_some_and(|e| e.eq_ignore_ascii_case("ics"));
         if !is_ics {
             continue;
         }
@@ -78,7 +77,7 @@ pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
             .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::UNIX_EPOCH);
-        if best.as_ref().map(|(m, _)| modified > *m).unwrap_or(true) {
+        if best.as_ref().map_or(true, |(m, _)| modified > *m) {
             best = Some((modified, path));
         }
     }

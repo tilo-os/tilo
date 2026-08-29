@@ -9,9 +9,9 @@
 //!   * clicking **Mark installed** pins it.
 //!
 //! Env:
-//!   QOS_STORE_ITEM_ID   reverse-DNS package id (default dev.qos.hello)
-//!   QOS_STORE_ITEM_URL   http(s) URL of the .qpkg (required for `open`)
-//!   QOS_STORE_ITEM_NAME  display name (default derived from id)
+//!   `QOS_STORE_ITEM_ID`   reverse-DNS package id (default dev.qos.hello)
+//!   `QOS_STORE_ITEM_URL`   http(s) URL of the .qpkg (required for `open`)
+//!   `QOS_STORE_ITEM_NAME`  display name (default derived from id)
 //! Arg 1: `open` | `mark-installed`
 //!
 //! Exit code 0 = the driven action's outcome was ok.

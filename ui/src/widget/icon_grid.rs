@@ -209,7 +209,7 @@ impl Widget for IconGrid {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -223,11 +223,10 @@ impl Widget for IconGrid {
         // for one cell.
         let width = known
             .width
-            .map(|w| w as f64)
-            .unwrap_or(match available.width {
-                taffy::AvailableSpace::Definite(w) => w as f64,
+            .map_or(match available.width {
+                taffy::AvailableSpace::Definite(w) => f64::from(w),
                 _ => self.cell_w,
-            });
+            }, f64::from);
         let columns = self.columns_for_width(width);
         self.columns = columns;
         let height = self.content_height(columns);
@@ -240,10 +239,10 @@ impl Widget for IconGrid {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // Actual allocated width — measure may have run against a
         // different available width.
@@ -273,7 +272,7 @@ impl Widget for IconGrid {
                 } else {
                     theme.bg_hover
                 };
-                let shape = RoundedRect::from_rect(cell, tokens.radii.md as f64);
+                let shape = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
@@ -303,7 +302,7 @@ impl Widget for IconGrid {
                 self.cell_w - 8.0,
             );
             let (tw, _) = text_renderer.measure(&label, label_size, None);
-            let tx = cell.x0 + (self.cell_w - tw as f64) / 2.0;
+            let tx = cell.x0 + (self.cell_w - f64::from(tw)) / 2.0;
             let ty = icon_y + self.icon_px + 8.0;
             let label_color = if selected {
                 tokens
@@ -329,7 +328,7 @@ impl Widget for IconGrid {
         {
             let cell = self.cell_rect(i);
             if !presence.should_cull(cell) {
-                let ring = RoundedRect::from_rect(cell, tokens.radii.md as f64);
+                let ring = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
                 scene.stroke(
                     &vello::kurbo::Stroke::new(2.0),
                     transform,
@@ -405,16 +404,16 @@ impl Widget for IconGrid {
                 let cur = self.selection.primary();
                 let target = match &ke.logical_key {
                     Key::Named(NamedKey::ArrowRight) => {
-                        Some(cur.map(|c| (c + 1).min(len - 1)).unwrap_or(0))
+                        Some(cur.map_or(0, |c| (c + 1).min(len - 1)))
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
-                        Some(cur.map(|c| c.saturating_sub(1)).unwrap_or(0))
+                        Some(cur.map_or(0, |c| c.saturating_sub(1)))
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        Some(cur.map(|c| (c + cols).min(len - 1)).unwrap_or(0))
+                        Some(cur.map_or(0, |c| (c + cols).min(len - 1)))
                     }
                     Key::Named(NamedKey::ArrowUp) => {
-                        Some(cur.map(|c| c.saturating_sub(cols)).unwrap_or(0))
+                        Some(cur.map_or(0, |c| c.saturating_sub(cols)))
                     }
                     Key::Named(NamedKey::Enter) => {
                         if let (Some(c), Some(cb)) = (cur, self.on_activate.as_mut()) {
@@ -441,7 +440,7 @@ impl Widget for IconGrid {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "IconGrid"
     }
 
@@ -496,7 +495,7 @@ fn truncate_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -
         return String::new();
     }
     let (w, _) = tr.measure(text, size, None);
-    if (w as f64) <= max_w {
+    if f64::from(w) <= max_w {
         return text.to_string();
     }
     let chars: Vec<char> = text.chars().collect();
@@ -505,7 +504,7 @@ fn truncate_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -
         keep -= 1;
         let candidate: String = chars[..keep].iter().collect::<String>() + "…";
         let (cw, _) = tr.measure(&candidate, size, None);
-        if (cw as f64) <= max_w {
+        if f64::from(cw) <= max_w {
             return candidate;
         }
     }

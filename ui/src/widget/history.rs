@@ -193,14 +193,14 @@ pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
     }
     let mins = secs / 60;
     if mins < 60 {
-        return format!("{} min ago", mins);
+        return format!("{mins} min ago");
     }
     let hours = mins / 60;
     if hours < 24 {
-        return format!("{} h ago", hours);
+        return format!("{hours} h ago");
     }
     let days = hours / 24;
-    format!("{} d ago", days)
+    format!("{days} d ago")
 }
 
 /// `HSV(h, 0.65, 0.95)` → RGB. Saturation and value held constant so

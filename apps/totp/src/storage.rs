@@ -2,7 +2,7 @@
 //!
 //! TOTP secrets are long-lived bearer credentials, so the vault is never
 //! written as plaintext. It is sealed with **XChaCha20-Poly1305** (a
-//! 192-bit-nonce AEAD from the audited RustCrypto stack) under a 256-bit
+//! 192-bit-nonce AEAD from the audited `RustCrypto` stack) under a 256-bit
 //! key, and stored as `vault.enc` under the user data dir. A fresh random
 //! nonce is drawn for every write, so re-saving an unchanged vault still
 //! produces distinct ciphertext and no nonce is ever reused.
@@ -112,12 +112,9 @@ fn load_at(dir: &Path) -> Vault {
     let enc = dir.join("vault.enc");
     if enc.exists() {
         return match (load_or_create_key(dir), std::fs::read(&enc)) {
-            (Some(key), Ok(blob)) => match open(&key, &blob) {
-                Some(plaintext) => parse_vault(&plaintext),
-                None => {
-                    tracing::warn!("authenticator: vault decrypt failed; starting empty");
-                    Vault::new()
-                }
+            (Some(key), Ok(blob)) => if let Some(plaintext) = open(&key, &blob) { parse_vault(&plaintext) } else {
+                tracing::warn!("authenticator: vault decrypt failed; starting empty");
+                Vault::new()
             },
             _ => Vault::new(),
         };
@@ -126,20 +123,18 @@ fn load_at(dir: &Path) -> Vault {
     // Transparent upgrade: an older build left a plaintext vault. Parse it,
     // re-seal it, and remove the cleartext original.
     let legacy = legacy_plaintext_path_in(dir);
-    if let Ok(text) = std::fs::read_to_string(&legacy) {
-        if let Ok(file) = serde_json::from_str::<VaultFile>(&text) {
+    if let Ok(text) = std::fs::read_to_string(&legacy)
+        && let Ok(file) = serde_json::from_str::<VaultFile>(&text) {
             let mut v = Vault::new();
             v.accounts = file.accounts;
             v.renumber();
             save_at(dir, &v);
-            if enc.exists() {
-                if let Err(e) = std::fs::remove_file(&legacy) {
+            if enc.exists()
+                && let Err(e) = std::fs::remove_file(&legacy) {
                     tracing::warn!(error = %e, "authenticator: could not remove migrated plaintext vault");
                 }
-            }
             return v;
         }
-    }
 
     Vault::new()
 }
@@ -278,7 +273,7 @@ fn write_key_file(path: &Path, key: &[u8; KEY_LEN]) -> std::io::Result<()> {
 /// Fresh-install check: true when no vault has been persisted yet, so the
 /// app shows the empty state rather than fabricating sample accounts.
 pub fn is_first_run() -> bool {
-    vault_path().map(|p| !p.exists()).unwrap_or(true)
+    vault_path().is_none_or(|p| !p.exists())
 }
 
 /// Test/inspection helper: deserialize an account list from a JSON blob.
@@ -328,7 +323,7 @@ mod tests {
         // A different key can't open it.
         assert!(open(&[9u8; KEY_LEN], &blob).is_none());
         // A single flipped ciphertext byte fails authentication.
-        let mut tampered = blob.clone();
+        let mut tampered = blob;
         let last = tampered.len() - 1;
         tampered[last] ^= 0x01;
         assert!(open(&key, &tampered).is_none());

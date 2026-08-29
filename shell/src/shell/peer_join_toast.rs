@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 /// Events within this window since the first entry are folded into a
 /// single toast when drained.
-pub const BATCH_WINDOW: Duration = Duration::from_millis(1000);
+pub const BATCH_WINDOW: Duration = Duration::from_secs(1);
 
 /// Direction of the event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,12 +152,12 @@ fn format_batch(kind: PeerEventKind, batch: &[&QueuedEvent]) -> ReadyToast {
         },
         n if n <= 3 => ReadyToast {
             kind,
-            title: format!("{} peers {verb}", n),
+            title: format!("{n} peers {verb}"),
             body: names.join(", "),
         },
         n => ReadyToast {
             kind,
-            title: format!("{} peers {verb}", n),
+            title: format!("{n} peers {verb}"),
             body: format!("{}, {}, {}, +{} more", names[0], names[1], names[2], n - 3),
         },
     }

@@ -335,7 +335,7 @@ impl BottomPanel {
                     transform * Affine::translate((x, y + 5.0)),
                     None,
                 );
-                x += w as f64;
+                x += f64::from(w);
             }
         }
 
@@ -449,7 +449,7 @@ fn ellipsize_front(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Str
     if max_w <= 0.0 {
         return String::new();
     }
-    if (tr.measure(s, size, None).0 as f64) <= max_w {
+    if f64::from(tr.measure(s, size, None).0) <= max_w {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
@@ -457,11 +457,11 @@ fn ellipsize_front(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Str
     // not cost a measure per character per row.
     let (mut lo, mut hi) = (0usize, chars.len());
     while lo < hi {
-        let mid = (lo + hi) / 2;
+        let mid = usize::midpoint(lo, hi);
         let candidate: String = std::iter::once('\u{2026}')
             .chain(chars[mid..].iter().copied())
             .collect();
-        if (tr.measure(&candidate, size, None).0 as f64) <= max_w {
+        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
             hi = mid;
         } else {
             lo = mid + 1;
@@ -478,7 +478,7 @@ fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Stri
     if max_w <= 0.0 {
         return String::new();
     }
-    if (tr.measure(s, size, None).0 as f64) <= max_w {
+    if f64::from(tr.measure(s, size, None).0) <= max_w {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
@@ -490,7 +490,7 @@ fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Stri
             .copied()
             .chain(std::iter::once('\u{2026}'))
             .collect();
-        if (tr.measure(&candidate, size, None).0 as f64) <= max_w {
+        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
             lo = mid;
         } else {
             hi = mid - 1;
@@ -522,17 +522,17 @@ impl Widget for BottomPanel {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -580,9 +580,9 @@ impl Widget for BottomPanel {
             (PanelTab::Terminal, "Terminal".to_string()),
         ];
         let mut x = self.rect.x0 + 8.0;
-        for (tab, label) in labels.iter() {
+        for (tab, label) in &labels {
             let (w, _) = text_renderer.measure(label, 12.0, None);
-            let x1 = x + w as f64 + 24.0;
+            let x1 = x + f64::from(w) + 24.0;
             self.tab_rects.push((x, x1, *tab));
             let active = self.tab == *tab;
             let color = if active { c.text_primary } else { c.text_dim };
@@ -744,7 +744,7 @@ impl Widget for BottomPanel {
                     return;
                 }
                 let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     MouseScrollDelta::PixelDelta(p) => p.y / 20.0,
                 };
                 let step = (-lines).round() as i64;
@@ -794,7 +794,7 @@ impl Widget for BottomPanel {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BottomPanel"
     }
 

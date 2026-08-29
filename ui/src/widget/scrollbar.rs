@@ -222,11 +222,11 @@ impl Scrollbar {
     /// Set the hover state directly; returns `true` when it changed (so the
     /// owner can schedule a redraw only on an edge).
     pub fn set_hover(&mut self, hovered: bool) -> bool {
-        if self.hover != hovered {
+        if self.hover == hovered {
+            false
+        } else {
             self.hover = hovered;
             true
-        } else {
-            false
         }
     }
 

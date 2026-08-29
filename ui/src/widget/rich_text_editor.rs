@@ -511,8 +511,7 @@ impl RichTextEditor {
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
     text.char_indices()
         .nth(char_idx)
-        .map(|(b, _)| b)
-        .unwrap_or(text.len())
+        .map_or(text.len(), |(b, _)| b)
 }
 
 impl Widget for RichTextEditor {
@@ -549,7 +548,7 @@ impl Widget for RichTextEditor {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -573,8 +572,7 @@ impl Widget for RichTextEditor {
         let text_h = self
             .layout
             .as_ref()
-            .map(|l| l.height())
-            .unwrap_or(self.base_font_size * 1.4);
+            .map_or(self.base_font_size * 1.4, super::super::richtext::RichTextLayout::height);
         taffy::Size {
             width,
             height: text_h + 2.0 * PAD as f32,
@@ -584,10 +582,10 @@ impl Widget for RichTextEditor {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.layout_dirty = true;
     }
@@ -600,7 +598,7 @@ impl Widget for RichTextEditor {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         if self.frame {
             let body = RoundedRect::from_rect(self.rect, radius);
             scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &body);
@@ -620,7 +618,7 @@ impl Widget for RichTextEditor {
 
         // Bullet marker.
         if self.style == RichBlockStyle::Bullet {
-            let size = self.base_font_size as f64;
+            let size = f64::from(self.base_font_size);
             let cy = self.content_rect().y0 + size * 0.7;
             let cx = self.content_rect().x0 + BULLET_INDENT * 0.4;
             scene.fill(
@@ -638,7 +636,7 @@ impl Widget for RichTextEditor {
             if r.start < r.end {
                 let sel = theme.accent_primary.with_alpha_factor(0.30);
                 for (x0, y0, x1, y1) in layout.selection_rects(r.start, r.end) {
-                    let rect = Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64);
+                    let rect = Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
                     scene.fill(Fill::NonZero, t, sel, None, &rect);
                 }
             }
@@ -667,10 +665,10 @@ impl Widget for RichTextEditor {
             let (_dt, _dm, caret_disp, _pr) = self.display_state();
             let (cx, top, h) = layout.caret_geometry(caret_disp);
             let caret = Rect::new(
-                cx as f64,
-                top as f64,
-                cx as f64 + CARET_WIDTH,
-                (top + h) as f64,
+                f64::from(cx),
+                f64::from(top),
+                f64::from(cx) + CARET_WIDTH,
+                f64::from(top + h),
             );
             scene.fill(Fill::NonZero, t, theme.accent_primary, None, &caret);
         }
@@ -717,8 +715,7 @@ impl Widget for RichTextEditor {
                 let now = Instant::now();
                 let is_double = self
                     .last_click_time
-                    .map(|t| now.duration_since(t) < MULTI_CLICK)
-                    .unwrap_or(false);
+                    .is_some_and(|t| now.duration_since(t) < MULTI_CLICK);
                 self.last_click_time = Some(now);
                 self.click_count = if is_double { self.click_count + 1 } else { 1 };
 
@@ -889,7 +886,7 @@ impl Widget for RichTextEditor {
                         if !ctrl
                             && let Some(t) = text
                             && !t.is_empty()
-                            && !t.chars().all(|c| c.is_control())
+                            && !t.chars().all(char::is_control)
                         {
                             self.insert_str(state, t);
                             *handled = true;
@@ -901,7 +898,7 @@ impl Widget for RichTextEditor {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RichTextEditor"
     }
 
@@ -940,8 +937,7 @@ impl Widget for RichTextEditor {
 
     fn needs_commit(&self) -> bool {
         self.last_edit_time
-            .map(|t| t.elapsed() >= Duration::from_secs(1))
-            .unwrap_or(false)
+            .is_some_and(|t| t.elapsed() >= Duration::from_secs(1))
     }
     fn on_commit(&mut self) {
         self.last_edit_time = None;

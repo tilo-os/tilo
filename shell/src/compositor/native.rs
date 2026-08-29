@@ -189,12 +189,11 @@ pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> O
 /// the unlink guard so the file disappears with the process.
 fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop> {
     let path = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
-    if let Some(dir) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(dir) {
+    if let Some(dir) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(dir) {
             eprintln!("nirios compositor: publishing {}: {e}", path.display());
             return None;
         }
-    }
     // 0600: not a secret, but nothing else should write it; applied before
     // the rename so it's never briefly visible wider than intended.
     match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
@@ -253,7 +252,7 @@ struct FrameBuilderControlState<'a> {
     doc: Option<(&'a AutoCommit, &'a ObjId)>,
 }
 
-impl<'a> ControlState for FrameBuilderControlState<'a> {
+impl ControlState for FrameBuilderControlState<'_> {
     fn widget_registry(&self) -> HashMap<String, Rect> {
         self.fb.widget_registry()
     }
@@ -579,8 +578,7 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             "may_administer_active": chrome
                 .tree()
                 .active_workspace()
-                .map(|ws| ws.may_administer(&chrome.local_user_id))
-                .unwrap_or(false),
+                .is_some_and(|ws| ws.may_administer(&chrome.local_user_id)),
             // The peer-sync card's contents — the invite token, exposed for scripts as it is on screen.
             "peer_sync": {
                 "invite_token": chrome.peer_sync_invite_token,
@@ -757,7 +755,7 @@ fn apply_modifier_mask(ctx: &mut TestControlCtx, ctrl: bool, shift: bool, alt: b
 }
 
 /// Synthesise the [`WindowEvent`] for one [`PlannedAction`] and dispatch it
-/// through the FrameBuilder's shared `dispatch_event` wire — the same wire
+/// through the `FrameBuilder`'s shared `dispatch_event` wire — the same wire
 /// `ShellDriver::dispatch` uses in-process. `device_id` is zeroed since
 /// winit's `DeviceId` isn't inspected by the host.
 ///
@@ -808,7 +806,7 @@ fn execute_planned_action(
                 "test_control: set {} group(s) to {permille}permille",
                 touched.len()
             );
-            fb.with_chrome(|st| st.bump());
+            fb.with_chrome(super::super::shell::chrome_state::ChromeState::bump);
         }
         PlannedAction::MouseLeftButton { pressed } => {
             let event = WindowEvent::MouseInput {
@@ -1087,7 +1085,7 @@ fn write_snapshot_png(
     // intact renderer or empty slot) — recover rather than compound the failure.
     let mut slot = cache
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let stale = match slot.as_ref() {
         Some(renderer) => renderer.width != w || renderer.height != h,
         None => true,
@@ -1344,8 +1342,8 @@ fn apply_session_transition(
 /// Whether an event is the hardware power key being pressed — detected by
 /// both the logical [`NamedKey::Power`] and physical key code, keymap-independent.
 fn is_power_key(event: &WindowEvent) -> bool {
-    if let WindowEvent::KeyboardInput { event, .. } = event {
-        if event.state == ElementState::Pressed {
+    if let WindowEvent::KeyboardInput { event, .. } = event
+        && event.state == ElementState::Pressed {
             if matches!(event.logical_key, Key::Named(NamedKey::Power)) {
                 return true;
             }
@@ -1353,7 +1351,6 @@ fn is_power_key(event: &WindowEvent) -> bool {
                 return code == winit::keyboard::KeyCode::Power;
             }
         }
-    }
     false
 }
 
@@ -1428,13 +1425,11 @@ fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: &Modifiers) -> bo
 }
 
 fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
-    if let WindowEvent::KeyboardInput { event, .. } = event {
-        if event.state == ElementState::Pressed && modifiers.state().super_key() {
-            if let Key::Character(s) = &event.logical_key {
+    if let WindowEvent::KeyboardInput { event, .. } = event
+        && event.state == ElementState::Pressed && modifiers.state().super_key()
+            && let Key::Character(s) = &event.logical_key {
                 return s.eq_ignore_ascii_case("l");
             }
-        }
-    }
     false
 }
 
@@ -1458,7 +1453,7 @@ fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
         _ => {
             // Some layouts deliver typed text on otherwise-Named keys.
             match &event.text {
-                Some(t) if !t.is_empty() && !t.chars().all(|c| c.is_control()) => {
+                Some(t) if !t.is_empty() && !t.chars().all(char::is_control) => {
                     LockKey::Text(t.to_string())
                 }
                 _ => LockKey::Ignored,
@@ -1595,9 +1590,7 @@ fn spawn_session_collab_broker(
     // in a real session dials it (apps use the capnp descriptor), so it goes
     // beside the service socket rather than at `QUICK_COLLAB_SOCK` — honoured
     // when set so in-tree tools and legacy tests keep working.
-    let json_path = std::env::var_os("QUICK_COLLAB_SOCK")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| launcher::services::services_root().join("collab-json.sock"));
+    let json_path = std::env::var_os("QUICK_COLLAB_SOCK").map_or_else(|| launcher::services::services_root().join("collab-json.sock"), std::path::PathBuf::from);
 
     match crate::shell::collab_broker::spawn_full(
         json_path.clone(),
@@ -1858,7 +1851,7 @@ pub fn run() -> ! {
                 tracing::info!("peer-sync: actor spawned, default workspace joined");
                 let net = Arc::new(handle);
                 let bridge_net = Arc::clone(&net);
-                let bridge_tree = tree_handle.clone();
+                let bridge_tree = tree_handle;
                 frame_builder
                     .host_mut()
                     .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
@@ -1946,7 +1939,7 @@ pub fn run() -> ! {
 
     event_loop
         .handle()
-        .insert_source(listening_socket, move |client_stream, _, state| {
+        .insert_source(listening_socket, move |client_stream, (), state| {
             // Each accepted connection becomes a wayland-server `Client`; attach a
             // `ClientState` so `client_compositor_state` can fish out the per-client state later.
             if let Err(err) = state
@@ -1970,7 +1963,7 @@ pub fn run() -> ! {
             eprintln!("nirios compositor privileged socket on {path:?}");
             if let Err(err) = event_loop.handle().insert_source(
                 privileged_socket,
-                move |client_stream, _, state| {
+                move |client_stream, (), state| {
                     if let Err(err) = state
                         .display_handle
                         .insert_client(client_stream, ClientState::privileged_arc())
@@ -2113,22 +2106,19 @@ pub fn run() -> ! {
     // comes from the backend's display; a fixed post-tick sleep instead
     // measures 21.9ms/45.6Hz regardless of actual rate. `QOS_REFRESH_HZ` overrides for testing.
     let refresh_override = pacing::refresh_override_from_env();
-    let mut frame_clock = match refresh_override.or_else(|| backend.refresh_interval()) {
-        Some(interval) => {
-            eprintln!(
-                "nirios compositor: pacing to {:.3} Hz",
-                1.0 / interval.as_secs_f64()
-            );
-            pacing::FrameClock::new(interval, Instant::now())
-        }
-        None => {
-            // No display to follow (headless, or a host that won't say) — fall back rather than invent a rate.
-            eprintln!(
-                "nirios compositor: backend reports no refresh rate; pacing to {:.3} Hz",
-                1.0 / pacing::FALLBACK_INTERVAL.as_secs_f64()
-            );
-            pacing::FrameClock::fallback(Instant::now())
-        }
+    let mut frame_clock = if let Some(interval) = refresh_override.or_else(|| backend.refresh_interval()) {
+        eprintln!(
+            "nirios compositor: pacing to {:.3} Hz",
+            1.0 / interval.as_secs_f64()
+        );
+        pacing::FrameClock::new(interval, Instant::now())
+    } else {
+        // No display to follow (headless, or a host that won't say) — fall back rather than invent a rate.
+        eprintln!(
+            "nirios compositor: backend reports no refresh rate; pacing to {:.3} Hz",
+            1.0 / pacing::FALLBACK_INTERVAL.as_secs_f64()
+        );
+        pacing::FrameClock::fallback(Instant::now())
     };
     let frame_period = frame_clock.interval();
 
@@ -2141,7 +2131,7 @@ pub fn run() -> ! {
         let (ping, ping_source) = calloop::ping::make_ping().expect("create present-retire ping");
         event_loop
             .handle()
-            .insert_source(ping_source, |_, _, _| {
+            .insert_source(ping_source, |(), (), _| {
                 // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
             })
             .expect("insert present-retire ping source");
@@ -2154,7 +2144,7 @@ pub fn run() -> ! {
     // `wl_output` globals: advertising the manager without an output means no
     // client learns a display exists. Synced here at startup and on every hotplug.
     let mut output_globals = output_globals::OutputGlobals::new();
-    let display_handle_for_outputs = display_handle.clone();
+    let display_handle_for_outputs = display_handle;
     {
         let outs = backend.outputs().to_vec();
         state.set_output_layout(&outs);
@@ -2175,7 +2165,7 @@ pub fn run() -> ! {
     // (input/resize/focus/redraw); the widget tree is animating; the chrome
     // revision bumped; a session transition fired; or the keepalive interval
     // elapsed (safety net, refresh within a second). Layout still runs every tick for hit-testing; only paint+submit are gated.
-    let keepalive = Duration::from_millis(1000);
+    let keepalive = Duration::from_secs(1);
     let mut last_paint = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
@@ -2232,17 +2222,15 @@ pub fn run() -> ! {
                         }
                         // A resize also means the window moved monitors or the mode changed;
                         // retarget the clock so "pace to the display" stays true. The env override still wins.
-                        if refresh_override.is_none() {
-                            if let Some(interval) = backend.refresh_interval() {
-                                if frame_clock.set_interval(interval) {
+                        if refresh_override.is_none()
+                            && let Some(interval) = backend.refresh_interval()
+                                && frame_clock.set_interval(interval) {
                                     eprintln!(
                                         "nirios compositor: display changed; now pacing to {:.3} Hz",
                                         1.0 / interval.as_secs_f64()
                                     );
                                     metrics.set_target_period(interval);
                                 }
-                            }
-                        }
                     }
                 }
                 BackendEvent::Input(wev) => {
@@ -2415,17 +2403,15 @@ pub fn run() -> ! {
                 &outs,
                 refresh_mhz_of(&*backend),
             );
-            if refresh_override.is_none() {
-                if let Some(interval) = backend.refresh_interval() {
-                    if frame_clock.set_interval(interval) {
+            if refresh_override.is_none()
+                && let Some(interval) = backend.refresh_interval()
+                    && frame_clock.set_interval(interval) {
                         eprintln!(
                             "nirios compositor: display configuration changed; now pacing to {:.3} Hz",
                             1.0 / interval.as_secs_f64()
                         );
                         metrics.set_target_period(interval);
                     }
-                }
-            }
         }
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
@@ -2545,7 +2531,7 @@ pub fn run() -> ! {
                 foreign::reconcile_foreign_tabs(&state.workspace_tree, &mut rendered)
             };
             if mirrored {
-                frame_builder.with_chrome(|st| st.bump());
+                frame_builder.with_chrome(super::super::shell::chrome_state::ChromeState::bump);
             }
             // The mirror above is the single source of tab adoption, so the input
             // router's own queues are pure bookkeeping — drained each tick so they can't grow across a long session.
@@ -2629,7 +2615,7 @@ pub fn run() -> ! {
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
         let keepalive_due = last_paint.elapsed() >= keepalive;
-        metrics.mark_pump(iter_t0.elapsed() - t_input_done);
+        metrics.mark_pump(iter_t0.elapsed().checked_sub(t_input_done).unwrap());
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
         let content_changed = force_first_paint
@@ -2645,12 +2631,11 @@ pub fn run() -> ! {
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
         // Is there room in the pipe? Building another scene while the render
         // thread is behind would only grow the queue (and input-to-photon latency); capped at `QUEUE_DEPTH + 1`, the tick still services input/clients without rendering.
-        let pipe_ready = present_pipe.as_ref().is_none_or(|p| p.has_capacity());
-        if content_changed && cadence_due && !pipe_ready {
-            if let Some(p) = present_pipe.as_mut() {
+        let pipe_ready = present_pipe.as_ref().is_none_or(super::present::PresentPipe::has_capacity);
+        if content_changed && cadence_due && !pipe_ready
+            && let Some(p) = present_pipe.as_mut() {
                 p.note_backpressure();
             }
-        }
         let should_paint = content_changed && cadence_due && pipe_ready;
 
         // Diagnostic: `QOS_PAINT_STATS=1` logs every ~2s how many frames painted
@@ -2685,13 +2670,10 @@ pub fn run() -> ! {
                      {:.3} Hz target | present={} backpressure={}",
                     1.0 / frame_clock.interval().as_secs_f64(),
                     present_pipe
-                        .as_ref()
-                        .map(|p| p.presented().to_string())
-                        .unwrap_or_else(|| "inline".to_string()),
+                        .as_ref().map_or_else(|| "inline".to_string(), |p| p.presented().to_string()),
                     present_pipe
                         .as_ref()
-                        .map(|p| p.backpressured())
-                        .unwrap_or(0),
+                        .map_or(0, super::present::PresentPipe::backpressured),
                 );
                 frames_total = 0;
                 frames_painted = 0;
@@ -2721,8 +2703,8 @@ pub fn run() -> ! {
                     .outputs()
                     .iter()
                     .map(|o| LockOutput {
-                        origin: (o.position.0 as f64, o.position.1 as f64),
-                        size: (o.size.0 as f64, o.size.1 as f64),
+                        origin: (f64::from(o.position.0), f64::from(o.position.1)),
+                        size: (f64::from(o.size.0), f64::from(o.size.1)),
                     })
                     .collect();
                 let lock_outputs = if lock_outputs.is_empty() {
@@ -2775,15 +2757,12 @@ pub fn run() -> ! {
             metrics.mark_scene(t_scene_start.elapsed());
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
-            let async_present = match present_pipe.as_mut() {
-                Some(pipe) => {
-                    render_thread_lost = !pipe.submit(scene, OutputId(0));
-                    true
-                }
-                None => {
-                    backend.submit_frame(&scene, OutputId(0));
-                    false
-                }
+            let async_present = if let Some(pipe) = present_pipe.as_mut() {
+                render_thread_lost = !pipe.submit(scene, OutputId(0));
+                true
+            } else {
+                backend.submit_frame(&scene, OutputId(0));
+                false
             };
             if render_thread_lost {
                 // Presentation is dead but the session isn't — clients stay served and
@@ -2821,11 +2800,10 @@ pub fn run() -> ! {
 
         // Confirm an `ext_session_lock_v1` client's lock only after the overlay is
         // presented and locked, so `locked` never fires while app content could still show; a failed lock notifies the client automatically.
-        if session.is_locked() {
-            if let Some(locker) = state.session_lock.take_pending_locker() {
+        if session.is_locked()
+            && let Some(locker) = state.session_lock.take_pending_locker() {
                 locker.lock();
             }
-        }
 
         // Accept new test-control connections, drain pending bytes from each open
         // one (parses commands, writes JSON responses); closed ones are collected below. Non-blocking so the frame-pacing loop never stalls.
@@ -2844,7 +2822,7 @@ pub fn run() -> ! {
                     }
                 }
             }
-            for conn in test_control_conns.iter_mut() {
+            for conn in &mut test_control_conns {
                 let injected = pump_test_control_conn(
                     conn,
                     &mut frame_builder,
@@ -2862,7 +2840,7 @@ pub fn run() -> ! {
             test_control_conns.retain(|c| !c.closed);
         }
         let t_testctl_done = iter_t0.elapsed();
-        metrics.mark_testctl(t_testctl_done - t_paint_done);
+        metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap());
 
         // Drain wayland client traffic and push updates back out: `dispatch_clients`
         // advances each client's request queue through the `*Handler` impls, `flush_clients` pumps server events back. Mirrors smithay 0.7's minimal example.
@@ -2878,15 +2856,15 @@ pub fn run() -> ! {
             break;
         }
         let t_work_done = iter_t0.elapsed();
-        metrics.mark_clients(t_work_done - t_testctl_done);
+        metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap());
         if loop_timing && t_work_done > Duration::from_millis(100) {
             eprintln!(
                 "SLOW-ITER total_work={:?} | input={:?} paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
                 t_work_done,
                 t_input_done,
-                t_paint_done - t_input_done,
-                t_testctl_done - t_paint_done,
-                t_work_done - t_testctl_done,
+                t_paint_done.checked_sub(t_input_done).unwrap(),
+                t_testctl_done.checked_sub(t_paint_done).unwrap(),
+                t_work_done.checked_sub(t_testctl_done).unwrap(),
             );
         }
 
@@ -2902,24 +2880,21 @@ pub fn run() -> ! {
         }
         metrics.mark_sleep(t_sleep_start.elapsed());
         metrics.end_tick();
-        if let Some(deadline) = run_deadline {
-            if Instant::now() >= deadline {
+        if let Some(deadline) = run_deadline
+            && Instant::now() >= deadline {
                 close_requested = true;
             }
-        }
         let _ = &state.display_handle;
 
         // Serialize the live `WorkspaceTree` to the requested path, via a
         // tempfile-in-the-same-dir + rename so a concurrently-polling test always sees a consistent snapshot.
-        if let Some(path) = test_dump_path.as_ref() {
-            if let Ok(json) = serde_json::to_vec(&state.workspace_tree) {
-                if let Err(e) =
+        if let Some(path) = test_dump_path.as_ref()
+            && let Ok(json) = serde_json::to_vec(&state.workspace_tree)
+                && let Err(e) =
                     atomic_file::write_creating_parent(std::path::Path::new(path), &json)
                 {
                     tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
                 }
-            }
-        }
     }
 
     // Stop the render thread and wait for the frame in flight, so a
@@ -3777,9 +3752,9 @@ fn output_geometry(
         .iter()
         .filter(|o| o.size.0 > 0 && o.size.1 > 0)
         .map(|o| crate::shell::overlay_host::OutputGeometry {
-            x: o.position.0 as f64,
-            width: o.size.0 as f64,
-            height: o.size.1 as f64,
+            x: f64::from(o.position.0),
+            width: f64::from(o.size.0),
+            height: f64::from(o.size.1),
         })
         .collect()
 }

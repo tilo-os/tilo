@@ -13,9 +13,11 @@ use crate::shell::state::{
 
 /// Where a newly-adopted toplevel should land — a new window group or a tab in an existing one — decided on purpose rather than inherited from wherever the tree walk landed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum Placement {
     /// Its own window group, right of the active group in the active strip. What a **launch** gets:
     /// a new task, not a tab hidden in whatever group happens to be focused; inserted beside the focused group so the strip doesn't scroll away on every launch.
+    #[default]
     NewGroup,
     /// A tab inside an existing group. What a **document opened from another app** gets, so the
     /// strip doesn't grow a column every peek. Falls back to [`Placement::NewGroup`] when the named group no longer exists.
@@ -28,11 +30,6 @@ pub enum Placement {
     IntoTab(TabId),
 }
 
-impl Default for Placement {
-    fn default() -> Self {
-        Placement::NewGroup
-    }
-}
 
 /// Adopt a freshly-committed wayland toplevel into the active workspace's tab tree, at the
 /// placement the launch asked for.
@@ -64,7 +61,7 @@ pub fn adopt_toplevel_at(
     app_id: Option<String>,
     placement: Placement,
 ) -> TabId {
-    let resolved_id = app_id.unwrap_or_else(|| format!("anon-{}", surface_id));
+    let resolved_id = app_id.unwrap_or_else(|| format!("anon-{surface_id}"));
     // A window started *for* an existing tab is bound into it rather than placed beside it, before the tab is minted.
     if let Placement::IntoTab(target) = placement
         && bind_into_tab(tree, target, &resolved_id, surface_id)
@@ -189,8 +186,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
             .tabs
             .iter()
             .position(|t| t.id == group.active_tab)
-            .map(|i| i + 1)
-            .unwrap_or(group.tabs.len());
+            .map_or(group.tabs.len(), |i| i + 1);
         group.tabs.insert(after, new_tab);
         group.active_tab = tab_id;
         let group_id = group.id;
@@ -215,8 +211,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     .or(active_group);
     let insert_at = anchor
         .and_then(|g| strip.window_groups.iter().position(|w| w.id == g))
-        .map(|i| i + 1)
-        .unwrap_or(strip.window_groups.len());
+        .map_or(strip.window_groups.len(), |i| i + 1);
     strip.window_groups.insert(insert_at, group);
     tree.active_strip.insert(ws_id, strip_id);
     tree.set_active_group(strip_id, group_id);
@@ -232,21 +227,19 @@ pub fn rename_tab_for_app_id(
     new_app_id: String,
 ) -> bool {
     let new_title = tab_label_for_foreign(&new_app_id);
-    for ws in tree.workspaces.iter_mut() {
-        for strip in ws.strips.iter_mut() {
-            for group in strip.window_groups.iter_mut() {
-                for tab in group.tabs.iter_mut() {
+    for ws in &mut tree.workspaces {
+        for strip in &mut ws.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
                     if let TileContent::Foreign {
                         surface_id: s,
                         app_id,
                     } = &mut tab.tile
-                    {
-                        if *s == surface_id {
+                        && *s == surface_id {
                             *app_id = new_app_id;
                             tab.title = new_title;
                             return true;
                         }
-                    }
                 }
             }
         }
@@ -257,9 +250,9 @@ pub fn rename_tab_for_app_id(
 /// Resolve the [`GroupId`] owning the `TileContent::Foreign` tab bound to `surface_id`. Used by
 /// `xdg_toplevel.set_fullscreen` to find which group to promote; `None` when the surface was never adopted (e.g. racing surface teardown).
 pub fn group_id_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<GroupId> {
-    for ws in tree.workspaces.iter() {
-        for strip in ws.strips.iter() {
-            for group in strip.window_groups.iter() {
+    for ws in &tree.workspaces {
+        for strip in &ws.strips {
+            for group in &strip.window_groups {
                 if group.tabs.iter().any(|t| {
                     matches!(
                         &t.tile,
@@ -280,9 +273,9 @@ pub fn close_tab_for_destroyed_surface(
     tree: &mut WorkspaceTree,
     destroyed_surface_id: u64,
 ) -> bool {
-    for ws in tree.workspaces.iter_mut() {
-        for strip in ws.strips.iter_mut() {
-            for group in strip.window_groups.iter_mut() {
+    for ws in &mut tree.workspaces {
+        for strip in &mut ws.strips {
+            for group in &mut strip.window_groups {
                 if let Some(pos) = group.tabs.iter().position(|t| {
                     matches!(
                         &t.tile,
@@ -293,7 +286,7 @@ pub fn close_tab_for_destroyed_surface(
                     let removed = group.tabs.remove(pos);
                     // If the removed tab was active, fall back to the new last tab; a stale id is tolerated by the chrome's resolver, which picks the first existing tab.
                     if group.active_tab == removed.id {
-                        group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
+                        group.active_tab = group.tabs.last().map_or(0, |t| t.id);
                     }
                     return true;
                 }
@@ -307,15 +300,15 @@ pub fn close_tab_for_destroyed_surface(
 /// front. The undo for a placement whose window never came — a failed launch takes its
 /// placeholder away rather than leaving a dead card. [`close_tab_for_destroyed_surface`] is the same removal keyed on a surface.
 pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
-    for ws in tree.workspaces.iter_mut() {
-        for strip in ws.strips.iter_mut() {
-            for group in strip.window_groups.iter_mut() {
+    for ws in &mut tree.workspaces {
+        for strip in &mut ws.strips {
+            for group in &mut strip.window_groups {
                 let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) else {
                     continue;
                 };
                 group.tabs.remove(pos);
                 if group.active_tab == tab_id {
-                    group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
+                    group.active_tab = group.tabs.last().map_or(0, |t| t.id);
                 }
                 return true;
             }

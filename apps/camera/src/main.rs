@@ -169,7 +169,7 @@ fn parse_flag(args: &[String], flag: &str) -> Option<String> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
@@ -267,7 +267,7 @@ mod tests {
     fn viewport_flag_seeds_dimensions_and_width_height_override() {
         let args: Vec<String> = ["camera", "--shots", "out.png", "--viewport", "1280x800"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         let (dw, dh) = DEFAULT_SHOTS_VIEWPORT;
         let (vw, vh) = parse_flag(&args, "--viewport")
@@ -284,7 +284,7 @@ mod tests {
         // An explicit --width still wins over the alias.
         let args2: Vec<String> = ["camera", "--viewport", "1280x800", "--width", "640"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         let (vw2, _vh2) = parse_flag(&args2, "--viewport")
             .and_then(|s| parse_viewport(&s))

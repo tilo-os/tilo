@@ -189,8 +189,7 @@ impl StoreItem {
     pub fn latest_version(&self) -> &str {
         self.versions
             .first()
-            .map(|v| v.version.as_str())
-            .unwrap_or("")
+            .map_or("", |v| v.version.as_str())
     }
 
     /// Which primary action the card should offer this frame.
@@ -261,11 +260,7 @@ impl StoreItem {
     pub fn install_rank(&self) -> u8 {
         if self.installed.is_pinned() {
             2
-        } else if self.installed.is_installed() {
-            1
-        } else {
-            0
-        }
+        } else { u8::from(self.installed.is_installed()) }
     }
 
     /// Case-insensitive substring match against name + description.
@@ -352,7 +347,7 @@ mod tests {
         StoreItem {
             id: format!("dev.qos.{}", name.to_ascii_lowercase()),
             name: name.into(),
-            description: format!("Some {} app", name),
+            description: format!("Some {name} app"),
             categories: vec!["Productivity".into()],
             icon_url: None,
             homepage_url: None,
@@ -374,9 +369,9 @@ mod tests {
 
     fn flatpak_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
-            id: format!("org.example.{}", name),
+            id: format!("org.example.{name}"),
             name: name.into(),
-            description: format!("{} on Flathub", name),
+            description: format!("{name} on Flathub"),
             categories: vec!["Games".into()],
             icon_url: None,
             homepage_url: None,

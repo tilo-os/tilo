@@ -108,7 +108,7 @@ pub enum SheetsAction {
         fmt: String,
     },
     /// Write a batch of cells in one change — a paste, a fill-down/right, or an
-    /// AutoSum totals row. One action per bulk operation keeps it a single undo
+    /// `AutoSum` totals row. One action per bulk operation keeps it a single undo
     /// boundary, a single actor-pinned change, and a byte-identical replay,
     /// rather than a change per cell.
     SetCells { sheet: usize, cells: Vec<CellWrite> },
@@ -359,7 +359,7 @@ pub fn set_cell_action(
         col: addr.0,
         row: addr.1,
         raw: raw.to_string(),
-        fmt: fmt.map(|f| f.as_str()),
+        fmt: fmt.map(super::model::CellFormat::as_str),
     }
 }
 
@@ -373,7 +373,7 @@ pub fn set_format_action(sheet: usize, addr: Addr, fmt: CellFormat) -> SheetsAct
     }
 }
 
-/// Write a batch of cells (paste / fill / AutoSum totals) in one change. Each
+/// Write a batch of cells (paste / fill / `AutoSum` totals) in one change. Each
 /// entry is `(addr, raw, optional format)`; an empty `raw` clears the cell.
 pub fn set_cells_action(
     sheet: usize,
@@ -387,7 +387,7 @@ pub fn set_cells_action(
                 col: addr.0,
                 row: addr.1,
                 raw,
-                fmt: fmt.map(|f| f.as_str()),
+                fmt: fmt.map(super::model::CellFormat::as_str),
             })
             .collect(),
     }
@@ -551,8 +551,7 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Reso
                     .trim()
                     .parse::<u32>()
                     .ok()
-                    .map(|n| n.saturating_sub(1))
-                    .unwrap_or(0);
+                    .map_or(0, |n| n.saturating_sub(1));
                 encode(&insert_row_action(idx, at))
             },
         ));
@@ -742,7 +741,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             SheetsDoc::sheet_count(&mut state.doc),

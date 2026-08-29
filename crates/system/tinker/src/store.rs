@@ -279,7 +279,7 @@ impl Store {
             bail!("path must not contain '..'");
         }
         let target = self.upper_dir(name).join(rel);
-        if !target.symlink_metadata().is_ok() {
+        if target.symlink_metadata().is_err() {
             bail!("layer '{name}' did not change {}", logical.display());
         }
         if target.symlink_metadata()?.is_dir() {
@@ -315,8 +315,7 @@ fn validate_name(name: &str) -> Result<()> {
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn dirs_data_home() -> Option<PathBuf> {

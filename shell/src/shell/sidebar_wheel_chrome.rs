@@ -147,8 +147,7 @@ impl SidebarWheelChrome {
             .cards
             .iter()
             .find(|c| Some(c.id) == self.active)
-            .map(|c| c.collab_count)
-            .unwrap_or(0);
+            .map_or(0, |c| c.collab_count);
     }
 
     pub fn active_collaborator_count(&self) -> usize {
@@ -156,7 +155,7 @@ impl SidebarWheelChrome {
     }
 
     pub fn card_collab_count(&self, idx: usize) -> usize {
-        self.cards.get(idx).map(|c| c.collab_count).unwrap_or(0)
+        self.cards.get(idx).map_or(0, |c| c.collab_count)
     }
 
     pub fn take_intent(&mut self) -> Option<SidebarIntent> {
@@ -170,9 +169,7 @@ impl SidebarWheelChrome {
 
 fn workspace_initial(name: &str) -> String {
     name.chars()
-        .next()
-        .map(|c| c.to_ascii_uppercase().to_string())
-        .unwrap_or_else(|| "·".to_string())
+        .next().map_or_else(|| "·".to_string(), |c| c.to_ascii_uppercase().to_string())
 }
 
 impl Widget for SidebarWheelChrome {
@@ -208,17 +205,17 @@ impl Widget for SidebarWheelChrome {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let pad_top = 16.0_f64;
         let pad_x = 12.0_f64;
@@ -255,7 +252,7 @@ impl Widget for SidebarWheelChrome {
             self.rect.y1 - backdrop_inset_y,
         );
         if backdrop.width() > 0.0 && backdrop.height() > 0.0 {
-            let backdrop_rr = RoundedRect::from_rect(backdrop, (tokens.radii.lg * 1.5) as f64);
+            let backdrop_rr = RoundedRect::from_rect(backdrop, f64::from(tokens.radii.lg * 1.5));
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -306,7 +303,7 @@ impl Widget for SidebarWheelChrome {
             let x0 = collapsed_x0 as f32 + (expanded_x0 as f32 - collapsed_x0 as f32) * eased;
             let x1 = collapsed_x1 as f32 + (expanded_x1 as f32 - collapsed_x1 as f32) * eased;
             let opacity = 0.2 + 0.8 * eased;
-            let pill_rect = Rect::new(x0 as f64, pill_y0, x1 as f64, pill_y1);
+            let pill_rect = Rect::new(f64::from(x0), pill_y0, f64::from(x1), pill_y1);
             let radius = pill_rect.height() / 2.0;
             let pill = RoundedRect::from_rect(pill_rect, radius);
             // Base alpha 13/255 fill, 26/255 border, scaled by opacity.
@@ -333,7 +330,7 @@ impl Widget for SidebarWheelChrome {
         // is visible inside the sidebar rect. Fades in with the pill.
         if eased > 0.0 {
             let cx = self.rect.x0 + 50.0;
-            let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+            let cy = f64::midpoint(self.rect.y0, self.rect.y1);
             let rim = Circle::new((cx, cy), 600.0);
             // Clipped to the sidebar bounds so it doesn't bleed into
             // the desktop beside the wheel.
@@ -370,7 +367,7 @@ impl Widget for SidebarWheelChrome {
             } else {
                 transform
             };
-            let pill = RoundedRect::from_rect(card.rect, tokens.radii.md as f64);
+            let pill = RoundedRect::from_rect(card.rect, f64::from(tokens.radii.md));
             if is_active {
                 ui::surface::soft_shadow(
                     scene,
@@ -405,7 +402,7 @@ impl Widget for SidebarWheelChrome {
                         card.rect.x1 + 1.0,
                         card.rect.y1 + 1.0,
                     ),
-                    (tokens.radii.md + 1.0) as f64,
+                    f64::from(tokens.radii.md + 1.0),
                 );
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.5),
@@ -418,8 +415,8 @@ impl Widget for SidebarWheelChrome {
 
             let glyph_size = tokens.typography.scale.xl;
             let (gw, gh) = text_renderer.measure(&card.label, glyph_size, None);
-            let cx = (card.rect.x0 + card.rect.x1) / 2.0 - gw as f64 / 2.0;
-            let cy = card.rect.y0 + card.rect.height() * 0.30 - gh as f64 / 2.0;
+            let cx = f64::midpoint(card.rect.x0, card.rect.x1) - f64::from(gw) / 2.0;
+            let cy = card.rect.y0 + card.rect.height() * 0.30 - f64::from(gh) / 2.0;
             let glyph_color = if is_active {
                 colors.text_primary
             } else {
@@ -441,8 +438,8 @@ impl Widget for SidebarWheelChrome {
             };
             let sub_size = tokens.typography.scale.xs;
             let (sw, sh) = text_renderer.measure(&subtitle, sub_size, None);
-            let sx = (card.rect.x0 + card.rect.x1) / 2.0 - sw as f64 / 2.0;
-            let sy = card.rect.y0 + card.rect.height() * 0.72 - sh as f64 / 2.0;
+            let sx = f64::midpoint(card.rect.x0, card.rect.x1) - f64::from(sw) / 2.0;
+            let sy = card.rect.y0 + card.rect.height() * 0.72 - f64::from(sh) / 2.0;
             let sub_color = if is_active {
                 colors.text_primary
             } else {
@@ -468,7 +465,7 @@ impl Widget for SidebarWheelChrome {
                 let row_w = shown as f64 * (dot_r * 2.0)
                     + (shown as f64 - 1.0).max(0.0) * gap
                     + if overflow > 0 { 14.0 } else { 0.0 };
-                let base_x = (card.rect.x0 + card.rect.x1) / 2.0 - row_w / 2.0;
+                let base_x = f64::midpoint(card.rect.x0, card.rect.x1) - row_w / 2.0;
                 let dot_y = card.rect.y1 - 10.0;
                 let dot_color = if is_active {
                     colors.text_primary
@@ -490,14 +487,14 @@ impl Widget for SidebarWheelChrome {
                 }
                 if overflow > 0 {
                     let chip_x = base_x + shown as f64 * (dot_r * 2.0 + gap);
-                    let s = format!("+{}", overflow);
+                    let s = format!("+{overflow}");
                     let (tw, th) = text_renderer.measure(&s, tokens.typography.scale.xs, None);
                     text_renderer.draw_text(
                         scene,
                         &s,
                         tokens.typography.scale.xs,
                         dot_color,
-                        card_xform * Affine::translate((chip_x, dot_y - th as f64 / 2.0)),
+                        card_xform * Affine::translate((chip_x, dot_y - f64::from(th) / 2.0)),
                         None,
                     );
                     let _ = tw; // only the ascent-based y alignment is needed
@@ -511,7 +508,7 @@ impl Widget for SidebarWheelChrome {
         } else {
             colors.neutral[0]
         };
-        let plus_pill = RoundedRect::from_rect(self.plus_rect, tokens.radii.md as f64);
+        let plus_pill = RoundedRect::from_rect(self.plus_rect, f64::from(tokens.radii.md));
         scene.fill(Fill::NonZero, transform, plus_fill, None, &plus_pill);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0]),
@@ -520,8 +517,8 @@ impl Widget for SidebarWheelChrome {
             None,
             &plus_pill,
         );
-        let cx = (self.plus_rect.x0 + self.plus_rect.x1) / 2.0;
-        let cy = (self.plus_rect.y0 + self.plus_rect.y1) / 2.0;
+        let cx = f64::midpoint(self.plus_rect.x0, self.plus_rect.x1);
+        let cy = f64::midpoint(self.plus_rect.y0, self.plus_rect.y1);
         let r = 10.0_f64;
         let plus = BezPath::from_iter([
             PathEl::MoveTo(Point::new(cx - r, cy)),
@@ -569,23 +566,21 @@ impl Widget for SidebarWheelChrome {
                         self.drag_accum += dy;
                         // Down → later workspace (+1), matching scroll-wheel sign.
                         while self.drag_accum >= DRAG_SWITCH_THRESHOLD_PX {
-                            if let Some(chrome) = self.chrome.clone() {
-                                if !chrome.borrow_mut().switch_workspace(1) {
+                            if let Some(chrome) = self.chrome.clone()
+                                && !chrome.borrow_mut().switch_workspace(1) {
                                     // Hit the bottom — stop consuming travel.
                                     self.drag_accum = 0.0;
                                     break;
                                 }
-                            }
                             self.drag_accum -= DRAG_SWITCH_THRESHOLD_PX;
                             *handled = true;
                         }
                         while self.drag_accum <= -DRAG_SWITCH_THRESHOLD_PX {
-                            if let Some(chrome) = self.chrome.clone() {
-                                if !chrome.borrow_mut().switch_workspace(-1) {
+                            if let Some(chrome) = self.chrome.clone()
+                                && !chrome.borrow_mut().switch_workspace(-1) {
                                     self.drag_accum = 0.0;
                                     break;
                                 }
-                            }
                             self.drag_accum += DRAG_SWITCH_THRESHOLD_PX;
                             *handled = true;
                         }
@@ -596,8 +591,7 @@ impl Widget for SidebarWheelChrome {
                 // Content scrolling shouldn't steal workspace switching.
                 let over_sidebar = self
                     .last_cursor
-                    .map(|p| self.rect.contains(p))
-                    .unwrap_or(false);
+                    .is_some_and(|p| self.rect.contains(p));
                 if !over_sidebar {
                     return;
                 }
@@ -607,20 +601,18 @@ impl Widget for SidebarWheelChrome {
                 };
                 self.scroll_accum += dy;
                 while self.scroll_accum >= 1.0 {
-                    if let Some(chrome) = self.chrome.clone() {
-                        if !chrome.borrow_mut().switch_workspace(-1) {
+                    if let Some(chrome) = self.chrome.clone()
+                        && !chrome.borrow_mut().switch_workspace(-1) {
                             break;
                         }
-                    }
                     self.scroll_accum -= 1.0;
                     *handled = true;
                 }
                 while self.scroll_accum <= -1.0 {
-                    if let Some(chrome) = self.chrome.clone() {
-                        if !chrome.borrow_mut().switch_workspace(1) {
+                    if let Some(chrome) = self.chrome.clone()
+                        && !chrome.borrow_mut().switch_workspace(1) {
                             break;
                         }
-                    }
                     self.scroll_accum += 1.0;
                     *handled = true;
                 }
@@ -639,7 +631,7 @@ impl Widget for SidebarWheelChrome {
                         let wheel = SidebarWheel::new();
                         {
                             let mut tree = state.tree_mut();
-                            let _ = wheel.click_management_new_workspace(&mut *tree);
+                            let _ = wheel.click_management_new_workspace(&mut tree);
                         }
                         state.bump();
                     }
@@ -661,9 +653,9 @@ impl Widget for SidebarWheelChrome {
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
                 ..
-            } => {
+            }
                 // Rotations already applied incrementally in `CursorMoved`.
-                if self.drag_start_y.is_some() {
+                if self.drag_start_y.is_some() => {
                     let was_drag = self.drag_moved;
                     self.drag_start_y = None;
                     self.drag_last_y = None;
@@ -686,12 +678,11 @@ impl Widget for SidebarWheelChrome {
                         *handled = true;
                     }
                 }
-            }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SidebarWheelChrome"
     }
 

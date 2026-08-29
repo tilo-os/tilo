@@ -188,7 +188,7 @@ impl NotificationBridge {
 
     /// Test/observability: number of incoming notifications buffered but not yet drained by the chrome pump.
     pub fn pending_incoming_len(&self) -> usize {
-        self.inner.lock().map(|g| g.incoming.len()).unwrap_or(0)
+        self.inner.lock().map_or(0, |g| g.incoming.len())
     }
 }
 

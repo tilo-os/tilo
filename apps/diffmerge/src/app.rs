@@ -335,9 +335,7 @@ impl DiffMergeApp {
     /// the two-file flow is unit-testable without a host dialog.
     fn consume_pick(&mut self, path: &Path) -> bool {
         let label = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.display().to_string());
+            .file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().to_string());
         let content = fs::read_to_string(path)
             .unwrap_or_else(|e| format!("<could not read {}: {e}>", path.display()));
         match self.pending_left.take() {
@@ -385,7 +383,7 @@ impl DiffMergeApp {
         let seg_h = 28.0;
         let mode_labels: [&str; 2] = ["Diff", "3-way merge"];
         let mode_actions = [Action::ModeDiff, Action::ModeMerge];
-        let selected = if self.mode == Mode::Merge { 1 } else { 0 };
+        let selected = usize::from(self.mode == Mode::Merge);
         let mut mode_rects: Vec<Rect> = Vec::with_capacity(mode_labels.len());
         let mut x = r.x0 + 16.0;
         for label in mode_labels {
@@ -582,17 +580,17 @@ impl Widget for DiffMergeApp {
                 &[content],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // Drive the active view to the content rect directly so mode switches
         // don't require a taffy rebuild to position correctly.
@@ -759,7 +757,7 @@ impl Widget for DiffMergeApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DiffMergeApp"
     }
 

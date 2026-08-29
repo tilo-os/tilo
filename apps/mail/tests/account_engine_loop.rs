@@ -50,7 +50,7 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         ..Default::default()
     };
     cfg.password = "app-password".into();
-    AccountStore::single(cfg.clone())
+    AccountStore::single(cfg)
         .persist_in(&root)
         .expect("persist account to the shared store");
 
@@ -124,7 +124,7 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     // length of a second build to the engine's. The exact bytes the engine puts
     // on the wire are asserted by the `--features live` SMTP socket test, which
     // captures the server-side DATA.
-    let from = Addr::new(loaded.display_name.clone(), loaded.email.clone());
+    let from = Addr::new(loaded.display_name.clone(), loaded.email);
     let mime = build_mime(&from, &draft).expect("build MIME");
     let text = String::from_utf8_lossy(&mime);
     assert!(

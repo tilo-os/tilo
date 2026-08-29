@@ -140,7 +140,7 @@ impl NameField {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -166,11 +166,11 @@ impl NameField {
             &shown,
             size,
             color,
-            transform * Affine::translate((rect.x0 + 7.0, rect.center().y - size as f64 / 2.0)),
+            transform * Affine::translate((rect.x0 + 7.0, rect.center().y - f64::from(size) / 2.0)),
             None,
         );
         let (w, _) = tr.measure(&shown, size, None);
-        let caret_x = (rect.x0 + 8.0 + w as f64).min(rect.x1 - 4.0);
+        let caret_x = (rect.x0 + 8.0 + f64::from(w)).min(rect.x1 - 4.0);
         scene.stroke(
             &Stroke::new(1.5),
             transform,
@@ -198,11 +198,11 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
     if budget <= 0.0 {
         return String::new();
     }
-    if tr.measure(s, size, None).0 as f64 <= budget {
+    if f64::from(tr.measure(s, size, None).0) <= budget {
         return s.to_string();
     }
     const ELLIPSIS: &str = "\u{2026}";
-    let ell_w = tr.measure(ELLIPSIS, size, None).0 as f64;
+    let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
     if ell_w > budget {
         return String::new();
     }
@@ -212,7 +212,7 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
         let candidate: String = s.chars().take(mid).collect();
-        if tr.measure(&candidate, size, None).0 as f64 <= inner {
+        if f64::from(tr.measure(&candidate, size, None).0) <= inner {
             lo = mid;
         } else {
             hi = mid - 1;
@@ -232,11 +232,11 @@ pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> Strin
     if budget <= 0.0 {
         return String::new();
     }
-    if tr.measure(s, size, None).0 as f64 <= budget {
+    if f64::from(tr.measure(s, size, None).0) <= budget {
         return s.to_string();
     }
     const ELLIPSIS: &str = "\u{2026}";
-    let ell_w = tr.measure(ELLIPSIS, size, None).0 as f64;
+    let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
     if ell_w > budget {
         return String::new();
     }
@@ -245,7 +245,7 @@ pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> Strin
     let mut take = 0usize;
     while take < chars.len() {
         let candidate: String = chars[chars.len() - take - 1..].iter().collect();
-        if tr.measure(&candidate, size, None).0 as f64 > inner {
+        if f64::from(tr.measure(&candidate, size, None).0) > inner {
             break;
         }
         take += 1;

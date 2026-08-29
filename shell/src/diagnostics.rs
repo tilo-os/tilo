@@ -8,7 +8,7 @@
 //! + capture path, set once at session start.
 //!
 //! [`Clone`] + a single mutex-protected inner, so the actor's receive
-//! loop, the PeerView paint pass, and the OSD overlay share one handle.
+//! loop, the `PeerView` paint pass, and the OSD overlay share one handle.
 
 use std::sync::{Arc, Mutex};
 
@@ -233,7 +233,7 @@ impl PeerSurfaceMetrics {
             inner.clock_offset_ns = None;
             return;
         }
-        let offset = (receiver_ns_at_recv as i128) - (sender_ns_at_send as i128);
+        let offset = i128::from(receiver_ns_at_recv) - i128::from(sender_ns_at_send);
         inner.clock_offset_ns = Some(offset);
     }
 
@@ -248,8 +248,8 @@ impl PeerSurfaceMetrics {
         let offset = inner.clock_offset_ns?;
         // The sender's `ts` on the receiver's clock is `wire_ts_ns + offset` —
         // the "moment of capture" in the receiver's monotonic domain; latency is now minus that.
-        let capture_on_receiver = (wire_ts_ns as i128) + offset;
-        let latency = (receiver_now_ns as i128) - capture_on_receiver;
+        let capture_on_receiver = i128::from(wire_ts_ns) + offset;
+        let latency = i128::from(receiver_now_ns) - capture_on_receiver;
         if latency < 0 {
             None
         } else {
@@ -277,7 +277,7 @@ impl PeerSurfaceMetrics {
         let (latency_ns_mean, latency_ns_max) = if latency_samples == 0 {
             (0, 0)
         } else {
-            let sum: u128 = inner.latency_ring.iter().map(|s| *s as u128).sum();
+            let sum: u128 = inner.latency_ring.iter().map(|s| u128::from(*s)).sum();
             let mean = (sum / latency_samples as u128) as u64;
             let max = inner.latency_ring.iter().copied().max().unwrap_or(0);
             (mean, max)

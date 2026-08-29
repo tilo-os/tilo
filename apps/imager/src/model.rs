@@ -141,7 +141,7 @@ impl TargetKind {
         match tran {
             Some("usb") => TargetKind::Usb,
             Some("nvme") => TargetKind::Nvme,
-            Some("sata") | Some("ata") => {
+            Some("sata" | "ata") => {
                 if removable {
                     TargetKind::Usb
                 } else if rota {
@@ -227,7 +227,7 @@ impl TargetDrive {
             labels.join(", ")
         )
     }
-    /// Does the image fit? (Raw writes need image_size ≤ drive size.)
+    /// Does the image fit? (Raw writes need `image_size` ≤ drive size.)
     pub fn fits(&self, image_size: u64) -> bool {
         image_size == 0 || image_size <= self.size
     }
@@ -745,7 +745,7 @@ pub fn fmt_eta(secs: u64) -> String {
 // seed so the screenshot is deterministic offline.
 // ---------------------------------------------------------------------------
 
-/// Two target drives: a USB stick (the flash target) and an internal NVMe
+/// Two target drives: a USB stick (the flash target) and an internal `NVMe`
 /// (the install target), exactly the spec the screenshot calls for.
 pub fn sample_targets() -> Vec<TargetDrive> {
     vec![

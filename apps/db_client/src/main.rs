@@ -39,13 +39,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // narrow ⇒ collapsed overlay). `--empty` captures the real live app
         // (no saved connections) instead of the seeded demo.
         let root = if args.iter().any(|a| a == "--empty") {
-            db_client::app_root_for_shot_empty(viewport.0 as f64)
+            db_client::app_root_for_shot_empty(f64::from(viewport.0))
         } else if args.iter().any(|a| a == "--status") {
             // `--status` arms the floating status bubble fully visible so the
             // chip that replaced the bottom status strip is captured.
-            db_client::app_root_for_shot_status(viewport.0 as f64)
+            db_client::app_root_for_shot_status(f64::from(viewport.0))
         } else {
-            db_client::app_root_for_shot(viewport.0 as f64)
+            db_client::app_root_for_shot(f64::from(viewport.0))
         };
         render_shot_to_png(root, viewport, &out)?;
         return Ok(());
@@ -105,7 +105,7 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),

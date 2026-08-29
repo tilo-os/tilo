@@ -24,7 +24,9 @@ pub type AccountId = Uuid;
 /// HMAC hash used by the TOTP construction. Mirrors the `algorithm`
 /// parameter of an `otpauth://` URI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Algorithm {
+    #[default]
     Sha1,
     Sha256,
     Sha512,
@@ -62,11 +64,6 @@ impl Algorithm {
     }
 }
 
-impl Default for Algorithm {
-    fn default() -> Self {
-        Algorithm::Sha1
-    }
-}
 
 /// One 2FA account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,10 +111,10 @@ impl Account {
     /// a single word takes its first two letters ("GitHub" → "GI") so the
     /// avatar stays distinctive rather than collapsing to one glyph.
     pub fn initials(&self) -> String {
-        let source = if !self.issuer.trim().is_empty() {
-            self.issuer.trim()
-        } else {
+        let source = if self.issuer.trim().is_empty() {
             self.label.trim()
+        } else {
+            self.issuer.trim()
         };
         let words: Vec<&str> = source.split_whitespace().collect();
         let out: String = match words.as_slice() {
@@ -136,10 +133,10 @@ impl Account {
     /// Human display title: "Issuer" or, when there is no issuer, the
     /// label. Never empty for a well-formed account.
     pub fn title(&self) -> &str {
-        if !self.issuer.trim().is_empty() {
-            &self.issuer
-        } else {
+        if self.issuer.trim().is_empty() {
             &self.label
+        } else {
+            &self.issuer
         }
     }
 
@@ -147,8 +144,7 @@ impl Account {
     /// validity gate the add form uses to enable Save.
     pub fn secret_is_valid(&self) -> bool {
         crate::totp::decode_secret(&self.secret)
-            .map(|b| !b.is_empty())
-            .unwrap_or(false)
+            .is_some_and(|b| !b.is_empty())
     }
 }
 
@@ -205,8 +201,7 @@ impl Vault {
             .iter()
             .map(|a| a.order)
             .max()
-            .map(|m| m + 1)
-            .unwrap_or(0)
+            .map_or(0, |m| m + 1)
     }
 
     /// Remove an account and re-densify the remaining order values.
@@ -345,10 +340,10 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
         Some((iss, acc)) => (iss.trim().to_string(), acc.trim().to_string()),
         None => (String::new(), label.trim().to_string()),
     };
-    let issuer = if !issuer_param.trim().is_empty() {
-        issuer_param.trim().to_string()
-    } else {
+    let issuer = if issuer_param.trim().is_empty() {
         label_issuer
+    } else {
+        issuer_param.trim().to_string()
     };
 
     Ok(Account {

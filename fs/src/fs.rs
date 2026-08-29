@@ -27,7 +27,7 @@
 //! `write` but not `read`, which no production caller writes. The same
 //! reasoning covers `rmdir` on a directory whose only remaining children
 //! are hidden: `EROFS`, not `ENOTEMPTY`.
-use fuser::*;
+use fuser::{Filesystem, FileType, INodeNo, ReplyEmpty, Errno, ReplyXattr, OpenAccMode, Request, KernelConfig, ReplyEntry, Generation, FileHandle, ReplyAttr, ReplyDirectory, OpenFlags, ReplyOpen, FopenFlags, LockOwner, ReplyData, ReplyCreate, WriteFlags, ReplyWrite, TimeOrNow, BsdFileFlags, RenameFlags};
 use libc::{EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -191,11 +191,10 @@ impl QuickFS {
     /// change and cached so multi-chunk reads and `getattr` are cheap + consistent.
     fn document_export(&self, ino: u64) -> Option<Vec<u8>> {
         let heads = self.namespace.lock().unwrap().heads();
-        if let Some((h, bytes)) = self.doc_exports.lock().unwrap().get(&ino) {
-            if *h == heads {
+        if let Some((h, bytes)) = self.doc_exports.lock().unwrap().get(&ino)
+            && *h == heads {
                 return Some(bytes.clone());
             }
-        }
         let (heads, bytes) = {
             let mut ns = self.namespace.lock().unwrap();
             let bytes = ns.export_document(ino, &self.registry)?;
@@ -236,7 +235,7 @@ impl QuickFS {
             let ns = self.namespace.lock().unwrap();
             let name = ns
                 .path_for(ino)
-                .and_then(|p| p.rsplit('/').next().map(|s| s.to_string()))?;
+                .and_then(|p| p.rsplit('/').next().map(std::string::ToString::to_string))?;
             (name, ns.hash_for(ino), ns.thumb_hash(ino))
         };
         let category = thumbnail::category_for_path(std::path::Path::new(&name));
@@ -253,13 +252,11 @@ impl QuickFS {
 
         // A peer gossiped a thumbnail blob — hydrate the tiny blob (ahead of
         // the content) and adopt it.
-        if let Some(tbh) = thumb_hash {
-            if let Some(png) = self.read_blob_blocking(tbh) {
-                if let Some(out) = provider.adopt(ch, png) {
+        if let Some(tbh) = thumb_hash
+            && let Some(png) = self.read_blob_blocking(tbh)
+                && let Some(out) = provider.adopt(ch, png) {
                     return Some(out);
                 }
-            }
-        }
 
         let bytes = self.local_content_blocking(content_hash)?;
         let png = provider.generate(ch, category, &bytes)?;
@@ -417,15 +414,14 @@ impl QuickFS {
     fn visible_dir_nlink(&self, ino: u64) -> u32 {
         let subdirs = self
             .visible_entries(ino)
-            .map(|entries| {
+            .map_or(0, |entries| {
                 entries
                     .iter()
                     .filter(|(_, kind, name)| {
                         *kind == FileType::Directory && name != "." && name != ".."
                     })
                     .count()
-            })
-            .unwrap_or(0);
+            });
         2u32.saturating_add(subdirs as u32)
     }
 
@@ -567,8 +563,8 @@ impl QuickFS {
             }
             if expect_dir {
                 // A directory must be empty to rmdir (entries beyond "." "..").
-                if let Some(entries) = ns.readdir(attr.ino.0) {
-                    if entries.len() > 2 {
+                if let Some(entries) = ns.readdir(attr.ino.0)
+                    && entries.len() > 2 {
                         // Emptiness is judged on the real tree, since removing the directory
                         // takes its hidden children with it — if the app's own listing said
                         // empty, `ENOTEMPTY` would announce something it can't see, so this
@@ -576,12 +572,10 @@ impl QuickFS {
                         drop(ns);
                         let visible = self
                             .visible_entries(attr.ino.0)
-                            .map(|e| e.len())
-                            .unwrap_or(0);
+                            .map_or(0, |e| e.len());
                         reply.error(to_errno(if visible > 2 { ENOTEMPTY } else { EROFS }));
                         return;
                     }
-                }
             }
             if !ns.remove(attr.ino.0) {
                 reply.error(to_errno(ENOENT));
@@ -623,8 +617,7 @@ fn child_path(dir: &str, name: &str) -> String {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn slice(bytes: &[u8], offset: u64, size: u32) -> Vec<u8> {
@@ -634,7 +627,7 @@ fn slice(bytes: &[u8], offset: u64, size: u32) -> Vec<u8> {
 }
 
 /// The ACL accesses an open of the given mode requires: read for
-/// O_RDONLY, write for O_WRONLY, both for O_RDWR.
+/// `O_RDONLY`, write for `O_WRONLY`, both for `O_RDWR`.
 fn required_accesses(mode: OpenAccMode) -> &'static [Access] {
     match mode {
         OpenAccMode::O_RDONLY => &[Access::Read],
@@ -823,7 +816,7 @@ impl Filesystem for QuickFS {
         let hydrator = self.hydrator.clone();
         let rt = hydrator.runtime_handle.clone();
         let res = tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read(hash, offset, size as u64).await })
+            rt.block_on(async move { hydrator.read(hash, offset, u64::from(size)).await })
         });
         match res {
             Ok(data) => reply.data(&data),
@@ -905,12 +898,9 @@ impl Filesystem for QuickFS {
         let seed = if absent {
             // Seed from current content (export for documents, hydrated bytes
             // for opaque files) so a partial/append write modifies it correctly.
-            match self.read_full_blocking(ino.0) {
-                Ok(d) => Some(d),
-                Err(_) => {
-                    reply.error(to_errno(EIO));
-                    return;
-                }
+            if let Ok(d) = self.read_full_blocking(ino.0) { Some(d) } else {
+                reply.error(to_errno(EIO));
+                return;
             }
         } else {
             None
@@ -1008,21 +998,17 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        if size.is_some() {
-            if let Err(e) = self.check_access(ino.0, Access::Write) {
+        if size.is_some()
+            && let Err(e) = self.check_access(ino.0, Access::Write) {
                 reply.error(to_errno(e));
                 return;
             }
-        }
         // Handle truncation/extension; ignore perm/owner/time changes.
         if let Some(new_size) = size {
             let is_doc = self.is_document(ino.0);
-            let mut data = match self.read_full_blocking(ino.0) {
-                Ok(d) => d,
-                Err(_) => {
-                    reply.error(to_errno(EIO));
-                    return;
-                }
+            let mut data = if let Ok(d) = self.read_full_blocking(ino.0) { d } else {
+                reply.error(to_errno(EIO));
+                return;
             };
             data.resize(new_size as usize, 0);
             let open = self.write_buffers.lock().unwrap().contains_key(&ino.0);
@@ -1180,7 +1166,7 @@ impl Filesystem for QuickFS {
             let exists = ns.getattr(ino.0).is_some();
             let name = ns
                 .path_for(ino.0)
-                .and_then(|p| p.rsplit('/').next().map(|s| s.to_string()));
+                .and_then(|p| p.rsplit('/').next().map(std::string::ToString::to_string));
             (exists, name)
         };
         if !exists {
@@ -1195,8 +1181,7 @@ impl Filesystem for QuickFS {
         let previewable = self.thumbs.is_some()
             && name
                 .as_deref()
-                .map(|n| thumbnail::category_for_path(std::path::Path::new(n)).has_preview())
-                .unwrap_or(false);
+                .is_some_and(|n| thumbnail::category_for_path(std::path::Path::new(n)).has_preview());
         if previewable {
             buf.extend_from_slice(crate::syncstate::THUMB_XATTR.as_bytes());
             buf.push(0);
@@ -1246,7 +1231,7 @@ mod thumb_tests {
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let provider = ThumbProvider::open(&thumb_dir).unwrap();
         let fs =
-            QuickFS::new(namespace.clone(), hydrator.clone(), heuristics).with_thumbs(provider);
+            QuickFS::new(namespace.clone(), hydrator, heuristics).with_thumbs(provider);
         (namespace, store, fs)
     }
 

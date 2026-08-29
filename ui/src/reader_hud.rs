@@ -1,4 +1,4 @@
-//! Shared reading-surface chrome for the document readers (ebook, pdf_viewer),
+//! Shared reading-surface chrome for the document readers (ebook, `pdf_viewer`),
 //! so both present the *same* selection affordances with the same spacing,
 //! hover, and selected-state treatment:
 //!
@@ -107,15 +107,15 @@ impl SelectionHud {
         anchor: Point,
         bounds: Rect,
     ) -> Self {
-        use dims::*;
+        use dims::{DOT_R, DOT_GAP, PILL_GAP, TRASH, SEP_W, PAD, HEIGHT, ANCHOR_GAP};
         let mut hud = SelectionHud::default();
 
         let n = swatches.len().max(1) as f64;
         let dots_w = n * (DOT_R * 2.0) + (n - 1.0).max(0.0) * DOT_GAP;
         let (cw, _) = tr.measure_weighted("Copy", 13.0, None, TextWeight::Medium);
-        let copy_w = cw as f64 + 24.0;
+        let copy_w = f64::from(cw) + 24.0;
         let (nw, _) = tr.measure_weighted("Note", 13.0, None, TextWeight::Medium);
-        let note_w = nw as f64 + 24.0;
+        let note_w = f64::from(nw) + 24.0;
         let note_extra = if show_note { PILL_GAP + note_w } else { 0.0 };
         let trash_extra = if show_delete { TRASH + 8.0 } else { 0.0 };
         let sep_w = if swatches.is_empty() { 0.0 } else { SEP_W };

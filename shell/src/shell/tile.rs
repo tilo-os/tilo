@@ -79,7 +79,7 @@ pub struct WindowGroup {
 
 impl WindowGroup {
     pub fn with_tabs(tabs: Vec<Tab>, width: WindowWidth) -> Self {
-        let active_tab = tabs.first().map(|t| t.id).unwrap_or(0);
+        let active_tab = tabs.first().map_or(0, |t| t.id);
         Self {
             id: next_runtime_id(),
             tabs,
@@ -131,7 +131,7 @@ impl WorkspaceTree {
         let active = workspaces
             .first()
             .map(|w| w.id)
-            .unwrap_or_else(WorkspaceId::new);
+            .unwrap_or_default();
         Self { workspaces, active }
     }
 }

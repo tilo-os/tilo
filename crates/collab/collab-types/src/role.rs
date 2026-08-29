@@ -111,7 +111,7 @@ pub enum ArtifactKind {
 /// Owner permits everything (including Govern). Editor permits every
 /// class except Govern, on every kind. Commenter permits Comment only.
 /// Viewer and Denied permit nothing. Exhaustive — every (Role,
-/// ArtifactKind, OpClass) triple has a defined answer, cross-checked by
+/// `ArtifactKind`, `OpClass`) triple has a defined answer, cross-checked by
 /// `tests/role_table.rs`.
 ///
 /// This is a wire-protocol decision: adding a row is fine, but flipping

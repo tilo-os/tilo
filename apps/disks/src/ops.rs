@@ -68,14 +68,14 @@ impl CommandSpec {
     fn new(program: &str, args: &[&str]) -> Self {
         CommandSpec {
             program: program.to_string(),
-            args: args.iter().map(|s| s.to_string()).collect(),
+            args: args.iter().map(std::string::ToString::to_string).collect(),
         }
     }
 }
 
 /// Encode a kernel device leaf name (`sda1`, `nvme0n1p2`, `dm-0`) into the
 /// udisks2 `block_devices` object-path suffix. Every byte outside `[A-Za-z0-9]`
-/// becomes `_<hex>` — the GDBus object-path escaping udisks uses (so `dm-0`
+/// becomes `_<hex>` — the `GDBus` object-path escaping udisks uses (so `dm-0`
 /// maps to `dm_2d0`).
 pub fn udisks_object_path(dev_leaf: &str) -> String {
     let mut s = String::from("/org/freedesktop/UDisks2/block_devices/");
@@ -247,11 +247,10 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
         let _ = f.seek(SeekFrom::Start(off));
         let _ = f.read(&mut small);
     }
-    let avg_ms = sstart.elapsed().as_secs_f64() * 1000.0 / SEEKS as f64;
+    let avg_ms = sstart.elapsed().as_secs_f64() * 1000.0 / f64::from(SEEKS);
 
     Ok(format!(
-        "{}: {mbs:.0} MB/s sequential read · {avg_ms:.2} ms avg seek",
-        path
+        "{path}: {mbs:.0} MB/s sequential read · {avg_ms:.2} ms avg seek"
     ))
 }
 

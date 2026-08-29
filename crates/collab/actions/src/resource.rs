@@ -1,4 +1,4 @@
-//! The nested **Resource** tree an app publishes, and the **ActionSpec**s
+//! The nested **Resource** tree an app publishes, and the **`ActionSpec`**s
 //! each resource exports.
 //!
 //! A [`Resource`] is something the app currently has *open/presented*

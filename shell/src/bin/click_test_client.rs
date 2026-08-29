@@ -122,8 +122,8 @@ impl WindowHandler for ClientApp {
         configure: WindowConfigure,
         _serial: u32,
     ) {
-        self.width = configure.new_size.0.map(|w| w.get()).unwrap_or(256);
-        self.height = configure.new_size.1.map(|h| h.get()).unwrap_or(256);
+        self.width = configure.new_size.0.map_or(256, std::num::NonZero::get);
+        self.height = configure.new_size.1.map_or(256, std::num::NonZero::get);
         let (buffer, canvas) = self
             .pool
             .create_buffer(
@@ -193,7 +193,7 @@ impl PointerHandler for ClientApp {
                 }
                 PointerEventKind::Press { .. } => {
                     let (x, y) = event.position;
-                    println!("EVENT:CLICK AT {:.1},{:.1}", x, y);
+                    println!("EVENT:CLICK AT {x:.1},{y:.1}");
                 }
                 _ => {}
             }

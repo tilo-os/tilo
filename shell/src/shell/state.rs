@@ -229,7 +229,7 @@ pub(crate) const PEER_ID_SALT_SHIFT: u32 = 48;
 pub(crate) fn next_id() -> u64 {
     let counter = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
     let counter = counter & PEER_ID_COUNTER_MASK;
-    let salt = NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed) as u64;
+    let salt = u64::from(NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed));
     (salt << PEER_ID_SALT_SHIFT) | counter
 }
 
@@ -341,8 +341,8 @@ impl WindowWidth {
     /// [`LEGACY_PIXEL_REFERENCE_WIDTH`].
     pub fn from_legacy_pixels(px: u32) -> Self {
         WindowWidth::Fraction(ui::widget::permille_for_px(
-            px as f64,
-            LEGACY_PIXEL_REFERENCE_WIDTH as f64,
+            f64::from(px),
+            f64::from(LEGACY_PIXEL_REFERENCE_WIDTH),
         ))
     }
 }
@@ -779,8 +779,7 @@ pub fn session_handle(peer: u64) -> String {
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 impl Capability {
@@ -1121,7 +1120,7 @@ impl Workspace {
                     best = Some(match best {
                         Some(prev) if prev.implies(c.verb) => prev,
                         _ => c.verb,
-                    })
+                    });
                 }
                 // A room-wide Restrict below Read is how a member is
                 // blocked without being erased from history.
@@ -1215,7 +1214,7 @@ impl Workspace {
                     best = Some(match best {
                         Some(prev) if prev.implies(c.verb) => prev,
                         _ => c.verb,
-                    })
+                    });
                 }
                 Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
                 Effect::Restrict => {}
@@ -1333,8 +1332,7 @@ impl Workspace {
             && self
                 .shared_surfaces
                 .get(&surface_id)
-                .map(|p| p.is_empty())
-                .unwrap_or(false)
+                .is_some_and(std::collections::HashSet::is_empty)
         {
             self.shared_surfaces.remove(&surface_id);
         }
@@ -1347,8 +1345,7 @@ impl Workspace {
     pub fn is_surface_shared(&self, surface_id: u64) -> bool {
         self.shared_surfaces
             .get(&surface_id)
-            .map(|peers| !peers.is_empty())
-            .unwrap_or(false)
+            .is_some_and(|peers| !peers.is_empty())
     }
 }
 
@@ -1943,7 +1940,7 @@ impl WorkspaceTree {
         // the wire that `apply_room_changes` would only refuse anyway.
         let governs = self.governs_room(room);
 
-        let doc = self.room_docs.entry(room).or_insert_with(AutoCommit::new);
+        let doc = self.room_docs.entry(room).or_default();
 
         // Identity first: the receiver checks this field against the
         // room it asked for, so an unlabelled document could be applied
@@ -2048,20 +2045,17 @@ impl WorkspaceTree {
     ) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-        let peers_id = match doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() {
-            Some((_, id)) => id,
-            None => {
-                // Don't mint an empty map — a room nobody has named
-                // anyone in produces no change at all.
-                if names.is_empty() {
+        let peers_id = if let Some((_, id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() { id } else {
+            // Don't mint an empty map — a room nobody has named
+            // anyone in produces no change at all.
+            if names.is_empty() {
+                return;
+            }
+            match doc.put_object(&ROOT, Self::ROOM_PEERS_KEY, ObjType::Map) {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::error!(?err, "room doc: peers map");
                     return;
-                }
-                match doc.put_object(&ROOT, Self::ROOM_PEERS_KEY, ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: peers map");
-                        return;
-                    }
                 }
             }
         };
@@ -2239,7 +2233,7 @@ impl WorkspaceTree {
                         doc,
                         &group_entry,
                         "width_permille",
-                        group.width.permille() as u64,
+                        u64::from(group.width.permille()),
                     );
                     put_bool_if_changed(doc, &group_entry, "maximized", group.maximized);
                     // `active_tab` is not written here. It is the one
@@ -2349,7 +2343,7 @@ impl WorkspaceTree {
             return Vec::new();
         };
         let mut strips: Vec<ReplicatedStrip> = Vec::new();
-        for skey in doc.keys(&contents_id).collect::<Vec<_>>() {
+        for skey in doc.keys(&contents_id) {
             let Some(sid) = Self::contents_key_id(&skey) else {
                 continue;
             };
@@ -2358,7 +2352,7 @@ impl WorkspaceTree {
             };
             let mut groups: Vec<ReplicatedGroup> = Vec::new();
             if let Some((_, groups_id)) = doc.get(&strip_entry, "groups").ok().flatten() {
-                for gkey in doc.keys(&groups_id).collect::<Vec<_>>() {
+                for gkey in doc.keys(&groups_id) {
                     let Some(gid) = Self::contents_key_id(&gkey) else {
                         continue;
                     };
@@ -2368,7 +2362,7 @@ impl WorkspaceTree {
                     };
                     let mut tabs: Vec<ReplicatedTab> = Vec::new();
                     if let Some((_, tabs_id)) = doc.get(&group_entry, "tabs").ok().flatten() {
-                        for tkey in doc.keys(&tabs_id).collect::<Vec<_>>() {
+                        for tkey in doc.keys(&tabs_id) {
                             let Some(tid) = Self::contents_key_id(&tkey) else {
                                 continue;
                             };
@@ -2397,7 +2391,7 @@ impl WorkspaceTree {
                         id: gid,
                         order: uint(&group_entry, "order").unwrap_or(u64::MAX),
                         width: uint(&group_entry, "width_permille")
-                            .map(|p| WindowWidth::Fraction(p.min(u16::MAX as u64) as u16)),
+                            .map(|p| WindowWidth::Fraction(p.min(u64::from(u16::MAX)) as u16)),
                         maximized: match doc.get(&group_entry, "maximized").ok().flatten() {
                             Some((Value::Scalar(v), _)) => match v.as_ref() {
                                 ScalarValue::Boolean(b) => Some(*b),
@@ -2742,11 +2736,10 @@ impl WorkspaceTree {
         Tab {
             tile: rep
                 .tile
-                .map(|tile| Self::localise_tile(tile, None, &title))
-                .unwrap_or(TileContent::Stub {
+                .map_or(TileContent::Stub {
                     kind: AppKind::Other(String::new()),
                     label: String::new(),
-                }),
+                }, |tile| Self::localise_tile(tile, None, &title)),
             id: rep.id,
             title,
         }
@@ -2764,8 +2757,8 @@ impl WorkspaceTree {
                 // Already resolved here, to our own instance or the same
                 // waypoint — the remote tile has nothing to add.
                 match current {
-                    Some(TileContent::Foreign { app_id: local, .. })
-                    | Some(TileContent::PeerWindow { app_id: local, .. })
+                    Some(TileContent::Foreign { app_id: local, .. } | TileContent::PeerWindow {
+app_id: local, .. })
                         if local.eq_ignore_ascii_case(&app_id) =>
                     {
                         return current.cloned().expect("matched a Some");
@@ -2854,7 +2847,7 @@ impl WorkspaceTree {
             return Vec::new();
         };
         let mut out: Vec<(String, String)> = Vec::new();
-        for key in doc.keys(&records_id).collect::<Vec<_>>() {
+        for key in doc.keys(&records_id) {
             let Some((_, entry)) = doc.get(&records_id, key.as_str()).ok().flatten() else {
                 continue;
             };
@@ -3154,7 +3147,7 @@ impl WorkspaceTree {
         let mut inbound: Vec<(RoomId, String, String)> = Vec::new();
         for (id, kind) in arrived {
             let known = already.and_then(|h| h.get(&id));
-            if known.map(|k| k.as_str()) != Some(kind.as_str()) {
+            if known.map(std::string::String::as_str) != Some(kind.as_str()) {
                 inbound.push((room, id, kind));
             }
         }
@@ -3298,7 +3291,7 @@ impl WorkspaceTree {
                     let _ = self.doc.put(
                         &group_entry,
                         "width_permille",
-                        ScalarValue::Uint(group.width.permille() as u64),
+                        ScalarValue::Uint(u64::from(group.width.permille())),
                     );
                     // `tile_json` is a JSON-blob shim for `TileContent`
                     // rather than a full per-variant CRDT structure.
@@ -3332,11 +3325,10 @@ impl WorkspaceTree {
     /// starts empty.
     fn rebuild_cache_from_doc(&mut self) {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        if let Some((Value::Scalar(s), _)) = self.doc.get(&ROOT, "active").ok().flatten() {
-            if let ScalarValue::Uint(raw) = s.as_ref() {
+        if let Some((Value::Scalar(s), _)) = self.doc.get(&ROOT, "active").ok().flatten()
+            && let ScalarValue::Uint(raw) = s.as_ref() {
                 self.active = WorkspaceId::from(*raw);
             }
-        }
         // Rebuild while preserving any existing nested state by id-match.
         if let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() {
             let len = self.doc.length(&workspaces_id);
@@ -3550,18 +3542,18 @@ impl WorkspaceTree {
                                     if let Some(existing) = g.tabs.iter().find(|t| t.id == *tid) {
                                         new_tabs.push(existing.clone());
                                     } else {
-                                        let tile = if !blob.is_empty() {
+                                        let tile = if blob.is_empty() {
+                                            TileContent::Stub {
+                                                kind: AppKind::Other(String::new()),
+                                                label: title.clone(),
+                                            }
+                                        } else {
                                             serde_json::from_slice::<TileContent>(blob).unwrap_or(
                                                 TileContent::Stub {
                                                     kind: AppKind::Other(String::new()),
                                                     label: title.clone(),
                                                 },
                                             )
-                                        } else {
-                                            TileContent::Stub {
-                                                kind: AppKind::Other(String::new()),
-                                                label: title.clone(),
-                                            }
                                         };
                                         new_tabs.push(Tab {
                                             id: *tid,
@@ -3575,7 +3567,7 @@ impl WorkspaceTree {
                                     .all(|t| !doc_tabs.iter().any(|(id, _, _)| *id == t.id))
                                     || g.tabs.is_empty()
                                 {
-                                    g.active_tab = new_tabs.first().map(|t| t.id).unwrap_or(0);
+                                    g.active_tab = new_tabs.first().map_or(0, |t| t.id);
                                 }
                                 g.tabs = new_tabs;
                             }
@@ -3584,18 +3576,18 @@ impl WorkspaceTree {
                             let synthesized_tabs: Vec<Tab> = doc_tabs
                                 .iter()
                                 .map(|(tid, title, blob)| {
-                                    let tile = if !blob.is_empty() {
+                                    let tile = if blob.is_empty() {
+                                        TileContent::Stub {
+                                            kind: AppKind::Other(String::new()),
+                                            label: title.clone(),
+                                        }
+                                    } else {
                                         serde_json::from_slice::<TileContent>(blob).unwrap_or(
                                             TileContent::Stub {
                                                 kind: AppKind::Other(String::new()),
                                                 label: title.clone(),
                                             },
                                         )
-                                    } else {
-                                        TileContent::Stub {
-                                            kind: AppKind::Other(String::new()),
-                                            label: title.clone(),
-                                        }
                                     };
                                     Tab {
                                         id: *tid,
@@ -3604,7 +3596,7 @@ impl WorkspaceTree {
                                     }
                                 })
                                 .collect();
-                            let active_tab = synthesized_tabs.first().map(|t| t.id).unwrap_or(0);
+                            let active_tab = synthesized_tabs.first().map_or(0, |t| t.id);
                             strip.window_groups.push(WindowGroup {
                                 id: group_id,
                                 tabs: synthesized_tabs,
@@ -3644,13 +3636,10 @@ impl WorkspaceTree {
                     let (_, group_entry) = self.doc.get(&groups_id, group_idx).ok().flatten()?;
                     if let Some((Value::Scalar(s), _)) =
                         self.doc.get(&group_entry, "id").ok().flatten()
-                    {
-                        if let ScalarValue::Uint(id) = s.as_ref() {
-                            if *id == group_id {
+                        && let ScalarValue::Uint(id) = s.as_ref()
+                            && *id == group_id {
                                 return Some((group_entry, ws_idx, strip_idx, group_idx));
                             }
-                        }
-                    }
                 }
             }
         }
@@ -3678,7 +3667,7 @@ impl WorkspaceTree {
             let _ = self.doc.put(
                 &entry,
                 "width_permille",
-                ScalarValue::Uint(new_permille as u64),
+                ScalarValue::Uint(u64::from(new_permille)),
             );
         }
     }
@@ -3691,13 +3680,11 @@ impl WorkspaceTree {
         let len = self.doc.length(&workspaces_id);
         for i in 0..len {
             let (_, ws_entry) = self.doc.get(&workspaces_id, i).ok().flatten()?;
-            if let Some((Value::Scalar(s), _)) = self.doc.get(&ws_entry, "id").ok().flatten() {
-                if let ScalarValue::Uint(raw) = s.as_ref() {
-                    if *raw == workspace_id.raw() {
+            if let Some((Value::Scalar(s), _)) = self.doc.get(&ws_entry, "id").ok().flatten()
+                && let ScalarValue::Uint(raw) = s.as_ref()
+                    && *raw == workspace_id.raw() {
                         return Some(ws_entry);
                     }
-                }
-            }
         }
         None
     }
@@ -4061,13 +4048,10 @@ impl WorkspaceTree {
                         let (_, tab_entry) = self.doc.get(&tabs_id, t_idx).ok().flatten()?;
                         if let Some((Value::Scalar(s), _)) =
                             self.doc.get(&tab_entry, "id").ok().flatten()
-                        {
-                            if let ScalarValue::Uint(id) = s.as_ref() {
-                                if *id == tab_id {
+                            && let ScalarValue::Uint(id) = s.as_ref()
+                                && *id == tab_id {
                                     return Some((group_entry, tabs_id, tab_entry, t_idx));
                                 }
-                            }
-                        }
                     }
                 }
             }
@@ -4206,8 +4190,8 @@ impl WorkspaceTree {
                 let glen = self.doc.length(&groups_id);
                 let mut cur: Option<usize> = None;
                 for gi in 0..glen {
-                    if let Some((_, g_entry)) = self.doc.get(&groups_id, gi).ok().flatten() {
-                        if matches!(
+                    if let Some((_, g_entry)) = self.doc.get(&groups_id, gi).ok().flatten()
+                        && matches!(
                             self.doc.get(&g_entry, "id").ok().flatten(),
                             Some((Value::Scalar(s), _))
                                 if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == group.id)
@@ -4215,7 +4199,6 @@ impl WorkspaceTree {
                             cur = Some(gi);
                             break;
                         }
-                    }
                 }
                 let Some(cur) = cur else { return };
                 let _ = self.doc.delete(&groups_id, cur);
@@ -4234,7 +4217,7 @@ impl WorkspaceTree {
                 let _ = self.doc.put(
                     &group_entry,
                     "width_permille",
-                    ScalarValue::Uint(group.width.permille() as u64),
+                    ScalarValue::Uint(u64::from(group.width.permille())),
                 );
                 if let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List) {
                     for (l, tab) in group.tabs.iter().enumerate() {
@@ -4713,8 +4696,7 @@ impl WorkspaceTree {
                     .window_groups
                     .iter()
                     .position(|g| g.id == id)
-                    .map(|i| i as isize)
-                    .unwrap_or(-1);
+                    .map_or(-1, |i| i as isize);
                 if idx < 0 {
                     // Recorded group no longer in the strip; fall
                     // through to "first non-closing" as a default.
@@ -4761,11 +4743,10 @@ impl WorkspaceTree {
                         // If the moved tab was active, promote the
                         // first remaining sibling so a future re-render
                         // doesn't dereference a stale active id.
-                        if group.active_tab == tab_id {
-                            if let Some(first) = group.tabs.first() {
+                        if group.active_tab == tab_id
+                            && let Some(first) = group.tabs.first() {
                                 group.active_tab = first.id;
                             }
-                        }
                         if group.tabs.is_empty() {
                             prune_group_at = Some((ws_idx, strip_idx, group_idx));
                         }
@@ -4790,8 +4771,8 @@ impl WorkspaceTree {
             width: WindowWidth::Normal,
             maximized: false,
         };
-        for ws in self.workspaces.iter_mut() {
-            for strip in ws.strips.iter_mut() {
+        for ws in &mut self.workspaces {
+            for strip in &mut ws.strips {
                 if strip.id == dest_strip_id {
                     strip.window_groups.push(new_group);
                     self.doc_move_tab_across_strips(src_strip_id, dest_strip_id, tab_id);
@@ -4924,18 +4905,15 @@ impl WorkspaceTree {
             return Some(recorded);
         }
         let resolved = self.resolve_active_group(strip_id, |id| closing_ids.contains(&id));
-        match resolved {
-            Some(next) => {
-                self.active_group.insert(strip_id, next);
-                Some(next)
-            }
-            None => {
-                // Whole strip is fading; drop the entry rather than
-                // leave a dangling pointer. The shell re-seeds when
-                // fresh groups land.
-                self.active_group.remove(&strip_id);
-                None
-            }
+        if let Some(next) = resolved {
+            self.active_group.insert(strip_id, next);
+            Some(next)
+        } else {
+            // Whole strip is fading; drop the entry rather than
+            // leave a dangling pointer. The shell re-seeds when
+            // fresh groups land.
+            self.active_group.remove(&strip_id);
+            None
         }
     }
 }
@@ -4984,8 +4962,7 @@ pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
     let present = |c: &&Collaborator| c.id != "me" && !c.invited;
     let active = tree.active_workspace();
     let per_ws = active
-        .map(|w| w.collaborators.iter().filter(present).count())
-        .unwrap_or(0);
+        .map_or(0, |w| w.collaborators.iter().filter(present).count());
     if per_ws > 0 {
         return per_ws;
     }

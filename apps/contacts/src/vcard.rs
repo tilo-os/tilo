@@ -244,12 +244,11 @@ fn unfold(input: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in input.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.starts_with(' ') || line.starts_with('\t') {
-            if let Some(last) = out.last_mut() {
+        if (line.starts_with(' ') || line.starts_with('\t'))
+            && let Some(last) = out.last_mut() {
                 last.push_str(&line[1..]);
                 continue;
             }
-        }
         out.push(line.to_string());
     }
     out
@@ -440,7 +439,7 @@ fn unescape(s: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             match chars.next() {
-                Some('n') | Some('N') => out.push('\n'),
+                Some('n' | 'N') => out.push('\n'),
                 Some(',') => out.push(','),
                 Some(';') => out.push(';'),
                 Some('\\') => out.push('\\'),

@@ -92,8 +92,7 @@ impl Workspace {
         let order = self
             .children_of(parent)
             .last()
-            .map(|p| p.order + 1)
-            .unwrap_or(0);
+            .map_or(0, |p| p.order + 1);
         self.data.pages.push(PageMeta {
             id,
             title: "Untitled".to_string(),
@@ -144,8 +143,7 @@ impl Workspace {
         if self
             .data
             .selected
-            .map(|s| removed_set.contains(&s))
-            .unwrap_or(false)
+            .is_some_and(|s| removed_set.contains(&s))
         {
             self.data.selected = None;
         }
@@ -238,11 +236,10 @@ impl Workspace {
         }
         // Cycle guard: a page can't become a child of itself or of one
         // of its own descendants.
-        if let Some(np) = new_parent {
-            if np == id || self.is_ancestor(id, np) {
+        if let Some(np) = new_parent
+            && (np == id || self.is_ancestor(id, np)) {
                 return false;
             }
-        }
         let old_parent = self.get(id).and_then(|p| p.parent);
         // Target sibling order (by id), with `id` removed so we can slot
         // it back in at the requested position.
@@ -376,14 +373,13 @@ impl Workspace {
     pub fn check_invariants(&self) -> Result<(), String> {
         let ids: std::collections::HashSet<PageId> = self.data.pages.iter().map(|p| p.id).collect();
         for p in &self.data.pages {
-            if let Some(parent) = p.parent {
-                if !ids.contains(&parent) {
+            if let Some(parent) = p.parent
+                && !ids.contains(&parent) {
                     return Err(format!(
                         "page {} has parent {} which does not exist",
                         p.id, parent,
                     ));
                 }
-            }
         }
 
         // Group by parent and check the order sequence.
@@ -392,22 +388,20 @@ impl Workspace {
             groups.entry(p.parent).or_default().push(p.order);
         }
         for (parent, mut orders) in groups {
-            orders.sort();
+            orders.sort_unstable();
             for (i, o) in orders.iter().enumerate() {
                 if (i as u32) != *o {
                     return Err(format!(
-                        "siblings of {:?} have non-contiguous order: {:?}",
-                        parent, orders,
+                        "siblings of {parent:?} have non-contiguous order: {orders:?}",
                     ));
                 }
             }
         }
 
-        if let Some(sel) = self.data.selected {
-            if !ids.contains(&sel) {
-                return Err(format!("selected {} does not exist", sel));
+        if let Some(sel) = self.data.selected
+            && !ids.contains(&sel) {
+                return Err(format!("selected {sel} does not exist"));
             }
-        }
         Ok(())
     }
 }

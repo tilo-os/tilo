@@ -408,8 +408,8 @@ impl Model {
             .filter(|t| t.parent.is_none())
             .filter(|t| match sel {
                 ListSel::Inbox => t.project.is_none() && !t.done,
-                ListSel::Today => t.due.map(|d| d <= today).unwrap_or(false) && !t.done,
-                ListSel::Upcoming => t.due.map(|d| d > today).unwrap_or(false) && !t.done,
+                ListSel::Today => t.due.is_some_and(|d| d <= today) && !t.done,
+                ListSel::Upcoming => t.due.is_some_and(|d| d > today) && !t.done,
                 ListSel::Completed => t.done,
                 ListSel::Project(p) => t.project == Some(*p),
             })

@@ -203,10 +203,10 @@ pub struct BlockEditor {
     edit_pending: bool,
     last_mouse_pos: Point,
     /// `(block_idx, byte)` start of an in-flight cross-block selection
-    /// drag. While set, CursorMoved paints selection bands across every
+    /// drag. While set, `CursorMoved` paints selection bands across every
     /// block between start and pointer — the only way to extend a
     /// selection past a paragraph boundary, since a block's own
-    /// TextInput drag only tracks x within its own rect.
+    /// `TextInput` drag only tracks x within its own rect.
     cross_block_drag_start: Option<(usize, usize)>,
     /// Furthest range touched this drag, so retreating (down then back
     /// up) knows which blocks to clear.
@@ -474,12 +474,10 @@ impl BlockEditor {
             {
                 b.line.set_focus(true);
             }
-        } else {
-            if let Some(idx) = self.focused
-                && let Some(b) = self.blocks.get_mut(idx)
-            {
-                b.line.set_focus(false);
-            }
+        } else if let Some(idx) = self.focused
+            && let Some(b) = self.blocks.get_mut(idx)
+        {
+            b.line.set_focus(false);
         }
         self.dirty = true;
     }
@@ -539,36 +537,33 @@ impl BlockEditor {
         for i in 0..len {
             let kind_str = kind_to_str(&self.blocks[i].kind);
             let local_text = self.blocks[i].line.value().to_string();
-            match self.blocks[i].line.bound_obj() {
-                Some(bound) => {
-                    // Delete any doc blocks before the bound one — they
-                    // were removed locally.
-                    while doc_idx < state.length(list)
-                        && doc_text_obj(state, list, doc_idx).as_ref() != Some(&bound)
-                    {
-                        let _ = state.delete(list, doc_idx);
-                    }
-                    if doc_idx < state.length(list) {
-                        let block_map = list_map(state, list, doc_idx);
-                        if let Some(bm) = block_map {
-                            let _ = state.put(&bm, "kind", kind_str.as_str());
-                        }
-                        push_text_diff(state, &bound, &local_text);
-                        doc_idx += 1;
-                    } else {
-                        // Bound object vanished from the doc — re-insert.
-                        let t = insert_doc_block(state, list, doc_idx, &kind_str, &local_text);
-                        self.blocks[i].line.bind_text(t);
-                        doc_idx += 1;
-                    }
+            if let Some(bound) = self.blocks[i].line.bound_obj() {
+                // Delete any doc blocks before the bound one — they
+                // were removed locally.
+                while doc_idx < state.length(list)
+                    && doc_text_obj(state, list, doc_idx).as_ref() != Some(&bound)
+                {
+                    let _ = state.delete(list, doc_idx);
                 }
-                None => {
-                    // New block (e.g. the suffix of a split): insert a
-                    // fresh doc block and bind it.
+                if doc_idx < state.length(list) {
+                    let block_map = list_map(state, list, doc_idx);
+                    if let Some(bm) = block_map {
+                        let _ = state.put(&bm, "kind", kind_str.as_str());
+                    }
+                    push_text_diff(state, &bound, &local_text);
+                    doc_idx += 1;
+                } else {
+                    // Bound object vanished from the doc — re-insert.
                     let t = insert_doc_block(state, list, doc_idx, &kind_str, &local_text);
                     self.blocks[i].line.bind_text(t);
                     doc_idx += 1;
                 }
+            } else {
+                // New block (e.g. the suffix of a split): insert a
+                // fresh doc block and bind it.
+                let t = insert_doc_block(state, list, doc_idx, &kind_str, &local_text);
+                self.blocks[i].line.bind_text(t);
+                doc_idx += 1;
             }
         }
         while state.length(list) > doc_idx {
@@ -690,7 +685,7 @@ impl BlockEditor {
         let cur_text = self.blocks[idx].line.value().to_string();
         let prev_text = self.blocks[idx - 1].line.value().to_string();
         let join_at = prev_text.len();
-        let merged = format!("{}{}", prev_text, cur_text);
+        let merged = format!("{prev_text}{cur_text}");
         self.blocks[idx - 1].line.set_text(&merged);
         self.blocks.remove(idx);
         self.structure_dirty = true;
@@ -802,24 +797,24 @@ impl BlockEditor {
     }
 
     /// No-op (returns `false`) for kinds without an indent. Clamped to
-    /// [0, MAX_LIST_INDENT].
+    /// [0, `MAX_LIST_INDENT`].
     pub fn try_indent(&mut self, idx: usize, delta: i8) -> bool {
         let Some(b) = self.blocks.get_mut(idx) else {
             return false;
         };
         let (new_kind, changed) = match &b.kind {
             BlockKind::Bullet { indent } => {
-                let next = (*indent as i16 + delta as i16).clamp(0, MAX_LIST_INDENT as i16) as u8;
+                let next = (i16::from(*indent) + i16::from(delta)).clamp(0, i16::from(MAX_LIST_INDENT)) as u8;
                 let changed = next != *indent;
                 (BlockKind::Bullet { indent: next }, changed)
             }
             BlockKind::Numbered { indent } => {
-                let next = (*indent as i16 + delta as i16).clamp(0, MAX_LIST_INDENT as i16) as u8;
+                let next = (i16::from(*indent) + i16::from(delta)).clamp(0, i16::from(MAX_LIST_INDENT)) as u8;
                 let changed = next != *indent;
                 (BlockKind::Numbered { indent: next }, changed)
             }
             BlockKind::Checklist { indent, done } => {
-                let next = (*indent as i16 + delta as i16).clamp(0, MAX_LIST_INDENT as i16) as u8;
+                let next = (i16::from(*indent) + i16::from(delta)).clamp(0, i16::from(MAX_LIST_INDENT)) as u8;
                 let changed = next != *indent;
                 (
                     BlockKind::Checklist {
@@ -853,7 +848,7 @@ impl BlockEditor {
             }
             let line_rect = b.line.get_rect();
             let gutter = prefix_gutter_for(&b.kind);
-            let cy = (line_rect.y0 + line_rect.y1) / 2.0;
+            let cy = f64::midpoint(line_rect.y0, line_rect.y1);
             let cx = line_rect.x0 - gutter + gutter / 2.0;
             let r = Rect::new(
                 cx - CHECKBOX_SIZE_PX / 2.0,
@@ -947,7 +942,7 @@ impl BlockEditor {
         b.line.set_text(&new_text);
         let mark_range = start..(start + page.title.len());
         b.line
-            .add_mark(MarkSpan::new(mark_range.clone(), Mark::Link(page.id)));
+            .add_mark(MarkSpan::new(mark_range, Mark::Link(page.id)));
         b.line.set_cursor_pos(start + page.title.len());
         self.dirty = true;
         self.edit_pending = true;
@@ -979,13 +974,11 @@ impl BlockEditor {
         let caret = self
             .blocks
             .get(focused_idx)
-            .map(|b| b.line.cursor_pos())
-            .unwrap_or(0);
+            .map_or(0, |b| b.line.cursor_pos());
         let line_rect = self
             .blocks
             .get(focused_idx)
-            .map(|b| b.line.get_rect())
-            .unwrap_or(Rect::ZERO);
+            .map_or(Rect::ZERO, |b| b.line.get_rect());
         self.slash_menu
             .set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
         self.slash_menu.set_filter("");
@@ -1152,7 +1145,7 @@ fn kind_to_str(kind: &BlockKind) -> String {
         BlockKind::Bullet { indent } => format!("bullet:{indent}"),
         BlockKind::Numbered { indent } => format!("numbered:{indent}"),
         BlockKind::Checklist { indent, done } => {
-            format!("checklist:{indent}:{}", if *done { 1 } else { 0 })
+            format!("checklist:{indent}:{}", i32::from(*done))
         }
         BlockKind::CodeBlock { lang } => {
             format!("code:{}", lang.clone().unwrap_or_default())
@@ -1187,7 +1180,7 @@ fn kind_from_str(s: &str) -> BlockKind {
             .and_then(|p| p.parse::<u8>().ok())
             .unwrap_or(0)
             .min(MAX_LIST_INDENT);
-        let done = parts.next().map(|p| p == "1").unwrap_or(false);
+        let done = parts.next().is_some_and(|p| p == "1");
         return BlockKind::Checklist { indent, done };
     }
     if let Some(rest) = s.strip_prefix("code:") {
@@ -1496,17 +1489,17 @@ impl Widget for BlockEditor {
                 &self.child_nodes,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         // Taffy's child list is authoritative (not `self.child_nodes`)
@@ -1517,7 +1510,7 @@ impl Widget for BlockEditor {
             // Shift prefixed kinds' text rect right of a reserved gutter
             // so the prefix glyph doesn't overlap editable text.
             let gutter = prefix_gutter_for(&b.kind);
-            let indent_px = LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
+            let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent());
             let original = b.line.get_rect();
             if gutter > 0.0 || indent_px > 0.0 {
                 let shifted = Rect::new(
@@ -1550,7 +1543,7 @@ impl Widget for BlockEditor {
             // Same vertical centring as the inner TextInput so the hint
             // reads as this line's placeholder, not a floating label.
             let size = self.blocks[0].line.font_size();
-            let line_height = (size as f64) * 1.25;
+            let line_height = f64::from(size) * 1.25;
             let text_y = line_rect.y0 + (line_rect.height() - line_height) / 2.0;
             // 2px right of the caret so it doesn't collide with the bar.
             let caret_w = 2.0;
@@ -1577,7 +1570,7 @@ impl Widget for BlockEditor {
 
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             let line_rect = b.line.get_rect();
-            let indent_px = LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
+            let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent());
             let gutter = prefix_gutter_for(&b.kind);
             let prefix_x0 = line_rect.x0 - gutter;
             let row_x0 = prefix_x0 - indent_px;
@@ -1590,7 +1583,7 @@ impl Widget for BlockEditor {
                 }
                 BlockKind::Bullet { .. } => {
                     // A filled disc, not a "•" glyph, reads the same across fonts.
-                    let cy = (line_rect.y0 + line_rect.y1) / 2.0;
+                    let cy = f64::midpoint(line_rect.y0, line_rect.y1);
                     let cx = prefix_x0 + gutter / 2.0;
                     let radius = 3.0;
                     let circle = vello::kurbo::Circle::new((cx, cy), radius);
@@ -1613,9 +1606,9 @@ impl Widget for BlockEditor {
                     let (label_w, _) = text_renderer.measure(&label, size, None);
                     // Matches RichTextLine's line height so the ordinal
                     // sits on the item text's baseline.
-                    let line_height = size as f64 * 1.25;
+                    let line_height = f64::from(size) * 1.25;
                     let text_y = line_rect.y0 + (line_rect.height() - line_height) / 2.0;
-                    let x = (line_rect.x0 - 6.0 - label_w as f64).max(prefix_x0);
+                    let x = (line_rect.x0 - 6.0 - f64::from(label_w)).max(prefix_x0);
                     text_renderer.draw_text(
                         scene,
                         &label,
@@ -1629,7 +1622,7 @@ impl Widget for BlockEditor {
                     let _ = indent_px;
                 }
                 BlockKind::Checklist { done, .. } => {
-                    let cy = (line_rect.y0 + line_rect.y1) / 2.0;
+                    let cy = f64::midpoint(line_rect.y0, line_rect.y1);
                     let cx = prefix_x0 + gutter / 2.0;
                     let box_rect = Rect::new(
                         cx - CHECKBOX_SIZE_PX / 2.0,
@@ -1706,7 +1699,7 @@ impl Widget for BlockEditor {
                         .draw(scene, transform, text_renderer, theme, presence);
                 }
                 BlockKind::Divider => {
-                    let cy = (line_rect.y0 + line_rect.y1) / 2.0;
+                    let cy = f64::midpoint(line_rect.y0, line_rect.y1);
                     let rule = Rect::new(line_rect.x0, cy - 0.5, line_rect.x1, cy + 0.5);
                     scene.fill(
                         vello::peniko::Fill::NonZero,
@@ -1863,7 +1856,7 @@ impl Widget for BlockEditor {
                     && m.shift_key()
                     && matches!(
                         logical_key,
-                        Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown)
+                        Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
                     );
                 if !is_extend {
                     self.kbd_sel_anchor = None;
@@ -1977,8 +1970,7 @@ impl Widget for BlockEditor {
             let supports = self
                 .blocks
                 .get(focused_idx)
-                .map(|b| b.kind.supports_indent())
-                .unwrap_or(false);
+                .is_some_and(|b| b.kind.supports_indent());
             if supports {
                 let delta = if modifiers.state().shift_key() { -1 } else { 1 };
                 self.try_indent(focused_idx, delta);
@@ -2006,19 +1998,16 @@ impl Widget for BlockEditor {
             let can_open = self
                 .blocks
                 .get(focused_idx)
-                .map(|b| !matches!(b.kind, BlockKind::CodeBlock { .. }) && b.kind.is_editable())
-                .unwrap_or(false);
+                .is_some_and(|b| !matches!(b.kind, BlockKind::CodeBlock { .. }) && b.kind.is_editable());
             if can_open {
                 let caret_byte = self
                     .blocks
                     .get(focused_idx)
-                    .map(|b| b.line.cursor_pos())
-                    .unwrap_or(0);
+                    .map_or(0, |b| b.line.cursor_pos());
                 let line_rect = self
                     .blocks
                     .get(focused_idx)
-                    .map(|b| b.line.get_rect())
-                    .unwrap_or(Rect::ZERO);
+                    .map_or(Rect::ZERO, |b| b.line.get_rect());
                 self.slash_menu
                     .set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
                 self.slash_menu.set_filter("");
@@ -2105,7 +2094,7 @@ impl Widget for BlockEditor {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BlockEditor"
     }
 
@@ -2205,8 +2194,7 @@ impl BlockEditor {
                 let block_empty = self
                     .blocks
                     .get(idx)
-                    .map(|b| b.line.value().is_empty())
-                    .unwrap_or(false);
+                    .is_some_and(|b| b.line.value().is_empty());
                 if block_empty {
                     self.delete_empty(idx);
                 } else {
@@ -2236,8 +2224,7 @@ impl BlockEditor {
                 let line_rect = self
                     .blocks
                     .get(idx)
-                    .map(|b| b.line.get_rect())
-                    .unwrap_or(Rect::ZERO);
+                    .map_or(Rect::ZERO, |b| b.line.get_rect());
                 self.link_popover
                     .set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
                 self.link_popover.set_filter("");

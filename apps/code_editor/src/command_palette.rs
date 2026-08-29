@@ -328,7 +328,7 @@ impl CommandPalette {
                     let acceptable = if self.goto_mode {
                         !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
                     } else {
-                        !s.is_empty() && !s.chars().any(|c| c.is_control())
+                        !s.is_empty() && !s.chars().any(char::is_control)
                     };
                     if acceptable {
                         self.query.push_str(s);
@@ -400,7 +400,7 @@ impl CommandPalette {
             c.text_primary
         };
         let input_text = if self.query.is_empty() {
-            format!("{}{}", prompt, placeholder)
+            format!("{prompt}{placeholder}")
         } else {
             shown.clone()
         };
@@ -415,7 +415,7 @@ impl CommandPalette {
         // Caret after the query text.
         let (qw, _) = text_renderer.measure(&shown, 16.0, None);
         if !self.query.is_empty() || self.command_mode {
-            let cx = x0 + 16.0 + qw as f64 + 1.0;
+            let cx = x0 + 16.0 + f64::from(qw) + 1.0;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -480,7 +480,7 @@ impl CommandPalette {
                     &entry.detail,
                     12.0,
                     c.text_dim,
-                    transform * Affine::translate((x0 + WIDTH - 16.0 - dw as f64, ry + 10.0)),
+                    transform * Affine::translate((x0 + WIDTH - 16.0 - f64::from(dw), ry + 10.0)),
                     None,
                 );
             }

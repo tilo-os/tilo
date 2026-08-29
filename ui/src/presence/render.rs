@@ -22,7 +22,7 @@ const MARKER_PIGMENT_L: f32 = 0.30;
 fn relative_luminance(c: Color) -> f32 {
     let c = c.to_rgba8();
     let f = |v: u8| {
-        let v = v as f32 / 255.0;
+        let v = f32::from(v) / 255.0;
         if v <= 0.04045 {
             v / 12.92
         } else {
@@ -48,7 +48,7 @@ fn marker_pigment(c: Color) -> Color {
     let k = MARKER_PIGMENT_L / l;
     let rgba = c.to_rgba8();
     let ch = |v: u8| -> u8 {
-        let v = v as f32 / 255.0;
+        let v = f32::from(v) / 255.0;
         let lin = if v <= 0.04045 {
             v / 12.92
         } else {
@@ -136,7 +136,7 @@ impl PresenceCtx {
         pos: (f32, f32),
     ) {
         let color = color_for(self, user, theme);
-        let t = transform * Affine::translate((pos.0 as f64, pos.1 as f64));
+        let t = transform * Affine::translate((f64::from(pos.0), f64::from(pos.1)));
         let halo = Circle::new(Point::ORIGIN, 9.0);
         scene.fill(Fill::NonZero, t, color.with_alpha_factor(0.22), None, &halo);
         let dot = Circle::new(Point::ORIGIN, 5.0);
@@ -272,7 +272,7 @@ pub(crate) fn peer_pill_size(
 ) -> (f64, f64) {
     let size = pill_label_size(theme);
     let (tw, _th) = text_renderer.measure(label, size, None);
-    (tw as f64 + PILL_PAD_X * 2.0, size as f64 + PILL_PAD_Y * 2.0)
+    (f64::from(tw) + PILL_PAD_X * 2.0, f64::from(size) + PILL_PAD_Y * 2.0)
 }
 
 #[derive(Debug, Clone)]
@@ -361,42 +361,39 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
             }
         }
 
-        let (rect, tethered) = match chosen {
-            Some((r, moved)) => (r, moved),
-            None => {
-                // Every corner taken or off-window: keep to whichever side
-                // fits and walk down the vertical until clear.
-                let x = if right + w <= vp.x1 {
-                    right
+        let (rect, tethered) = if let Some((r, moved)) = chosen { (r, moved) } else {
+            // Every corner taken or off-window: keep to whichever side
+            // fits and walk down the vertical until clear.
+            let x = if right + w <= vp.x1 {
+                right
+            } else {
+                left.max(vp.x0)
+            };
+            let x = x.clamp(vp.x0, (vp.x1 - w).max(vp.x0));
+            let mut r = Rect::new(x, below, x + w, below + h);
+            let step = h + PILL_GAP;
+            let mut guard = 0;
+            while (!inside(&r, &vp) || !clear(&r, &placed)) && guard < 64 {
+                let next_y = if r.y1 + step <= vp.y1 {
+                    r.y0 + step
                 } else {
-                    left.max(vp.x0)
+                    // Out of room going down — restart above and walk up.
+                    let up = if r.y0 > py { above } else { r.y0 - step };
+                    if up < vp.y0 {
+                        break;
+                    }
+                    up
                 };
-                let x = x.clamp(vp.x0, (vp.x1 - w).max(vp.x0));
-                let mut r = Rect::new(x, below, x + w, below + h);
-                let step = h + PILL_GAP;
-                let mut guard = 0;
-                while (!inside(&r, &vp) || !clear(&r, &placed)) && guard < 64 {
-                    let next_y = if r.y1 + step <= vp.y1 {
-                        r.y0 + step
-                    } else {
-                        // Out of room going down — restart above and walk up.
-                        let up = if r.y0 > py { above } else { r.y0 - step };
-                        if up < vp.y0 {
-                            break;
-                        }
-                        up
-                    };
-                    r = Rect::new(x, next_y, x + w, next_y + h);
-                    guard += 1;
-                }
-                let r = Rect::new(
-                    r.x0,
-                    r.y0.clamp(vp.y0, (vp.y1 - h).max(vp.y0)),
-                    r.x0 + w,
-                    r.y0.clamp(vp.y0, (vp.y1 - h).max(vp.y0)) + h,
-                );
-                (r, true)
+                r = Rect::new(x, next_y, x + w, next_y + h);
+                guard += 1;
             }
+            let r = Rect::new(
+                r.x0,
+                r.y0.clamp(vp.y0, (vp.y1 - h).max(vp.y0)),
+                r.x0 + w,
+                r.y0.clamp(vp.y0, (vp.y1 - h).max(vp.y0)) + h,
+            );
+            (r, true)
         };
 
         // Further from its pointer than a corner placement gets: draw the
@@ -510,7 +507,7 @@ pub(crate) fn draw_peer_pill(
     peer: Color,
 ) {
     let label_size = pill_label_size(theme);
-    let radius = theme.tokens.radii.sm as f64;
+    let radius = f64::from(theme.tokens.radii.sm);
     let shadow = RoundedRect::from_rect(
         rect.inflate(0.5, 0.5) + vello::kurbo::Vec2::new(0.0, 1.0),
         radius,
@@ -574,7 +571,7 @@ pub fn draw_remote_cursors(
 /// A [`super::RemoteCursor`] as the renderer wants it.
 fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
     PeerCursor {
-        pos: (cursor.position[0] as f64, cursor.position[1] as f64),
+        pos: (f64::from(cursor.position[0]), f64::from(cursor.position[1])),
         label: cursor.label.clone(),
         color: Color::from_rgba8(
             (cursor.color[0].clamp(0.0, 1.0) * 255.0) as u8,
@@ -591,7 +588,7 @@ fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
 pub fn contrast_ink(bg: Color) -> Color {
     let c = bg.to_rgba8();
     // Rec. 601 luma on the 0..255 channels.
-    let luma = 0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32;
+    let luma = 0.299 * f32::from(c.r) + 0.587 * f32::from(c.g) + 0.114 * f32::from(c.b);
     if luma > 140.0 {
         Color::BLACK
     } else {
@@ -662,7 +659,7 @@ fn draw_edge_mist(
     // mist reads as a soft glow rather than a flat block.
     let layers = 3;
     for i in 0..layers {
-        let f = i as f64 / layers as f64;
+        let f = f64::from(i) / f64::from(layers);
         let a = base * (1.0 - f as f32);
         let inset = match mist.edge {
             MistEdge::Left => Rect::new(band.x0, band.y0, band.x1 - (band.width() * f), band.y1),
@@ -683,8 +680,8 @@ fn draw_edge_mist(
     let label_size = tokens.typography.scale.xs;
     let (tw, _th) = text_renderer.measure(name, label_size, None);
     let pad = 4.0_f64;
-    let tag_w = tw as f64 + pad * 2.0;
-    let tag_h = label_size as f64 + pad;
+    let tag_w = f64::from(tw) + pad * 2.0;
+    let tag_h = f64::from(label_size) + pad;
     // Anchor the tag near the band centre, nudged inward from the edge.
     let (tx, ty) = match mist.edge {
         MistEdge::Left => (band.x0 + 4.0, band.center().y - tag_h / 2.0),
@@ -693,7 +690,7 @@ fn draw_edge_mist(
         MistEdge::Bottom => (band.center().x - tag_w / 2.0, band.y1 - tag_h - 4.0),
     };
     let tag_rect = Rect::new(tx, ty, tx + tag_w, ty + tag_h);
-    let tag = RoundedRect::from_rect(tag_rect, tokens.radii.sm as f64);
+    let tag = RoundedRect::from_rect(tag_rect, f64::from(tokens.radii.sm));
     scene.fill(Fill::NonZero, Affine::IDENTITY, peer, None, &tag);
     text_renderer.draw_text(
         scene,
@@ -738,7 +735,7 @@ pub fn draw_remote_presence(
         if !cursor.painted_by_window() {
             continue;
         }
-        let target = Point::new(cursor.position[0] as f64, cursor.position[1] as f64);
+        let target = Point::new(f64::from(cursor.position[0]), f64::from(cursor.position[1]));
         let peer = peer_of(cursor);
         match super::geom::edge_mist_for(viewport, target) {
             Some(mist) => {

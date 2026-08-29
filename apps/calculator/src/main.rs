@@ -46,17 +46,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             //   QOS_CALC_HISTORY=open|closed  — force the history sidebar state
             let mut app = calculator::CalculatorApp::seeded();
             match std::env::var("QOS_CALC_MODE").ok().as_deref() {
-                Some("2d") | Some("graph2d") => {
-                    app.shots_set_mode(calculator::model::Mode::Graph2d)
+                Some("2d" | "graph2d") => {
+                    app.shots_set_mode(calculator::model::Mode::Graph2d);
                 }
-                Some("3d") | Some("graph3d") => {
-                    app.shots_set_mode(calculator::model::Mode::Graph3d)
+                Some("3d" | "graph3d") => {
+                    app.shots_set_mode(calculator::model::Mode::Graph3d);
                 }
                 _ => {}
             }
             match std::env::var("QOS_CALC_HISTORY").ok().as_deref() {
                 Some("open") => app.shots_set_history_open(true),
-                Some("closed") | Some("collapsed") => app.shots_set_history_open(false),
+                Some("closed" | "collapsed") => app.shots_set_history_open(false),
                 _ => {}
             }
             Box::new(app)
@@ -368,11 +368,10 @@ fn run_clicks_bench(viewport: (u32, u32), n: usize) -> Result<(), Box<dyn std::e
 fn shots_viewport() -> (u32, u32) {
     if let Some(s) = std::env::var_os("QOS_CALC_SHOTS_SIZE") {
         let s = s.to_string_lossy();
-        if let Some((w, h)) = s.split_once(['x', 'X', '*']) {
-            if let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse()) {
+        if let Some((w, h)) = s.split_once(['x', 'X', '*'])
+            && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse()) {
                 return (w, h);
             }
-        }
     }
     DEFAULT_SHOTS_VIEWPORT
 }
@@ -391,7 +390,7 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
@@ -410,11 +409,10 @@ fn render_shot_to_png(
     // frame shows a peer caret mapped into the active math field's 2D layout.
     if let Some(spec) = std::env::var_os("QOS_CALC_REMOTE_CURSOR") {
         let spec = spec.to_string_lossy();
-        if let Some((sx, sy)) = spec.split_once(',') {
-            if let (Ok(x), Ok(y)) = (sx.trim().parse::<f32>(), sy.trim().parse::<f32>()) {
+        if let Some((sx, sy)) = spec.split_once(',')
+            && let (Ok(x), Ok(y)) = (sx.trim().parse::<f32>(), sy.trim().parse::<f32>()) {
                 presence.upsert_remote_cursor("alice".into(), [x, y], Some("Alice"));
             }
-        }
     }
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

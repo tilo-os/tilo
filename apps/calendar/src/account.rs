@@ -15,7 +15,7 @@
 //! `CalendarAccount`), so an account added in one was invisible to the other.
 //! Reading and writing the one shared store resolves that by construction —
 //! both sides now (de)serialise the same [`accounts::Account`], with the
-//! CalDAV settings carried in its opaque `config`.
+//! `CalDAV` settings carried in its opaque `config`.
 
 use std::path::Path;
 
@@ -29,17 +29,18 @@ use crate::model::Palette;
 /// The account-type id Calendar contributes to the shared store.
 pub const TYPE_ID: &str = "caldav";
 
-/// CalDAV connection + identity settings — exactly what the setup form
+/// `CalDAV` connection + identity settings — exactly what the setup form
 /// collects and the sync layer consumes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct CalDavConfig {
     /// Friendly account name shown in the sidebar header ("Work", "Fastmail").
     pub display_name: String,
-    /// Base CalDAV server URL. The well-known discovery path
+    /// Base `CalDAV` server URL. The well-known discovery path
     /// (`/.well-known/caldav`) and principal/home-set resolution are handled by
     /// the sync layer; this is the value the user types.
     pub server_url: String,
-    /// Login name for the CalDAV server (often the email address).
+    /// Login name for the `CalDAV` server (often the email address).
     pub username: String,
     /// Held only in memory here and hydrated from the [`accounts::SecretVault`]
     /// on load; the sync layer uses it at connect time. Never written to the
@@ -48,19 +49,9 @@ pub struct CalDavConfig {
     pub password: String,
 }
 
-impl Default for CalDavConfig {
-    fn default() -> Self {
-        Self {
-            display_name: String::new(),
-            server_url: String::new(),
-            username: String::new(),
-            password: String::new(),
-        }
-    }
-}
 
 impl CalDavConfig {
-    /// Heuristic autofill: given a username/email, guess a well-known CalDAV
+    /// Heuristic autofill: given a username/email, guess a well-known `CalDAV`
     /// endpoint for the big providers. Mirrors what a desktop client's
     /// autoconfig does. Returns true if it recognised the domain.
     pub fn autofill_from_username(&mut self) -> bool {
@@ -106,14 +97,14 @@ impl CalDavConfig {
     }
 }
 
-/// One remote calendar collection within an account (a CalDAV `calendar-home-set`
+/// One remote calendar collection within an account (a `CalDAV` `calendar-home-set`
 /// child). Each is an independent sync target with its own visibility toggle and
 /// display colour, so a user can show "Work" but hide "Holidays".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteCalendar {
     /// Stable id — in a live deployment the collection href; here a slug.
     pub id: String,
-    /// Calendar display name from the CalDAV `displayname` property.
+    /// Calendar display name from the `CalDAV` `displayname` property.
     pub name: String,
     /// Which palette slot tints this calendar's events. Stored as the palette
     /// index so the JSON stays OS-theme-agnostic.
@@ -134,7 +125,7 @@ impl RemoteCalendar {
     }
 }
 
-/// A single configured calendar account: its CalDAV connection settings, the
+/// A single configured calendar account: its `CalDAV` connection settings, the
 /// calendars discovered within it, plus the per-account UI state the Calendar
 /// app needs (sidebar expand/collapse).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,7 +202,7 @@ impl CalendarAccount {
 }
 
 /// The opaque config payload a [`CalendarAccount`] serialises into a shared
-/// [`StoredAccount`]: the CalDAV settings (password skipped), the discovered
+/// [`StoredAccount`]: the `CalDAV` settings (password skipped), the discovered
 /// calendars, and the sidebar collapse state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
@@ -263,7 +254,7 @@ impl AccountStore {
             .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
     }
 
-    /// Load the CalDAV accounts the OS Settings app maintains from the shared
+    /// Load the `CalDAV` accounts the OS Settings app maintains from the shared
     /// canonical store, hydrating each password from the secret vault. Returns
     /// `None` only when no config root is discoverable; an empty store
     /// otherwise, so the app runs on local + sample data.
@@ -314,7 +305,7 @@ impl AccountStore {
         Ok(())
     }
 
-    /// A representative offline store so `--shots` shows real CalDAV accounts in
+    /// A representative offline store so `--shots` shows real `CalDAV` accounts in
     /// the sidebar without a network or a configured machine. These mirror the
     /// shape Settings would persist after a successful connect — minus the
     /// credentials, which never live here.

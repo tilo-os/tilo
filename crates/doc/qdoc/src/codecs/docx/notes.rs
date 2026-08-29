@@ -62,11 +62,10 @@ pub(super) fn import_notes_part(
             Event::Start(e) if e.name().as_ref() == tag => {
                 // A content note has no `w:type` (separators do); capture it verbatim and parse on close.
                 let ntype = attr_w_val(&e, b"w:type");
-                if ntype.is_none() {
-                    if let Some(id) = attr_w_val(&e, b"w:id") {
+                if ntype.is_none()
+                    && let Some(id) = attr_w_val(&e, b"w:id") {
                         capture = Some((id, pos_before, 1));
                     }
-                }
             }
             Event::Eof => break,
             _ => {}
@@ -96,12 +95,11 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String
         }
     };
     let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
-        if let Some(b) = cur {
-            if !txt.is_empty() {
+        if let Some(b) = cur
+            && !txt.is_empty() {
                 doc.splice_note_text(&note_id, b, *cur_len, 0, txt);
                 *cur_len += txt.chars().count();
             }
-        }
     };
 
     loop {
@@ -121,11 +119,10 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String
                 _ => {}
             },
             Event::Text(t) if in_t => {
-                if let Ok(txt) = t.xml10_content() {
-                    if !txt.is_empty() {
+                if let Ok(txt) = t.xml10_content()
+                    && !txt.is_empty() {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
-                }
             }
             Event::End(e) => match e.name().as_ref() {
                 b"w:t" => in_t = false,
@@ -143,7 +140,7 @@ fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
 }
 
 fn push_escaped(out: &mut String, c: char) {

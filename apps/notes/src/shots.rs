@@ -223,7 +223,7 @@ pub fn render_to_path(
     storage::ensure_layout(&root)?;
     seed_sample_workspace(&root);
 
-    let mut app = NotesApp::spawn(root.clone()).map_err(|e| e.to_string())?;
+    let mut app = NotesApp::spawn(root.clone()).map_err(|e| e)?;
 
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
@@ -275,7 +275,7 @@ pub fn render_to_path(
     // edge mist for off-screen ones. The widget tree already drew the
     // labeled carets, typing swipe, and sidebar mist from `presence`.
     if scenario == Some("presence") {
-        let window_rect = Rect::new(0.0, 0.0, w as f64, h as f64);
+        let window_rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         draw_remote_presence(
             &mut scene,
             Affine::IDENTITY,
@@ -309,7 +309,7 @@ fn seed_two_peers(app: &NotesApp) -> PresenceCtx {
     let alice = UserId("alice".to_string());
     let bob = UserId("bob".to_string());
     p.set_display_name(alice.clone(), "Alice");
-    p.set_display_name(bob.clone(), "Bob");
+    p.set_display_name(bob, "Bob");
 
     // Alice's caret + typing swipe on a mid-document block. The key matches
     // `block_editor::block_presence_key(4)` — a checklist row on the
@@ -322,7 +322,7 @@ fn seed_two_peers(app: &NotesApp) -> PresenceCtx {
     };
     p.set_caret(&block(4), alice.clone(), 18);
     p.record_peer_typing(
-        alice.clone(),
+        alice,
         block(4),
         SelectionRange { start: 0, end: 18 },
         std::time::Instant::now(),

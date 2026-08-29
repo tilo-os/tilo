@@ -174,30 +174,24 @@ impl SessionManager {
     pub fn tick(&mut self, now: Instant) -> Vec<SessionTransition> {
         let idle = self.idle_for(now);
         let mut out = Vec::new();
-        if !self.blanked {
-            if let Some(t) = self.config.blank_timeout {
-                if idle >= t {
+        if !self.blanked
+            && let Some(t) = self.config.blank_timeout
+                && idle >= t {
                     self.blanked = true;
                     out.push(SessionTransition::Blanked);
                 }
-            }
-        }
-        if !self.locked {
-            if let Some(t) = self.config.lock_timeout {
-                if idle >= t {
+        if !self.locked
+            && let Some(t) = self.config.lock_timeout
+                && idle >= t {
                     self.locked = true;
                     out.push(SessionTransition::Locked);
                 }
-            }
-        }
-        if !self.suspended {
-            if let Some(t) = self.config.suspend_timeout {
-                if idle >= t {
+        if !self.suspended
+            && let Some(t) = self.config.suspend_timeout
+                && idle >= t {
                     self.suspended = true;
                     out.push(SessionTransition::Suspend);
                 }
-            }
-        }
         out
     }
 

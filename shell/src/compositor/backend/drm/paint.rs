@@ -297,7 +297,7 @@ impl VelloDrmBridge {
         self.size
     }
 
-    /// Allocate (texture, view, readback_buf, padded_bytes_per_row) for the given size; shared by `new` and `resize`.
+    /// Allocate (texture, view, `readback_buf`, `padded_bytes_per_row`) for the given size; shared by `new` and `resize`.
     fn allocate_targets(
         device: &wgpu::Device,
         width: u32,
@@ -324,7 +324,7 @@ impl VelloDrmBridge {
         let unpadded = width * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row = unpadded.div_ceil(align) * align;
-        let readback_size = (padded_bytes_per_row as u64) * (height as u64);
+        let readback_size = u64::from(padded_bytes_per_row) * u64::from(height);
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quick-desktop-drm-paint-readback"),
             size: readback_size,

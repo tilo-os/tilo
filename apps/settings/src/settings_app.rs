@@ -148,15 +148,14 @@ impl SettingsApp {
             Some(s) => s.is_narrow(),
             None => self
                 .width_hint
-                .map(|w| (w as f64) < NAV_BREAKPOINT)
-                .unwrap_or(false),
+                .is_some_and(|w| f64::from(w) < NAV_BREAKPOINT),
         }
     }
 
     /// Whether the sidebar / list is currently shown (always when wide, or the
     /// list screen when narrow). Used by `--shots` assertions.
     pub fn sidebar_open(&self) -> bool {
-        self.shell.as_ref().is_some_and(|s| s.sidebar_open())
+        self.shell.as_ref().is_some_and(ui::AppShell::sidebar_open)
     }
 
     /// The current search query (empty when not searching).
@@ -170,8 +169,7 @@ impl SettingsApp {
     pub fn back_button_rect(&self) -> vello::kurbo::Rect {
         self.shell
             .as_ref()
-            .map(|s| s.back_rect())
-            .unwrap_or(vello::kurbo::Rect::ZERO)
+            .map_or(vello::kurbo::Rect::ZERO, ui::AppShell::back_rect)
     }
 
     /// Pre-seed a search query so the deterministic `--shots` render shows the
@@ -253,7 +251,7 @@ impl SettingsApp {
             .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
             .with_narrow_screen(narrow_screen);
         if let Some(w) = self.width_hint {
-            shell = shell.with_width_hint(w as f64);
+            shell = shell.with_width_hint(f64::from(w));
         }
         shell
     }
@@ -347,7 +345,7 @@ impl Widget for SettingsApp {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[shell_node]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -359,10 +357,10 @@ impl Widget for SettingsApp {
     ) {
         let l = taffy.layout(node).unwrap();
         self.rect = vello::kurbo::Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell)
@@ -449,7 +447,7 @@ impl Widget for SettingsApp {
             .unwrap_or_default()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SettingsApp"
     }
 
@@ -464,25 +462,24 @@ impl Widget for SettingsApp {
         let child = self
             .shell
             .as_mut()
-            .map(|s| s.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(ui::Widget::take_structure_dirty);
         own || child
     }
 
     fn needs_animation_frame(&self) -> bool {
         self.shell
             .as_ref()
-            .is_some_and(|s| s.needs_animation_frame())
+            .is_some_and(ui::Widget::needs_animation_frame)
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.shell.as_ref().is_some_and(|s| s.needs_idle_sync())
+        self.shell.as_ref().is_some_and(ui::Widget::needs_idle_sync)
     }
 
     fn layout_needs_measure(&self) -> bool {
         self.shell
             .as_ref()
-            .is_some_and(|s| s.layout_needs_measure())
+            .is_some_and(ui::Widget::layout_needs_measure)
     }
 
     /// Publish the settings resource tree to the shell's one Ctrl+K palette,
@@ -563,7 +560,7 @@ impl AppWidget for SettingsApp {
         AppKind::Settings
     }
 
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "Settings"
     }
 

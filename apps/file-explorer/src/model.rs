@@ -128,7 +128,7 @@ pub fn workspace_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a P
         .iter()
         .filter(|r| path == r.as_path() || path.starts_with(r))
         .max_by_key(|r| r.as_os_str().len())
-        .map(|r| r.as_path())
+        .map(std::path::PathBuf::as_path)
 }
 
 /// What to call a workspace root on screen.
@@ -143,9 +143,7 @@ pub fn workspace_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a P
 /// same location, and somebody who clicks the one to reach the other must
 /// not find it has been renamed on the way.
 pub fn workspace_label(root: &Path) -> String {
-    root.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Workspace".to_string())
+    root.file_name().map_or_else(|| "Workspace".to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 #[derive(Clone, Debug)]
@@ -180,7 +178,7 @@ impl Entry {
     pub fn content_is_local(&self) -> bool {
         !matches!(
             self.sync_state,
-            Some(SyncState::Projected) | Some(SyncState::Downloading)
+            Some(SyncState::Projected | SyncState::Downloading)
         )
     }
 }
@@ -257,7 +255,7 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
     for entry in rd.flatten() {
         let meta = entry.metadata().ok();
         let path = entry.path();
-        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
         let mime = mime_guess::from_path(&path)
             .first_or_octet_stream()
             .to_string();
@@ -272,7 +270,7 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             name: entry.file_name().to_string_lossy().into_owned(),
             path,
             is_dir,
-            size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+            size: meta.as_ref().map_or(0, std::fs::Metadata::len),
             modified: meta
                 .as_ref()
                 .and_then(|m| m.modified().ok())

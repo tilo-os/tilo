@@ -491,8 +491,7 @@ pub struct SearchOptions {
 fn is_word_byte(bytes: &[u8], idx: usize) -> bool {
     bytes
         .get(idx)
-        .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
-        .unwrap_or(false)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
 }
 
 /// Substring search across all renderable text, honouring the find-bar

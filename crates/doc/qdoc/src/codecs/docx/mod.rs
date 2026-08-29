@@ -1,4 +1,4 @@
-//! `.docx` (OOXML WordprocessingML) codec. Lossless-preserving: OPC package parts are
+//! `.docx` (OOXML `WordprocessingML`) codec. Lossless-preserving: OPC package parts are
 //! carried verbatim except `word/document.xml`, which maps onto the canonical model.
 //! Mirrors the `.odt` codec: container → styles → body parse → spans → export → preservation.
 
@@ -86,16 +86,14 @@ impl FormatProvider for DocxCodec {
         // each (incl. PAGE fields) into the canonical regions.
         let rels = container.get("word/_rels/document.xml.rels");
         let (hdr_part, ftr_part) = headers::resolve_default_parts(&document, rels);
-        if let Some(part) = hdr_part {
-            if let Some(xml) = container.get(&part) {
+        if let Some(part) = hdr_part
+            && let Some(xml) = container.get(&part) {
                 headers::import_region(xml, crate::model::Region::Header, doc);
             }
-        }
-        if let Some(part) = ftr_part {
-            if let Some(xml) = container.get(&part) {
+        if let Some(part) = ftr_part
+            && let Some(xml) = container.get(&part) {
                 headers::import_region(xml, crate::model::Region::Footer, doc);
             }
-        }
         // Parse the body `w:sectPr`'s `w:cols` num/space into the document-wide column setting.
         columns::import_section_columns(&document, doc);
         // Preservation layer: stash every part except the regenerated word/document.xml verbatim,

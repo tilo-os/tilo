@@ -149,23 +149,20 @@ impl PeerPublisher {
     /// in the log since from inside an app it's indistinguishable from
     /// a peer who never typed.
     pub fn from_network(net: Option<Arc<ShellNetwork>>) -> Arc<Self> {
-        match net {
-            Some(n) => {
-                tracing::info!(
-                    "collab outbound: peer sync wired; local edits will be \
-                     republished to the room"
-                );
-                Self::new(n as Arc<dyn PeerPublishSink>)
-            }
-            None => {
-                tracing::warn!(
-                    "collab outbound: no peer network — this session is \
-                     LOCAL ONLY. Nothing typed in any app will reach another \
-                     machine. (Peer sync is off, or QOS_PEER_KEY_PATH did not \
-                     point somewhere writable.)"
-                );
-                Self::disabled()
-            }
+        if let Some(n) = net {
+            tracing::info!(
+                "collab outbound: peer sync wired; local edits will be \
+                 republished to the room"
+            );
+            Self::new(n as Arc<dyn PeerPublishSink>)
+        } else {
+            tracing::warn!(
+                "collab outbound: no peer network — this session is \
+                 LOCAL ONLY. Nothing typed in any app will reach another \
+                 machine. (Peer sync is off, or QOS_PEER_KEY_PATH did not \
+                 point somewhere writable.)"
+            );
+            Self::disabled()
         }
     }
 

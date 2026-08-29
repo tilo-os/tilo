@@ -179,8 +179,8 @@ pub(crate) fn identifier_to_u16(id: &Identifier) -> u16 {
     // Scalars in frost-ed25519 are 32-byte little-endian; a u16 encodes
     // as `[lo, hi, 0, 0, …]`. Reads the bottom 16 bits — the rest is
     // guaranteed zero by `u16_to_identifier`.
-    let lo = *bytes.first().unwrap_or(&0) as u16;
-    let hi = *bytes.get(1).unwrap_or(&0) as u16;
+    let lo = u16::from(*bytes.first().unwrap_or(&0));
+    let hi = u16::from(*bytes.get(1).unwrap_or(&0));
     lo | (hi << 8)
 }
 

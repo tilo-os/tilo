@@ -141,7 +141,7 @@ impl<C: Widget> FloatingWindow<C> {
             h = h
                 .min(bounds.height() - 32.0)
                 .max(MIN_HEIGHT.min(bounds.height()));
-            let cx = (bounds.x0 + bounds.x1) / 2.0;
+            let cx = f64::midpoint(bounds.x0, bounds.x1);
             let y0 = (bounds.y0 + (bounds.height() - h) / 2.0).max(bounds.y0 + 8.0);
             self.rect = Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y0 + h);
             self.placed = true;
@@ -309,17 +309,17 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         let viewport = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // Default when the host hasn't supplied tighter bounds via `layout_within`.
         if self.bounds.width() <= 0.0 {
@@ -343,7 +343,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         if !self.open {
             return;
         }
-        let radius = theme.tokens.radii.lg as f64;
+        let radius = f64::from(theme.tokens.radii.lg);
 
         let shadow = Rect::new(
             self.rect.x0 + 2.0,
@@ -389,8 +389,8 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             &title_band,
         );
         let title_size = theme.tokens.typography.scale.base;
-        let tx = self.rect.x0 + theme.tokens.spacing.s4 as f64;
-        let ty = self.rect.y0 + (TITLE_BAR_HEIGHT - title_size as f64) / 2.0;
+        let tx = self.rect.x0 + f64::from(theme.tokens.spacing.s4);
+        let ty = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_size)) / 2.0;
         text_renderer.draw_text(
             scene,
             &self.title,
@@ -536,7 +536,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         vec![&mut self.content]
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FloatingWindow"
     }
 

@@ -431,14 +431,13 @@ impl Widget for DbClientApp {
             self.session.set_connections(doc_conns);
             // Open a connection the local user just added, once it has landed
             // back through the reconcile.
-            if let Some(id) = self.pending_connect_id {
-                if let Some(idx) = self.session.connections.iter().position(|c| c.id == id) {
+            if let Some(id) = self.pending_connect_id
+                && let Some(idx) = self.session.connections.iter().position(|c| c.id == id) {
                     self.session.active = idx;
                     self.session.connect_active();
                     self.pending_connect_id = None;
                     self.dirty = true;
                 }
-            }
         }
 
         self.editor.sync(state);
@@ -453,14 +452,14 @@ impl Widget for DbClientApp {
         let node = taffy
             .new_leaf(Style {
                 size: Size {
-                    width: percent(1.0),
-                    height: percent(1.0),
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
                 },
                 flex_grow: 1.0,
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -488,10 +487,10 @@ impl Widget for DbClientApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // Drop a stale user preference when the window crosses the breakpoint
         // (a resize returns the sidebar to the new layout's default), then
@@ -603,7 +602,7 @@ impl Widget for DbClientApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx_px, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 40.0, *y as f64),
+                    MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 40.0, f64::from(*y)),
                     MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y / 24.0),
                 };
                 let step = (-dy * 3.0) as isize;
@@ -617,8 +616,7 @@ impl Widget for DbClientApp {
                             .session
                             .query_result
                             .as_ref()
-                            .map(|r| r.rows.len())
-                            .unwrap_or(0);
+                            .map_or(0, |r| r.rows.len());
                         self.grid.scroll(step, total);
                         if dx_px != 0.0 {
                             self.grid.scroll_h(dx_px);
@@ -635,8 +633,7 @@ impl Widget for DbClientApp {
                             .session
                             .data_result
                             .as_ref()
-                            .map(|r| r.rows.len())
-                            .unwrap_or(0);
+                            .map_or(0, |r| r.rows.len());
                         self.data_grid.scroll(step, total);
                         if dx_px != 0.0 {
                             self.data_grid.scroll_h(dx_px);
@@ -672,13 +669,12 @@ impl Widget for DbClientApp {
                         *handled = true;
                         return;
                     }
-                    if let Key::Character(c) = logical_key {
-                        if c.eq_ignore_ascii_case("n") {
+                    if let Key::Character(c) = logical_key
+                        && c.eq_ignore_ascii_case("n") {
                             self.modal.open_new();
                             *handled = true;
                             return;
                         }
-                    }
                 }
                 // Esc closes the snippet menu, then dismisses an open overlay
                 // flap (in docked mode Esc leaves the sidebar untouched).
@@ -717,7 +713,7 @@ impl Widget for DbClientApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DbClientApp"
     }
 
@@ -857,7 +853,7 @@ impl DbClientApp {
             if self.snippets_open {
                 let items = crate::sample::starter_queries();
                 let mut y = self.snippet_btn.y1 + 2.0;
-                for (_, sql) in items.iter() {
+                for (_, sql) in items {
                     let item = Rect::new(
                         self.snippet_btn.x0,
                         y,
@@ -876,29 +872,26 @@ impl DbClientApp {
             }
 
             // Header click → sort.
-            if let Some(col) = self.grid.header_hit(c) {
-                if let Some(res) = &self.session.query_result {
+            if let Some(col) = self.grid.header_hit(c)
+                && let Some(res) = &self.session.query_result {
                     self.grid.sort_by(col, res);
                     *handled = true;
                     return;
                 }
-            }
         }
 
         // Data tab grid sorting + paging.
-        if self.session.tab == MainTab::Data {
-            if let Some(col) = self.data_grid.header_hit(c) {
-                if let Some(res) = &self.session.data_result {
+        if self.session.tab == MainTab::Data
+            && let Some(col) = self.data_grid.header_hit(c)
+                && let Some(res) = &self.session.data_result {
                     self.data_grid.sort_by(col, res);
                     *handled = true;
                     return;
                 }
-            }
-        }
 
         // Schema tree (a sidebar widget — gated like the rest of the sidebar).
-        if self.sidebar_interactive() {
-            if let Some(click) = self.tree.hit(c) {
+        if self.sidebar_interactive()
+            && let Some(click) = self.tree.hit(c) {
                 match click {
                     TreeClick::ToggleTable(name) => {
                         self.tree.toggle(&name);
@@ -923,7 +916,6 @@ impl DbClientApp {
                 *handled = true;
                 return;
             }
-        }
 
         // Click into the editor body focuses it (editor handles caret).
         if self.session.tab == MainTab::Query && self.editor.rect().contains(c) {
@@ -1142,7 +1134,7 @@ impl DbClientApp {
         for tab in MainTab::all() {
             let label = tab.label();
             let (lw, _) = tr.measure(label, 13.0, None);
-            let w = lw as f64 + 28.0;
+            let w = f64::from(lw) + 28.0;
             let tab_rect = Rect::new(x, bar.y0 + 6.0, x + w, bar.y1 - 6.0);
             self.tab_rects.push((tab, tab_rect));
             let active = tab == self.session.tab;
@@ -1188,7 +1180,7 @@ impl DbClientApp {
                 &crumb,
                 12.0,
                 theme.text_dim,
-                t * Affine::translate((bar.x1 - cw as f64 - 14.0, bar.y0 + 12.0)),
+                t * Affine::translate((bar.x1 - f64::from(cw) - 14.0, bar.y0 + 12.0)),
                 None,
             );
         }
@@ -1285,7 +1277,7 @@ impl DbClientApp {
                 title,
                 17.0,
                 theme.text_primary,
-                t * Affine::translate((cx - tw as f64 / 2.0, card.y0 + 92.0)),
+                t * Affine::translate((cx - f64::from(tw) / 2.0, card.y0 + 92.0)),
                 None,
             );
             tr.draw_text(
@@ -1319,7 +1311,7 @@ impl DbClientApp {
                 label,
                 13.0,
                 Color::WHITE,
-                t * Affine::translate((cx - lw as f64 / 2.0, btn.y0 + 9.0)),
+                t * Affine::translate((cx - f64::from(lw) / 2.0, btn.y0 + 9.0)),
                 None,
             );
             return;
@@ -1393,7 +1385,7 @@ impl DbClientApp {
             // Three-line hamburger when collapsed.
             let half = 6.0;
             for i in 0..3 {
-                let ly = cy - 5.0 + i as f64 * 5.0;
+                let ly = cy - 5.0 + f64::from(i) * 5.0;
                 scene.stroke(
                     &Stroke::new(1.6),
                     t,
@@ -1550,7 +1542,7 @@ impl DbClientApp {
             &menu.to_rounded_rect(8.0),
         );
         let mut y = menu.y0;
-        for (name, _) in items.iter() {
+        for (name, _) in items {
             let item = Rect::new(menu.x0, y, menu.x1, y + 28.0);
             if item.contains(self.cursor) {
                 scene.fill(Fill::NonZero, t, p.hover, None, &item);
@@ -1588,7 +1580,7 @@ impl DbClientApp {
                 let total = self.session.selected_table_rows();
                 let from = self.session.data_offset + 1;
                 let to = (self.session.data_offset + res.rows.len()).min(total as usize);
-                let info = format!("{name}   ·   rows {from}–{to} of {total}",);
+                let info = format!("{name}   ·   rows {from}–{to} of {total}");
                 tr.draw_text(
                     scene,
                     &info,
@@ -1725,8 +1717,8 @@ fn engine_color(engine: Engine, theme: &Theme) -> Color {
 mod responsive_tests {
     use super::*;
 
-    /// Drive the real layout passes (build_layout → compute_layout →
-    /// apply_layout) so assertions exercise the production geometry path, not
+    /// Drive the real layout passes (`build_layout` → `compute_layout` →
+    /// `apply_layout`) so assertions exercise the production geometry path, not
     /// a hand-recomputed copy.
     fn lay_out(app: &mut DbClientApp, w: f64, h: f64) {
         let theme = Theme::dark();

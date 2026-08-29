@@ -1,7 +1,7 @@
-//! Call video capture — camera + portal ScreenCast, yielding RGBA frames.
+//! Call video capture — camera + portal `ScreenCast`, yielding RGBA frames.
 //!
-//! Capture is **GStreamer**: `autovideosrc` for the webcam and `pipewiresrc`
-//! for a portal ScreenCast node — both yield tightly-packed RGBA frames. The
+//! Capture is **`GStreamer`**: `autovideosrc` for the webcam and `pipewiresrc`
+//! for a portal `ScreenCast` node — both yield tightly-packed RGBA frames. The
 //! frames feed the **shared qOS video-streaming stack** ([`qos_callstream`]):
 //! encode, per-share framing/transport, and decode all live there, so the
 //! call app reuses the exact same H.264 codec + wire format the compositor's
@@ -75,11 +75,10 @@ impl CameraCapture {
     pub fn poll(&mut self) -> Option<Vec<u8>> {
         let mut latest = None;
         while let Some(sample) = self.sink.try_pull_sample(gst::ClockTime::ZERO) {
-            if let Some(buffer) = sample.buffer() {
-                if let Ok(map) = buffer.map_readable() {
+            if let Some(buffer) = sample.buffer()
+                && let Ok(map) = buffer.map_readable() {
                     latest = Some(map.as_slice().to_vec());
                 }
-            }
         }
         latest
     }
@@ -91,11 +90,11 @@ impl Drop for CameraCapture {
     }
 }
 
-/// Portal ScreenCast PipeWire node → RGBA frames. `None` when the `pipewiresrc`
+/// Portal `ScreenCast` `PipeWire` node → RGBA frames. `None` when the `pipewiresrc`
 /// element is unavailable or the node can't be opened. `node_id` comes from
 /// [`crate::media::request_screencast`]. The captured RGBA is handed to a
 /// [`qos_callstream::VideoStreamSender`] for encode + framing — the source
-/// selection stays the xdg ScreenCast portal, the encode + transport reuse the
+/// selection stays the xdg `ScreenCast` portal, the encode + transport reuse the
 /// shared stack.
 pub struct ScreenCapture {
     pipeline: gst::Pipeline,
@@ -125,11 +124,10 @@ impl ScreenCapture {
     pub fn poll(&mut self) -> Option<Vec<u8>> {
         let mut latest = None;
         while let Some(sample) = self.sink.try_pull_sample(gst::ClockTime::ZERO) {
-            if let Some(buffer) = sample.buffer() {
-                if let Ok(map) = buffer.map_readable() {
+            if let Some(buffer) = sample.buffer()
+                && let Ok(map) = buffer.map_readable() {
                     latest = Some(map.as_slice().to_vec());
                 }
-            }
         }
         latest
     }

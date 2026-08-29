@@ -10,7 +10,7 @@
 //! widget tree (`Widget::children`) in lock-step with the taffy tree
 //! (`taffy.children`). Any intermediate taffy node MUST have a matching
 //! widget in `children()`, or the recursion derails and inner widgets
-//! (the TextInputs) never enter `focusable_order` — breaking Tab / arrow
+//! (the `TextInputs`) never enter `focusable_order` — breaking Tab / arrow
 //! navigation. That's why the card is a real [`Card`] widget rather than a
 //! bare taffy node owned directly by `GreeterApp`: the structure stays
 //! `GreeterApp -> Card -> [fields]`, mirroring the taffy tree exactly.
@@ -179,7 +179,7 @@ impl Widget for VStack {
                     // separately-centred pills.
                     align_items: Some(AlignItems::Stretch),
                     gap: Size {
-                        width: length(0.0),
+                        width: length(0.0_f32),
                         height: length(self.gap),
                     },
                     padding: taffy::Rect {
@@ -208,17 +208,17 @@ impl Widget for VStack {
                 &child_nodes,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let own_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
@@ -238,7 +238,7 @@ impl Widget for VStack {
     ) {
         if self.chrome {
             let tokens = &theme.tokens;
-            let shape = RoundedRect::from_rect(self.rect, tokens.radii.lg as f64 * 1.5);
+            let shape = RoundedRect::from_rect(self.rect, f64::from(tokens.radii.lg) * 1.5);
             // Lift the card off the backdrop so it reads as a surface rather
             // than a lighter rectangle painted onto the wallpaper.
             ui::surface::elevation(scene, transform, self.rect, &tokens.elevation.e4);
@@ -312,7 +312,7 @@ impl Widget for VStack {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.children.iter().map(|c| c.as_ref()).collect()
+        self.children.iter().map(std::convert::AsRef::as_ref).collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -343,7 +343,7 @@ impl Widget for VStack {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "GreeterStack"
     }
 
@@ -848,13 +848,11 @@ impl GreeterApp {
         if state.get(root, SUBMIT_PATH).ok().flatten().is_none() {
             let _ = state.put(root, SUBMIT_PATH, false);
         }
-        if state.get(root, SESSION_PATH).ok().flatten().is_none() {
-            if let Ok(obj) = state.put_object(root, SESSION_PATH, ObjType::Text) {
-                if let Some(s) = self.sessions.get(self.selected_session) {
+        if state.get(root, SESSION_PATH).ok().flatten().is_none()
+            && let Ok(obj) = state.put_object(root, SESSION_PATH, ObjType::Text)
+                && let Some(s) = self.sessions.get(self.selected_session) {
                     let _ = state.splice_text(&obj, 0, 0, &s.name);
                 }
-            }
-        }
         if state.get(root, REBOOT_PATH).ok().flatten().is_none() {
             let _ = state.put(root, REBOOT_PATH, false);
         }
@@ -1031,14 +1029,13 @@ impl GreeterApp {
     /// Empty the password CRDT Text object so the field clears on the next
     /// sync. The username is intentionally left untouched.
     fn clear_password(state: &mut AutoCommit, root: &ObjId) {
-        if let Ok(Some((Value::Object(ObjType::Text), obj))) = state.get(root, PASSWORD_PATH) {
-            if let Ok(text) = state.text(&obj) {
+        if let Ok(Some((Value::Object(ObjType::Text), obj))) = state.get(root, PASSWORD_PATH)
+            && let Ok(text) = state.text(&obj) {
                 let chars = text.chars().count();
                 if chars > 0 {
                     let _ = state.splice_text(&obj, 0, chars as isize, "");
                 }
             }
-        }
     }
 
     /// Surface a correctable note about the form itself. Distinct from a
@@ -1080,14 +1077,12 @@ impl Widget for GreeterApp {
         // mirror that back onto the selected index. An unrecognised label
         // (a session that vanished between renders) is ignored rather than
         // resetting the choice out from under the user.
-        if let Some(name) = Self::read_text(state, root, SESSION_PATH) {
-            if let Some(idx) = self.sessions.iter().position(|s| s.name == name) {
-                if idx != self.selected_session {
+        if let Some(name) = Self::read_text(state, root, SESSION_PATH)
+            && let Some(idx) = self.sessions.iter().position(|s| s.name == name)
+                && idx != self.selected_session {
                     self.selected_session = idx;
                     self.dirty_structure = true;
                 }
-            }
-        }
 
         // Submit rising edge — reset the flag *before* attempting so a
         // single click fires exactly one attempt.
@@ -1140,25 +1135,23 @@ impl Widget for GreeterApp {
             )
             .unwrap();
 
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&card_node) = children.first() {
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+                && let Some(&card_node) = children.first() {
                     c.apply_layout(taffy, card_node, Point::new(self.rect.x0, self.rect.y0));
                 }
-            }
-        }
     }
 
     fn draw(
@@ -1254,9 +1247,9 @@ impl Widget for GreeterApp {
         }
 
         // Delegate to the composed card.
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&card_node) = children.first() {
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+                && let Some(&card_node) = children.first() {
                     c.handle_event(
                         event,
                         scale_factor,
@@ -1269,8 +1262,6 @@ impl Widget for GreeterApp {
                         taffy,
                     );
                 }
-            }
-        }
 
         if enter_pressed {
             *handled = true;
@@ -1299,8 +1290,7 @@ impl Widget for GreeterApp {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         mine || child
     }
 
@@ -1314,8 +1304,7 @@ impl Widget for GreeterApp {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_focus_reset())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_focus_reset());
         mine || child
     }
 
@@ -1359,7 +1348,7 @@ impl Widget for GreeterApp {
             .is_some_and(|c| c.wants_pointer_capture())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "GreeterApp"
     }
 

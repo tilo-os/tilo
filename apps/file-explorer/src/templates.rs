@@ -32,7 +32,7 @@ pub fn list_templates(dir: &Path) -> Vec<PathBuf> {
             if name.starts_with('.') {
                 continue;
             }
-            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            if entry.file_type().is_ok_and(|t| t.is_file()) {
                 out.push(entry.path());
             }
         }

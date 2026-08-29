@@ -374,16 +374,16 @@ impl Widget for NumberInput {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let x0 = origin.x + layout.location.x as f64;
-        let y0 = origin.y + layout.location.y as f64;
-        let x1 = x0 + layout.size.width as f64;
-        let y1 = y0 + layout.size.height as f64;
+        let x0 = origin.x + f64::from(layout.location.x);
+        let y0 = origin.y + f64::from(layout.location.y);
+        let x1 = x0 + f64::from(layout.size.width);
+        let y1 = y0 + f64::from(layout.size.height);
         self.apply_layout_external(Rect::new(x0, y0, x1, y1));
     }
 
@@ -396,7 +396,7 @@ impl Widget for NumberInput {
         presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let disabled = !self.enabled;
         if disabled {
             scene.push_layer(
@@ -429,8 +429,8 @@ impl Widget for NumberInput {
             );
 
             let (gw, _) = text_renderer.measure(glyph, STEP_GLYPH_SIZE, None);
-            let line_height = (STEP_GLYPH_SIZE * 1.25) as f64;
-            let gx = btn_rect.x0 + (btn_rect.width() - gw as f64) / 2.0;
+            let line_height = f64::from(STEP_GLYPH_SIZE * 1.25);
+            let gx = btn_rect.x0 + (btn_rect.width() - f64::from(gw)) / 2.0;
             let gy = btn_rect.y0 + (btn_rect.height() - line_height) / 2.0;
             let glyph_color = if disabled {
                 theme.text_dim
@@ -569,7 +569,7 @@ impl Widget for NumberInput {
         self.field.is_dragging()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NumberInput"
     }
 
@@ -633,7 +633,7 @@ impl Widget for NumberInput {
 
     /// Reports [`Role::SpinButton`] with the formatted value; an assistive
     /// technology can nudge it with Increment / Decrement or jump it with
-    /// SetValue, all through the same commit path as pointer/keyboard input.
+    /// `SetValue`, all through the same commit path as pointer/keyboard input.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(

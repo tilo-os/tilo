@@ -188,14 +188,13 @@ impl WeatherApp {
         self.core.borrow_mut().maybe_fire_geocode();
 
         let reqs = self.core.borrow_mut().take_outbox();
-        if !reqs.is_empty() {
-            if let Some(svc) = self.service.as_ref() {
+        if !reqs.is_empty()
+            && let Some(svc) = self.service.as_ref() {
                 for r in reqs {
                     svc.request(r);
                 }
                 self.last_activity = Instant::now();
             }
-        }
         if let Some(svc) = self.service.as_ref() {
             let resps = svc.drain();
             if !resps.is_empty() {
@@ -432,16 +431,14 @@ impl Widget for WeatherApp {
     /// Open the saved city a chosen palette row identifies: select it and push
     /// its forecast into view, the same path a tap on the city list takes.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::CitySearchProvider::parse_action_id(action_id) {
-            if self.core.borrow_mut().open_location(id) {
-                if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
+        if let Some(id) = crate::search_provider::CitySearchProvider::parse_action_id(action_id)
+            && self.core.borrow_mut().open_location(id)
+                && let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
                     self.nav.show_detail();
                 }
-            }
-        }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "WeatherApp"
     }
 

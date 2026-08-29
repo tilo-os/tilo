@@ -38,11 +38,10 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// [`write`], creating the parent directory first when it is missing.
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        if !dir.as_os_str().is_empty() {
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty() {
             fs::create_dir_all(dir)?;
         }
-    }
     write_inner(path, bytes, None)
 }
 
@@ -100,9 +99,7 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
 /// clobber each other's temp file.
 fn temp_path(path: &Path) -> PathBuf {
     let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".to_string());
+        .file_name().map_or_else(|| "file".to_string(), |n| n.to_string_lossy().into_owned());
     let tmp_name = format!(".{name}.{}.tmp", std::process::id());
     match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.join(tmp_name),

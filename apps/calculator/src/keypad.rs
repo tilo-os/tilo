@@ -100,7 +100,7 @@ impl CalcScreen {
     /// has been laid out. Used by the headless interaction bench + tests.
     #[doc(hidden)]
     pub fn key_center(&self, i: usize) -> Option<Point> {
-        self.key_rects.get(i).map(|r| r.center())
+        self.key_rects.get(i).map(ui::kurbo::Rect::center)
     }
 
     /// Bench/test helper: index of the first keypad key whose label is `label`.
@@ -112,7 +112,7 @@ impl CalcScreen {
     /// Test helper: screen-space center of memory-bar button `i`, once laid out.
     #[doc(hidden)]
     pub fn mem_center(&self, i: usize) -> Option<Point> {
-        self.mem_rects.get(i).map(|r| r.center())
+        self.mem_rects.get(i).map(ui::kurbo::Rect::center)
     }
 
     /// Test helper: screen-space center of the history row for entry `i`, if it
@@ -226,7 +226,7 @@ impl CalcScreen {
         let mem_btn_w = 64.0;
         let mem_gap = 8.0;
         for i in 0..4 {
-            let x0 = left.x0 + i as f64 * (mem_btn_w + mem_gap);
+            let x0 = left.x0 + f64::from(i) * (mem_btn_w + mem_gap);
             self.mem_rects
                 .push(Rect::new(x0, mem_top, x0 + mem_btn_w, mem_top + mem_h));
         }
@@ -453,10 +453,10 @@ impl CalcScreen {
             self.mem_rects[3].y1,
         );
         let mem_txt = format!("M = {}", engine::format_number(model.memory));
-        let mem_col = if model.memory != 0.0 {
-            c.accent[6]
-        } else {
+        let mem_col = if model.memory == 0.0 {
             c.text_dim
+        } else {
+            c.accent[6]
         };
         draw::text_in(
             scene,

@@ -1,10 +1,10 @@
 //! Headless click-driving harness for Tube.
 //!
-//! Runs the real five-pass frame (sync → build_layout → compute_layout →
-//! apply_layout) against the app, then lets a test resolve a widget's laid-out
+//! Runs the real five-pass frame (sync → `build_layout` → `compute_layout` →
+//! `apply_layout`) against the app, then lets a test resolve a widget's laid-out
 //! [`Rect`] by `test_id` (or tree path) and inject a real winit click / key at
 //! those coordinates through `Widget::handle_event`. No GPU, no event loop —
-//! this exercises the exact production interaction path (ActionBus drain +
+//! this exercises the exact production interaction path (`ActionBus` drain +
 //! `apply`), which is what makes the assertions meaningful.
 
 use std::collections::HashMap;
@@ -150,7 +150,7 @@ impl<W: Widget> Harness<W> {
 
     /// The taffy node of the first widget with `test_id == id` (via `node_map`).
     fn node_by_id(&self, id: &str) -> Option<NodeId> {
-        for (node, ptr) in self.node_map.iter() {
+        for (node, ptr) in &self.node_map {
             if unsafe { (**ptr).test_id() } == Some(id) {
                 return Some(*node);
             }
@@ -271,7 +271,7 @@ impl<W: Widget> Harness<W> {
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         let permissions = PermissionContext::permissive();
-        let vp = presence.push_viewport(Rect::new(0.0, 0.0, w as f64, h as f64));
+        let vp = presence.push_viewport(Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
         self.app.draw_with_presence(
             &mut scene,
             Affine::IDENTITY,

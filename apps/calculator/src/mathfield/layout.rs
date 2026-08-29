@@ -85,7 +85,7 @@ const SCRIPT_RATIO: f32 = 0.72;
 const MIN_SIZE: f32 = 11.0;
 
 fn line_h(size: f32) -> f64 {
-    (size * 1.25) as f64
+    f64::from(size * 1.25)
 }
 
 /// Approximate ascent/descent split of a glyph cell. cosmic-text centers the
@@ -101,12 +101,12 @@ fn measure_glyph(tr: &mut TextRenderer, ch: char, size: f32) -> f64 {
     let mut buf = [0u8; 4];
     let s = ch.encode_utf8(&mut buf);
     let (w, _) = tr.measure_weighted(s, size, None, TextWeight::Medium);
-    w as f64
+    f64::from(w)
 }
 
 fn measure_name(tr: &mut TextRenderer, name: &str, size: f32) -> f64 {
     let (w, _) = tr.measure_weighted(name, size, None, TextWeight::Medium);
-    w as f64
+    f64::from(w)
 }
 
 /// Lay out a whole expression at the field origin. The fragment's baseline is
@@ -455,7 +455,7 @@ fn layout_node(
             // The radical is drawn as a vector path (see render::SqrtSign), so
             // its width is a fixed fraction of the font size rather than the
             // font's `√` advance — keeps the nib proportions consistent.
-            let sign_w = (size as f64 * 0.62).max(9.0);
+            let sign_w = (f64::from(size) * 0.62).max(9.0);
             let over_pad = 4.0;
             let top_gap = 3.0;
             let ascent = inner.ascent + top_gap + 2.0;
@@ -478,7 +478,7 @@ fn layout_node(
                     g.x += pen;
                     gaps.push(g);
                 }
-                pen += idxf.width.max(idx_size as f64 * 0.5);
+                pen += idxf.width.max(f64::from(idx_size) * 0.5);
             }
 
             let radicand_w = inner.width + over_pad;
@@ -578,7 +578,7 @@ mod layout_tests {
 /// Find the gap nearest a click point `(px, py)` (content-local). Picks the
 /// row whose vertical band contains `py` if any, else the globally nearest
 /// gap by Euclidean distance to the gap's vertical extent.
-pub fn nearest_gap<'a>(gaps: &'a [Gap], px: f64, py: f64) -> Option<&'a Gap> {
+pub fn nearest_gap(gaps: &[Gap], px: f64, py: f64) -> Option<&Gap> {
     let mut best: Option<(&Gap, f64)> = None;
     for g in gaps {
         let dy = if py < g.top {

@@ -514,7 +514,7 @@ impl Palette {
     /// the OS theme; or a literal `#RRGGBB` / `#RRGGBBAA` hex chosen with the
     /// inspector colour picker, which resolves to that exact colour regardless
     /// of theme. Hex is what lets a user pick an arbitrary fill and what a
-    /// LibreOffice `.odp` round-trips faithfully.
+    /// `LibreOffice` `.odp` round-trips faithfully.
     pub fn resolve_role(&self, role: &str) -> Option<Color> {
         if role == "none" {
             return None;
@@ -599,7 +599,7 @@ pub fn color_to_hex(c: Color) -> String {
 /// Linear blend `a*(1-t) + b*t` in straight RGB.
 fn mix(a: Color, b: Color, t: f64) -> Color {
     let l = |x: u8, y: u8| {
-        (x as f64 * (1.0 - t) + y as f64 * t)
+        (f64::from(x) * (1.0 - t) + f64::from(y) * t)
             .round()
             .clamp(0.0, 255.0) as u8
     };

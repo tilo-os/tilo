@@ -73,7 +73,7 @@ pub enum DmabufImportError {
     NonLinearModifier(u64),
     /// Multi-planar (e.g. NV12). The RGBA path here is single-plane only.
     MultiPlanar(usize),
-    /// FourCC we don't know how to swizzle.
+    /// `FourCC` we don't know how to swizzle.
     UnsupportedFormat(Fourcc),
     /// Degenerate width / height / stride.
     InvalidDimensions {
@@ -125,7 +125,7 @@ fn modifier_is_cpu_readable(modifier: Modifier) -> bool {
     matches!(modifier, Modifier::Linear | Modifier::Invalid)
 }
 
-/// Byte layout of one pixel in memory for a DRM FourCC — names read the
+/// Byte layout of one pixel in memory for a DRM `FourCC` — names read the
 /// *most significant* byte first of a little-endian word, so `ARGB8888` is `[B, G, R, A]` and `ABGR8888` is `[R, G, B, A]`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum PixelOrder {
@@ -288,7 +288,7 @@ fn sync_dmabuf(fd: libc::c_int, flags: u64) {
     // SAFETY: `DMA_BUF_IOCTL_SYNC` takes a pointer to a single `__u64`
     // flags word; `arg` matches that layout and outlives the call.
     unsafe {
-        libc::ioctl(fd, DMA_BUF_IOCTL_SYNC, &arg as *const DmaBufSync);
+        libc::ioctl(fd, DMA_BUF_IOCTL_SYNC, &raw const arg);
     }
 }
 
@@ -389,7 +389,7 @@ pub enum CaptureOutcome {
 
 impl ForeignFrameStore {
     fn with_entry<R>(&self, id: SurfaceId, f: impl FnOnce(&mut ForeignEntry) -> R) -> R {
-        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         f(guard.entry(id).or_insert_with(ForeignEntry::new))
     }
 
@@ -431,13 +431,10 @@ impl ForeignFrameStore {
                 }
             }
             Err(ReadbackError::DmaBufUnsupported) => {
-                match smithay::wayland::dmabuf::get_dmabuf(buffer) {
-                    Ok(dmabuf) => self.capture_dmabuf(id, &dmabuf),
-                    Err(_) => {
-                        let msg = "buffer is neither wl_shm nor dmabuf".to_string();
-                        self.note_failure(id, msg.clone());
-                        CaptureOutcome::Failed(msg)
-                    }
+                if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer) { self.capture_dmabuf(id, dmabuf) } else {
+                    let msg = "buffer is neither wl_shm nor dmabuf".to_string();
+                    self.note_failure(id, msg.clone());
+                    CaptureOutcome::Failed(msg)
                 }
             }
             Err(err) => {
@@ -559,19 +556,19 @@ impl ForeignFrameStore {
 
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
-        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&id);
     }
 
     /// Current frame counter for `id`; `0` when nothing has landed.
     pub fn frame_seq(&self, id: SurfaceId) -> u64 {
-        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        guard.get(&id).map(|e| e.seq).unwrap_or(0)
+        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.get(&id).map_or(0, |e| e.seq)
     }
 
     /// Copy out the current frame, or `None` when the surface has no pixels staged.
     pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
-        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
         if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
             return None;
@@ -588,14 +585,14 @@ impl ForeignFrameStore {
     /// it; `None` when nothing has landed. Exists so a harness can compare
     /// what the client drew against the tab it was drawn into — disagreeing is what a visibly resizing window *is*, unlike a frame counter alone.
     pub fn frame_size(&self, id: SurfaceId) -> Option<(u32, u32)> {
-        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
         (e.width > 0 && e.height > 0).then_some((e.width, e.height))
     }
 
     /// Whether `id`'s window has been shown — the latched answer from [`Self::mark_presented`], read without changing it.
     pub fn is_presented(&self, id: SurfaceId) -> bool {
-        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&id).is_some_and(|e| e.presented)
     }
 
@@ -604,7 +601,7 @@ impl ForeignFrameStore {
     /// by [`ForeignSurfaceWidget::opening`] before painting the
     /// placeholder card; `presented` wins, so this goes false and stays false — a watched-away placeholder must not return.
     pub fn is_opening(&self, id: SurfaceId) -> bool {
-        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
             .get(&id)
             .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
@@ -634,7 +631,7 @@ impl ForeignFrameStore {
     /// [`OPENING_CONFIGURE_GRACE`] since adopted. Read only by
     /// [`flush_configures`], to decide when to configure anyway; no entry means not adopted, not waiting on anything.
     pub fn opening_wait_expired(&self, id: SurfaceId) -> bool {
-        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
             .get(&id)
             .is_some_and(|e| e.first_seen.elapsed() >= OPENING_CONFIGURE_GRACE)
@@ -642,7 +639,7 @@ impl ForeignFrameStore {
 
     /// Reason the last capture failed, if any.
     pub fn last_error(&self, id: SurfaceId) -> Option<String> {
-        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&id).and_then(|e| e.last_error.clone())
     }
 
@@ -655,7 +652,7 @@ impl ForeignFrameStore {
 
     /// The tab rectangle last published by [`Self::note_placement`].
     pub fn placement(&self, id: SurfaceId) -> Option<Rect> {
-        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&id).and_then(|e| e.placement)
     }
 
@@ -685,8 +682,8 @@ impl ForeignFrameStore {
                 return None;
             }
             let logical = (
-                ((w_px as f64) / scale).round().max(1.0) as i32,
-                ((h_px as f64) / scale).round().max(1.0) as i32,
+                (f64::from(w_px) / scale).round().max(1.0) as i32,
+                (f64::from(h_px) / scale).round().max(1.0) as i32,
             );
             if e.configured == Some(logical) {
                 return None;
@@ -771,7 +768,7 @@ fn fills(w: u32, h: u32, tile: Rect) -> bool {
     if w == 0 || h == 0 || tile.width() <= 0.0 || tile.height() <= 0.0 {
         return false;
     }
-    let (bw, bh) = (w as f64, h as f64);
+    let (bw, bh) = (f64::from(w), f64::from(h));
     let scale = (tile.width() / bw).min(tile.height() / bh);
     let at_least = |a: f64, b: f64| a >= b * (1.0 - FIT_TOLERANCE);
     let at_most = |a: f64, b: f64| a <= b * (1.0 + FIT_TOLERANCE);
@@ -890,8 +887,8 @@ impl ForeignSurfaceWidget {
         if img_w == 0 || img_h == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return None;
         }
-        let iw = img_w as f64;
-        let ih = img_h as f64;
+        let iw = f64::from(img_w);
+        let ih = f64::from(img_h);
         let scale = (self.rect.width() / iw).min(self.rect.height() / ih);
         let dw = iw * scale;
         let dh = ih * scale;
@@ -919,7 +916,7 @@ impl Widget for ForeignSurfaceWidget {
                 ..Default::default()
             })
             .expect("foreign surface leaf node");
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -927,9 +924,9 @@ impl Widget for ForeignSurfaceWidget {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        let x = origin.x + l.location.x as f64;
-        let y = origin.y + l.location.y as f64;
-        self.rect = Rect::new(x, y, x + l.size.width as f64, y + l.size.height as f64);
+        let x = origin.x + f64::from(l.location.x);
+        let y = origin.y + f64::from(l.location.y);
+        self.rect = Rect::new(x, y, x + f64::from(l.size.width), y + f64::from(l.size.height));
         // Publish the laid-out rect so the configure pass can tell the client what resolution to render at — the shell-to-wayland seam.
         if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
             store().note_placement(self.surface_id, self.rect);
@@ -948,11 +945,11 @@ impl Widget for ForeignSurfaceWidget {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let radius = theme.tokens.radii.xl as f64;
+        let radius = f64::from(theme.tokens.radii.xl);
         let clip = RoundedRect::from_rect(self.rect, radius);
 
-        if let Some(image) = self.cached.clone() {
-            if let Some(dst) = self.fit_rect(image.width, image.height) {
+        if let Some(image) = self.cached.clone()
+            && let Some(dst) = self.fit_rect(image.width, image.height) {
                 // Neutral backdrop so letterbox bands (and client transparency) read as compositor surface, not whatever the tile card painted.
                 scene.fill(
                     Fill::NonZero,
@@ -961,8 +958,8 @@ impl Widget for ForeignSurfaceWidget {
                     None,
                     &clip,
                 );
-                let sx = dst.width() / image.width as f64;
-                let sy = dst.height() / image.height as f64;
+                let sx = dst.width() / f64::from(image.width);
+                let sy = dst.height() / f64::from(image.height);
                 let brush_transform = transform
                     * Affine::translate((dst.x0, dst.y0))
                     * Affine::scale_non_uniform(sx, sy);
@@ -979,12 +976,11 @@ impl Widget for ForeignSurfaceWidget {
                     brush_transform,
                     &brush,
                     None,
-                    &Rect::new(0.0, 0.0, image.width as f64, image.height as f64),
+                    &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
                 );
                 scene.pop_layer();
                 return;
             }
-        }
 
         let (headline, detail) = self.unshowable_text();
         // Fixed ramp indices were a guess about which way round the card
@@ -996,13 +992,13 @@ impl Widget for ForeignSurfaceWidget {
         let size = theme.tokens.typography.scale.xl;
         let (tw, _) = text_renderer.measure(&headline, size, None);
         let cx = self.rect.center().x;
-        let y = self.rect.center().y - size as f64 / 2.0;
+        let y = self.rect.center().y - f64::from(size) / 2.0;
         text_renderer.draw_text(
             scene,
             &headline,
             size,
             on_card,
-            transform * Affine::translate((cx - tw as f64 / 2.0, y)),
+            transform * Affine::translate((cx - f64::from(tw) / 2.0, y)),
             None,
         );
         let sm = theme.tokens.typography.scale.sm;
@@ -1012,7 +1008,7 @@ impl Widget for ForeignSurfaceWidget {
             &detail,
             sm,
             on_card_dim,
-            transform * Affine::translate((cx - dw as f64 / 2.0, y + size as f64 + 8.0)),
+            transform * Affine::translate((cx - f64::from(dw) / 2.0, y + f64::from(size) + 8.0)),
             None,
         );
     }
@@ -1032,7 +1028,7 @@ impl Widget for ForeignSurfaceWidget {
         // Input routing to client surfaces goes through the seat, not the widget tree.
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ForeignSurfaceWidget"
     }
 
@@ -1207,17 +1203,16 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
 
     // Keep titles/app-ids in step for tabs on both sides (a client can call `set_app_id` after mapping).
     for want in &wanted {
-        for ws in rendered.workspaces.iter_mut() {
-            for strip in ws.strips.iter_mut() {
-                for group in strip.window_groups.iter_mut() {
-                    for tab in group.tabs.iter_mut() {
-                        if let ShellTile::Foreign { app_id, surface_id } = &mut tab.tile {
-                            if *surface_id == want.surface_id && *app_id != want.app_id {
+        for ws in &mut rendered.workspaces {
+            for strip in &mut ws.strips {
+                for group in &mut strip.window_groups {
+                    for tab in &mut group.tabs {
+                        if let ShellTile::Foreign { app_id, surface_id } = &mut tab.tile
+                            && *surface_id == want.surface_id && *app_id != want.app_id {
                                 *app_id = want.app_id.clone();
                                 tab.title = want.title.clone();
                                 changed = true;
                             }
-                        }
                     }
                 }
             }
@@ -1237,9 +1232,9 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
 fn drop_duplicate_foreign_tabs(tree: &mut WorkspaceTree) -> bool {
     let mut seen: std::collections::HashSet<SurfaceId> = std::collections::HashSet::new();
     let mut removed = false;
-    for ws in tree.workspaces.iter_mut() {
-        for strip in ws.strips.iter_mut() {
-            for group in strip.window_groups.iter_mut() {
+    for ws in &mut tree.workspaces {
+        for strip in &mut ws.strips {
+            for group in &mut strip.window_groups {
                 let active = group.active_tab;
                 let mut dropped_active = false;
                 group.tabs.retain(|tab| {
@@ -1255,7 +1250,7 @@ fn drop_duplicate_foreign_tabs(tree: &mut WorkspaceTree) -> bool {
                 });
                 // The duplicate may have been the tab the group was showing — fall back the way a closed tab does.
                 if dropped_active {
-                    group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
+                    group.active_tab = group.tabs.last().map_or(0, |t| t.id);
                 }
             }
         }
@@ -1341,12 +1336,12 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
     };
     let (out_w, out_h) = state.output_size;
     let logical = |px: f64| ((px / scale).round() as i32).max(1);
-    let chrome_w = crate::shell::sidebar_wheel_chrome::SIDEBAR_WIDTH_PX as f64;
+    let chrome_w = f64::from(crate::shell::sidebar_wheel_chrome::SIDEBAR_WIDTH_PX);
     let chrome_h =
-        crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX as f64 + ui::widget::tabs::TAB_BAR_HEIGHT;
+        f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + ui::widget::tabs::TAB_BAR_HEIGHT;
     (
-        logical((out_w as f64 - chrome_w).max(1.0)),
-        logical((out_h as f64 - chrome_h).max(1.0)),
+        logical((f64::from(out_w) - chrome_w).max(1.0)),
+        logical((f64::from(out_h) - chrome_h).max(1.0)),
     )
 }
 

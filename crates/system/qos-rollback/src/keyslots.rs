@@ -424,9 +424,8 @@ pub fn add_generation_slot(
     let mut added: Vec<u32> = after.into_iter().filter(|s| !before.contains(s)).collect();
     if added.len() != 1 {
         bail!(
-            "expected exactly one new keyslot after luksAddKey, found {:?} — refusing to guess \
-             which one to bind a token to",
-            added
+            "expected exactly one new keyslot after luksAddKey, found {added:?} — refusing to guess \
+             which one to bind a token to"
         );
     }
     let slot = added.remove(0);

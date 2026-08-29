@@ -44,7 +44,7 @@ pub(super) fn import_tracked_changes(raw: &str) -> Vec<ImportedChange> {
                         .attributes()
                         .flatten()
                         .find(|a| matches!(a.key.as_ref(), b"xml:id" | b"text:id"))
-                        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()));
+                        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned));
                     cur_kind = None;
                     author.clear();
                     date.clear();
@@ -90,7 +90,7 @@ pub(super) fn marker_change_id(e: &quick_xml::events::BytesStart) -> Option<Stri
     e.attributes()
         .flatten()
         .find(|a| matches!(a.key.as_ref(), b"text:change-id" | b"text:id"))
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
 }
 
 fn push_escaped(out: &mut String, c: char) {

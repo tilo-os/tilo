@@ -93,14 +93,14 @@ impl WebView {
     /// Engine-space (physical, view-relative) coordinates for a logical point.
     fn to_engine(&self, p: Point) -> (f32, f32) {
         (
-            ((p.x - self.rect.x0) * self.scale_factor as f64) as f32,
-            ((p.y - self.rect.y0) * self.scale_factor as f64) as f32,
+            ((p.x - self.rect.x0) * f64::from(self.scale_factor)) as f32,
+            ((p.y - self.rect.y0) * f64::from(self.scale_factor)) as f32,
         )
     }
 
     fn send_resize_if_needed(&mut self) {
-        let w = (self.rect.width() * self.scale_factor as f64).round() as u32;
-        let h = (self.rect.height() * self.scale_factor as f64).round() as u32;
+        let w = (self.rect.width() * f64::from(self.scale_factor)).round() as u32;
+        let h = (self.rect.height() * f64::from(self.scale_factor)).round() as u32;
         if w == 0 || h == 0 || (w, h) == self.last_sent_size {
             return;
         }
@@ -162,17 +162,17 @@ impl Widget for WebView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.send_resize_if_needed();
     }
@@ -229,8 +229,8 @@ impl Widget for WebView {
             }
             // The engine renders at physical resolution for our logical rect
             // — scale down so hi-DPI frames map 1:1 to device pixels.
-            let sx = self.rect.width() / iw as f64;
-            let sy = self.rect.height() / ih as f64;
+            let sx = self.rect.width() / f64::from(iw);
+            let sy = self.rect.height() / f64::from(ih);
             let brush_transform =
                 Affine::translate((self.rect.x0, self.rect.y0)) * Affine::scale_non_uniform(sx, sy);
             let brush = vello::peniko::ImageBrush::new(img);
@@ -258,7 +258,7 @@ impl Widget for WebView {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        if (self.scale_factor as f64 - scale_factor).abs() > f64::EPSILON {
+        if (f64::from(self.scale_factor) - scale_factor).abs() > f64::EPSILON {
             self.scale_factor = scale_factor as f32;
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.
             self.last_sent_size = (0, 0);
@@ -327,8 +327,8 @@ impl Widget for WebView {
                 }
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
-                        (*x as f64 * WHEEL_LINE_PX * scale_factor) as f32,
-                        (*y as f64 * WHEEL_LINE_PX * scale_factor) as f32,
+                        (f64::from(*x) * WHEEL_LINE_PX * scale_factor) as f32,
+                        (f64::from(*y) * WHEEL_LINE_PX * scale_factor) as f32,
                     ),
                     // PixelDelta is already physical.
                     MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
@@ -364,7 +364,7 @@ impl Widget for WebView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "WebView"
     }
 

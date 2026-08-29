@@ -75,9 +75,9 @@ impl Period {
     pub fn range(self, now: SystemTime) -> Option<(SystemTime, SystemTime)> {
         let back = match self {
             Period::AllTime => return None,
-            Period::Today => Duration::from_secs(24 * 3600),
-            Period::Week => Duration::from_secs(7 * 24 * 3600),
-            Period::Month => Duration::from_secs(30 * 24 * 3600),
+            Period::Today => Duration::from_hours(24),
+            Period::Week => Duration::from_hours(168),
+            Period::Month => Duration::from_hours(720),
         };
         // The end is nudged past `now` so a change committed during this very
         // frame is inside the window rather than one tick outside it — the
@@ -442,7 +442,7 @@ impl RoomActivityPane {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let card = RoundedRect::from_rect(self.sheet, tokens.radii.lg as f64);
+        let card = RoundedRect::from_rect(self.sheet, f64::from(tokens.radii.lg));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -505,7 +505,7 @@ impl RoomActivityPane {
             let cy = self.sheet.y0 + 24.0;
             let mut widths: Vec<f64> = Vec::with_capacity(2);
             for sc in RoomScope::ALL {
-                widths.push(tr.measure(sc.label(), size, None).0 as f64 + 16.0);
+                widths.push(f64::from(tr.measure(sc.label(), size, None).0) + 16.0);
             }
             let total: f64 = widths.iter().sum::<f64>() + 4.0;
             if total < self.sheet.width() * 0.62 {
@@ -538,8 +538,8 @@ impl RoomActivityPane {
                         },
                         transform
                             * Affine::translate((
-                                rect.x0 + (rect.width() - lw as f64) / 2.0,
-                                rect.y0 + (rect.height() - lh as f64) / 2.0,
+                                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
                             )),
                         None,
                     );
@@ -766,7 +766,7 @@ fn draw_chip_row<T: Clone>(
     for (value, label) in items {
         // Reserve room for a "+N" overflow marker so it never itself overflows.
         let (lw, lh) = tr.measure(label, size, None);
-        let w = lw as f64 + 16.0;
+        let w = f64::from(lw) + 16.0;
         if x + w > row.x1 - 28.0 {
             dropped += 1;
             continue;
@@ -796,8 +796,8 @@ fn draw_chip_row<T: Clone>(
             },
             transform
                 * Affine::translate((
-                    rect.x0 + (rect.width() - lw as f64) / 2.0,
-                    rect.y0 + (rect.height() - lh as f64) / 2.0,
+                    rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                    rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
                 )),
             None,
         );
@@ -812,7 +812,7 @@ fn draw_chip_row<T: Clone>(
             &more,
             size,
             colors.text_dim,
-            transform * Affine::translate((row.x1 - mw as f64, cy - mh as f64 / 2.0)),
+            transform * Affine::translate((row.x1 - f64::from(mw), cy - f64::from(mh) / 2.0)),
             None,
         );
     }
@@ -965,16 +965,16 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
             (automerge::PatchAction::Insert { values, .. }, "tabs") => tabs_added += values.len(),
             (automerge::PatchAction::DeleteSeq { length, .. }, "tabs") => tabs_removed += length,
             (automerge::PatchAction::Insert { values, .. }, "window_groups") => {
-                groups_moved += values.len()
+                groups_moved += values.len();
             }
             (automerge::PatchAction::DeleteSeq { length, .. }, "window_groups") => {
-                groups_moved += length
+                groups_moved += length;
             }
             (automerge::PatchAction::Insert { values, .. }, "workspaces") => {
-                workspaces_added += values.len()
+                workspaces_added += values.len();
             }
             (automerge::PatchAction::DeleteSeq { length, .. }, "workspaces") => {
-                workspaces_removed += length
+                workspaces_removed += length;
             }
             _ => {}
         }

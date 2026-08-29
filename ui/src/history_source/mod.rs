@@ -247,7 +247,7 @@ fn prefix_heads_series(
             i,
             prefix
                 .iter()
-                .map(|c| c.hash())
+                .map(automerge::Change::hash)
                 .filter(|h| !depended_on.contains(h))
                 .collect(),
         );
@@ -272,7 +272,7 @@ fn structural_summary(
         match b.op {
             qdoc::BlockOp::Added => inserted += b.new_text.as_deref().unwrap_or("").chars().count(),
             qdoc::BlockOp::Removed => {
-                deleted += b.old_text.as_deref().unwrap_or("").chars().count()
+                deleted += b.old_text.as_deref().unwrap_or("").chars().count();
             }
             qdoc::BlockOp::Changed | qdoc::BlockOp::Equal => {
                 for r in &b.runs {
@@ -393,7 +393,7 @@ fn patch_summary(
         let is_text = matches!(doc.object_type(&p.obj), Ok(ObjType::Text));
         match &p.action {
             PatchAction::SpliceText { value, .. } => {
-                inserted += value.make_string().chars().count()
+                inserted += value.make_string().chars().count();
             }
             PatchAction::DeleteSeq { length, .. } => {
                 if is_text {

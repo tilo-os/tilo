@@ -62,16 +62,13 @@ impl DrmBackend {
         // Pace to the *fastest* connected mode: the compositor paints one scene across the combined
         // geometry, so there's one cadence to pick — showing every Nth frame on a slower output beats throttling the fast panel down.
         let refresh = Self::refresh_from(&inner);
-        match refresh {
-            Some(d) => tracing::info!(
-                hz = 1.0 / d.as_secs_f64(),
-                "DRM backend: pacing to the connector's mode timing"
-            ),
-            None => tracing::warn!(
-                "DRM backend: no connector reported a usable mode refresh; \
-                 the compositor will fall back to its default cadence"
-            ),
-        }
+        if let Some(d) = refresh { tracing::info!(
+            hz = 1.0 / d.as_secs_f64(),
+            "DRM backend: pacing to the connector's mode timing"
+        ); } else { tracing::warn!(
+            "DRM backend: no connector reported a usable mode refresh; \
+             the compositor will fall back to its default cadence"
+        ); }
         Ok(Self {
             inner,
             outputs,
@@ -148,12 +145,11 @@ impl DrmPresenter {
         }
         {
             let bridge = self.paint.as_mut().expect("paint just initialised");
-            if bridge.size() != target_size {
-                if let Err(e) = bridge.resize(target_size.0, target_size.1) {
+            if bridge.size() != target_size
+                && let Err(e) = bridge.resize(target_size.0, target_size.1) {
                     tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
                     return;
                 }
-            }
         }
 
         if self.scanouts.len() == 1 {
@@ -169,7 +165,7 @@ impl DrmPresenter {
 
         let completed = self.scanouts[0].scanout.poll_flip_completions();
         for c in &completed {
-            for e in self.scanouts.iter_mut() {
+            for e in &mut self.scanouts {
                 e.scanout.mark_flip_complete(*c);
             }
         }
@@ -184,15 +180,15 @@ impl DrmPresenter {
         };
         let pointer = self.pointer;
         let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
-        for e in self.scanouts.iter_mut() {
+        for e in &mut self.scanouts {
             let (px, py) = e.position;
             let (ow, oh) = e.scanout.size();
-            let local_cursor = if pointer.0 >= px as f64
-                && pointer.0 < (px + ow as i32) as f64
-                && pointer.1 >= py as f64
-                && pointer.1 < (py + oh as i32) as f64
+            let local_cursor = if pointer.0 >= f64::from(px)
+                && pointer.0 < f64::from(px + ow as i32)
+                && pointer.1 >= f64::from(py)
+                && pointer.1 < f64::from(py + oh as i32)
             {
-                Some((pointer.0 - px as f64, pointer.1 - py as f64))
+                Some((pointer.0 - f64::from(px), pointer.1 - f64::from(py)))
             } else {
                 None
             };
@@ -293,7 +289,7 @@ impl Presenter for DrmPresenter {
 
     fn set_dpms(&mut self, on: bool) {
         self.blanked = !on;
-        for e in self.scanouts.iter_mut() {
+        for e in &mut self.scanouts {
             e.scanout.set_dpms(on);
         }
     }
@@ -336,12 +332,11 @@ impl Backend for DrmBackend {
         }
         {
             let bridge = self.paint.as_mut().expect("paint just initialised");
-            if bridge.size() != target_size {
-                if let Err(e) = bridge.resize(target_size.0, target_size.1) {
+            if bridge.size() != target_size
+                && let Err(e) = bridge.resize(target_size.0, target_size.1) {
                     tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
                     return;
                 }
-            }
         }
 
         // Single-output fast path: render the scene and swizzle it straight into the one scanout's
@@ -365,7 +360,7 @@ impl Backend for DrmBackend {
         // draining per scanout would let the primary swallow its siblings' completions and wedge their `flip_pending`.
         let completed = self.inner.scanouts[0].scanout.poll_flip_completions();
         for c in &completed {
-            for e in self.inner.scanouts.iter_mut() {
+            for e in &mut self.inner.scanouts {
                 e.scanout.mark_flip_complete(*c);
             }
         }
@@ -381,17 +376,17 @@ impl Backend for DrmBackend {
         };
         let pointer = self.inner.dispatch.pointer;
         let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
-        for e in self.inner.scanouts.iter_mut() {
+        for e in &mut self.inner.scanouts {
             let (px, py) = e.position;
             let (ow, oh) = e.scanout.size();
             // Software-cursor fallback only: draw the cursor (output-local coords) on the output it's over.
             // The hardware cursor plane, when active, ignores this and is driven from the input path via `CursorPlanes`.
-            let local_cursor = if pointer.0 >= px as f64
-                && pointer.0 < (px + ow as i32) as f64
-                && pointer.1 >= py as f64
-                && pointer.1 < (py + oh as i32) as f64
+            let local_cursor = if pointer.0 >= f64::from(px)
+                && pointer.0 < f64::from(px + ow as i32)
+                && pointer.1 >= f64::from(py)
+                && pointer.1 < f64::from(py + oh as i32)
             {
-                Some((pointer.0 - px as f64, pointer.1 - py as f64))
+                Some((pointer.0 - f64::from(px), pointer.1 - f64::from(py)))
             } else {
                 None
             };
@@ -485,7 +480,7 @@ impl Backend for DrmBackend {
         if let Some(s) = self.inner.dispatch.session.as_ref() {
             s.set_dpms(on);
         }
-        for e in self.inner.scanouts.iter_mut() {
+        for e in &mut self.inner.scanouts {
             e.scanout.set_dpms(on);
         }
     }

@@ -42,6 +42,6 @@ pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
     } else {
         ThemesApp::new_demo()
     };
-    app.seed_shot(width as f64, &scenario);
+    app.seed_shot(f64::from(width), &scenario);
     Box::new(app)
 }

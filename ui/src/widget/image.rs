@@ -211,19 +211,13 @@ impl Image {
                 self.cached_image = Some(img);
             }
             Source::Path(path) => {
-                let bytes = match std::fs::read(path) {
-                    Ok(b) => b,
-                    Err(_) => {
-                        self.source = Source::Failed;
-                        return;
-                    }
+                let bytes = if let Ok(b) = std::fs::read(path) { b } else {
+                    self.source = Source::Failed;
+                    return;
                 };
-                let (rgba, width, height) = match decode_png(&bytes) {
-                    Ok(t) => t,
-                    Err(_) => {
-                        self.source = Source::Failed;
-                        return;
-                    }
+                let (rgba, width, height) = if let Ok(t) = decode_png(&bytes) { t } else {
+                    self.source = Source::Failed;
+                    return;
                 };
                 let blob = Blob::new(Arc::new(rgba));
                 let img = PenikoImage {
@@ -257,8 +251,8 @@ impl Image {
 
         let rw = self.rect.width();
         let rh = self.rect.height();
-        let iw_f = iw as f64;
-        let ih_f = ih as f64;
+        let iw_f = f64::from(iw);
+        let ih_f = f64::from(ih);
 
         // Brush-transform shape: we apply the brush to the rect itself
         // (`scene.fill(.., &rect)`), so the brush_transform must map
@@ -430,17 +424,17 @@ impl Widget for Image {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -469,7 +463,7 @@ impl Widget for Image {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Image"
     }
 

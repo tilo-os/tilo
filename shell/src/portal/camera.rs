@@ -15,7 +15,7 @@ use zbus::names::OwnedUniqueName;
 use zbus::object_server::SignalContext;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
-use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+use crate::shell::state::{Capability, GRANT_ONCE};
 
 use super::{CapabilityKind, PortalContext, PromptOutcome, file_chooser::FileChooserBackend, flow};
 
@@ -64,7 +64,7 @@ impl AccessBackend {
 /// than a fixed phrase, to keep working across locales the portal hasn't translated yet.
 ///
 /// Falls back to `Camera` — the only consumer this backend's surface
-/// targets, since Microphone goes through Pipewire's own ACL and RemoteDesktop / Inhibit / Wallpaper aren't handled here.
+/// targets, since Microphone goes through Pipewire's own ACL and `RemoteDesktop` / Inhibit / Wallpaper aren't handled here.
 pub(super) fn classify(
     title: &str,
     subtitle: &str,
@@ -91,7 +91,7 @@ pub(super) fn classify(
 
 fn outcome_to_access_response(outcome: PromptOutcome) -> (u32, HashMap<String, OwnedValue>) {
     let results: HashMap<String, OwnedValue> = HashMap::new();
-    let code = if outcome.is_allowed() { 0 } else { 1 };
+    let code = u32::from(!outcome.is_allowed());
     (code, results)
 }
 

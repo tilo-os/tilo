@@ -445,7 +445,7 @@ mod tests {
     fn all_categories_are_unique() {
         let mut seen = std::collections::HashSet::new();
         for c in Category::ALL {
-            assert!(seen.insert(*c), "duplicate category {:?}", c);
+            assert!(seen.insert(*c), "duplicate category {c:?}");
         }
         assert_eq!(seen.len(), Category::ALL.len());
     }

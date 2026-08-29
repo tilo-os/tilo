@@ -33,7 +33,7 @@ pub fn logical_size(physical: (u32, u32), device_scale: f64) -> (f64, f64) {
     } else {
         1.0
     };
-    (physical.0 as f64 / s, physical.1 as f64 / s)
+    (f64::from(physical.0) / s, f64::from(physical.1) / s)
 }
 
 #[inline]

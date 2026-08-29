@@ -363,8 +363,7 @@ impl ActionPalette {
                 |known, available, id, _, _| {
                     node_map
                         .get(&id)
-                        .map(|&p| unsafe { (*p).measure(known, available, tr) })
-                        .unwrap_or(Size::ZERO)
+                        .map_or(Size::ZERO, |&p| unsafe { (*p).measure(known, available, tr) })
                 },
             )
             .expect("field layout");
@@ -449,9 +448,7 @@ impl ActionPalette {
         // other key edits the query and re-runs the search.
         let nav = matches!(
             &key.logical_key,
-            Key::Named(NamedKey::ArrowUp)
-                | Key::Named(NamedKey::ArrowDown)
-                | Key::Named(NamedKey::Enter)
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Enter)
         );
         if nav {
             self.route_to_results(event, modifiers, doc, path);

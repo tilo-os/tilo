@@ -76,7 +76,7 @@ mod tests {
             .lock()
             // A poisoned lock only means a previous test panicked; we
             // still want to run — clear the poison and continue.
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     struct Guard<'a> {

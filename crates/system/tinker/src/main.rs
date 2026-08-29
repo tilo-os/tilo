@@ -189,26 +189,10 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
     // abandoned and a second one made in the child.
     idmap::ensure_mapped()?;
 
-    let name = match &args.name {
-        Some(n) => {
-            if store.load(n).is_err() {
-                store.create(
-                    n,
-                    &args.base,
-                    if args.keep {
-                        LayerKind::Kept
-                    } else {
-                        LayerKind::Ephemeral
-                    },
-                    args.on.clone(),
-                )?;
-            }
-            n.clone()
-        }
-        None => {
-            let n = next_scratch_name(store)?;
+    let name = if let Some(n) = &args.name {
+        if store.load(n).is_err() {
             store.create(
-                &n,
+                n,
                 &args.base,
                 if args.keep {
                     LayerKind::Kept
@@ -217,8 +201,21 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
                 },
                 args.on.clone(),
             )?;
-            n
         }
+        n.clone()
+    } else {
+        let n = next_scratch_name(store)?;
+        store.create(
+            &n,
+            &args.base,
+            if args.keep {
+                LayerKind::Kept
+            } else {
+                LayerKind::Ephemeral
+            },
+            args.on.clone(),
+        )?;
+        n
     };
 
     let layer = store.load(&name)?;
@@ -408,15 +405,12 @@ fn cmd_revert(store: &Store, name: &str, path: &Path) -> Result<()> {
 }
 
 fn cmd_base_list(store: &Store) -> Result<()> {
-    let rd = match std::fs::read_dir(store.bases_dir()) {
-        Ok(rd) => rd,
-        Err(_) => {
-            println!("No bases yet. Add one with:");
-            println!(
-                "    tinker base add debian --from-image docker.io/library/debian:stable-slim"
-            );
-            return Ok(());
-        }
+    let rd = if let Ok(rd) = std::fs::read_dir(store.bases_dir()) { rd } else {
+        println!("No bases yet. Add one with:");
+        println!(
+            "    tinker base add debian --from-image docker.io/library/debian:stable-slim"
+        );
+        return Ok(());
     };
     for e in rd.filter_map(std::result::Result::ok) {
         println!("{}", e.file_name().to_string_lossy());

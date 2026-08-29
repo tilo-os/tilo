@@ -30,11 +30,10 @@ pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
     for raw in text.lines() {
         if raw.starts_with("@@") {
             // Close the previous hunk's line range.
-            if in_hunk {
-                if let Some(h) = diff.hunks.last_mut() {
+            if in_hunk
+                && let Some(h) = diff.hunks.last_mut() {
                     h.line_range.1 = diff.lines.len();
                 }
-            }
             let (old_start, new_start, header) = parse_hunk_header(raw);
             old_no = old_start;
             new_no = new_start;
@@ -127,15 +126,14 @@ pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
         });
     }
 
-    if in_hunk {
-        if let Some(h) = diff.hunks.last_mut() {
+    if in_hunk
+        && let Some(h) = diff.hunks.last_mut() {
             h.line_range.1 = diff.lines.len();
         }
-    }
     diff
 }
 
-/// Parse an `@@ -a,b +c,d @@ trailing @@` header into (old_start, new_start,
+/// Parse an `@@ -a,b +c,d @@ trailing @@` header into (`old_start`, `new_start`,
 /// remaining-section-text).
 fn parse_hunk_header(line: &str) -> (u32, u32, String) {
     // Expected shape: @@ -12,7 +12,9 @@ fn foo()
@@ -296,7 +294,7 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
             }
             let class = if keywords.contains(&s.as_str()) {
                 TokenClass::Keyword
-            } else if s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            } else if s.chars().next().is_some_and(char::is_uppercase) {
                 TokenClass::Type
             } else {
                 TokenClass::Plain

@@ -81,11 +81,10 @@ pub async fn run_server(addr: SocketAddr, state: AppState) -> std::io::Result<()
 /// Convenience: default XDG state dir for the registry data.
 /// Falls back to `~/.local/state/qos-registry`.
 pub fn default_data_dir() -> std::path::PathBuf {
-    if let Ok(v) = std::env::var("XDG_STATE_HOME") {
-        if !v.is_empty() {
+    if let Ok(v) = std::env::var("XDG_STATE_HOME")
+        && !v.is_empty() {
             return std::path::PathBuf::from(v).join("qos-registry");
         }
-    }
     if let Ok(home) = std::env::var("HOME") {
         return std::path::PathBuf::from(home)
             .join(".local")

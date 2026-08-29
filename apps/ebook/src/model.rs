@@ -86,7 +86,7 @@ impl Chapter {
     pub fn block_text(&self, i: usize) -> String {
         self.blocks
             .get(i)
-            .map(|b| b.plain_text())
+            .map(Block::plain_text)
             .unwrap_or_default()
     }
 }
@@ -336,8 +336,7 @@ pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 // --- Reading settings + per-book progress ------------------------------------
@@ -524,28 +523,28 @@ pub fn default_fonts() -> Vec<FontEntry> {
 
 /// Relative luminance (0..1) of an sRGB colour, for light/dark decisions.
 pub fn luminance(c: [u8; 3]) -> f32 {
-    (0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32) / 255.0
+    (0.299 * f32::from(c[0]) + 0.587 * f32::from(c[1]) + 0.114 * f32::from(c[2])) / 255.0
 }
 
 /// Linear blend of two colours; `t` in 0..1 moves from `a` to `b`.
 pub fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     let t = t.clamp(0.0, 1.0);
     [
-        (a[0] as f32 * (1.0 - t) + b[0] as f32 * t).round() as u8,
-        (a[1] as f32 * (1.0 - t) + b[1] as f32 * t).round() as u8,
-        (a[2] as f32 * (1.0 - t) + b[2] as f32 * t).round() as u8,
+        (f32::from(a[0]) * (1.0 - t) + f32::from(b[0]) * t).round() as u8,
+        (f32::from(a[1]) * (1.0 - t) + f32::from(b[1]) * t).round() as u8,
+        (f32::from(a[2]) * (1.0 - t) + f32::from(b[2]) * t).round() as u8,
     ]
 }
 
 fn rgb_to_hsl(c: [u8; 3]) -> (f32, f32, f32) {
     let (r, g, b) = (
-        c[0] as f32 / 255.0,
-        c[1] as f32 / 255.0,
-        c[2] as f32 / 255.0,
+        f32::from(c[0]) / 255.0,
+        f32::from(c[1]) / 255.0,
+        f32::from(c[2]) / 255.0,
     );
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
-    let l = (max + min) / 2.0;
+    let l = f32::midpoint(max, min);
     if (max - min).abs() < 1e-6 {
         return (0.0, 0.0, l);
     }
@@ -596,9 +595,9 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
 /// achromatic axis (callers editing a grey preserve their prior hue).
 pub fn rgb_to_hsv(c: [u8; 3]) -> (f32, f32, f32) {
     let (r, g, b) = (
-        c[0] as f32 / 255.0,
-        c[1] as f32 / 255.0,
-        c[2] as f32 / 255.0,
+        f32::from(c[0]) / 255.0,
+        f32::from(c[1]) / 255.0,
+        f32::from(c[2]) / 255.0,
     );
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);

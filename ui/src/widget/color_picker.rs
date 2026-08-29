@@ -53,7 +53,7 @@ pub struct ColorPicker {
     drag_target: Option<DragTarget>,
     last_cursor: Point,
     is_focused: bool,
-    /// Local-mode TextInput sitting under the preview swatch, holding the
+    /// Local-mode `TextInput` sitting under the preview swatch, holding the
     /// canonical hex string. A parse failure leaves `self.color` untouched.
     hex_input: TextInput,
     /// Cached rect for the hex input. Computed in `apply_layout` so
@@ -261,9 +261,9 @@ impl ColorPicker {
     /// callers writing back into HSV should preserve whatever hue they
     /// last had rather than relying on this fallback.
     fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
-        let rf = r as f32 / 255.0;
-        let gf = g as f32 / 255.0;
-        let bf = b as f32 / 255.0;
+        let rf = f32::from(r) / 255.0;
+        let gf = f32::from(g) / 255.0;
+        let bf = f32::from(b) / 255.0;
         let max = rf.max(gf).max(bf);
         let min = rf.min(gf).min(bf);
         let delta = max - min;
@@ -433,16 +433,16 @@ impl Widget for ColorPicker {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let x0 = origin.x + layout.location.x as f64;
-        let y0 = origin.y + layout.location.y as f64;
-        let x1 = x0 + layout.size.width as f64;
-        let y1 = y0 + layout.size.height as f64;
+        let x0 = origin.x + f64::from(layout.location.x);
+        let y0 = origin.y + f64::from(layout.location.y);
+        let x1 = x0 + f64::from(layout.size.width);
+        let y1 = y0 + f64::from(layout.size.height);
         self.apply_layout_external(Rect::new(x0, y0, x1, y1));
     }
 
@@ -455,7 +455,7 @@ impl Widget for ColorPicker {
         _presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius_sm = theme.tokens.radii.sm as f64;
+        let radius_sm = f64::from(theme.tokens.radii.sm);
 
         // No bounding-box focus border: the picker's rect spans empty
         // space between its controls, so a stroke around all of it would
@@ -498,8 +498,8 @@ impl Widget for ColorPicker {
         // SV cursor — a small ring at the (saturation, 1 - value) coordinate.
         let (_, sat, val) = self.current_hsv();
         let sv_cursor = Point::new(
-            self.sv_rect.x0 + sat as f64 * self.sv_rect.width(),
-            self.sv_rect.y0 + (1.0 - val as f64) * self.sv_rect.height(),
+            self.sv_rect.x0 + f64::from(sat) * self.sv_rect.width(),
+            self.sv_rect.y0 + (1.0 - f64::from(val)) * self.sv_rect.height(),
         );
         let sv_ring = vello::kurbo::Circle::new(sv_cursor, KNOB_RADIUS);
         scene.stroke(
@@ -532,7 +532,7 @@ impl Widget for ColorPicker {
         );
 
         let (h, _, _) = self.current_hsv();
-        let tick_y = self.hue_strip_rect.y0 + h as f64 * self.hue_strip_rect.height();
+        let tick_y = self.hue_strip_rect.y0 + f64::from(h) * self.hue_strip_rect.height();
         let tick = Rect::new(
             self.hue_strip_rect.x0 - 2.0,
             tick_y - 1.0,
@@ -570,9 +570,9 @@ impl Widget for ColorPicker {
         let g_fill = Color::from_rgba8(0, self.color.g(), 0, 255);
         let b_fill = Color::from_rgba8(0, 0, self.color.b(), 255);
         for (slider, fill, frac) in [
-            (self.r_slider_rect, r_fill, self.color.r() as f64 / 255.0),
-            (self.g_slider_rect, g_fill, self.color.g() as f64 / 255.0),
-            (self.b_slider_rect, b_fill, self.color.b() as f64 / 255.0),
+            (self.r_slider_rect, r_fill, f64::from(self.color.r()) / 255.0),
+            (self.g_slider_rect, g_fill, f64::from(self.color.g()) / 255.0),
+            (self.b_slider_rect, b_fill, f64::from(self.color.b()) / 255.0),
         ] {
             let track_y0 = slider.y0 + (slider.height() - TRACK_HEIGHT) / 2.0;
             let track_y1 = track_y0 + TRACK_HEIGHT;
@@ -636,7 +636,7 @@ impl Widget for ColorPicker {
         let text_size = theme.tokens.typography.scale.sm;
         let rgb_label = self.rgb_string();
         let label_x = self.preview_rect.x0;
-        let row_gap = theme.tokens.spacing.s2 as f64;
+        let row_gap = f64::from(theme.tokens.spacing.s2);
         let rgb_y = self.hex_input_rect.y1 + row_gap;
         text_renderer.draw_text(
             scene,
@@ -757,7 +757,7 @@ impl Widget for ColorPicker {
         self.drag_target.is_some()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ColorPicker"
     }
 

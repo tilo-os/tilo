@@ -33,6 +33,12 @@ pub struct GridView {
     rect: Rect,
 }
 
+impl Default for GridView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GridView {
     pub fn new() -> Self {
         Self {
@@ -61,7 +67,7 @@ impl GridView {
         self.col_widths = vec![MIN_COL_W; ncols];
         for (ci, name) in result.columns.iter().enumerate() {
             let (w, _) = tr.measure(name, 13.0, None);
-            self.col_widths[ci] = (w as f64 + 2.0 * CELL_PAD + 16.0).max(MIN_COL_W);
+            self.col_widths[ci] = (f64::from(w) + 2.0 * CELL_PAD + 16.0).max(MIN_COL_W);
         }
         // Sample up to 60 rows to size columns to content.
         for row in result.rows.iter().take(60) {
@@ -72,7 +78,7 @@ impl GridView {
                 let s = cell.display();
                 let sample: String = s.chars().take(40).collect();
                 let (w, _) = tr.measure(&sample, 13.0, None);
-                let want = (w as f64 + 2.0 * CELL_PAD).max(MIN_COL_W);
+                let want = (f64::from(w) + 2.0 * CELL_PAD).max(MIN_COL_W);
                 if want > self.col_widths[ci] {
                     self.col_widths[ci] = want.min(360.0);
                 }
@@ -369,7 +375,7 @@ fn draw_cell(
     if cell.is_numeric() {
         // Right-align numerics within the cell.
         let (tw, _) = tr.measure(&truncated, 13.0, None);
-        let tx = (x + w - CELL_PAD - tw as f64).max(x + CELL_PAD);
+        let tx = (x + w - CELL_PAD - f64::from(tw)).max(x + CELL_PAD);
         tr.draw_text(
             scene,
             &truncated,

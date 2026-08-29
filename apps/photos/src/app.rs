@@ -471,7 +471,7 @@ impl PhotosApp {
     pub fn visible_rect(&self) -> Rect01 {
         match (self.viewer.as_ref(), self.original.as_ref()) {
             (Some(v), Some((_, original))) => {
-                visible_image_rect(v, original.w as f64, original.h as f64).unwrap_or(Rect01::FULL)
+                visible_image_rect(v, f64::from(original.w), f64::from(original.h)).unwrap_or(Rect01::FULL)
             }
             _ => Rect01::FULL,
         }
@@ -502,15 +502,12 @@ impl PhotosApp {
             self.notice = Some(tr("photos-save-failed"));
             return false;
         };
-        match std::fs::write(path, &bytes) {
-            Ok(()) => {
-                self.notice = Some(format!("{} {path}", tr("photos-saved")));
-                true
-            }
-            Err(_) => {
-                self.notice = Some(tr("photos-save-failed"));
-                false
-            }
+        if let Ok(()) = std::fs::write(path, &bytes) {
+            self.notice = Some(format!("{} {path}", tr("photos-saved")));
+            true
+        } else {
+            self.notice = Some(tr("photos-save-failed"));
+            false
         }
     }
 
@@ -522,7 +519,7 @@ impl PhotosApp {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let parent = p.parent().map(|s| s.to_path_buf()).unwrap_or_default();
+        let parent = p.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
         parent
             .join(format!("{stem}-edited.png"))
             .to_string_lossy()
@@ -548,17 +545,13 @@ impl PhotosApp {
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
         if self.original.as_ref().map(|(p, _)| p.as_str()) != Some(open.path.as_str()) {
-            match crate::doc::bytes_of(&open)
+            if let Some(img) = crate::doc::bytes_of(&open)
                 .as_deref()
-                .and_then(pixels::decode)
-            {
-                Some(img) => self.original = Some((open.path.clone(), img)),
-                None => {
-                    self.original = None;
-                    self.rendered = None;
-                    self.viewer = None;
-                    return;
-                }
+                .and_then(pixels::decode) { self.original = Some((open.path.clone(), img)) } else {
+                self.original = None;
+                self.rendered = None;
+                self.viewer = None;
+                return;
             }
         }
         let Some((_, original)) = self.original.as_ref() else {
@@ -582,7 +575,7 @@ impl PhotosApp {
         // asked for.
         self.viewer = Some(ImageViewer::new(image));
         self.rendered = Some(Rendered {
-            path: open.path.clone(),
+            path: open.path,
             edits,
             rgba,
         });
@@ -692,7 +685,7 @@ fn visible_image_rect(viewer: &ImageViewer, w: f64, h: f64) -> Option<Rect01> {
         return None;
     }
     let base = (rw / w).min(rh / h);
-    let total_scale = base * viewer.zoom() as f64;
+    let total_scale = base * f64::from(viewer.zoom());
     if total_scale <= 0.0 {
         return None;
     }
@@ -908,19 +901,19 @@ impl Widget for PhotosApp {
                 &[bar, canvas, status],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let x = origin.x + layout.location.x as f64;
-        let y = origin.y + layout.location.y as f64;
+        let x = origin.x + f64::from(layout.location.x);
+        let y = origin.y + f64::from(layout.location.y);
         self.rect = Rect::new(
             x,
             y,
-            x + layout.size.width as f64,
-            y + layout.size.height as f64,
+            x + f64::from(layout.size.width),
+            y + f64::from(layout.size.height),
         );
         let here = Point::new(x, y);
 
@@ -928,12 +921,12 @@ impl Widget for PhotosApp {
         let Some(&bar) = children.first() else { return };
         let bl = taffy.layout(bar).unwrap();
         self.toolbar_rect = Rect::new(
-            x + bl.location.x as f64,
-            y + bl.location.y as f64,
-            x + bl.location.x as f64 + bl.size.width as f64,
-            y + bl.location.y as f64 + bl.size.height as f64,
+            x + f64::from(bl.location.x),
+            y + f64::from(bl.location.y),
+            x + f64::from(bl.location.x) + f64::from(bl.size.width),
+            y + f64::from(bl.location.y) + f64::from(bl.size.height),
         );
-        let bar_origin = Point::new(x + bl.location.x as f64, y + bl.location.y as f64);
+        let bar_origin = Point::new(x + f64::from(bl.location.x), y + f64::from(bl.location.y));
         let bar_children = taffy.children(bar).unwrap();
         self.separator_rects.clear();
         for (slot, &bn) in SLOTS.iter().zip(bar_children.iter()) {
@@ -945,13 +938,13 @@ impl Widget for PhotosApp {
                 }
                 Slot::Separator => {
                     let sl = taffy.layout(bn).unwrap();
-                    let sx = bar_origin.x + sl.location.x as f64 + sl.size.width as f64 / 2.0;
-                    let sy = bar_origin.y + sl.location.y as f64;
+                    let sx = bar_origin.x + f64::from(sl.location.x) + f64::from(sl.size.width) / 2.0;
+                    let sy = bar_origin.y + f64::from(sl.location.y);
                     self.separator_rects.push(Rect::new(
                         sx,
                         sy,
                         sx + 1.0,
-                        sy + sl.size.height as f64,
+                        sy + f64::from(sl.size.height),
                     ));
                 }
                 Slot::Spacer => {}
@@ -961,10 +954,10 @@ impl Widget for PhotosApp {
         if let Some(&canvas) = children.get(1) {
             let cl = taffy.layout(canvas).unwrap();
             self.canvas_rect = Rect::new(
-                x + cl.location.x as f64,
-                y + cl.location.y as f64,
-                x + cl.location.x as f64 + cl.size.width as f64,
-                y + cl.location.y as f64 + cl.size.height as f64,
+                x + f64::from(cl.location.x),
+                y + f64::from(cl.location.y),
+                x + f64::from(cl.location.x) + f64::from(cl.size.width),
+                y + f64::from(cl.location.y) + f64::from(cl.size.height),
             );
             if let Some(v) = self.viewer.as_mut() {
                 v.apply_layout(taffy, canvas, here);
@@ -973,10 +966,10 @@ impl Widget for PhotosApp {
         if let Some(&status) = children.get(2) {
             let sl = taffy.layout(status).unwrap();
             self.status_rect = Rect::new(
-                x + sl.location.x as f64,
-                y + sl.location.y as f64,
-                x + sl.location.x as f64 + sl.size.width as f64,
-                y + sl.location.y as f64 + sl.size.height as f64,
+                x + f64::from(sl.location.x),
+                y + f64::from(sl.location.y),
+                x + f64::from(sl.location.x) + f64::from(sl.size.width),
+                y + f64::from(sl.location.y) + f64::from(sl.size.height),
             );
         }
     }
@@ -1064,8 +1057,8 @@ impl Widget for PhotosApp {
                 &self.status,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((inner.x0 + PAD as f64, inner.y0 + 4.0)),
-                Some((inner.width() - 2.0 * PAD as f64) as f32),
+                transform * Affine::translate((inner.x0 + f64::from(PAD), inner.y0 + 4.0)),
+                Some((inner.width() - 2.0 * f64::from(PAD)) as f32),
                 TextWeight::Regular,
             );
         }
@@ -1120,7 +1113,7 @@ impl Widget for PhotosApp {
         self.drain_pending(doc);
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PhotosApp"
     }
 

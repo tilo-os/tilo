@@ -81,8 +81,7 @@ pub fn fetch_h264(
     // content length or the server's per-request cap.
     let end = handle
         .content_length
-        .map(|len| MAX_PREFIX_BYTES.min(len.saturating_sub(1)))
-        .unwrap_or(MAX_PREFIX_BYTES);
+        .map_or(MAX_PREFIX_BYTES, |len| MAX_PREFIX_BYTES.min(len.saturating_sub(1)));
 
     let url = with_range(&handle.url, 0, end);
     let resp = client
@@ -200,7 +199,7 @@ pub fn fetch_stream_plan(
             continue;
         }
         let start = cursor;
-        let end = cursor + *size as u64 - 1;
+        let end = cursor + u64::from(*size) - 1;
         fragments.push((start, end));
         durations.push(*dur);
         cursor = end + 1;

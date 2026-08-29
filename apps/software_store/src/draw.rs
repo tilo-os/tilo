@@ -17,7 +17,7 @@ use vello::peniko::{Color, Fill};
 /// tile) without hard-coding any literal.
 pub fn mix(a: Color, b: Color, t: f64) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let lerp = |x: u8, y: u8| -> u8 { (x as f64 + (y as f64 - x as f64) * t).round() as u8 };
+    let lerp = |x: u8, y: u8| -> u8 { (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8 };
     Color::from_rgba8(
         lerp(a.r(), b.r()),
         lerp(a.g(), b.g()),
@@ -102,7 +102,7 @@ pub fn text_w(
 
 pub fn measure(tr: &mut TextRenderer, s: &str, size: f32) -> (f64, f64) {
     let (w, h) = tr.measure(s, size, None);
-    (w as f64, h as f64)
+    (f64::from(w), f64::from(h))
 }
 
 /// Truncate `s` with a trailing ellipsis so it fits within `max_w` at
@@ -131,7 +131,7 @@ fn star_path(c: Point, outer: f64) -> BezPath {
     for i in 0..10 {
         let r = if i % 2 == 0 { outer } else { inner };
         // -PI/2 puts the first point straight up.
-        let ang = -std::f64::consts::FRAC_PI_2 + (i as f64) * std::f64::consts::PI / 5.0;
+        let ang = -std::f64::consts::FRAC_PI_2 + f64::from(i) * std::f64::consts::PI / 5.0;
         let pt = Point::new(c.x + r * ang.cos(), c.y + r * ang.sin());
         if i == 0 {
             p.move_to(pt);
@@ -246,7 +246,7 @@ pub fn screenshot_thumb(
     // Three "window dots" on the header.
     for i in 0..3 {
         let r = (rect.height() * 0.025).max(2.0);
-        let cx = rect.x0 + rect.width() * 0.08 + i as f64 * r * 3.0;
+        let cx = rect.x0 + rect.width() * 0.08 + f64::from(i) * r * 3.0;
         let cy = rect.y0 + rect.height() * 0.11;
         let dot = vello::kurbo::Circle::new(Point::new(cx, cy), r);
         scene.fill(Fill::NonZero, t, alpha(Color::WHITE, 0.55), None, &dot);
@@ -261,11 +261,11 @@ pub fn screenshot_thumb(
     fill_round(scene, t, side, 6.0, alpha(tone_a, 0.65));
     // A few content bars.
     for i in 0..3 {
-        let by = rect.y0 + rect.height() * (0.34 + i as f64 * 0.18);
+        let by = rect.y0 + rect.height() * (0.34 + f64::from(i) * 0.18);
         let bar = Rect::new(
             rect.x0 + rect.width() * 0.36,
             by,
-            rect.x1 - rect.width() * (0.10 + i as f64 * 0.08),
+            rect.x1 - rect.width() * (0.10 + f64::from(i) * 0.08),
             by + rect.height() * 0.08,
         );
         fill_round(scene, t, bar, 4.0, alpha(tone_a, 0.5));

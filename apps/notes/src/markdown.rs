@@ -231,8 +231,8 @@ pub fn parse_inline(line: &str) -> InlineText {
     let mut i = 0usize;
     while i < bytes.len() {
         // Inline code.
-        if bytes[i] == b'`' {
-            if let Some(end) = find_unescaped(bytes, i + 1, b'`') {
+        if bytes[i] == b'`'
+            && let Some(end) = find_unescaped(bytes, i + 1, b'`') {
                 let start = plain.len();
                 plain.push_str(&line[i + 1..end]);
                 let stop = plain.len();
@@ -240,10 +240,9 @@ pub fn parse_inline(line: &str) -> InlineText {
                 i = end + 1;
                 continue;
             }
-        }
         // Page link `[[Title]]`.
-        if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            if let Some(end) = find_pair(bytes, i + 2, b']', b']') {
+        if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'['
+            && let Some(end) = find_pair(bytes, i + 2, b']', b']') {
                 let title = &line[i + 2..end];
                 let start = plain.len();
                 plain.push_str(title);
@@ -255,11 +254,10 @@ pub fn parse_inline(line: &str) -> InlineText {
                 i = end + 2;
                 continue;
             }
-        }
         // Bold `**...**` (run before italic so `**` doesn't parse as
         // empty italic).
-        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*' {
-            if let Some(end) = find_pair(bytes, i + 2, b'*', b'*') {
+        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*'
+            && let Some(end) = find_pair(bytes, i + 2, b'*', b'*') {
                 // Body may contain nested italic via `*text*`. Recurse.
                 let body = &line[i + 2..end];
                 let body_parsed = parse_inline(body);
@@ -277,10 +275,9 @@ pub fn parse_inline(line: &str) -> InlineText {
                 i = end + 2;
                 continue;
             }
-        }
         // Italic `*...*`.
-        if bytes[i] == b'*' {
-            if let Some(end) = find_unescaped(bytes, i + 1, b'*') {
+        if bytes[i] == b'*'
+            && let Some(end) = find_unescaped(bytes, i + 1, b'*') {
                 // Empty `**` body wouldn't reach here (bold path
                 // above already claimed it). A lone `*` with no
                 // closing partner falls through.
@@ -301,7 +298,6 @@ pub fn parse_inline(line: &str) -> InlineText {
                     continue;
                 }
             }
-        }
         // Fallback: copy the next char verbatim. The markers we
         // scan for are all ASCII, but the body may contain
         // multi-byte UTF-8 — pushing a single byte as `char` mangles
@@ -728,13 +724,12 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
                 let run_lang = lang.clone();
                 i += 1;
                 while i < blocks.len() {
-                    if let BlockKind::CodeBlock { lang: next_lang } = &blocks[i].kind {
-                        if *next_lang == run_lang {
+                    if let BlockKind::CodeBlock { lang: next_lang } = &blocks[i].kind
+                        && *next_lang == run_lang {
                             lines.push(blocks[i].text().to_string());
                             i += 1;
                             continue;
                         }
-                    }
                     break;
                 }
                 out.push(BlockSpec::CodeBlock {
@@ -769,14 +764,13 @@ where
             _ => continue,
         };
         for m in &mut inline.marks {
-            if let Mark::Link(id) = &m.mark {
-                if id.is_nil() {
+            if let Mark::Link(id) = &m.mark
+                && id.is_nil() {
                     let title = &inline.text[m.range.clone()];
                     if let Some(new_id) = resolver(title) {
                         m.mark = Mark::Link(new_id);
                     }
                 }
-            }
         }
     }
 }

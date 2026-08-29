@@ -67,7 +67,7 @@ fn draw_chip(
 ) {
     let size = 13.0_f32;
     let (tw, _) = text.measure(label, size, None);
-    let w = tw as f64 + CHIP_PAD * 2.0;
+    let w = f64::from(tw) + CHIP_PAD * 2.0;
     let x = cursor.x + CHIP_DX;
     let y = cursor.y + CHIP_DY;
     let rect = RoundedRect::new(x, y, x + w, y + CHIP_H, 8.0);
@@ -99,7 +99,7 @@ fn draw_chip(
         label,
         size,
         theme.text_primary,
-        Affine::translate((x + CHIP_PAD, y + (CHIP_H - size as f64 * 1.3) / 2.0)),
+        Affine::translate((x + CHIP_PAD, y + (CHIP_H - f64::from(size) * 1.3) / 2.0)),
         None,
     );
 }
@@ -195,13 +195,12 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
                 out.push(v);
                 i += 3;
                 continue;
             }
-        }
         out.push(bytes[i]);
         i += 1;
     }
@@ -213,9 +212,7 @@ pub fn label_for_paths(paths: &[std::path::PathBuf]) -> String {
     match paths {
         [] => "1 item".to_string(),
         [one] => one
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| one.display().to_string()),
+            .file_name().map_or_else(|| one.display().to_string(), |n| n.to_string_lossy().into_owned()),
         many => format!("{} items", many.len()),
     }
 }

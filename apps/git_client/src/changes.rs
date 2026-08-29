@@ -190,8 +190,8 @@ impl ChangesColumn {
         let count = files.len().to_string();
         let cx = area.x0
             + 14.0
-            + tr.measure_weighted(title, 12.0, None, TextWeight::Semibold)
-                .0 as f64
+            + f64::from(tr.measure_weighted(title, 12.0, None, TextWeight::Semibold)
+                .0)
             + 8.0;
         draw::pill(
             scene,
@@ -212,7 +212,7 @@ impl ChangesColumn {
             } else {
                 "Stage all"
             };
-            let lw = tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0 as f64;
+            let lw = f64::from(tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0);
             let lx = area.x1 - lw - 14.0;
             draw::text_weighted(
                 scene,
@@ -284,7 +284,7 @@ impl ChangesColumn {
                 None,
                 TextWeight::Medium,
             );
-            let nw = tr.measure_weighted(name, 12.5, None, TextWeight::Medium).0 as f64;
+            let nw = f64::from(tr.measure_weighted(name, 12.5, None, TextWeight::Medium).0);
             let dir = f.dir();
             if !dir.is_empty() {
                 draw::text(
@@ -319,7 +319,7 @@ impl ChangesColumn {
             let chev = if is_staged { "−" } else { "+" };
             let brect = Rect::new(area.x1 - 28.0, y + 4.0, area.x1 - 8.0, y + ROW_H - 4.0);
             draw::fill_round(scene, t, brect, 4.0, c.surface_white_10);
-            let chw = draw::mono_width(tr, chev, 14.0) as f64;
+            let chw = f64::from(draw::mono_width(tr, chev, 14.0));
             draw::mono(
                 scene,
                 tr,
@@ -443,9 +443,9 @@ impl ChangesColumn {
                 if staged_n == 1 { "" } else { "s" }
             )
         };
-        let lw = tr
+        let lw = f64::from(tr
             .measure_weighted(&label, 12.0, None, TextWeight::Semibold)
-            .0 as f64;
+            .0);
         draw::text_weighted(
             scene,
             tr,

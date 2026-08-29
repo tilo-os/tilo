@@ -17,7 +17,7 @@ use ui::widget::Avatar;
 
 use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
-use crate::paint::*;
+use crate::paint::{legible_on, band_at_least, blend_toward, palette_color, fill_circle, fill_rect, fill_round, text, truncate_to, label, hline, stroke_circle, stroke_round, push_clip};
 
 /// Body text size for a message. Shared by the measure and the draw so a
 /// mention-carrying row reserves exactly the height it paints.
@@ -191,7 +191,7 @@ pub(crate) fn draw_avatar(
 }
 
 fn char_to_byte(s: &str, ci: usize) -> usize {
-    s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len())
+    s.char_indices().nth(ci).map_or(s.len(), |(b, _)| b)
 }
 
 /// Human label for a presence state, shown under a member in the roster.
@@ -245,8 +245,8 @@ impl ChatApp {
                 &ws.glyph,
                 17.0,
                 col,
-                b.center().x - tw as f64 / 2.0,
-                b.center().y - th as f64 / 2.0,
+                b.center().x - f64::from(tw) / 2.0,
+                b.center().y - f64::from(th) / 2.0,
                 TextWeight::Bold,
                 None,
             );
@@ -265,8 +265,8 @@ impl ChatApp {
             "+",
             24.0,
             c.semantic.success,
-            add.center().x - aw as f64 / 2.0,
-            add.center().y - ah as f64 / 2.0,
+            add.center().x - f64::from(aw) / 2.0,
+            add.center().y - f64::from(ah) / 2.0,
             TextWeight::Regular,
             None,
         );
@@ -316,7 +316,7 @@ impl ChatApp {
         let pill_txt = format!("{online} online");
         let (pw, _) = tr.measure(&pill_txt, 10.5, None);
         let pill = Rect::new(
-            side.x1 - pw as f64 - 28.0,
+            side.x1 - f64::from(pw) - 28.0,
             side.y0 + 16.0,
             side.x1 - 12.0,
             side.y0 + 34.0,
@@ -521,8 +521,8 @@ impl ChatApp {
                 dglyph,
                 14.0,
                 c.text_primary,
-                deaf.center().x - dw as f64 / 2.0,
-                deaf.center().y - dh as f64 / 2.0,
+                deaf.center().x - f64::from(dw) / 2.0,
+                deaf.center().y - f64::from(dh) / 2.0,
                 TextWeight::Regular,
                 None,
             );
@@ -554,8 +554,8 @@ impl ChatApp {
                 mglyph,
                 14.0,
                 c.text_primary,
-                mute.center().x - mw as f64 / 2.0,
-                mute.center().y - mh as f64 / 2.0,
+                mute.center().x - f64::from(mw) / 2.0,
+                mute.center().y - f64::from(mh) / 2.0,
                 TextWeight::Regular,
                 None,
             );
@@ -594,8 +594,7 @@ impl ChatApp {
                     ws_channels.get(s.channel_index).map(|cc| cc.id.as_str())
                         == Some(ch.id.as_str())
                 })
-                .map(|s| s.dx())
-                .unwrap_or(0.0);
+                .map_or(0.0, |s| s.dx());
             let row = Rect::new(
                 side.x0 + 8.0 - swipe_dx,
                 y,
@@ -688,7 +687,7 @@ impl ChatApp {
             } else if ch.unread > 0 {
                 let txt = ch.unread.to_string();
                 let (bw, _) = tr.measure(&txt, 11.0, None);
-                let badge = Rect::new(row.x1 - bw as f64 - 22.0, y + 7.0, row.x1 - 8.0, y + 25.0);
+                let badge = Rect::new(row.x1 - f64::from(bw) - 22.0, y + 7.0, row.x1 - 8.0, y + 25.0);
                 fill_round(scene, tf, badge, 9.0, c.accent[5]);
                 label(
                     scene,
@@ -801,7 +800,7 @@ impl ChatApp {
             TextWeight::Regular,
             Some((w - 8.0) as f32),
         );
-        let caret = Rect::new(x + tw as f64 + 1.0, y, x + tw as f64 + 2.4, y + 16.0);
+        let caret = Rect::new(x + f64::from(tw) + 1.0, y, x + f64::from(tw) + 2.4, y + 16.0);
         fill_rect(scene, tf, caret, c.border_focus);
         ChatApp::push_hit(hits, box_r, Hit::RenameConfirm);
     }
@@ -925,7 +924,7 @@ impl ChatApp {
             None,
         );
         if !topic.is_empty() {
-            let tx = nx + nw as f64 + 18.0;
+            let tx = nx + f64::from(nw) + 18.0;
             let avail = cluster_left - 12.0 - tx;
             if avail >= 48.0 {
                 let topic_t = truncate_to(tr, &topic, 13.0, avail);
@@ -1075,8 +1074,8 @@ impl ChatApp {
                 "#",
                 30.0,
                 c.text_dim,
-                cx - gw as f64 / 2.0,
-                cy - gh as f64 / 2.0,
+                cx - f64::from(gw) / 2.0,
+                cy - f64::from(gh) / 2.0,
                 TextWeight::Bold,
                 None,
             );
@@ -1089,7 +1088,7 @@ impl ChatApp {
                 &title,
                 20.0,
                 c.text_primary,
-                cx - tw as f64 / 2.0,
+                cx - f64::from(tw) / 2.0,
                 cy + 46.0,
                 TextWeight::Bold,
                 None,
@@ -1103,7 +1102,7 @@ impl ChatApp {
                 &sub,
                 13.0,
                 c.text_dim,
-                cx - sw as f64 / 2.0,
+                cx - f64::from(sw) / 2.0,
                 cy + 76.0,
             );
             return;
@@ -1137,23 +1136,21 @@ impl ChatApp {
         // date divider
         let dl = self
             .messages
-            .first()
-            .map(|m| model::day_label(m.ts, crate::doc::NOW))
-            .unwrap_or_else(|| "Today".into());
+            .first().map_or_else(|| "Today".into(), |m| model::day_label(m.ts, crate::doc::NOW));
         let (dw, _) = tr.measure(&dl, 11.5, None);
         let dcy = y + divider_h / 2.0;
         hline(
             scene,
             tf,
             area.x0 + 24.0,
-            area.center().x - dw as f64 / 2.0 - 14.0,
+            area.center().x - f64::from(dw) / 2.0 - 14.0,
             dcy,
             c.border_standard,
         );
         hline(
             scene,
             tf,
-            area.center().x + dw as f64 / 2.0 + 14.0,
+            area.center().x + f64::from(dw) / 2.0 + 14.0,
             area.x1 - 24.0,
             dcy,
             c.border_standard,
@@ -1165,7 +1162,7 @@ impl ChatApp {
             &dl,
             11.5,
             c.text_dim,
-            area.center().x - dw as f64 / 2.0,
+            area.center().x - f64::from(dw) / 2.0,
             dcy - 7.0,
         );
         y += divider_h;
@@ -1187,26 +1184,26 @@ impl ChatApp {
         // The editor measures its live working text so the timeline reflows as
         // you type; a static message measures its stored body.
         let body_h = if editing {
-            let t = self.editing.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
-            (tr.measure(t, 15.0, Some(text_w)).1 as f64).max(19.0)
+            let t = self.editing.as_ref().map_or("", |(_, t)| t.as_str());
+            f64::from(tr.measure(t, 15.0, Some(text_w)).1).max(19.0)
         } else if m.text.is_empty() {
             0.0
         } else if m.mentions.is_empty() {
-            tr.measure(&m.text, BODY_SIZE, Some(text_w)).1 as f64
+            f64::from(tr.measure(&m.text, BODY_SIZE, Some(text_w)).1)
         } else {
             // A mention-carrying body is laid out by the rich path, so it must
             // be measured by the rich path too — measuring one and painting the
             // other is how a row ends up clipping its own last line.
             let spans = body_spans(self, m, theme, theme.tokens.colors.surfaces.base);
-            shape_body(tr, &spans, text_w).height() as f64
+            f64::from(shape_body(tr, &spans, text_w).height())
         };
         let att_h = match &m.attachment {
             None => 0.0,
             Some(Attachment::File { .. }) => 70.0,
             Some(Attachment::Image { w, h, .. }) => {
-                image_thumb_size(*w, *h, text_w as f64).1 + 24.0
+                image_thumb_size(*w, *h, f64::from(text_w)).1 + 24.0
             }
-            Some(Attachment::Video { w, h, .. }) => video_card_size(*w, *h, text_w as f64).1 + 24.0,
+            Some(Attachment::Video { w, h, .. }) => video_card_size(*w, *h, f64::from(text_w)).1 + 24.0,
         };
         let react_h = if m.reactions.is_empty() { 0.0 } else { 32.0 };
         // While editing, the "(edited)" marker is suppressed in favour of the
@@ -1259,8 +1256,7 @@ impl ChatApp {
             let u = self.user(&m.author).cloned();
             let (initials, cidx, status) = u
                 .as_ref()
-                .map(|u| (u.initials.clone(), u.color_idx, Some(u.status)))
-                .unwrap_or(("?".into(), 0, None));
+                .map_or(("?".into(), 0, None), |u| (u.initials.clone(), u.color_idx, Some(u.status)));
             draw_avatar(
                 scene,
                 tf,
@@ -1292,7 +1288,7 @@ impl ChatApp {
                 &model::clock(m.ts),
                 11.5,
                 c.text_dim,
-                text_x + nw as f64 + 10.0,
+                text_x + f64::from(nw) + 10.0,
                 *y + 3.0,
             );
             *y += 22.0;
@@ -1347,7 +1343,7 @@ impl ChatApp {
             let r = Rect::new(
                 text_x,
                 *y,
-                text_x + tr.measure(s, 11.5, None).0 as f64 + 4.0,
+                text_x + f64::from(tr.measure(s, 11.5, None).0) + 4.0,
                 *y + 16.0,
             );
             label(scene, tr, tf, s, 11.5, c.text_dim, text_x, *y);
@@ -1367,11 +1363,11 @@ impl ChatApp {
             *y += rm.att_h;
         }
 
-        if !m.reactions.is_empty() {
+        if m.reactions.is_empty() {
+            // empty reaction strip still gets an add affordance on header rows
+        } else {
             self.draw_reactions(scene, tf, tr, theme, m, text_x, *y, hits);
             *y += rm.react_h;
-        } else {
-            // empty reaction strip still gets an add affordance on header rows
         }
 
         if rm.thread_h > 0.0 {
@@ -1400,9 +1396,9 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let editing_text = self.editing.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
+        let editing_text = self.editing.as_ref().map_or("", |(_, t)| t.as_str());
         let box_h = rm.body_h + EDIT_BOX_PAD;
-        let er = Rect::new(text_x - 8.0, *y, text_x + text_w as f64 + 8.0, *y + box_h);
+        let er = Rect::new(text_x - 8.0, *y, text_x + f64::from(text_w) + 8.0, *y + box_h);
         fill_round(scene, tf, er, 10.0, c.neutral[2]);
         stroke_round(scene, tf, er, 10.0, c.border_focus, 1.6);
         if editing_text.is_empty() {
@@ -1431,7 +1427,7 @@ impl ChatApp {
             );
         }
         let prefix = &editing_text[..char_to_byte(editing_text, self.caret)];
-        let cx = (text_x + tr.measure(prefix, 15.0, None).0 as f64).min(text_x + text_w as f64);
+        let cx = (text_x + f64::from(tr.measure(prefix, 15.0, None).0)).min(text_x + f64::from(text_w));
         fill_rect(
             scene,
             tf,
@@ -1462,8 +1458,8 @@ impl ChatApp {
             "Save",
             12.5,
             Color::WHITE,
-            save.center().x - sw as f64 / 2.0,
-            save.center().y - sh as f64 / 2.0,
+            save.center().x - f64::from(sw) / 2.0,
+            save.center().y - f64::from(sh) / 2.0,
             TextWeight::Semibold,
             None,
         );
@@ -1478,8 +1474,8 @@ impl ChatApp {
             "Cancel",
             12.5,
             c.text_primary,
-            cancel.center().x - kw as f64 / 2.0,
-            cancel.center().y - kh as f64 / 2.0,
+            cancel.center().x - f64::from(kw) / 2.0,
+            cancel.center().y - f64::from(kh) / 2.0,
             TextWeight::Regular,
             None,
         );
@@ -1506,7 +1502,7 @@ impl ChatApp {
             let mine = r.reacted_by(&self.me.id);
             let lbl = format!("{}  {}", r.emoji, r.count());
             let (lw, _) = tr.measure(&lbl, 12.5, None);
-            let chip = Rect::new(x, y, x + lw as f64 + 20.0, y + h);
+            let chip = Rect::new(x, y, x + f64::from(lw) + 20.0, y + h);
             let bg = if mine {
                 c.accent[5].with_alpha_factor(0.22)
             } else {
@@ -1547,8 +1543,8 @@ impl ChatApp {
             "☺",
             14.0,
             c.text_dim,
-            add.center().x - aw as f64 / 2.0,
-            add.center().y - ah as f64 / 2.0,
+            add.center().x - f64::from(aw) / 2.0,
+            add.center().y - f64::from(ah) / 2.0,
             TextWeight::Regular,
             None,
         );
@@ -1578,7 +1574,7 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let n = model::reply_count(&self.messages, &m.id);
         let parts = model::thread_participants(&self.messages, &m.id);
-        let bar = Rect::new(text_x, y, text_x + (text_w as f64).min(360.0), y + 38.0);
+        let bar = Rect::new(text_x, y, text_x + f64::from(text_w).min(360.0), y + 38.0);
         let open = self.thread_open.as_deref() == Some(m.id.as_str());
         fill_round(
             scene,
@@ -1644,7 +1640,7 @@ impl ChatApp {
             .max();
         if let Some(ts) = last_ts {
             let s = format!("last reply {}", model::clock(ts));
-            let sx = bar.x1 - tr.measure(&s, 11.0, None).0 as f64 - 14.0;
+            let sx = bar.x1 - f64::from(tr.measure(&s, 11.0, None).0) - 14.0;
             label(
                 scene,
                 tr,
@@ -1682,7 +1678,7 @@ impl ChatApp {
         }
         match att {
             Attachment::Image { name, path, w, h } => {
-                let (tw, th) = image_thumb_size(*w, *h, text_w as f64);
+                let (tw, th) = image_thumb_size(*w, *h, f64::from(text_w));
                 let rect = Rect::new(x, y, x + tw, y + th);
                 // Real decoded bytes from the shared background image cache
                 // (projected from the FUSE workspace). `get` schedules the
@@ -1702,8 +1698,8 @@ impl ChatApp {
                         "🖼",
                         18.0,
                         c.text_dim,
-                        dot.x - gw as f64 / 2.0,
-                        dot.y - gh as f64 / 2.0,
+                        dot.x - f64::from(gw) / 2.0,
+                        dot.y - f64::from(gh) / 2.0,
                         TextWeight::Regular,
                         None,
                     );
@@ -1742,7 +1738,7 @@ impl ChatApp {
             Attachment::Video {
                 name, w, h, size, ..
             } => {
-                let (tw, th) = video_card_size(*w, *h, text_w as f64);
+                let (tw, th) = video_card_size(*w, *h, f64::from(text_w));
                 let rect = Rect::new(x, y, x + tw, y + th);
                 // A dark poster surface with a play affordance. A real decoded
                 // frame needs the media engine's decoder (live-media only); here
@@ -1768,8 +1764,8 @@ impl ChatApp {
                     "▶",
                     20.0,
                     Color::WHITE,
-                    cc.x - pw as f64 / 2.0 + 2.0,
-                    cc.y - ph as f64 / 2.0,
+                    cc.x - f64::from(pw) / 2.0 + 2.0,
+                    cc.y - f64::from(ph) / 2.0,
                     TextWeight::Regular,
                     None,
                 );
@@ -1809,7 +1805,7 @@ impl ChatApp {
                 );
             }
             Attachment::File { name, size, .. } => {
-                let chip = Rect::new(x, y, x + (text_w as f64).min(360.0), y + 58.0);
+                let chip = Rect::new(x, y, x + f64::from(text_w).min(360.0), y + 58.0);
                 fill_round(scene, tf, chip, 10.0, c.surfaces.raised);
                 stroke_round(scene, tf, chip, 10.0, c.border_standard, 1.0);
                 let icon = Rect::new(
@@ -1827,8 +1823,8 @@ impl ChatApp {
                     "📄",
                     16.0,
                     Color::WHITE,
-                    icon.center().x - iw as f64 / 2.0,
-                    icon.center().y - ih as f64 / 2.0,
+                    icon.center().x - f64::from(iw) / 2.0,
+                    icon.center().y - f64::from(ih) / 2.0,
                     TextWeight::Regular,
                     None,
                 );
@@ -1875,9 +1871,9 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let (w, h) = match att {
-            Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, text_w as f64),
-            Attachment::Video { w, h, .. } => video_card_size(*w, *h, text_w as f64),
-            Attachment::File { .. } => ((text_w as f64).min(360.0), 58.0),
+            Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, f64::from(text_w)),
+            Attachment::Video { w, h, .. } => video_card_size(*w, *h, f64::from(text_w)),
+            Attachment::File { .. } => (f64::from(text_w).min(360.0), 58.0),
         };
         let rect = Rect::new(x, y, x + w, y + h);
         fill_round(scene, tf, rect, 12.0, c.neutral[1]);
@@ -1892,8 +1888,8 @@ impl ChatApp {
             "🔒",
             18.0,
             c.text_dim,
-            cx - lw as f64 / 2.0,
-            cy - lh as f64 / 2.0,
+            cx - f64::from(lw) / 2.0,
+            cy - f64::from(lh) / 2.0,
             TextWeight::Regular,
             None,
         );
@@ -1906,7 +1902,7 @@ impl ChatApp {
             msg,
             12.0,
             c.text_dim,
-            cx - mw as f64 / 2.0,
+            cx - f64::from(mw) / 2.0,
             cy + 12.0,
         );
         let fname = truncate_to(tr, att.name(), 11.0, rect.width() - 24.0);
@@ -1918,7 +1914,7 @@ impl ChatApp {
             &fname,
             11.0,
             c.text_dim,
-            cx - fw as f64 / 2.0,
+            cx - f64::from(fw) / 2.0,
             cy + 28.0,
         );
     }
@@ -2006,8 +2002,8 @@ impl ChatApp {
                 "+",
                 20.0,
                 c.text_dim,
-                plus.center().x - pw as f64 / 2.0,
-                plus.center().y - ph as f64 / 2.0,
+                plus.center().x - f64::from(pw) / 2.0,
+                plus.center().y - f64::from(ph) / 2.0,
                 TextWeight::Regular,
                 None,
             );
@@ -2045,8 +2041,8 @@ impl ChatApp {
             } else {
                 c.text_dim
             },
-            send.center().x - sw as f64 / 2.0,
-            send.center().y - sh as f64 / 2.0,
+            send.center().x - f64::from(sw) / 2.0,
+            send.center().y - f64::from(sh) / 2.0,
             TextWeight::Regular,
             None,
         );
@@ -2066,8 +2062,8 @@ impl ChatApp {
             "🙂",
             16.0,
             c.text_dim,
-            emoji.center().x - ew as f64 / 2.0,
-            emoji.center().y - eh as f64 / 2.0,
+            emoji.center().x - f64::from(ew) / 2.0,
+            emoji.center().y - f64::from(eh) / 2.0,
             TextWeight::Regular,
             None,
         );
@@ -2151,8 +2147,8 @@ impl ChatApp {
             "✕",
             14.0,
             c.text_primary,
-            close.center().x - xw as f64 / 2.0,
-            close.center().y - xh as f64 / 2.0,
+            close.center().x - f64::from(xw) / 2.0,
+            close.center().y - f64::from(xh) / 2.0,
             TextWeight::Regular,
             None,
         );
@@ -2195,14 +2191,14 @@ impl ChatApp {
                 scene,
                 tf,
                 panel.x0 + 16.0,
-                panel.center().x - sw as f64 / 2.0 - 10.0,
+                panel.center().x - f64::from(sw) / 2.0 - 10.0,
                 dcy,
                 c.border_standard,
             );
             hline(
                 scene,
                 tf,
-                panel.center().x + sw as f64 / 2.0 + 10.0,
+                panel.center().x + f64::from(sw) / 2.0 + 10.0,
                 panel.x1 - 16.0,
                 dcy,
                 c.border_standard,
@@ -2214,7 +2210,7 @@ impl ChatApp {
                 &s,
                 11.5,
                 c.text_dim,
-                panel.center().x - sw as f64 / 2.0,
+                panel.center().x - f64::from(sw) / 2.0,
                 dcy - 7.0,
             );
             y += 30.0;
@@ -2293,7 +2289,7 @@ impl ChatApp {
             13.5,
             palette_color(
                 theme,
-                self.user(&m.author).map(|u| u.color_idx).unwrap_or(0),
+                self.user(&m.author).map_or(0, |u| u.color_idx),
             ),
             tx,
             yy,
@@ -2307,12 +2303,12 @@ impl ChatApp {
             &model::clock(m.ts),
             11.0,
             c.text_dim,
-            tx + nw as f64 + 8.0,
+            tx + f64::from(nw) + 8.0,
             yy + 2.0,
         );
         yy += 19.0;
         if !m.text.is_empty() {
-            let h = tr.measure(&m.text, 14.0, Some(tw)).1 as f64;
+            let h = f64::from(tr.measure(&m.text, 14.0, Some(tw)).1);
             text(
                 scene,
                 tr,
@@ -2331,8 +2327,8 @@ impl ChatApp {
             self.draw_attachment(scene, tf, tr, theme, att, tx, yy, tw);
             yy += match att {
                 Attachment::File { .. } => 66.0,
-                Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, tw as f64).1 + 24.0,
-                Attachment::Video { w, h, .. } => video_card_size(*w, *h, tw as f64).1 + 24.0,
+                Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, f64::from(tw)).1 + 24.0,
+                Attachment::Video { w, h, .. } => video_card_size(*w, *h, f64::from(tw)).1 + 24.0,
             };
         }
         if !m.reactions.is_empty() {
@@ -2340,7 +2336,7 @@ impl ChatApp {
             for r in &m.reactions {
                 let lbl = format!("{} {}", r.emoji, r.count());
                 let (lw, _) = tr.measure(&lbl, 11.5, None);
-                let chip = Rect::new(x, yy, x + lw as f64 + 16.0, yy + 22.0);
+                let chip = Rect::new(x, yy, x + f64::from(lw) + 16.0, yy + 22.0);
                 fill_round(scene, tf, chip, 11.0, c.surface_white_5);
                 label(
                     scene,
@@ -2432,8 +2428,8 @@ impl ChatApp {
             "✕",
             14.0,
             c.text_primary,
-            close.center().x - xw as f64 / 2.0,
-            close.center().y - xh as f64 / 2.0,
+            close.center().x - f64::from(xw) / 2.0,
+            close.center().y - f64::from(xh) / 2.0,
             TextWeight::Regular,
             None,
         );
@@ -2571,7 +2567,7 @@ impl ChatApp {
             &count,
             11.5,
             c.text_dim,
-            panel.x1 - cw as f64 - 14.0,
+            panel.x1 - f64::from(cw) - 14.0,
             panel.y0 + 14.0,
         );
         hline(
@@ -2621,8 +2617,8 @@ impl ChatApp {
                     "🎬",
                     16.0,
                     c.text_dim,
-                    thumb.center().x - gw as f64 / 2.0,
-                    thumb.center().y - gh as f64 / 2.0,
+                    thumb.center().x - f64::from(gw) / 2.0,
+                    thumb.center().y - f64::from(gh) / 2.0,
                     TextWeight::Regular,
                     None,
                 );
@@ -2638,8 +2634,8 @@ impl ChatApp {
                     "🖼",
                     16.0,
                     c.text_dim,
-                    thumb.center().x - gw as f64 / 2.0,
-                    thumb.center().y - gh as f64 / 2.0,
+                    thumb.center().x - f64::from(gw) / 2.0,
+                    thumb.center().y - f64::from(gh) / 2.0,
                     TextWeight::Regular,
                     None,
                 );
@@ -2725,7 +2721,7 @@ const EDIT_BOX_PAD: f64 = 16.0;
 fn image_thumb_size(w: u32, h: u32, max_w: f64) -> (f64, f64) {
     let maxw = max_w.min(380.0);
     let maxh = 210.0;
-    let (w, h) = (w.max(1) as f64, h.max(1) as f64);
+    let (w, h) = (f64::from(w.max(1)), f64::from(h.max(1)));
     let mut tw = maxw;
     let mut th = tw * h / w;
     if th > maxh {

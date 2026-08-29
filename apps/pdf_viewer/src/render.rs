@@ -181,7 +181,7 @@ pub fn collect_text_lines(tr: &mut TextRenderer, theme: &Theme, page: &Page) -> 
                 y += height + 4.0;
                 let csize = 9.5f32;
                 let (_, ch) = tr.measure(label, csize, Some(content_w as f32));
-                y += ch as f64 + 8.0;
+                y += f64::from(ch) + 8.0;
             }
             _ => {
                 let Some(spec) = body_spec(block, theme) else {
@@ -197,9 +197,9 @@ pub fn collect_text_lines(tr: &mut TextRenderer, theme: &Theme, page: &Page) -> 
                 } else {
                     content_x
                 };
-                let line_h = (size * 1.25) as f64;
+                let line_h = f64::from(size * 1.25);
                 let n_lines = if line_h > 0.0 {
-                    (th as f64 / line_h).round().max(1.0) as usize
+                    (f64::from(th) / line_h).round().max(1.0) as usize
                 } else {
                     1
                 };
@@ -208,7 +208,7 @@ pub fn collect_text_lines(tr: &mut TextRenderer, theme: &Theme, page: &Page) -> 
                     // measured width is known precisely, so the last line
                     // uses `line_w` and full lines span the column.
                     let x_end = if li == n_lines - 1 {
-                        (x + line_w as f64).min(content_x + content_w)
+                        (x + f64::from(line_w)).min(content_x + content_w)
                     } else {
                         content_x + content_w
                     };
@@ -220,7 +220,7 @@ pub fn collect_text_lines(tr: &mut TextRenderer, theme: &Theme, page: &Page) -> 
                         h: line_h,
                     });
                 }
-                y += th as f64 + spec.after;
+                y += f64::from(th) + spec.after;
             }
         }
     }
@@ -264,7 +264,7 @@ pub fn draw_page(
     // card width, then let the shared markup overlay draw on top.
     if let Some(img) = raster {
         if img.width > 0 && img.height > 0 {
-            let sx = card.width() / img.width as f64;
+            let sx = card.width() / f64::from(img.width);
             let img_tf =
                 base * Affine::translate((card.x0, card.y0)) * Affine::scale_non_uniform(sx, sx);
             scene.draw_image(img, img_tf);
@@ -342,7 +342,7 @@ pub fn draw_page(
                     false,
                 );
                 let (_, ch) = tr.measure(label, csize, Some(content_w as f32));
-                y += ch as f64 + 8.0 * scale;
+                y += f64::from(ch) + 8.0 * scale;
             }
             _ => {
                 let Some(spec) = body_spec(block, theme) else {
@@ -358,7 +358,7 @@ pub fn draw_page(
                         content_x - 4.0 * scale,
                         y - 1.0 * scale,
                         content_x + content_w + 4.0 * scale,
-                        y + th as f64 + 1.0 * scale,
+                        y + f64::from(th) + 1.0 * scale,
                     );
                     let is_active = active_block == Some(bi);
                     let fill = if is_active {
@@ -381,7 +381,7 @@ pub fn draw_page(
 
                 let mut x = content_x;
                 if matches!(block, Block::Quote(_)) {
-                    let bar = Rect::new(content_x, y, content_x + 3.0 * scale, y + th as f64);
+                    let bar = Rect::new(content_x, y, content_x + 3.0 * scale, y + f64::from(th));
                     scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
                     x += 14.0 * scale;
                 }
@@ -396,7 +396,7 @@ pub fn draw_page(
                     spec.italic,
                     false,
                 );
-                y += th as f64 + spec.after * scale;
+                y += f64::from(th) + spec.after * scale;
             }
         }
     }
@@ -429,7 +429,7 @@ pub fn draw_page(
 }
 
 fn draw_figure_glyph(scene: &mut Scene, theme: &Theme, base: Affine, b: Rect) {
-    let cy = (b.y0 + b.y1) / 2.0;
+    let cy = f64::midpoint(b.y0, b.y1);
     let w = b.width();
     let r = (b.height().min(w) * 0.16).max(8.0);
     let lx = b.x0 + w * 0.32;
@@ -491,7 +491,7 @@ fn draw_annotation(
             for w in points.windows(2) {
                 let a0 = pt(origin, scale, w[0].0, w[0].1);
                 let b0 = pt(origin, scale, w[1].0, w[1].1);
-                let mid = Point::new((a0.x + b0.x) / 2.0, (a0.y + b0.y) / 2.0);
+                let mid = Point::new(f64::midpoint(a0.x, b0.x), f64::midpoint(a0.y, b0.y));
                 path.quad_to(a0, mid);
             }
             let last = pt(
@@ -544,7 +544,7 @@ fn draw_note_marker(
         &fold,
     );
     for i in 0..3 {
-        let ly = r.y0 + s * (0.32 + i as f64 * 0.18);
+        let ly = r.y0 + s * (0.32 + f64::from(i) * 0.18);
         let line = Line::new((r.x0 + s * 0.2, ly), (r.x1 - s * 0.2, ly));
         scene.stroke(
             &Stroke::new((1.2 * scale).max(0.8)),
@@ -623,7 +623,7 @@ fn draw_signature(
         &date_label,
         (7.5 * scale).max(7.0) as f32,
         ink_faint(),
-        base * Affine::translate((r.x0 + 8.0, base_y + 3.0 + name_size as f64 + 2.0)),
+        base * Affine::translate((r.x0 + 8.0, base_y + 3.0 + f64::from(name_size) + 2.0)),
         Some((r.width() - 16.0) as f32),
     );
 }
@@ -662,8 +662,8 @@ pub fn draw_signature_ink(
                     .measure_font(name, size, None, TextWeight::Medium, true, &family)
                     .0;
             }
-            let tx = area.x0 + ((area.width() as f32 - tw).max(0.0) / 2.0) as f64;
-            let ty = area.y0 + (area.height() - size as f64) / 2.0;
+            let tx = area.x0 + f64::from((area.width() as f32 - tw).max(0.0) / 2.0);
+            let ty = area.y0 + (area.height() - f64::from(size)) / 2.0;
             tr.draw_text_font(
                 scene,
                 name,
@@ -735,7 +735,7 @@ pub fn draw_thumbnail(
     if let Some(img) = raster {
         if img.width > 0 && img.height > 0 {
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rr);
-            let sx = rect.width() / img.width as f64;
+            let sx = rect.width() / f64::from(img.width);
             let tf =
                 base * Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sx);
             scene.draw_image(img, tf);

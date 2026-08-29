@@ -1,4 +1,4 @@
-//! ToggleGroup — segmented control. A horizontal strip of equal-width
+//! `ToggleGroup` — segmented control. A horizontal strip of equal-width
 //! buttons where exactly one segment is selected. Clicking a segment
 //! activates it and fires the `on_change` callback with the new index.
 //!
@@ -381,9 +381,9 @@ impl ToggleGroup {
             let (tw, th) = text_renderer.measure_weighted(label, face.text_size, None, weight);
             let text_x = match face.label_pad_left {
                 Some(pad) => seg.x0 + pad,
-                None => seg.center().x - tw as f64 / 2.0,
+                None => seg.center().x - f64::from(tw) / 2.0,
             };
-            let text_y = seg.y0 + (seg.height() - th as f64) / 2.0;
+            let text_y = seg.y0 + (seg.height() - f64::from(th)) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
                 label,
@@ -418,16 +418,16 @@ impl Widget for ToggleGroup {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let x0 = origin.x + layout.location.x as f64;
-        let y0 = origin.y + layout.location.y as f64;
-        let x1 = x0 + layout.size.width as f64;
-        let y1 = y0 + layout.size.height as f64;
+        let x0 = origin.x + f64::from(layout.location.x);
+        let y0 = origin.y + f64::from(layout.location.y);
+        let x1 = x0 + f64::from(layout.size.width);
+        let y1 = y0 + f64::from(layout.size.height);
         self.set_rect_and_partition(Rect::new(x0, y0, x1, y1));
     }
 
@@ -466,7 +466,7 @@ impl Widget for ToggleGroup {
         let transform = Affine::IDENTITY;
 
         let colors = &theme.tokens.colors;
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let outer_shape = RoundedRect::from_rect(self.rect, radius);
 
         // Clip each fill against the outer rounded rect so the end segments
@@ -529,8 +529,8 @@ impl Widget for ToggleGroup {
                 colors.text_primary
             };
             let (tw, th) = text_renderer.measure(label, text_size, None);
-            let text_x = seg_rect.center().x - (tw as f64 / 2.0);
-            let text_y = seg_rect.y0 + (seg_rect.height() - th as f64) / 2.0;
+            let text_x = seg_rect.center().x - (f64::from(tw) / 2.0);
+            let text_y = seg_rect.y0 + (seg_rect.height() - f64::from(th)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -604,7 +604,7 @@ impl Widget for ToggleGroup {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ToggleGroup"
     }
 

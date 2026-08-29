@@ -205,7 +205,7 @@ impl MprisHandle {
         out
     }
 
-    /// Publish the current player state to the bus, emitting PropertiesChanged
+    /// Publish the current player state to the bus, emitting `PropertiesChanged`
     /// for whatever changed. Cheap and deduped: identical/insignificant updates
     /// are dropped so the bus isn't spammed each frame.
     pub fn publish(&mut self, snap: PlayerSnapshot) {
@@ -462,7 +462,7 @@ mod imp {
         Ok(())
     }
 
-    /// Emit PropertiesChanged for whichever served properties changed between
+    /// Emit `PropertiesChanged` for whichever served properties changed between
     /// `old` and `new`, then store `new` as the served snapshot. Position is
     /// intentionally excluded (MPRIS clients poll it); a large jump additionally
     /// fires `Seeked`.
@@ -540,7 +540,7 @@ mod imp {
         };
         let player = PlayerIface {
             snap: initial.clone(),
-            cmd: cmd_tx.clone(),
+            cmd: cmd_tx,
         };
         if rt.block_on(serve(&connection, player, root)).is_err() {
             return None;

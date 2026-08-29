@@ -421,7 +421,9 @@ fn large_document_parse_and_serialize_is_fast() {
     // qdoc) — pathologically slow under CI for no added signal, since
     // the structural guards above already prove the fix in debug.
     let mut report = String::new();
-    if !cfg!(debug_assertions) {
+    if cfg!(debug_assertions) {
+        report.push_str("  (debug: export/reimport wall-clock runs in release; structural guards above cover debug)\n");
+    } else {
         for (name, codec) in [
             ("odt", &OdtCodec as &dyn FormatProvider),
             ("docx", &DocxCodec as &dyn FormatProvider),
@@ -470,8 +472,6 @@ fn large_document_parse_and_serialize_is_fast() {
                 "{name}: reimport too slow ({import_ms:.0} ms) — possible O(n^2) regression"
             );
         }
-    } else {
-        report.push_str("  (debug: export/reimport wall-clock runs in release; structural guards above cover debug)\n");
     }
     let head = format!(
         "large_document_parse_and_serialize ({N} paragraphs; {build_scans} container scans, order-key <= {max_key_len}B)"

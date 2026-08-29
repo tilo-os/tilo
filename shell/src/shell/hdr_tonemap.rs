@@ -1,6 +1,6 @@
 //! HDR → SDR tone-mapping — CPU implementation + WGSL compute shader.
 //!
-//! [`tonemap_p010_to_rgba8`] is PeerView's `ensure_image` fallback: decoded
+//! [`tonemap_p010_to_rgba8`] is `PeerView`'s `ensure_image` fallback: decoded
 //! P010 → sRGB bytes blitted through the vello image path, no GPU compute
 //! pipeline needed. [`SHADER_SOURCE`] mirrors the same math for callers with
 //! a wgpu device.
@@ -8,7 +8,7 @@
 //! # Pipeline
 //!
 //! Unpack P010 (top 10 bits of each `u16`) → BT.2020 non-constant-luminance
-//! Y'CbCr → R'G'B' ([`bt2020_ycbcr_to_rgb`]) → PQ/HLG EOTF to linear cd/m²
+//! Y'`CbCr` → R'G'B' ([`bt2020_ycbcr_to_rgb`]) → PQ/HLG EOTF to linear cd/m²
 //! → BT.2020→BT.709 gamut (ITU-R BT.2087 §3.1.2, negatives clipped) →
 //! Hable tone-map to `[0,1]` at the target peak → BT.709/sRGB OETF to 8-bit.
 //!
@@ -148,7 +148,7 @@ pub fn tonemap_p010_to_rgba8(
 /// `f32`. Limited-range luma is `64..940`, chroma `64..960` (10-bit code
 /// values, per spec); full range is linear `[0,1]`/`[-0.5,0.5]`.
 fn unpack_p010_sample(raw: u16, limited: bool, is_luma: bool) -> f32 {
-    let code = (raw >> 6) as f32;
+    let code = f32::from(raw >> 6);
     if is_luma {
         if limited {
             ((code - 64.0) / (940.0 - 64.0)).clamp(0.0, 1.0)
@@ -162,22 +162,22 @@ fn unpack_p010_sample(raw: u16, limited: bool, is_luma: bool) -> f32 {
     }
 }
 
-/// BT.2020 non-constant luminance Y'CbCr → R'G'B'. Same coefficients
+/// BT.2020 non-constant luminance Y'`CbCr` → R'G'B'. Same coefficients
 /// the HEVC Main10 codec uses (ITU-R BT.2020 §5.2).
 fn bt2020_ycbcr_to_rgb(y: f32, cb: f32, cr: f32) -> (f32, f32, f32) {
     let r = y + 1.4746 * cr;
     let b = y + 1.8814 * cb;
-    let g = y - 0.16455312684 * cb - 0.57135312684 * cr;
+    let g = y - 0.164_553_12 * cb - 0.571_353_14 * cr;
     (r, g, b)
 }
 
 /// SMPTE ST 2084 EOTF: PQ electrical signal `[0,1]` → absolute
 /// luminance in cd/m² (`pq_eotf(1.0) == 10_000`).
 fn pq_eotf(e_prime: f32) -> f32 {
-    const M1: f32 = 0.1593017578125; // 2610/16384
+    const M1: f32 = 0.159_301_76; // 2610/16384
     const M2: f32 = 78.84375; // 2523/32
     const C1: f32 = 0.8359375; // 3424/4096
-    const C2: f32 = 18.8515625; // 2413/128
+    const C2: f32 = 18.851_563; // 2413/128
     const C3: f32 = 18.6875; // 2392/128
     let e = e_prime.max(0.0);
     let e_p = e.powf(1.0 / M2);
@@ -192,7 +192,7 @@ fn pq_eotf(e_prime: f32) -> f32 {
 fn hlg_eotf(e_prime: f32) -> f32 {
     const A: f32 = 0.17883277;
     const B: f32 = 0.28466892;
-    const C: f32 = 0.55991073;
+    const C: f32 = 0.559_910_7;
     let e = e_prime.max(0.0);
     let linear = if e <= 0.5 {
         (e * e) / 3.0

@@ -1,9 +1,9 @@
 //! Browser-extension groundwork: acquire and inventory extension
 //! packages from the Firefox (AMO) / Chrome web stores.
 //!
-//! The runtime that actually *executes* extensions is WebKit's upstream
-//! WebExtension support (Safari's engine-level implementation, being
-//! exposed through the GTK/WPE GLib API — manifest handling shipped in
+//! The runtime that actually *executes* extensions is `WebKit`'s upstream
+//! `WebExtension` support (Safari's engine-level implementation, being
+//! exposed through the GTK/WPE `GLib` API — manifest handling shipped in
 //! 2.52, the controller classes follow in later releases). Until the
 //! controller lands, this module covers everything up to activation:
 //!
@@ -72,8 +72,8 @@ pub fn extensions_dir() -> PathBuf {
 /// (AMO serves `.xpi`, the Chrome store `.crx`).
 pub fn install_from_url(url: &str) -> Result<ExtensionInfo, ExtensionError> {
     let bytes = reqwest::blocking::get(url)
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.bytes())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::bytes)
         .map_err(|e| ExtensionError::Download(e.to_string()))?;
     install_from_bytes(&bytes, extensions_dir())
 }
@@ -192,7 +192,7 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
     let gecko_id = value["browser_specific_settings"]["gecko"]["id"]
         .as_str()
         .or_else(|| value["applications"]["gecko"]["id"].as_str());
-    let id = gecko_id.map(str::to_string).unwrap_or_else(|| slug(&name));
+    let id = gecko_id.map_or_else(|| slug(&name), str::to_string);
 
     Ok(ExtensionInfo {
         id,

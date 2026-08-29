@@ -55,7 +55,7 @@ fn paint_banner(
         return Rect::ZERO;
     }
     let accent = kind.color(theme);
-    let radius = theme.tokens.radii.md as f64;
+    let radius = f64::from(theme.tokens.radii.md);
 
     let surf = RoundedRect::from_rect(rect, radius);
     scene.fill(
@@ -92,9 +92,9 @@ fn paint_banner(
     let title_size = theme.tokens.typography.scale.base;
     let msg_size = theme.tokens.typography.scale.sm;
     let total_text_h = if message.is_some() {
-        title_size as f64 + 4.0 + msg_size as f64
+        f64::from(title_size) + 4.0 + f64::from(msg_size)
     } else {
-        title_size as f64
+        f64::from(title_size)
     };
     let mut ty = rect.center().y - total_text_h / 2.0;
     text_renderer.draw_text(
@@ -105,7 +105,7 @@ fn paint_banner(
         transform * Affine::translate((text_x, ty)),
         None,
     );
-    ty += title_size as f64 + 4.0;
+    ty += f64::from(title_size) + 4.0;
     if let Some(msg) = message {
         text_renderer.draw_text(
             scene,
@@ -288,10 +288,10 @@ impl Banner {
 
     /// Intrinsic content height for the current title/message, in logical px.
     fn content_height(&self, theme: &Theme) -> f64 {
-        let title_h = theme.tokens.typography.scale.base as f64;
+        let title_h = f64::from(theme.tokens.typography.scale.base);
         let mut h = title_h;
         if self.message.is_some() {
-            h += 4.0 + theme.tokens.typography.scale.sm as f64;
+            h += 4.0 + f64::from(theme.tokens.typography.scale.sm);
         }
         (h + PAD_Y * 2.0).max(44.0)
     }
@@ -321,7 +321,7 @@ impl Widget for Banner {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -346,10 +346,10 @@ impl Widget for Banner {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -420,7 +420,7 @@ impl Widget for Banner {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Banner"
     }
 

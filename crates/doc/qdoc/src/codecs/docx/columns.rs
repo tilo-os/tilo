@@ -1,4 +1,4 @@
-//! Multi-column section layout ⇄ OOXML section properties. WordprocessingML models
+//! Multi-column section layout ⇄ OOXML section properties. `WordprocessingML` models
 //! newspaper-style columns as `<w:cols w:num="N" w:space="…"/>` inside the body's
 //! `<w:sectPr>`; `w:space` is the inter-column gap in twips. This maps that count/gap
 //! onto the document-wide column setting; the exporter hands back the `<w:cols>`

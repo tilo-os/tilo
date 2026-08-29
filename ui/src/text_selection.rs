@@ -174,11 +174,10 @@ pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
 /// selection uses this.
 pub fn line_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     let byte_idx = byte_idx.min(text.len());
-    let start = text[..byte_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let start = text[..byte_idx].rfind('\n').map_or(0, |i| i + 1);
     let end = text[byte_idx..]
         .find('\n')
-        .map(|i| byte_idx + i)
-        .unwrap_or(text.len());
+        .map_or(text.len(), |i| byte_idx + i);
     (start, end)
 }
 
@@ -219,8 +218,7 @@ pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
     text.char_indices()
         .nth(char_idx)
-        .map(|(b, _)| b)
-        .unwrap_or(text.len())
+        .map_or(text.len(), |(b, _)| b)
 }
 
 fn byte_to_char(text: &str, byte_idx: usize) -> usize {

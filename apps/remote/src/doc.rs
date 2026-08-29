@@ -75,7 +75,7 @@ impl RemoteDoc {
         ui::doc::splice_text_diffed(doc, &name_id, &c.name);
 
         ui::doc::put_if_changed(doc, &conn, "host", c.host.as_str());
-        ui::doc::put_if_changed(doc, &conn, "port", c.port as i64);
+        ui::doc::put_if_changed(doc, &conn, "port", i64::from(c.port));
         ui::doc::put_if_changed(doc, &conn, "user", c.user.as_str());
         ui::doc::put_if_changed(doc, &conn, "kind", c.kind.tag());
         ui::doc::put_if_changed(doc, &conn, "auth", c.auth.label());

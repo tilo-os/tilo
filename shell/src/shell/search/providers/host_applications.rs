@@ -199,7 +199,7 @@ impl Default for HostApplicationsProvider {
 }
 
 impl SearchProvider for HostApplicationsProvider {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "host-applications"
     }
     fn name(&self) -> &str {

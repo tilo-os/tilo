@@ -110,7 +110,7 @@ impl UndoLog {
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
     ) {
-        self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
+        self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None);
     }
 
     /// As [`Self::record_committed_action`], naming who performed it — for a
@@ -583,7 +583,7 @@ impl State {
         Ok(n)
     }
 
-    /// Serialize the changes made since the last save/save_incremental call.
+    /// Serialize the changes made since the last `save/save_incremental` call.
     /// The returned bytes can be fed into another peer's `load_incremental`
     /// to replay just the delta — the basic building block of efficient
     /// CRDT sync.
@@ -742,8 +742,7 @@ fn live_insert_boundary(
     match doc.get_cursor(obj, index - 1, Some(anchor_heads)) {
         Ok(cursor) => doc
             .get_cursor_position(obj, &cursor, None)
-            .map(|p| p + 1)
-            .unwrap_or(index),
+            .map_or(index, |p| p + 1),
         Err(_) => index,
     }
 }

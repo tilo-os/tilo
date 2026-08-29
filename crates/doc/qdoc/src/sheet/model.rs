@@ -5,7 +5,7 @@
 //! sheets, each a sparse map of A1-keyed cells.
 
 use crate::document::DocError;
-use crate::sheet::schema::*;
+use crate::sheet::schema::{KEY_SHEET_SCHEMA, SHEET_SCHEMA_ID, KEY_SHEET_SCHEMA_VERSION, SHEET_SCHEMA_VERSION, KEY_SHEETS, KEY_SHEET_META, KEY_SHEET_PRESERVED, SHEET_ORDER, SHEET_NAME, SHEET_CELLS, CELL_VALUE, CELL_TYPE, CELL_FORMULA, CELL_STYLE, KEY_SHEET_PROPS};
 use crate::sheet::snapshot::{CellType, CellView, SheetView, WorkbookSnapshot};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -136,7 +136,7 @@ pub fn sheet_ids_in_order(doc: &AutoCommit, c: &SheetContainers) -> Vec<String> 
 pub fn sheet_name(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<String> {
     let obj = sheet_obj(doc, c, id)?;
     match doc.get(&obj, SHEET_NAME) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -151,7 +151,7 @@ fn cells_obj(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<ObjId> {
 
 fn cell_str(doc: &AutoCommit, cell: &ObjId, key: &str) -> Option<String> {
     match doc.get(cell, key) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -175,8 +175,7 @@ fn materialize_cell(doc: &AutoCommit, cell_obj: &ObjId, reference: &str) -> Opti
     let (col, row) = crate::sheet::a1::parse_ref(reference)?;
     let value = cell_str(doc, cell_obj, CELL_VALUE).unwrap_or_default();
     let cell_type = cell_str(doc, cell_obj, CELL_TYPE)
-        .map(|s| CellType::from_str(&s))
-        .unwrap_or(CellType::Text);
+        .map_or(CellType::Text, |s| CellType::from_str(&s));
     let formula = cell_str(doc, cell_obj, CELL_FORMULA).filter(|s| !s.is_empty());
     let style = cell_str(doc, cell_obj, CELL_STYLE).filter(|s| !s.is_empty());
     Some(CellView {
@@ -198,14 +197,12 @@ pub fn materialize_sheet(doc: &AutoCommit, c: &SheetContainers, id: &str) -> She
         for reference in doc.keys(&cells_obj) {
             if let Ok(Some((Value::Object(ObjType::Map), cell_obj))) =
                 doc.get(&cells_obj, &reference)
-            {
-                if let Some(view) = materialize_cell(doc, &cell_obj, &reference) {
+                && let Some(view) = materialize_cell(doc, &cell_obj, &reference) {
                     cells.push(view);
                 }
-            }
         }
     }
-    cells.sort_by(|a, b| (a.row, a.col).cmp(&(b.row, b.col)));
+    cells.sort_by_key(|a| (a.row, a.col));
     SheetView {
         id: id.to_string(),
         name,
@@ -225,11 +222,10 @@ pub fn doc_props(doc: &AutoCommit, c: &SheetContainers) -> BTreeMap<String, Stri
     let mut out = BTreeMap::new();
     if let Some(props) = props_obj(doc, c) {
         for k in doc.keys(&props) {
-            if let Ok(Some((v, _))) = doc.get(&props, &k) {
-                if let Some(s) = v.to_str() {
+            if let Ok(Some((v, _))) = doc.get(&props, &k)
+                && let Some(s) = v.to_str() {
                     out.insert(k, s.to_string());
                 }
-            }
         }
     }
     out
@@ -238,7 +234,7 @@ pub fn doc_props(doc: &AutoCommit, c: &SheetContainers) -> BTreeMap<String, Stri
 pub fn doc_prop(doc: &AutoCommit, c: &SheetContainers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
     match doc.get(&props, name) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -247,11 +243,10 @@ pub fn doc_prop(doc: &AutoCommit, c: &SheetContainers, name: &str) -> Option<Str
 pub fn preserved_parts(doc: &AutoCommit, c: &SheetContainers) -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::new();
     for k in doc.keys(&c.preserved) {
-        if let Ok(Some((Value::Scalar(s), _))) = doc.get(&c.preserved, &k) {
-            if let ScalarValue::Bytes(b) = s.as_ref() {
+        if let Ok(Some((Value::Scalar(s), _))) = doc.get(&c.preserved, &k)
+            && let ScalarValue::Bytes(b) = s.as_ref() {
                 out.push((k, b.clone()));
             }
-        }
     }
     out
 }
@@ -288,8 +283,7 @@ fn sheet_order_after(doc: &AutoCommit, c: &SheetContainers, after: Option<&str>)
         Some(id) => ordered
             .iter()
             .position(|x| x == id)
-            .map(|i| i + 1)
-            .unwrap_or(ordered.len()),
+            .map_or(ordered.len(), |i| i + 1),
     };
     let lo = if pos == 0 {
         None
@@ -542,11 +536,10 @@ fn seeded_sheet_id_gen(doc: &AutoCommit, c: &SheetContainers) -> crate::model::I
     let prefix = format!("{actor}.");
     let mut next = 0u64;
     for id in doc.keys(&c.sheets) {
-        if let Some(rest) = id.strip_prefix(&prefix) {
-            if let Ok(n) = rest.parse::<u64>() {
+        if let Some(rest) = id.strip_prefix(&prefix)
+            && let Ok(n) = rest.parse::<u64>() {
                 next = next.max(n + 1);
             }
-        }
     }
     crate::model::IdGen::with_counter(actor, next)
 }
@@ -555,7 +548,7 @@ fn seeded_sheet_id_gen(doc: &AutoCommit, c: &SheetContainers) -> crate::model::I
 /// redundant CRDT op — the store-churn guard).
 fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str) {
     let current = match doc.get(obj, key) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     };
     if current.as_deref() != Some(value) {
@@ -567,7 +560,7 @@ fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str)
 /// `None` and currently present.
 fn set_opt_str(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: Option<&str>) {
     let current = match doc.get(obj, key) {
-        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     };
     match value {

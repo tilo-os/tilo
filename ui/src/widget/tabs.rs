@@ -30,7 +30,7 @@ const LAYOUT_ANIM_MS: u64 = 180;
 
 /// Per-pill insert fade-in, distinct from `LAYOUT_ANIM_MS` so a new pill reads as
 /// "appearing" rather than sliding in. Opacity + y-offset only; scale is skipped to
-/// avoid a per-pill affine push_layer.
+/// avoid a per-pill affine `push_layer`.
 const INSERT_FADE_MS: u64 = 220;
 /// Start y-offset for the insert fade; positive pulls the pill up at t=0, settling
 /// to target at t=1.
@@ -372,7 +372,7 @@ impl TabBar {
                 0.0
             };
             let title_x = r.x0 + 12.0 + leading_shift;
-            let title_y = r.center().y - th as f64 / 2.0;
+            let title_y = r.center().y - f64::from(th) / 2.0;
             // Clip at this frame's reveal, not the close chip, so an idle pill gets
             // its full width and a mid-open pill hands room back as it opens.
             let clip_x1 = r.x1
@@ -609,7 +609,7 @@ impl TabBar {
             0.0
         };
         let title_x = r.x0 + 12.0 + leading_shift;
-        let title_y = r.center().y - th as f64 / 2.0;
+        let title_y = r.center().y - f64::from(th) / 2.0;
         // Clip just before the close glyph, same as `draw_pill_inner`, so the title
         // can't slide past the × while the pill shrinks.
         let clip_r = Rect::new(r.x0, r.y0, c.close_rect.x0 - 2.0, r.y1);
@@ -834,9 +834,7 @@ impl TabBar {
         let t = &self.tabs[i];
         self.title_advance
             .get(&t.id)
-            .filter(|(title, _, _)| title == &t.title)
-            .map(|(_, _, w)| *w)
-            .unwrap_or_else(|| t.title.chars().count() as f64 * APPROX_CHAR_W)
+            .filter(|(title, _, _)| title == &t.title).map_or_else(|| t.title.chars().count() as f64 * APPROX_CHAR_W, |(_, _, w)| *w)
     }
 
     fn leading_zone(&self, i: usize) -> f64 {
@@ -878,7 +876,7 @@ impl TabBar {
         // its own, so it reads this back on the next pass.
         let (full_w, _) = tr.measure_weighted(&title, size, None, TextWeight::Semibold);
         self.title_advance
-            .insert(id, (title.clone(), size, full_w as f64));
+            .insert(id, (title.clone(), size, f64::from(full_w)));
         let r = *self.tab_rects.get(i)?;
         let (zx0, zx1) = self.title_zone(i, r);
         let budget = (zx1 - zx0) as f32;
@@ -965,8 +963,7 @@ impl TabBar {
                 .tabs
                 .get(idx)
                 .or_else(|| self.tabs.last())
-                .map(|t| t.id)
-                .unwrap_or(0);
+                .map_or(0, |t| t.id);
         }
         Some(idx)
     }
@@ -999,8 +996,7 @@ impl TabBar {
                 .tabs
                 .get(idx)
                 .or_else(|| self.tabs.last())
-                .map(|t| t.id)
-                .unwrap_or(0);
+                .map_or(0, |t| t.id);
         }
         self.closing_tabs.push(ClosingTab {
             desc,
@@ -1187,7 +1183,7 @@ impl TabBar {
     /// `release_point.x`; append if past every midpoint.
     pub fn drop_index_for(&self, release_point: Point) -> usize {
         for (i, r) in self.tab_rects.iter().enumerate() {
-            let mid_x = (r.x0 + r.x1) / 2.0;
+            let mid_x = f64::midpoint(r.x0, r.x1);
             if release_point.x < mid_x {
                 return i;
             }
@@ -1481,7 +1477,7 @@ fn fit_pill_widths(natural: &[f64], pinned: &[bool], avail: f64) -> Vec<f64> {
     let squeezed: f64 = out.iter().sum();
     if squeezed > budget && squeezed > 0.0 {
         let scale = budget / squeezed;
-        for w in out.iter_mut() {
+        for w in &mut out {
             *w *= scale;
         }
     }
@@ -1507,16 +1503,16 @@ impl Widget for TabBar {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.tab_rects.clear();
         self.close_rects.clear();
@@ -1590,7 +1586,7 @@ impl Widget for TabBar {
         let total_grow: f64 = grow.iter().sum();
         if total_grow > headroom && total_grow > 0.0 {
             let k = headroom / total_grow;
-            for g in grow.iter_mut() {
+            for g in &mut grow {
                 *g *= k;
             }
         }
@@ -1741,10 +1737,10 @@ impl Widget for TabBar {
             };
             let combined_alpha = fade_alpha * source_dim;
 
-            let pill_transform = if fade_y != 0.0 {
-                transform * Affine::translate((0.0, fade_y))
-            } else {
+            let pill_transform = if fade_y == 0.0 {
                 transform
+            } else {
+                transform * Affine::translate((0.0, fade_y))
             };
             let pill_alpha_active = combined_alpha < 1.0;
             if pill_alpha_active {
@@ -1836,7 +1832,7 @@ impl Widget for TabBar {
                 if elapsed >= close_window {
                     continue;
                 }
-                let raw = (elapsed.as_secs_f64() / (CLOSE_FADE_MS as f64 / 1000.0)).clamp(0.0, 1.0);
+                let raw = (elapsed.as_secs_f64() / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
                 let eased = crate::ease_out(raw);
                 let alpha = (1.0 - eased) as f32;
                 let scale = 1.0 + (CLOSE_SCALE_END - 1.0) * eased;
@@ -1876,8 +1872,7 @@ impl Widget for TabBar {
             let now = Instant::now();
             let elapsed_ms = self
                 .hover_drop_animated_at
-                .map(|t| now.duration_since(t).as_millis() as f64)
-                .unwrap_or(HOVER_DROP_FADE_MS as f64);
+                .map_or(HOVER_DROP_FADE_MS as f64, |t| now.duration_since(t).as_millis() as f64);
             let raw_t = (elapsed_ms / HOVER_DROP_FADE_MS as f64).clamp(0.0, 1.0);
             let eased_t = crate::ease_out(raw_t);
             // 4px above/below the pill's extent for bleed past the rounded caps.
@@ -1890,7 +1885,7 @@ impl Widget for TabBar {
             } else {
                 let prev = self.tab_rects[gap_idx - 1];
                 let next = self.tab_rects[gap_idx];
-                let cx = (prev.x1 + next.x0) / 2.0;
+                let cx = f64::midpoint(prev.x1, next.x0);
                 (cx, prev.y0.min(next.y0) - 4.0, prev.y1.max(next.y1) + 4.0)
             };
             let half_w = HOVER_DROP_LINE_PX / 2.0;
@@ -1957,8 +1952,7 @@ impl Widget for TabBar {
                 let is_pinned_at = |i: usize| {
                     self.tabs
                         .get(i)
-                        .map(|t| self.pinned_ids.contains(&t.id))
-                        .unwrap_or(false)
+                        .is_some_and(|t| self.pinned_ids.contains(&t.id))
                 };
                 self.hover_close_idx = self
                     .close_rects
@@ -1985,7 +1979,7 @@ impl Widget for TabBar {
                     let group_tag_hash = self
                         .group_id_tag
                         .bytes()
-                        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
+                        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)));
                     self.pending_drag = Some(DragPayload::Tab {
                         group: group_tag_hash,
                         tab: t.id,
@@ -2046,8 +2040,7 @@ impl Widget for TabBar {
                 let is_pinned_at = |i: usize| {
                     self.tabs
                         .get(i)
-                        .map(|t| self.pinned_ids.contains(&t.id))
-                        .unwrap_or(false)
+                        .is_some_and(|t| self.pinned_ids.contains(&t.id))
                 };
                 let close_idx = self
                     .close_rects
@@ -2131,7 +2124,7 @@ impl Widget for TabBar {
             _ => {}
         }
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TabBar"
     }
     fn test_id(&self) -> Option<&str> {
@@ -2212,12 +2205,10 @@ impl Widget for TabBar {
         // layout spring, insert fade, close fade, drop-line fade-in, or reveal.
         let drop_zone = self
             .drop_zone_animated_at
-            .map(|t| t.elapsed() < Duration::from_millis(DROP_ZONE_ANIM_MS))
-            .unwrap_or(false);
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(DROP_ZONE_ANIM_MS));
         let layout = self
             .layout_anim_started
-            .map(|t| t.elapsed() < Duration::from_millis(LAYOUT_ANIM_MS))
-            .unwrap_or(false);
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(LAYOUT_ANIM_MS));
         let insert_fade = self
             .inserted_at
             .values()
@@ -2228,8 +2219,7 @@ impl Widget for TabBar {
             .any(|c| c.started_at.elapsed().as_millis() < CLOSE_FADE_MS as u128);
         let hover_drop_fade = self
             .hover_drop_animated_at
-            .map(|t| t.elapsed() < Duration::from_millis(HOVER_DROP_FADE_MS))
-            .unwrap_or(false);
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(HOVER_DROP_FADE_MS));
         // Keeps the curve running once the pointer stops moving, until an
         // opening pill finishes.
         let reveal = self.reveal_in_flight();

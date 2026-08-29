@@ -33,7 +33,7 @@ use crate::store::{Store, StoreError};
 /// One-line header at the top of every .qpkg tarball.
 #[derive(Debug, Deserialize)]
 struct QpkgHeader {
-    /// `qpkg:<hex>` form of the PackageId.
+    /// `qpkg:<hex>` form of the `PackageId`.
     package_id: String,
     #[allow(dead_code)]
     format: u32,

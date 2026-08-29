@@ -198,7 +198,7 @@ pub struct ContainersApp {
     prompt_dialog: Option<PromptDlg>,
     /// Whether the create-container modal is open.
     pub(crate) create_open: bool,
-    /// Which create field has keyboard focus (index into CreateField::ALL).
+    /// Which create field has keyboard focus (index into `CreateField::ALL`).
     pub(crate) create_focus: usize,
     /// State of the typeable image combobox inside the create modal.
     pub(crate) combo: ComboState,
@@ -327,9 +327,9 @@ impl ContainersApp {
         if let Some(mut fresh) = latest {
             // Carry over the selected container's hydrated detail so the
             // detail tabs don't flicker empty between probes.
-            if let Some(sel) = ViewDoc::selected(doc) {
-                if let Some(old) = self.engine.find(&sel).cloned() {
-                    if let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel) {
+            if let Some(sel) = ViewDoc::selected(doc)
+                && let Some(old) = self.engine.find(&sel).cloned()
+                    && let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel) {
                         if newc.logs.is_empty() {
                             newc.logs = old.logs;
                         }
@@ -340,8 +340,6 @@ impl ContainersApp {
                             newc.mounts = old.mounts;
                         }
                     }
-                }
-            }
             self.engine = fresh;
         }
     }
@@ -356,8 +354,7 @@ impl ContainersApp {
             .containers
             .iter()
             .find(|c| c.id == sel)
-            .map(|c| c.logs.is_empty() && c.env.is_empty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.logs.is_empty() && c.env.is_empty());
         if !needs || !self.live {
             return;
         }
@@ -375,9 +372,7 @@ impl ContainersApp {
     pub(crate) fn apply_action(&mut self, action: Action, id: &str) {
         let name = self
             .engine
-            .find(id)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| id.to_string());
+            .find(id).map_or_else(|| id.to_string(), |c| c.name.clone());
         if self.live {
             match podman::run_action(action, id) {
                 Ok(()) => self.show_toast(format!("{} {}", action.label(), name), false),
@@ -885,9 +880,7 @@ impl ContainersApp {
                 let (name, id) = self
                     .engine
                     .containers
-                    .first()
-                    .map(|c| (c.name.clone(), c.id.clone()))
-                    .unwrap_or_else(|| ("web".to_string(), "web".to_string()));
+                    .first().map_or_else(|| ("web".to_string(), "web".to_string()), |c| (c.name.clone(), c.id.clone()));
                 self.confirm = Some(Confirm {
                     name,
                     verb: "Remove container".into(),
@@ -1063,8 +1056,8 @@ impl Widget for ContainersApp {
                 _ => DetailTab::Logs,
             };
             let list_scene = matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
-            if !list_scene && ViewDoc::selected(doc).is_none() {
-                if let Some(first) = self
+            if !list_scene && ViewDoc::selected(doc).is_none()
+                && let Some(first) = self
                     .engine
                     .containers
                     .iter()
@@ -1074,7 +1067,6 @@ impl Widget for ContainersApp {
                     ViewDoc::set_selected(doc, Some(&first.id));
                     ViewDoc::set_tab(doc, tab);
                 }
-            }
         }
         // Periodically re-probe the engine for fresh stats / state.
         if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL {
@@ -1118,23 +1110,23 @@ impl Widget for ContainersApp {
         let node = taffy
             .new_leaf(Style {
                 size: Size {
-                    width: percent(1.0),
-                    height: percent(1.0),
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
                 },
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -1156,11 +1148,10 @@ impl Widget for ContainersApp {
         // Advance the sidebar collapse slide off a real per-frame delta.
         self.tick_sidebar();
         // Expire the toast.
-        if let Some(t) = &self.toast {
-            if t.born.elapsed().as_millis() > TOAST_MS {
+        if let Some(t) = &self.toast
+            && t.born.elapsed().as_millis() > TOAST_MS {
                 self.toast = None;
             }
-        }
         self.hits.clear();
         let r = self.rect;
         let c = &theme.tokens.colors;
@@ -1279,8 +1270,7 @@ impl Widget for ContainersApp {
         if let WindowEvent::KeyboardInput {
             event: key_event, ..
         } = event
-        {
-            if key_event.state == ElementState::Pressed
+            && key_event.state == ElementState::Pressed
                 && modifiers.state().control_key()
                 && matches!(&key_event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k"))
             {
@@ -1289,7 +1279,6 @@ impl Widget for ContainersApp {
                 self.refresh_view(doc);
                 return;
             }
-        }
 
         // A destructive-confirm or text-prompt dialog is modal: while it's up
         // the shared ModalDialog captures every event (typing, clicks, Esc)
@@ -1315,7 +1304,7 @@ impl Widget for ContainersApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (*y as f64) * 48.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 // Scroll the panel under the cursor.
@@ -1353,7 +1342,7 @@ impl Widget for ContainersApp {
         self.refresh_view(doc);
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ContainersApp"
     }
 
@@ -1476,8 +1465,7 @@ impl ContainersApp {
         let now = Instant::now();
         let dt = self
             .sidebar_tick
-            .map(|t| now.duration_since(t).as_secs_f64().min(0.1))
-            .unwrap_or(0.0);
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
         self.sidebar_tick = Some(now);
         self.sidebar_flap.tick(SplitLayout::Docked, dt);
     }

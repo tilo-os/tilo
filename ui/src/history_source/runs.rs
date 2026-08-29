@@ -107,8 +107,7 @@ pub fn record_run(
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis() as i64);
 
     // Replacing the record wholesale keeps a re-record atomic: no peer ever
     // observes the new label against the old step list.
@@ -149,8 +148,7 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
         };
         let at = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
-            .map(|ms| UNIX_EPOCH + Duration::from_millis(ms as u64))
-            .unwrap_or(UNIX_EPOCH);
+            .map_or(UNIX_EPOCH, |ms| UNIX_EPOCH + Duration::from_millis(ms as u64));
         let mut steps = Vec::new();
         if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&rec, "steps") {
             for i in 0..doc.length(&list) {

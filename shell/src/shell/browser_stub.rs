@@ -95,17 +95,17 @@ impl Widget for BrowserStubWidget {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -142,7 +142,7 @@ impl Widget for BrowserStubWidget {
         // the outer rounded card is clipped against `self.rect` so the
         // chrome paints inside the host's tile boundary.
         let tokens = &theme.tokens;
-        let radius = tokens.radii.lg as f64;
+        let radius = f64::from(tokens.radii.lg);
         let card = vello::kurbo::RoundedRect::from_rect(self.rect, radius);
 
         scene.fill(
@@ -185,7 +185,7 @@ impl Widget for BrowserStubWidget {
         // Concept doesn't colour the traffic lights red/yellow/green.
         let light_y = self.rect.y0 + chrome_h / 2.0;
         for i in 0..3 {
-            let cx = self.rect.x0 + 22.0 + (i as f64) * 18.0;
+            let cx = self.rect.x0 + 22.0 + f64::from(i) * 18.0;
             let circ = vello::kurbo::Circle::new(Point::new(cx, light_y), 6.0);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -222,7 +222,7 @@ impl Widget for BrowserStubWidget {
             let glyph_size = tokens.typography.scale.base;
             let (ggw, ggh) = text_renderer.measure(globe, glyph_size, None);
             let gx = bar_rect.x0 + 14.0;
-            let gy = bar_rect.center().y - ggh as f64 / 2.0;
+            let gy = bar_rect.center().y - f64::from(ggh) / 2.0;
             text_renderer.draw_text(
                 scene,
                 globe,
@@ -233,8 +233,8 @@ impl Widget for BrowserStubWidget {
             );
             let url = "localhost:3000";
             let (_uw, uh) = text_renderer.measure(url, glyph_size, None);
-            let ux = gx + ggw as f64 + 10.0;
-            let uy = bar_rect.center().y - uh as f64 / 2.0;
+            let ux = gx + f64::from(ggw) + 10.0;
+            let uy = bar_rect.center().y - f64::from(uh) / 2.0;
             text_renderer.draw_text(
                 scene,
                 url,
@@ -290,7 +290,7 @@ impl Widget for BrowserStubWidget {
             let headline = "App Preview";
             let headline_size = tokens.typography.scale.xl;
             let (hw, _hh) = text_renderer.measure(headline, headline_size, None);
-            let hx = self.rect.center().x - hw as f64 / 2.0;
+            let hx = self.rect.center().x - f64::from(hw) / 2.0;
             let hy = tile_cy + tile_size / 2.0 + 24.0;
             text_renderer.draw_text(
                 scene,
@@ -304,8 +304,8 @@ impl Widget for BrowserStubWidget {
             let sub = "Running locally on port 3000";
             let sub_size = tokens.typography.scale.sm;
             let (sw, _) = text_renderer.measure(sub, sub_size, None);
-            let sx = self.rect.center().x - sw as f64 / 2.0;
-            let sy = hy + headline_size as f64 + 8.0;
+            let sx = self.rect.center().x - f64::from(sw) / 2.0;
+            let sy = hy + f64::from(headline_size) + 8.0;
             text_renderer.draw_text(
                 scene,
                 sub,
@@ -335,7 +335,7 @@ impl Widget for BrowserStubWidget {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BrowserStubWidget"
     }
 
@@ -365,7 +365,7 @@ impl AppWidget for BrowserStubWidget {
     fn app_kind(&self) -> AppKind {
         AppKind::Browser
     }
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "Browser"
     }
     fn app_icon(&self) -> IconDescriptor {

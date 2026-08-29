@@ -187,11 +187,11 @@ impl SelectionModel {
         self.selected.retain(|&i| i < count);
         let pruned_set = self.selected.len() != before;
         let mut pruned_meta = false;
-        if self.anchor.map(|a| a >= count).unwrap_or(false) {
+        if self.anchor.is_some_and(|a| a >= count) {
             self.anchor = None;
             pruned_meta = true;
         }
-        if self.primary.map(|p| p >= count).unwrap_or(false) {
+        if self.primary.is_some_and(|p| p >= count) {
             self.primary = None;
             pruned_meta = true;
         }

@@ -43,7 +43,7 @@ pub struct MonitorInfo {
 impl MonitorInfo {
     /// Pixel area, used to rank monitors for [`FullscreenTarget::Largest`].
     pub fn area(&self) -> u64 {
-        self.width as u64 * self.height as u64
+        u64::from(self.width) * u64::from(self.height)
     }
 }
 

@@ -29,7 +29,7 @@ fn env_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Locate the `qos-install` binary this workspace builds. A missing
@@ -229,13 +229,13 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     let entry = signed_entry(PACKAGE_ID, &url, &qpkg);
     let entries_json = serde_json::to_string(&vec![entry]).unwrap();
     // Bind for real; if the planned port was taken, fall back to whatever we get and rewrite the URL.
-    let registry = Registry::start(entries_json.clone(), qpkg.clone());
+    let registry = Registry::start(entries_json, qpkg.clone());
     let registry = if registry.port == planned_port {
         registry
     } else {
         let url = format!("http://127.0.0.1:{}/sheets.qpkg", registry.port);
         let entry = signed_entry(PACKAGE_ID, &url, &qpkg);
-        Registry::start(serde_json::to_string(&vec![entry]).unwrap(), qpkg.clone())
+        Registry::start(serde_json::to_string(&vec![entry]).unwrap(), qpkg)
     };
 
     let config_dir = tempfile::tempdir().unwrap();
@@ -336,7 +336,7 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
     let entry = signed_entry("dev.qos.catalogue-corrupt", &url, &good);
     let registry = Registry::start(
         serde_json::to_string(&vec![entry]).unwrap(),
-        corrupted.clone(),
+        corrupted,
     );
 
     let config_dir = tempfile::tempdir().unwrap();
@@ -448,7 +448,7 @@ fn publish_and_install(
     let key = SigningKey::from_bytes(&[11u8; 32]);
     entry.signature_hex = String::new();
     sign_entry(&mut entry, &key);
-    let registry = Registry::start(serde_json::to_string(&vec![entry]).unwrap(), qpkg.clone());
+    let registry = Registry::start(serde_json::to_string(&vec![entry]).unwrap(), qpkg);
 
     let config_dir = tempfile::tempdir().unwrap();
     let cache_dir = tempfile::tempdir().unwrap();

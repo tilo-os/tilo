@@ -51,7 +51,7 @@ impl Driver {
         }
     }
 
-    /// Run sync → build_layout → compute_layout → apply_layout → draw, caching
+    /// Run sync → `build_layout` → `compute_layout` → `apply_layout` → draw, caching
     /// the produced scene for inspection.
     fn frame(&mut self) {
         self.app.sync(&mut self.doc, &self.root);
@@ -112,7 +112,7 @@ impl Driver {
         self.dispatch(left_press());
     }
 
-    /// Type a single character through `handle_event` (KeyboardInput).
+    /// Type a single character through `handle_event` (`KeyboardInput`).
     fn type_char(&mut self, ch: &str) {
         self.dispatch(char_press(ch));
     }

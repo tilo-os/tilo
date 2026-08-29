@@ -32,7 +32,7 @@ pub enum IconKind {
     Settings,
     Search,
     Like,
-    /// Thumbs-down — the Return YouTube Dislike pill on the watch page.
+    /// Thumbs-down — the Return `YouTube` Dislike pill on the watch page.
     Dislike,
     Bell,
     Play,
@@ -155,7 +155,7 @@ impl Icon {
                 let n = 8;
                 let half = 0.20_f64; // angular half-width of each tooth (rad)
                 for k in 0..n {
-                    let a = std::f64::consts::TAU * k as f64 / n as f64;
+                    let a = std::f64::consts::TAU * f64::from(k) / f64::from(n);
                     let pt =
                         |ang: f64, r: f64| Point::new(c.x + ang.cos() * r, c.y + ang.sin() * r);
                     let mut p = BezPath::new();
@@ -388,17 +388,17 @@ impl Widget for Icon {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -426,7 +426,7 @@ impl Widget for Icon {
         _t: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Icon"
     }
     fn is_layout_dirty(&self) -> bool {
@@ -489,17 +489,17 @@ impl Widget for Switch {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -584,7 +584,7 @@ impl Widget for Switch {
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Switch"
     }
     fn is_layout_dirty(&self) -> bool {

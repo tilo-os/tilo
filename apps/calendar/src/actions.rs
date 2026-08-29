@@ -183,12 +183,12 @@ pub enum CalendarAction {
     /// every field edit, and a move (a start/end change is just new datetimes).
     UpsertEvent(EventData),
     /// Retarget an event to a calendar: write the (already resolved) event
-    /// fields and update the CalDAV push queue — enqueue for a remote target,
+    /// fields and update the `CalDAV` push queue — enqueue for a remote target,
     /// dequeue for the local one. The colour is already folded into `event`.
     SetEventCalendar { event: EventData, enqueue: bool },
     /// Delete an event, clearing any queued upload. When the event was synced
     /// from a still-configured remote calendar, `remote_delete` carries that
-    /// calendar id so `apply` also queues a CalDAV delete of the server copy.
+    /// calendar id so `apply` also queues a `CalDAV` delete of the server copy.
     DeleteEvent {
         id: String,
         remote_delete: Option<String>,
@@ -293,7 +293,7 @@ pub fn set_event_calendar_action(e: &Event, enqueue: bool) -> CalendarAction {
     }
 }
 
-/// Delete an event; `remote_delete` names the source calendar when a CalDAV
+/// Delete an event; `remote_delete` names the source calendar when a `CalDAV`
 /// delete should be queued too.
 pub fn delete_event_action(id: impl Into<String>, remote_delete: Option<String>) -> CalendarAction {
     CalendarAction::DeleteEvent {
@@ -326,7 +326,7 @@ pub fn delete_task_action(id: impl Into<String>, subtasks: Vec<String>) -> Calen
 
 /// One event surfaced as a resource, with its delete pre-resolved so the
 /// palette's "Delete event" builds the byte-identical action the trash button
-/// does (a synced event still queues its CalDAV delete).
+/// does (a synced event still queues its `CalDAV` delete).
 #[derive(Debug, Clone)]
 pub struct EventResource {
     pub data: EventData,

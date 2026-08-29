@@ -36,7 +36,7 @@ use crate::shell::state::{Capability, GRANT_ONCE};
 use super::{CapabilityKind, PortalCaller, PortalContext, file_chooser::FileChooserBackend, flow};
 
 /// Interface version we advertise: `1`, the method set implemented here.
-/// Named lowercase to match the spec's `version` property (zbus would otherwise PascalCase it to `Version`), same as [`super::remote_desktop`].
+/// Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`), same as [`super::remote_desktop`].
 pub const PRINT_VERSION: u32 = 1;
 
 /// Hard ceiling on the bytes we will read off the app's descriptor.
@@ -55,14 +55,14 @@ pub const MAX_SPOOL_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TITLE_BYTES: usize = 255;
 
 /// Copies ceiling — an app asking for `u32::MAX` copies is a
-/// physical-resource DoS (paper, toner) no consent granularity fixes.
+/// physical-resource `DoS` (paper, toner) no consent granularity fixes.
 pub const MAX_COPIES: u32 = 100;
 
 /// Title used when the app's own title sanitises down to nothing.
 pub const FALLBACK_TITLE: &str = "Document";
 
 /// How long a `PreparePrint` token stays redeemable — a dialog the user configured and walked away from shouldn't leave a live capability behind.
-const TOKEN_TTL: Duration = Duration::from_secs(300);
+const TOKEN_TTL: Duration = Duration::from_mins(5);
 
 /// Outstanding tokens held at once — bounds memory an app can pin by looping `PreparePrint` without ever printing; oldest is evicted past this.
 const MAX_OUTSTANDING_TOKENS: usize = 32;
@@ -146,7 +146,7 @@ impl PrintSpooler for LpSpooler {
             .lines()
             .filter_map(|l| l.split_whitespace().next())
             .filter(|n| valid_destination(n))
-            .map(|n| n.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         names.dedup();
 
@@ -364,7 +364,7 @@ impl PrintBackend {
 
     /// Outstanding token count — lets a test observe that a rejected redemption didn't consume somebody else's token.
     pub fn outstanding_tokens(&self) -> usize {
-        self.prepared.lock().map(|t| t.len()).unwrap_or(0)
+        self.prepared.lock().map_or(0, |t| t.len())
     }
 }
 
@@ -378,7 +378,7 @@ fn random_token() -> u32 {
 
 #[interface(name = "org.freedesktop.impl.portal.Print")]
 impl PrintBackend {
-    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise PascalCase it to `Version`).
+    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
     #[zbus(property, name = "version")]
     async fn version(&self) -> u32 {
         PRINT_VERSION
@@ -478,32 +478,23 @@ impl PrintBackend {
         // is refused outright, not downgraded to "no token", since falling back to the default destination would let a replayed token still print.
         let prepared = match opt_u32(&options, "token") {
             None | Some(0) => None,
-            Some(token) => match self.redeem_token(token, &caller) {
-                Some(job) => Some(job),
-                None => {
-                    tracing::warn!(
-                        app = %caller.app_id,
-                        "Print: refused an unknown, replayed or expired token"
-                    );
-                    return (2, HashMap::new());
-                }
+            Some(token) => if let Some(job) = self.redeem_token(token, &caller) { Some(job) } else {
+                tracing::warn!(
+                    app = %caller.app_id,
+                    "Print: refused an unknown, replayed or expired token"
+                );
+                return (2, HashMap::new());
             },
         };
 
-        let destination = match prepared.as_ref() {
-            Some(job) => job.destination.clone(),
-            None => {
-                let available = self.ctx.print_spooler.destinations();
-                match available.first() {
-                    Some(d) => d.clone(),
-                    None => {
-                        tracing::debug!("Print.Print: no destinations available");
-                        return (2, HashMap::new());
-                    }
-                }
+        let destination = if let Some(job) = prepared.as_ref() { job.destination.clone() } else {
+            let available = self.ctx.print_spooler.destinations();
+            if let Some(d) = available.first() { d.clone() } else {
+                tracing::debug!("Print.Print: no destinations available");
+                return (2, HashMap::new());
             }
         };
-        let copies = prepared.as_ref().map(|j| j.copies).unwrap_or(1);
+        let copies = prepared.as_ref().map_or(1, |j| j.copies);
         let job_title = sanitise_title(&title);
 
         let spooler = self.ctx.print_spooler.clone();

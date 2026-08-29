@@ -92,17 +92,17 @@ impl Widget for Btn {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -200,7 +200,7 @@ impl Widget for Btn {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Btn"
     }
     fn get_rect(&self) -> Rect {
@@ -319,17 +319,17 @@ impl Widget for ThemeRow {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -426,7 +426,7 @@ impl Widget for ThemeRow {
         if self.active {
             let lab = "Active";
             let (w, _) = tr.measure(lab, 10.0, None);
-            let pw = w as f64 + 16.0;
+            let pw = f64::from(w) + 16.0;
             let pill = Rect::new(
                 self.rect.x1 - pw - 10.0,
                 self.rect.center().y - 9.0,
@@ -476,8 +476,8 @@ impl Widget for ThemeRow {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.hover {
+            }
+                if self.hover => {
                     crate::doc::put_str(
                         state,
                         path,
@@ -487,12 +487,11 @@ impl Widget for ThemeRow {
                     *focus_target = Some(node_id);
                     *handled = true;
                 }
-            }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ThemeRow"
     }
     fn get_rect(&self) -> Rect {

@@ -62,7 +62,7 @@ impl VtGrid {
             .iter()
             .map(|row| {
                 let last = row.iter().rposition(|c| c.ch != ' ' || c.color.is_some());
-                let end = last.map(|i| i + 1).unwrap_or(0);
+                let end = last.map_or(0, |i| i + 1);
                 TermLine {
                     cells: row[..end].to_vec(),
                 }
@@ -125,15 +125,14 @@ impl Grid {
             self.cx = 0;
             self.newline();
         }
-        if let Some(row) = self.cells.get_mut(self.cy) {
-            if let Some(cell) = row.get_mut(self.cx) {
+        if let Some(row) = self.cells.get_mut(self.cy)
+            && let Some(cell) = row.get_mut(self.cx) {
                 *cell = Cell {
                     ch,
                     color: self.pen_color,
                     bold: self.pen_bold,
                 };
             }
-        }
         self.cx += 1;
     }
 
@@ -164,7 +163,7 @@ impl Grid {
     /// Apply a Select-Graphic-Rendition parameter list to the pen.
     fn apply_sgr(&mut self, params: &Params) {
         let mut any = false;
-        for p in params.iter() {
+        for p in params {
             any = true;
             let code = p.first().copied().unwrap_or(0);
             match code {
@@ -239,11 +238,11 @@ impl Perform for Grid {
             'A' => self.cy = self.cy.saturating_sub(first_param(params, 1) as usize),
             'B' => {
                 self.cy =
-                    (self.cy + first_param(params, 1) as usize).min(self.rows.saturating_sub(1))
+                    (self.cy + first_param(params, 1) as usize).min(self.rows.saturating_sub(1));
             }
             'C' => {
                 self.cx =
-                    (self.cx + first_param(params, 1) as usize).min(self.cols.saturating_sub(1))
+                    (self.cx + first_param(params, 1) as usize).min(self.cols.saturating_sub(1));
             }
             'D' => self.cx = self.cx.saturating_sub(first_param(params, 1) as usize),
             'G' => self.cx = (first_param(params, 1) as usize - 1).min(self.cols.saturating_sub(1)),

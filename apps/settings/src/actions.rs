@@ -277,7 +277,7 @@ fn match_option(raw: &str, options: &[&str]) -> Option<String> {
     options
         .iter()
         .find(|o| o.to_ascii_lowercase() == r)
-        .map(|o| o.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Build the resource tree Settings publishes: the configuration root, a child
@@ -805,7 +805,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             doc_bool(&state.doc, panes::notifications::DND_KEY),

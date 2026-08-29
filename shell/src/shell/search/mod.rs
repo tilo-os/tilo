@@ -253,7 +253,7 @@ impl SearchRegistry {
 
     /// Used by the shell's scope-narrow helper to look up which provider owns a tab.
     pub fn providers_iter(&self) -> impl Iterator<Item = &dyn SearchProvider> {
-        self.providers.iter().map(|p| p.as_ref())
+        self.providers.iter().map(std::convert::AsRef::as_ref)
     }
 
     /// Union of every registered provider's [`ResourceKind`]s, ordered by
@@ -267,7 +267,7 @@ impl SearchRegistry {
                 }
             }
         }
-        out.sort_by_key(|k| k.sort_key());
+        out.sort_by_key(ResourceKind::sort_key);
         out
     }
 

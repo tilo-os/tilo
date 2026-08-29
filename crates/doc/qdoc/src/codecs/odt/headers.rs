@@ -36,16 +36,15 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
                       cur_len: &mut usize| {
         let id = doc.insert_block_in(region, prev.as_deref(), "paragraph");
         *prev = Some(id.clone());
-        *cur = Some(id.clone());
+        *cur = Some(id);
         *cur_len = 0;
     };
     let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
-        if let Some(b) = cur {
-            if !txt.is_empty() {
+        if let Some(b) = cur
+            && !txt.is_empty() {
                 doc.splice_text_in(region, b, *cur_len, 0, txt);
                 *cur_len += txt.chars().count();
             }
-        }
     };
 
     loop {
@@ -57,7 +56,7 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
             Event::Start(e) => match e.name().as_ref() {
                 n if n == tag.as_bytes() => in_region = true,
                 b"text:p" | b"text:h" if in_region => {
-                    open_block(doc, &mut prev, &mut cur, &mut cur_len)
+                    open_block(doc, &mut prev, &mut cur, &mut cur_len);
                 }
                 _ => {}
             },
@@ -95,7 +94,7 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
                 if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
                     if !txt.is_empty()
-                        && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r']))
+                        && !(txt.chars().all(char::is_whitespace) && txt.contains(['\n', '\r']))
                     {
                         append(doc, &cur, &mut cur_len, &txt);
                     }

@@ -211,7 +211,7 @@ fn stable_id(raw: &str) -> String {
     // short enough to read in `perm list`.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in raw.as_bytes() {
-        hash ^= *byte as u64;
+        hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100_0000_01b3);
     }
     format!("{hash:016x}")

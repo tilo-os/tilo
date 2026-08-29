@@ -1,4 +1,4 @@
-//! PostgreSQL execution engine: opens a real TCP connection through the sync
+//! `PostgreSQL` execution engine: opens a real TCP connection through the sync
 //! `postgres` crate, introspects the catalog (`information_schema` +
 //! `pg_catalog`) and runs arbitrary SQL returning a [`QueryResult`]. Mirrors
 //! the shape of [`crate::engine::SqliteEngine`] so the session layer can hold
@@ -19,7 +19,7 @@ use crate::model::{
     TableInfo, TypeClass,
 };
 
-/// A live PostgreSQL connection. Owns the client for the session lifetime.
+/// A live `PostgreSQL` connection. Owns the client for the session lifetime.
 pub struct PostgresEngine {
     client: Client,
 }

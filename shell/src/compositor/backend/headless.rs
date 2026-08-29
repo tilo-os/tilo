@@ -42,7 +42,7 @@ pub struct HeadlessBackend {
     renderer: OffscreenRenderer,
     outputs: Vec<Output>,
     events: Vec<BackendEvent>,
-    /// Latest painted RGBA frame, kept so test_control's `snapshot`
+    /// Latest painted RGBA frame, kept so `test_control`'s `snapshot`
     /// command can write a PNG without re-rendering.
     last_frame: Vec<u8>,
     /// Whether the one startup `Redraw` has been handed over yet.
@@ -112,7 +112,7 @@ pub fn parse_headless_size(value: Option<&str>) -> Option<(u32, u32)> {
     // Accept either `x` or `X` as separator — case-insensitive matches
     // the `1600x900` convention used everywhere else in the repo while
     // still tolerating shell weirdness.
-    let (w, h) = raw.split_once(|c: char| c == 'x' || c == 'X')?;
+    let (w, h) = raw.split_once(['x', 'X'])?;
     let w: u32 = w.trim().parse().ok()?;
     let h: u32 = h.trim().parse().ok()?;
     if w == 0 || h == 0 {

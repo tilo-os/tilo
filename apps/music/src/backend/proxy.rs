@@ -3,7 +3,7 @@
 //! ## The truncation problem this fixes
 //!
 //! rustypipe resolves a track's audio through the iOS/TV player clients, which
-//! return direct `googlevideo` media URLs *without* a PoToken. That gets audio
+//! return direct `googlevideo` media URLs *without* a `PoToken`. That gets audio
 //! playing — but those URLs are gated by PoToken/SABR: a bounded `Range` request
 //! **past the first ~1-minute segment is refused**, so only the opening minute
 //! of a track is ever fetchable. The whole track never streams.
@@ -36,8 +36,8 @@ pub const INVIDIOUS_INSTANCES: &[&str] = &[
     "https://iv.melmac.space",
 ];
 
-/// Standard YouTube audio itags, best-decodable first. itag 140 is m4a/AAC 128k
-/// (decodable by any stock GStreamer with libav/faad); itag 251 is webm/opus
+/// Standard `YouTube` audio itags, best-decodable first. itag 140 is m4a/AAC 128k
+/// (decodable by any stock `GStreamer` with libav/faad); itag 251 is webm/opus
 /// 160k. These are present for effectively every music track, so the resolver
 /// can probe the media proxy directly without first querying (flaky, often
 /// Cloudflare-gated) `/api/v1/videos` metadata for the itag list.
@@ -57,7 +57,7 @@ const KNOWN_AUDIO_ITAGS: &[(u32, &str, &str, &str, u32)] = &[
 /// One audio-only adaptive format parsed from an Invidious video response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvAudio {
-    /// YouTube stream format id (itag) — the key the local proxy re-fetches by.
+    /// `YouTube` stream format id (itag) — the key the local proxy re-fetches by.
     pub itag: u32,
     /// Average/target bitrate in bits/second (higher = better).
     pub bitrate: u32,
@@ -153,7 +153,7 @@ fn num_field(it: &serde_json::Value, key: &str) -> Option<u64> {
 }
 
 /// Pick the best audio format to play: prefer the broadly-decodable M4A/AAC
-/// container (stock GStreamer decodes it everywhere), then highest bitrate;
+/// container (stock `GStreamer` decodes it everywhere), then highest bitrate;
 /// fall back to the highest-bitrate stream of any container.
 pub fn best_audio(list: &[InvAudio]) -> Option<&InvAudio> {
     list.iter()
@@ -175,7 +175,7 @@ fn instances() -> Vec<String> {
             }
         }
     }
-    out.extend(INVIDIOUS_INSTANCES.iter().map(|s| s.to_string()));
+    out.extend(INVIDIOUS_INSTANCES.iter().map(std::string::ToString::to_string));
     out
 }
 
@@ -262,8 +262,7 @@ fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
             }
             let ok = resp
                 .bytes()
-                .map(|b| !b.is_empty() && !body_sniffs_as_html(&b))
-                .unwrap_or(false);
+                .is_ok_and(|b| !b.is_empty() && !body_sniffs_as_html(&b));
             if !ok {
                 tracing::debug!(target: "music::proxy", %url, "proxy probe rejected (empty or HTML body)");
             }

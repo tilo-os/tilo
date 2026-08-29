@@ -1,4 +1,4 @@
-//! The BlueZ client: adapter control, discovery, pairing, trust, removal.
+//! The `BlueZ` client: adapter control, discovery, pairing, trust, removal.
 //!
 //! Everything goes through `org.bluez` on the **system** bus. Fedora's default D-Bus policy
 //! (`/usr/share/dbus-1/system.d/bluetooth.conf`) grants `send_destination="org.bluez"` to
@@ -27,7 +27,7 @@ const OBJECT_MANAGER_IFACE: &str = "org.freedesktop.DBus.ObjectManager";
 /// The `a{oa{sa{sv}}}` shape `GetManagedObjects` returns.
 type ManagedObjects = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
 
-/// A connected BlueZ handle. Hold this for as long as discovery should run: BlueZ ties a
+/// A connected `BlueZ` handle. Hold this for as long as discovery should run: `BlueZ` ties a
 /// discovery session to the D-Bus connection that started it and stops scanning the moment
 /// that connection goes away — a fire-and-forget `StartDiscovery` scans for microseconds.
 #[derive(Clone)]
@@ -44,7 +44,7 @@ impl BluezClient {
     }
 
     /// Build on an existing connection — used when the agent and the client must share one
-    /// connection so BlueZ sees a single client.
+    /// connection so `BlueZ` sees a single client.
     pub fn with_connection(connection: Connection, names: DeviceNames) -> Self {
         Self { connection, names }
     }
@@ -64,7 +64,7 @@ impl BluezClient {
         reply.body().deserialize()
     }
 
-    /// Every adapter BlueZ knows about, in path order.
+    /// Every adapter `BlueZ` knows about, in path order.
     pub async fn adapters(&self) -> zbus::Result<Vec<AdapterInfo>> {
         let objects = self.managed_objects().await?;
         let mut out: Vec<AdapterInfo> = objects
@@ -194,7 +194,7 @@ impl BluezClient {
         zbus::Proxy::new(&self.connection, DEST, device.to_string(), DEVICE_IFACE).await
     }
 
-    /// Pair with a device. This is the call that drives the agent: BlueZ will invoke our
+    /// Pair with a device. This is the call that drives the agent: `BlueZ` will invoke our
     /// `org.bluez.Agent1` object one or more times before returning, and pairing only completes
     /// if those calls are answered. The reply can take as long as the user takes to compare a
     /// passkey, so this deliberately imposes no short timeout of its own.
@@ -239,7 +239,7 @@ impl BluezClient {
     }
 
     /// Mark a paired device trusted. Trust is what lets a keyboard reconnect without the user
-    /// re-authorising every profile (BlueZ answers `AuthorizeService` itself for trusted
+    /// re-authorising every profile (`BlueZ` answers `AuthorizeService` itself for trusted
     /// devices) — a real grant, so it's set explicitly after a successful pairing rather than
     /// implied by it.
     pub async fn set_trusted(&self, device: &str, trusted: bool) -> zbus::Result<()> {
@@ -333,7 +333,7 @@ pub enum PairOutcome {
     },
 }
 
-/// Turn a BlueZ D-Bus error into something worth putting in front of a person. BlueZ's own
+/// Turn a `BlueZ` D-Bus error into something worth putting in front of a person. `BlueZ`'s own
 /// messages are terse but accurate, so we keep them and only translate the ones whose wire
 /// name says more than the text.
 pub fn error_text(e: &zbus::Error) -> String {
@@ -345,7 +345,7 @@ pub fn error_text(e: &zbus::Error) -> String {
     }
 }
 
-/// The mapping itself, over the wire name and detail BlueZ sent. Split out so it's exercised
+/// The mapping itself, over the wire name and detail `BlueZ` sent. Split out so it's exercised
 /// directly rather than through a hand-built `zbus::Error` (whose `MethodError` carries a
 /// real `Message` that can't be fabricated in a test).
 pub fn bluez_error_text(name: &str, detail: Option<&str>) -> String {
@@ -361,15 +361,13 @@ pub fn bluez_error_text(name: &str, detail: Option<&str>) -> String {
         }
         "NotReady" => "Bluetooth is turned off.".to_string(),
         "NotAuthorized" => "Not allowed to control Bluetooth.".to_string(),
-        _ => detail
-            .map(|d| d.to_string())
-            .unwrap_or_else(|| format!("Bluetooth error: {short}")),
+        _ => detail.map_or_else(|| format!("Bluetooth error: {short}"), std::string::ToString::to_string),
     }
 }
 
 /// How long to leave a scan running before it stops on its own. Discovery costs radio time
 /// and battery on every nearby device, so it's not left on indefinitely.
-pub const DISCOVERY_WINDOW: Duration = Duration::from_secs(60);
+pub const DISCOVERY_WINDOW: Duration = Duration::from_mins(1);
 
 #[cfg(test)]
 mod tests {

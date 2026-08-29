@@ -30,7 +30,7 @@ pub enum Action {
     /// Fraction of the current video's duration, in `[0, 1]`.
     Seek(f64),
     TogglePlay,
-    /// Cycle a SponsorBlock category through auto-skip → show → off.
+    /// Cycle a `SponsorBlock` category through auto-skip → show → off.
     ToggleCategory(Category),
     /// Skip to `to` seconds, offered for a `Show`-mode segment the playhead
     /// is currently inside.

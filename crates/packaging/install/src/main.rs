@@ -18,10 +18,10 @@ use pkg::trust::{
 use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify_with_trust};
 use serde::{Deserialize, Serialize};
 
-/// Mirrors qos-pkg-cli's QpkgHeader (kept local to avoid a circular dep).
+/// Mirrors qos-pkg-cli's `QpkgHeader` (kept local to avoid a circular dep).
 #[derive(Debug, Deserialize)]
 struct QpkgHeader {
-    /// `qpkg:<hex>` form of the PackageId.
+    /// `qpkg:<hex>` form of the `PackageId`.
     package_id: String,
     #[allow(dead_code)]
     format: u32,
@@ -416,11 +416,10 @@ fn payloads_root() -> Result<PathBuf, Error> {
 /// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
 /// not `QOS_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
-        if !dir.is_empty() {
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
+        && !dir.is_empty() {
             return Ok(PathBuf::from(dir));
         }
-    }
     dirs::data_dir().ok_or(Error::NoDataDir)
 }
 
@@ -478,14 +477,13 @@ fn verify_and_gate(
     let outcome = verify_with_trust(pkg_id, store, &[], attestors.as_slice(), &revocation);
     match outcome {
         Verification::AttestedBy { attestor, manifest } => {
-            if let Some(required) = &trust.require_attestor {
-                if required != &attestor {
+            if let Some(required) = &trust.require_attestor
+                && required != &attestor {
                     return Err(Error::AttestorMismatch {
                         required: required.clone(),
                         found: attestor,
                     });
                 }
-            }
             let pub_key_hex = extract_publisher_key(&pkg_id, store)
                 .map(|k| hex_of(&k))
                 .unwrap_or_default();
@@ -875,22 +873,19 @@ fn update(
     runtime: RuntimeFlags,
 ) -> Result<(), Error> {
     let reg = load_registry()?;
-    let targets: Vec<RegistryEntry> = match pkg_id {
-        Some(id) => vec![
-            reg.entry
-                .iter()
-                .find(|e| e.id == id)
-                .cloned()
-                .ok_or_else(|| Error::NotInstalled(id.into()))?,
-        ],
-        None => {
-            if from.is_some() {
-                return Err(Error::Policy(
-                    "--from names one .qpkg, so it needs one package id".into(),
-                ));
-            }
-            reg.entry.clone()
+    let targets: Vec<RegistryEntry> = if let Some(id) = pkg_id { vec![
+        reg.entry
+            .iter()
+            .find(|e| e.id == id)
+            .cloned()
+            .ok_or_else(|| Error::NotInstalled(id.into()))?,
+    ] } else {
+        if from.is_some() {
+            return Err(Error::Policy(
+                "--from names one .qpkg, so it needs one package id".into(),
+            ));
         }
+        reg.entry
     };
     if targets.is_empty() {
         println!("(no packages installed)");
@@ -1139,8 +1134,8 @@ fn list() -> Result<(), Error> {
         return Ok(());
     }
     println!(
-        "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  {}",
-        "id", "version", "pinned", "attested-by", "runtime", "installed"
+        "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  installed",
+        "id", "version", "pinned", "attested-by", "runtime"
     );
     for e in &reg.entry {
         let ago = age(e.installed_at);
@@ -1154,7 +1149,7 @@ fn list() -> Result<(), Error> {
         let runtime = match e.runtime.as_str() {
             "" => "-".to_string(),
             r => {
-                let version = r.split_once('/').map(|(_, v)| v).unwrap_or("");
+                let version = r.split_once('/').map_or("", |(_, v)| v);
                 if runtime_bundle_present(version) {
                     r.to_string()
                 } else {
@@ -1397,7 +1392,7 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
             }
         }
         if !entry.runtime.is_empty() {
-            let version = entry.runtime.split_once('/').map(|(_, v)| v).unwrap_or("");
+            let version = entry.runtime.split_once('/').map_or("", |(_, v)| v);
             let present = runtime_bundle::default_bundle_path(version)
                 .ok()
                 .into_iter()
@@ -1455,8 +1450,8 @@ fn run(
     // --require-attestor is honoured against the recorded attested-by field.
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
-    if let Ok(pk_bytes) = decode_hex_32(&entry.publisher_key_hex) {
-        if let Some(rev) = revocation.find(&pk_bytes) {
+    if let Ok(pk_bytes) = decode_hex_32(&entry.publisher_key_hex)
+        && let Some(rev) = revocation.find(&pk_bytes) {
             eprintln!(
                 "qos-install: REFUSED — installed package's publisher is revoked: {}",
                 rev.reason
@@ -1465,7 +1460,6 @@ fn run(
                 reason: rev.reason.clone(),
             });
         }
-    }
     if let Some(required) = &trust.require_attestor {
         // The recorded attested_by is fixed at install time and can go stale
         // if trusted-attestors.toml changed since; re-check it's still trusted.
@@ -1557,7 +1551,7 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     if entry.runtime.is_empty() {
         println!("runtime       : (none declared)");
     } else {
-        let version = entry.runtime.split_once('/').map(|(_, v)| v).unwrap_or("");
+        let version = entry.runtime.split_once('/').map_or("", |(_, v)| v);
         println!(
             "runtime       : {} ({})",
             entry.runtime,
@@ -1749,7 +1743,7 @@ fn runtime_list() -> Result<(), Error> {
         return Ok(());
     }
     versions.sort();
-    println!("{:<20}  {}", "version", "path");
+    println!("{:<20}  path", "version");
     for v in &versions {
         println!("{:<20}  {}", v, base.join(v).display());
     }
@@ -1882,7 +1876,7 @@ fn main() {
     }
 }
 
-/// Read a .qpkg tar → [`MemoryBlobStore`] + PackageId. Mirrors
+/// Read a .qpkg tar → [`MemoryBlobStore`] + `PackageId`. Mirrors
 /// (deliberately duplicated) qos-pkg-cli::read_qpkg so this crate
 /// stays independent.
 #[allow(dead_code)]
@@ -1935,7 +1929,7 @@ fn read_qpkg_bytes(bytes: &[u8]) -> Result<(PackageId, MemoryBlobStore), Error> 
 }
 
 /// Best-effort publisher key extraction: reads the signed-root blob by
-/// PackageId and decodes the 32-byte publisher_identity.
+/// `PackageId` and decodes the 32-byte `publisher_identity`.
 fn extract_publisher_key(id: &PackageId, store: &MemoryBlobStore) -> Option<[u8; 32]> {
     let blob = store
         .get(&pkg::blobs::BlobHash(*id.as_bytes()))
@@ -1966,8 +1960,7 @@ fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn age(installed_at: u64) -> String {
@@ -1983,13 +1976,12 @@ fn age(installed_at: u64) -> String {
 
 fn which_launcher() -> PathBuf {
     // Prefer a sibling binary — matches how the demo installs both under target/release/.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent() {
             let sib = parent.join("qos-launcher");
             if sib.exists() {
                 return sib;
             }
         }
-    }
     PathBuf::from("qos-launcher")
 }

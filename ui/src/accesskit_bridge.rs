@@ -210,50 +210,47 @@ fn visit(
     parent_children: &mut Vec<AkNodeId>,
 ) {
     let access = w.accessibility();
-    let w_ptr = w as *const dyn Widget;
+    let w_ptr = std::ptr::from_ref::<dyn Widget>(w);
     let taffy_id = ptr_to_taffy.get(&w_ptr).copied();
 
-    match access {
-        Some(access_node) => {
-            let id = widget_node_id(taffy_id, *walk_counter);
-            *walk_counter += 1;
+    if let Some(access_node) = access {
+        let id = widget_node_id(taffy_id, *walk_counter);
+        *walk_counter += 1;
 
-            let mut ak = AkNode::new(map_role(access_node.role));
-            apply_semantics(&mut ak, &access_node, w, scale);
+        let mut ak = AkNode::new(map_role(access_node.role));
+        apply_semantics(&mut ak, &access_node, w, scale);
 
-            let mut my_children: Vec<AkNodeId> = Vec::new();
-            for child in w.children() {
-                visit(
-                    child,
-                    ptr_to_taffy,
-                    scale,
-                    walk_counter,
-                    nodes,
-                    &mut my_children,
-                );
-            }
-            // Synthetic children with no backing widget — a table's rows/cells.
-            for synth in &access_node.children {
-                visit_synthetic(synth, walk_counter, nodes, &mut my_children);
-            }
-            ak.set_children(my_children);
-
-            nodes.push((id, ak));
-            parent_children.push(id);
+        let mut my_children: Vec<AkNodeId> = Vec::new();
+        for child in w.children() {
+            visit(
+                child,
+                ptr_to_taffy,
+                scale,
+                walk_counter,
+                nodes,
+                &mut my_children,
+            );
         }
-        None => {
-            // Presentational: collapse out, reparent children onto the parent.
-            *walk_counter += 1;
-            for child in w.children() {
-                visit(
-                    child,
-                    ptr_to_taffy,
-                    scale,
-                    walk_counter,
-                    nodes,
-                    parent_children,
-                );
-            }
+        // Synthetic children with no backing widget — a table's rows/cells.
+        for synth in &access_node.children {
+            visit_synthetic(synth, walk_counter, nodes, &mut my_children);
+        }
+        ak.set_children(my_children);
+
+        nodes.push((id, ak));
+        parent_children.push(id);
+    } else {
+        // Presentational: collapse out, reparent children onto the parent.
+        *walk_counter += 1;
+        for child in w.children() {
+            visit(
+                child,
+                ptr_to_taffy,
+                scale,
+                walk_counter,
+                nodes,
+                parent_children,
+            );
         }
     }
 }

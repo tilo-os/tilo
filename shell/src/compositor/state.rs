@@ -71,7 +71,7 @@ use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
 use std::collections::HashMap;
 
-/// Read the persisted HiDPI display scale from the shared settings store.
+/// Read the persisted `HiDPI` display scale from the shared settings store.
 ///
 /// The Settings app writes `~/.config/qos/settings.json` with a
 /// `"display"` object carrying a `"scale"` number (1.0=100%, …); the
@@ -90,7 +90,7 @@ fn load_display_scale() -> f64 {
     match json
         .get("display")
         .and_then(|d| d.get("scale"))
-        .and_then(|s| s.as_f64())
+        .and_then(serde_json::Value::as_f64)
     {
         // Clamp to the Settings control's range (100%-200%, with margin) so an out-of-band value can't wedge the UI.
         Some(scale) if (0.5..=3.0).contains(&scale) => scale,
@@ -230,7 +230,7 @@ pub struct State {
     /// events; [`InputEvent::PointerLeave`] releases it. See
     /// [`crate::compositor::remote_seat::RemoteSeats`]; multi-user typing interleaves at the physical seat level (v1: bookkeeping only, not a per-peer pipeline).
     pub remote_seats: RemoteSeats,
-    /// Optional surface-id → WlSurface resolver installed by the backend
+    /// Optional surface-id → `WlSurface` resolver installed by the backend
     /// (`native::run` wires this to the compositor's wayland-server
     /// tracker). Populated at boot from the same map the render layer uses;
     /// consulted by [`Self::apply_remote_input`]'s keyboard-focus flip on
@@ -249,14 +249,14 @@ pub struct State {
     /// capabilities, and attach parametric image descriptions; the
     /// flatpak-share encoder reads the current per-surface description through [`crate::wayland::color_management::surface_current_colorimetry`].
     pub color_manager: ColorManagerState,
-    /// `wp_fractional_scale_manager_v1` state — lets HiDPI clients ask the
+    /// `wp_fractional_scale_manager_v1` state — lets `HiDPI` clients ask the
     /// compositor for their surface's preferred fractional scale (a
     /// `1/120`-unit integer). The preferred value is [`Self::scale`],
     /// pushed on commit so a client rendering at, say, 1.5× produces crisp output instead of a bilinearly-upscaled 1× buffer.
     pub fractional_scale_manager: FractionalScaleManagerState,
     /// `wp_viewporter` state, fractional scaling's companion protocol — `wp_viewport.set_destination` declares a 1.5×-buffer's logical size, which integer `set_buffer_scale` can't express.
     pub viewporter: ViewporterState,
-    /// Current display scale factor (HiDPI), sent to clients as the
+    /// Current display scale factor (`HiDPI`), sent to clients as the
     /// preferred `wp_fractional_scale`. Read once at session start from the
     /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
     pub scale: f64,
@@ -460,7 +460,7 @@ impl State {
     pub fn set_output_layout(&mut self, outputs: &[crate::compositor::backend::Output]) {
         self.output_layout = outputs
             .iter()
-            .map(|o| (o.position, o.size, o.scale as f64))
+            .map(|o| (o.position, o.size, f64::from(o.scale)))
             .collect();
         self.surface_scales.clear();
     }
@@ -705,7 +705,7 @@ impl State {
     /// [`RemoteAction`] into the real seat, targeting whatever surface holds seat focus.
     ///
     /// The *local-app* counterpart to [`Self::apply_remote_input`]
-    /// (peer-sync, gated by the share registry). RemoteDesktop consent is
+    /// (peer-sync, gated by the share registry). `RemoteDesktop` consent is
     /// mediated by the portal grant + device selection, so an action
     /// reaching here has already cleared consent and drives the seat directly.
     ///
@@ -751,7 +751,7 @@ impl State {
                     &RelativeMotionEvent {
                         delta: (dx, dy).into(),
                         delta_unaccel: (dx, dy).into(),
-                        utime: (time as u64) * 1000,
+                        utime: u64::from(time) * 1000,
                     },
                 );
                 pointer.frame(self);
@@ -807,7 +807,7 @@ impl State {
                 let frame = AxisFrame::new(time)
                     .source(smithay::backend::input::AxisSource::Wheel)
                     .v120(ax, steps * 120)
-                    .value(ax, (steps as f64) * 15.0);
+                    .value(ax, f64::from(steps) * 15.0);
                 pointer.axis(self, frame);
                 pointer.frame(self);
                 true
@@ -816,22 +816,19 @@ impl State {
                 self.inject_seat_key(keycode as u32, pressed, serial, time)
             }
             RemoteAction::KeyboardKeysym { keysym, pressed } => {
-                match self.keysym_to_keycode(keysym as u32) {
-                    Some(kc) => self.inject_seat_key(kc, pressed, serial, time),
-                    None => {
-                        tracing::debug!(
-                            keysym,
-                            "RemoteDesktop: keysym has no keycode in the active layout; dropped"
-                        );
-                        false
-                    }
+                if let Some(kc) = self.keysym_to_keycode(keysym as u32) { self.inject_seat_key(kc, pressed, serial, time) } else {
+                    tracing::debug!(
+                        keysym,
+                        "RemoteDesktop: keysym has no keycode in the active layout; dropped"
+                    );
+                    false
                 }
             }
         }
     }
 
     /// Deliver a raw keycode press/release to the seat keyboard. Shared by
-    /// the RemoteDesktop keycode + keysym paths; passed straight through to
+    /// the `RemoteDesktop` keycode + keysym paths; passed straight through to
     /// smithay's `KeyboardHandle::input`, the same convention `network::wayland::WaylandServer::handle_input` and [`Self::apply_remote_input`]'s `Key` arm use.
     fn inject_seat_key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
@@ -864,9 +861,7 @@ impl State {
             for raw in 8u32..=255 {
                 let kc: Keycode = raw.into();
                 if xkb
-                    .raw_syms_for_key_in_layout(kc, layout)
-                    .iter()
-                    .any(|s| *s == target)
+                    .raw_syms_for_key_in_layout(kc, layout).contains(&target)
                 {
                     return Some(raw);
                 }
@@ -947,23 +942,21 @@ impl RemoteInputSink for State {
                 // Grab keyboard focus for the peer's virtual seat.
                 let prev = self.remote_seats.seat_mut(peer).enter(target);
                 // Only flip the physical seat's keyboard focus if the target changed — noisy re-enters otherwise stomp focus state.
-                if prev != Some(target) {
-                    if let (Some(resolver), Some(keyboard)) =
+                if prev != Some(target)
+                    && let (Some(resolver), Some(keyboard)) =
                         (&self.surface_resolver, self.seat.get_keyboard())
                     {
                         let target_surface = resolver(target);
                         keyboard.set_focus(self, target_surface, serial);
                     }
-                }
             }
             InputEvent::PointerLeave { surface: _ } => {
                 // Release the peer's grab, only clearing keyboard focus if this peer actually held it — an unentered `PointerLeave` is a no-op.
                 let prev = self.remote_seats.seat_mut(peer).leave();
-                if prev.is_some() {
-                    if let Some(keyboard) = self.seat.get_keyboard() {
+                if prev.is_some()
+                    && let Some(keyboard) = self.seat.get_keyboard() {
                         keyboard.set_focus(self, None, serial);
                     }
-                }
             }
             InputEvent::Key {
                 keysym,
@@ -1065,7 +1058,7 @@ pub fn surface_id(surface: &WlSurface) -> u64 {
         .and_then(|c| c.get_data::<ClientState>().map(|d| d.index))
         // A surface whose client is gone can't collide with a live one; reserving 0 keeps it out of every live client's range.
         .unwrap_or(0);
-    ((index as u64) << 32) | surface.id().protocol_id() as u64
+    (u64::from(index) << 32) | u64::from(surface.id().protocol_id())
 }
 
 // Handler trait impls.
@@ -1088,7 +1081,7 @@ impl CompositorHandler for State {
         // scale of the *output it is on*, not one session-wide number,
         // since a docked laptop has two different right answers. Runs for
         // every surface so any HiDPI-aware client with a `wp_fractional_scale_v1` object learns its scale. `set_preferred_scale` is idempotent, only emitting a wire event on real change, and stores the value even before the client creates the object (smithay replays it on `get_fractional_scale`).
-        let scale = self.surface_scale(surface.id().protocol_id() as u64);
+        let scale = self.surface_scale(u64::from(surface.id().protocol_id()));
         wl_compositor::with_states(surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -1104,9 +1097,9 @@ impl CompositorHandler for State {
             .any(|ws| ws.is_surface_shared(surface_id));
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         let is_foreign_tab =
-            tab_binding::group_id_for_surface(&self.workspace_tree, surface_id as u64).is_some();
+            tab_binding::group_id_for_surface(&self.workspace_tree, surface_id).is_some();
         if is_foreign_tab {
-            self.capture_foreign_surface(surface, surface_id as u64);
+            self.capture_foreign_surface(surface, surface_id);
         }
         if !is_shared {
             return;
@@ -1472,7 +1465,7 @@ impl FractionalScaleHandler for State {
         // A client just created a `wp_fractional_scale_v1` for this
         // surface. Seed it with the output's scale (or session-wide if not
         // yet placed) immediately so it doesn't wait for its first commit; `set_preferred_scale` is idempotent and safe before any buffer is attached.
-        let scale = self.surface_scale(surface.id().protocol_id() as u64);
+        let scale = self.surface_scale(u64::from(surface.id().protocol_id()));
         wl_compositor::with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);

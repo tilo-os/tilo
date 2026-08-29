@@ -156,7 +156,7 @@ pub fn undo_step(
     authors: &AuthorDirectory,
 ) -> StepOutcome {
     let state = match revert_run(doc, &step.run, by, authors) {
-        Err(RevertError::UnknownRun) | Err(RevertError::Inverted) => StepState::NotInDocument,
+        Err(RevertError::UnknownRun | RevertError::Inverted) => StepState::NotInDocument,
         Ok(o) if !o.kept.is_empty() => StepState::KeptSome {
             changes: o.covered,
             kept: o.kept,

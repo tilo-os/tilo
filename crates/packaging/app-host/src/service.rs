@@ -73,7 +73,7 @@ fn fill_entry(
 ) {
     out.set_id(e.id.as_bytes());
     out.set_pinning(wire_pinning(e.pinning));
-    out.set_payload_root(&e.payload_root.to_string_lossy());
+    out.set_payload_root(e.payload_root.to_string_lossy());
     out.set_manifest_text(&e.manifest_text);
     out.set_size_bytes(size_bytes);
     out.set_last_used_unix(e.last_used_unix);

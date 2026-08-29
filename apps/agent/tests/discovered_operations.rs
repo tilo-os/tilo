@@ -322,7 +322,7 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         )
     };
     let cfg = Config {
-        socket: Some(sock.clone()),
+        socket: Some(sock),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),

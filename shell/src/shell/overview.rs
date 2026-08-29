@@ -138,9 +138,7 @@ impl RoomCard {
 /// row labelled "Unknown" tells the reader nothing, while the raw
 /// subject is both true and the value a revoke would name.
 fn display_name(id: &UserId, ws: &Workspace, tree: &WorkspaceTree) -> String {
-    known_collaborator(id, ws, tree)
-        .map(|c| c.name.clone())
-        .unwrap_or_else(|| id.clone())
+    known_collaborator(id, ws, tree).map_or_else(|| id.clone(), |c| c.name.clone())
 }
 
 fn known_collaborator<'a>(

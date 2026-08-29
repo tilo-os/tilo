@@ -12,7 +12,7 @@
 //!    page-tree shape match what we wrote.
 //!
 //! If any future phase breaks the read/write spine — markdown
-//! round-trip, BlockEditor mutations, the saver pipeline, the
+//! round-trip, `BlockEditor` mutations, the saver pipeline, the
 //! `NotesApp::spawn` reload path — this test catches it.
 
 use std::path::Path;
@@ -56,7 +56,7 @@ fn full_lifecycle_round_trips_through_disk() {
         // Switch the panel to the new page if it's not already there
         // (apply_event_for_test creates + selects, so MainPanel is
         // already on it — but be defensive).
-        if panel.page_id() != Some(target_id) {
+        if panel.page_id() == Some(target_id) {
             panel.load_page(target_id, "Test Page".into(), String::new());
         } else {
             panel.load_page(target_id, "Test Page".into(), String::new());
@@ -128,27 +128,23 @@ fn full_lifecycle_round_trips_through_disk() {
     // but the four block markers below pin every kind we exercised.
     assert!(
         body.contains("Hello world."),
-        "saved body must contain the paragraph; got {:?}",
-        body
+        "saved body must contain the paragraph; got {body:?}"
     );
     assert!(
         body.contains("## Section title"),
-        "saved body must contain the H2 heading; got {:?}",
-        body
+        "saved body must contain the H2 heading; got {body:?}"
     );
     assert!(
         body.contains("- bullet"),
-        "saved body must contain the bullet line; got {:?}",
-        body
+        "saved body must contain the bullet line; got {body:?}"
     );
     assert!(
         body.contains("- [x] buy coffee"),
-        "saved body must contain the checked checklist line; got {:?}",
-        body
+        "saved body must contain the checked checklist line; got {body:?}"
     );
 
     // ---- Phase E: re-spawn from the same root + verify reload ----
-    let mut app2 = NotesApp::spawn_with_starter_page(root.clone()).expect("reload spawn ok");
+    let mut app2 = NotesApp::spawn_with_starter_page(root).expect("reload spawn ok");
     let pages = app2.workspace_pages_for_test();
     assert!(
         pages.len() >= 2,

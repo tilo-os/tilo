@@ -14,9 +14,7 @@ use crate::service::FormatRouterService;
 
 /// Default socket path: `$XDG_RUNTIME_DIR/qos/services/format-router.sock`.
 pub fn default_socket_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir());
+    let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
     base.join("qos").join("services").join("format-router.sock")
 }
 

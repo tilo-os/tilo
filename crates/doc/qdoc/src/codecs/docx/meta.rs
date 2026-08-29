@@ -4,7 +4,7 @@
 //! This maps those onto `meta.props`, preserving unmodeled `core.xml` children on export.
 
 use crate::model::{DocMut, DocRef, doc_prop};
-use crate::schema::*;
+use crate::schema::{PROP_TITLE, PROP_AUTHOR, PROP_SUBJECT, PROP_KEYWORDS, PROP_CREATED, PROP_MODIFIED, PROP_GENERATOR};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
@@ -45,22 +45,20 @@ fn import_elements(xml: &[u8], doc: &mut DocMut, prop_of: impl Fn(&[u8]) -> Opti
                 }
             }
             Ok(Event::Text(t)) => {
-                if current.is_some() {
-                    if let Ok(s) = t.xml10_content() {
+                if current.is_some()
+                    && let Ok(s) = t.xml10_content() {
                         text.push_str(&s);
                     }
-                }
             }
             Ok(Event::End(e)) => {
-                if let Some(prop) = prop_of(local_name(e.name().as_ref())) {
-                    if current == Some(prop) {
+                if let Some(prop) = prop_of(local_name(e.name().as_ref()))
+                    && current == Some(prop) {
                         if !text.is_empty() {
                             doc.set_doc_prop(prop, &text);
                         }
                         current = None;
                         text.clear();
                     }
-                }
             }
             Ok(Event::Eof) => break,
             Err(_) => break,
@@ -239,12 +237,12 @@ fn element_inner(xml: &[u8], local: &str) -> Option<Vec<u8>> {
             || (between.ends_with(':')
                 && between[..between.len() - 1]
                     .chars()
-                    .all(|c| c.is_alphanumeric()));
+                    .all(char::is_alphanumeric));
         // The char after the name must end the name (space, `>`, `/`).
         let after_ch = text[pos + needle.len()..].chars().next();
         let name_ends = matches!(
             after_ch,
-            Some(' ') | Some('>') | Some('/') | Some('\t') | Some('\n') | Some('\r')
+            Some(' ' | '>' | '/' | '\t' | '\n' | '\r')
         );
         if is_tag && name_ends {
             let gt = text[before..].find('>')? + before;
@@ -295,7 +293,7 @@ pub(super) fn export_app(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8
         return None;
     }
     let preserved = original
-        .map(|o| app_unmodeled_children(o))
+        .map(app_unmodeled_children)
         .unwrap_or_default();
     let app = generator
         .map(|g| format!("<Application>{}</Application>", escape_text(&g)))

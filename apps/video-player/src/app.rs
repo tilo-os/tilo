@@ -6,7 +6,7 @@
 //! video immersive). The media title and the Open action float in a top overlay
 //! that appears with the player's controls and auto-hides during playback, so
 //! immersive video is truly edge-to-edge. It opens files through the XDG
-//! FileChooser portal (or `--open PATH`), and — when a collab session is
+//! `FileChooser` portal (or `--open PATH`), and — when a collab session is
 //! attached — keeps playback in sync across peers via the shared [`media`]
 //! transport.
 
@@ -106,29 +106,26 @@ impl PlayerApp {
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
-        match open {
-            Some(path) => app.open_path(path),
-            None => {
-                // The demo shot must stay hermetic: pin the deterministic
-                // synthesized-frame engine so no real GStreamer pipeline is
-                // built and the placeholder `demo.local` host is never
-                // contacted — even though `decode` compiles the real backend in
-                // by default. `--shots --open <file>` is the real-decode path.
-                app.player.set_engine(media::MediaEngine::new_synthesized());
-                app.player.open(media::Source::Remote {
-                    url: "https://demo.local/clip.mp4".into(),
-                });
-                app.title = "Demo clip".to_string();
-                // Park at a fixed position and pause so the synthesized frame and
-                // the transport read-out are byte-deterministic across runs: a
-                // *playing* demo would capture a different synth frame each time
-                // depending on warm-up timing. `open` already seeded a frame, so
-                // the `--shots` warm-up still breaks immediately.
-                app.player.seek_to_ms(8_000);
-                app.player.pause();
-            }
+        if let Some(path) = open { app.open_path(path) } else {
+            // The demo shot must stay hermetic: pin the deterministic
+            // synthesized-frame engine so no real GStreamer pipeline is
+            // built and the placeholder `demo.local` host is never
+            // contacted — even though `decode` compiles the real backend in
+            // by default. `--shots --open <file>` is the real-decode path.
+            app.player.set_engine(media::MediaEngine::new_synthesized());
+            app.player.open(media::Source::Remote {
+                url: "https://demo.local/clip.mp4".into(),
+            });
+            app.title = "Demo clip".to_string();
+            // Park at a fixed position and pause so the synthesized frame and
+            // the transport read-out are byte-deterministic across runs: a
+            // *playing* demo would capture a different synth frame each time
+            // depending on warm-up timing. `open` already seeded a frame, so
+            // the `--shots` warm-up still breaks immediately.
+            app.player.seek_to_ms(8_000);
+            app.player.pause();
         }
-        if matches!(scenario, Some("settings") | Some("fullscreen")) {
+        if matches!(scenario, Some("settings" | "fullscreen")) {
             app.register_demo_settings();
         }
         match scenario {
@@ -206,9 +203,7 @@ impl PlayerApp {
     fn open_path(&mut self, path: PathBuf) {
         let source = source_for_path(&path);
         self.title = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            .file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
         self.player.open(source);
         self.player.play();
         self.dirty = true;
@@ -230,7 +225,7 @@ impl PlayerApp {
                     chosen = Some(p);
                     clear = true;
                 }
-                Ok(OpenOutcome::Cancelled) | Ok(OpenOutcome::Failed(_)) => clear = true,
+                Ok(OpenOutcome::Cancelled | OpenOutcome::Failed(_)) => clear = true,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
             }
@@ -254,7 +249,7 @@ impl PlayerApp {
                 CollabEvent::CRDTIncremental { data } => collab.ingest(&data),
                 CollabEvent::CRDTUpdate { data } => collab.ingest_snapshot(&data),
                 CollabEvent::SignedCRDTIncremental { envelope, .. } => {
-                    collab.ingest(&envelope.payload)
+                    collab.ingest(&envelope.payload);
                 }
                 _ => {}
             }
@@ -262,11 +257,10 @@ impl PlayerApp {
         let now = media::now_ms();
         match collab.role() {
             Role::Host => {
-                if let Some(engine) = self.player.engine() {
-                    if let Some(delta) = collab.host_step(engine, now) {
+                if let Some(engine) = self.player.engine()
+                    && let Some(delta) = collab.host_step(engine, now) {
                         mgr.send(CollabRequest::SyncIncremental { data: delta });
                     }
-                }
             }
             Role::Follower => {
                 if let Some(engine) = self.player.engine_mut() {
@@ -316,7 +310,7 @@ impl PlayerApp {
         // theme — `text_primary` would flip to near-black on light and vanish
         // against the dark scrim.
         let title_size = 15.0f32;
-        let ty = self.rect.y0 + (scrim_h - title_size as f64) * 0.5;
+        let ty = self.rect.y0 + (scrim_h - f64::from(title_size)) * 0.5;
         text_renderer.draw_text(
             scene,
             &self.title,
@@ -373,25 +367,25 @@ impl Widget for PlayerApp {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
                     size: Size {
-                        width: percent(1.0),
-                        height: percent(1.0),
+                        width: percent(1.0_f32),
+                        height: percent(1.0_f32),
                     },
                     ..Default::default()
                 },
                 &[player_node],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap();
@@ -474,7 +468,7 @@ impl Widget for PlayerApp {
         vec![&mut self.player as &mut (dyn Widget + '_)]
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PlayerApp"
     }
 

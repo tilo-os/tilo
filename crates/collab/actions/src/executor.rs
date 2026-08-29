@@ -24,8 +24,7 @@ fn now_secs() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Build an envelope for `action` at the doc's current heads, without
@@ -44,7 +43,7 @@ fn envelope_for(
         base_heads: base.iter().map(|h| h.0).collect(),
         timestamp: now_secs(),
         locus: action.locus(),
-        actor: actor.filter(|a| !a.is_empty()).map(|a| a.to_vec()),
+        actor: actor.filter(|a| !a.is_empty()).map(<[u8]>::to_vec),
     }
 }
 

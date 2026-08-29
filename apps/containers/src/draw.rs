@@ -30,7 +30,7 @@ pub fn status_color(theme: &Theme, status: ContainerStatus) -> Color {
 /// Mix two colours by `t` (0 = a, 1 = b), preserving alpha of `a`.
 pub fn mix(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let lerp = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+    let lerp = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     Color::from_rgba8(
         lerp(a.r(), b.r()),
         lerp(a.g(), b.g()),
@@ -46,7 +46,7 @@ pub fn with_alpha(c: Color, alpha: u8) -> Color {
 
 /// The base transform every helper composes onto. Set once per frame from the
 /// host's DPI transform (`Affine::scale(scale_factor)`); a thread-local keeps
-/// the helper signatures terse while still honouring HiDPI scaling.
+/// the helper signatures terse while still honouring `HiDPI` scaling.
 use std::cell::Cell;
 thread_local! {
     static BASE: Cell<Affine> = const { Cell::new(Affine::IDENTITY) };
@@ -59,9 +59,9 @@ pub fn set_base(transform: Affine) {
 
 /// The per-frame base transform installed by [`set_base`]. Exposed so
 /// hosted `ui` widgets (which take an explicit transform) compose onto
-/// the same HiDPI transform the immediate-mode `draw::*` helpers use.
+/// the same `HiDPI` transform the immediate-mode `draw::*` helpers use.
 pub fn base() -> Affine {
-    BASE.with(|b| b.get())
+    BASE.with(std::cell::Cell::get)
 }
 
 /// Fill a rounded rectangle.
@@ -111,7 +111,7 @@ pub fn text_clip(
     weight: TextWeight,
 ) {
     let (w, _) = tr.measure_weighted(s, size, None, weight);
-    if (w as f64) <= max_width {
+    if f64::from(w) <= max_width {
         tr.draw_text_weighted(
             scene,
             s,
@@ -130,10 +130,10 @@ pub fn text_clip(
     let mut hi = chars.len();
     let mut best = String::new();
     while lo < hi {
-        let mid = (lo + hi + 1) / 2;
+        let mid = (lo + hi).div_ceil(2);
         let candidate: String = chars[..mid].iter().collect::<String>() + ell;
         let (cw, _) = tr.measure_weighted(&candidate, size, None, weight);
-        if (cw as f64) <= max_width {
+        if f64::from(cw) <= max_width {
             best = candidate;
             lo = mid;
         } else {
@@ -170,13 +170,13 @@ pub fn status_pill(
     let pad_x = 10.0;
     let dot_r = 3.5;
     let dot_gap = 6.0;
-    let width = pad_x * 2.0 + dot_r * 2.0 + dot_gap + tw as f64;
+    let width = pad_x * 2.0 + dot_r * 2.0 + dot_gap + f64::from(tw);
     let rect = Rect::new(origin.x, origin.y, origin.x + width, origin.y + height);
     fill_round(scene, rect, height / 2.0, with_alpha(color, 38));
     let cy = rect.center().y;
     let dot = Circle::new(Point::new(rect.x0 + pad_x + dot_r, cy), dot_r);
     scene.fill(Fill::NonZero, base(), color, None, &dot);
-    let ty = cy - (size as f64) / 2.0 - 1.0;
+    let ty = cy - f64::from(size) / 2.0 - 1.0;
     text(
         scene,
         tr,
@@ -202,10 +202,10 @@ pub fn chip(
     let size = theme.tokens.typography.scale.xs;
     let (tw, _) = tr.measure(label, size, None);
     let pad_x = 8.0;
-    let width = pad_x * 2.0 + tw as f64;
+    let width = pad_x * 2.0 + f64::from(tw);
     let rect = Rect::new(origin.x, origin.y, origin.x + width, origin.y + height);
     fill_round(scene, rect, 4.0, with_alpha(accent, 30));
-    let ty = rect.center().y - (size as f64) / 2.0 - 1.0;
+    let ty = rect.center().y - f64::from(size) / 2.0 - 1.0;
     text(
         scene,
         tr,
@@ -222,7 +222,7 @@ pub fn chip(
 pub fn usage_bar(scene: &mut Scene, theme: &Theme, rect: Rect, fraction: f32, color: Color) {
     let track = theme.tokens.colors.neutral[3];
     fill_round(scene, rect, rect.height() / 2.0, with_alpha(track, 120));
-    let frac = fraction.clamp(0.0, 1.0) as f64;
+    let frac = f64::from(fraction.clamp(0.0, 1.0));
     if frac > 0.0 {
         let filled = Rect::new(rect.x0, rect.y0, rect.x0 + rect.width() * frac, rect.y1);
         fill_round(scene, filled, rect.height() / 2.0, color);

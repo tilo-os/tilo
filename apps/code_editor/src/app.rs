@@ -770,12 +770,11 @@ impl CodeApp {
         let active = self.session.active_buffer().map(|b| (b.node, b.language));
         match active {
             Some((node, lang)) => {
-                if self.bound_node != Some(node) || !self.editor.is_bound() {
-                    if let Some(text) = EditorDoc::buffer_text(doc, node) {
+                if (self.bound_node != Some(node) || !self.editor.is_bound())
+                    && let Some(text) = EditorDoc::buffer_text(doc, node) {
                         self.editor.bind(text, lang);
                         self.bound_node = Some(node);
                     }
-                }
             }
             None => {
                 if self.bound_node.is_some() {
@@ -894,9 +893,9 @@ impl CodeApp {
             None => Vec::new(),
         };
         if let Some(lsp) = lsp_for_buffer {
-            diagnostics.extend(lsp.iter().map(|d| d.to_panel()));
+            diagnostics.extend(lsp.iter().map(super::lsp::LspDiagnostic::to_panel));
         }
-        diagnostics.sort_by(|a, b| (a.line, a.col).cmp(&(b.line, b.col)));
+        diagnostics.sort_by_key(|a| (a.line, a.col));
         self.panel.set_problems(diagnostics);
         self.panel.set_analysis(self.lsp_status.analysis_note());
     }
@@ -934,8 +933,7 @@ impl CodeApp {
             dirty: self
                 .session
                 .active_buffer()
-                .map(|b| b.dirty)
-                .unwrap_or(false),
+                .is_some_and(|b| b.dirty),
         });
         // Surface the floating status bubble only on a real change to the label
         // (a caret move, a save flip, an indexing tick) — refresh_status runs
@@ -1003,15 +1001,12 @@ impl CodeApp {
     fn refresh_palette_entries(&mut self) {
         let mut entries: Vec<Entry> = Vec::new();
         // Files.
-        for (id, node) in self.session.project.nodes.iter() {
+        for (id, node) in &self.session.project.nodes {
             if let NodeKind::File { .. } = node.kind {
                 let detail = self
                     .session
                     .project
-                    .path_of(*id)
-                    .rsplitn(2, '/')
-                    .nth(1)
-                    .unwrap_or("")
+                    .path_of(*id).rsplit_once('/').map_or("", |x| x.0)
                     .to_string();
                 entries.push(Entry {
                     label: node.name.clone(),
@@ -1152,7 +1147,7 @@ impl CodeApp {
                 // Replace the buffer's whole text through the CRDT so the edit
                 // is one undoable action and peers converge on it.
                 if let Some(obj) = EditorDoc::buffer_text(doc, node) {
-                    let old_len = doc.text(&obj).map(|t| t.chars().count()).unwrap_or(0);
+                    let old_len = doc.text(&obj).map_or(0, |t| t.chars().count());
                     EditorDoc::splice(doc, &obj, 0, old_len, &text);
                 }
                 self.session.open[idx].mark_saved(text, stamp);
@@ -1170,7 +1165,7 @@ impl CodeApp {
     /// Notice files that changed on disk since we read them, so a tab can warn
     /// before the user tries to save over someone else's work.
     fn check_disk_staleness(&mut self) {
-        for buf in self.session.open.iter_mut() {
+        for buf in &mut self.session.open {
             let (Some(path), Some(stamp)) = (buf.path.as_ref(), buf.stamp.as_ref()) else {
                 continue;
             };
@@ -1304,7 +1299,7 @@ impl CodeApp {
 
     /// Ask the host desktop for a folder to open as the project.
     ///
-    /// This goes through the XDG FileChooser portal rather than any in-app
+    /// This goes through the XDG `FileChooser` portal rather than any in-app
     /// browser: under app-state confinement the editor has exactly one writable
     /// directory of its own and no manifest field can add more, so a path the
     /// user picked in the portal — which is where the sandbox's file-access
@@ -1334,9 +1329,7 @@ impl CodeApp {
     fn request_save_as(&mut self, node: TreeId) {
         let suggested = self
             .session
-            .buffer_of(node)
-            .map(|b| b.name.clone())
-            .unwrap_or_else(|| "untitled.txt".to_string());
+            .buffer_of(node).map_or_else(|| "untitled.txt".to_string(), |b| b.name.clone());
         self.portal_intent = Some(PortalIntent::SaveAs(node));
         self.portal = Some(
             ui::portal::PickRequest::save("Save file as", "Save", &suggested)
@@ -1389,9 +1382,7 @@ impl CodeApp {
             Some(PortalIntent::OpenFile) => self.open_disk_file(&path),
             Some(PortalIntent::SaveAs(node)) => {
                 let name = path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "untitled".to_string());
+                    .file_name().map_or_else(|| "untitled".to_string(), |s| s.to_string_lossy().to_string());
                 self.session.project.set_file_path(node, &path, &name);
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.path = Some(path.clone());
@@ -1614,8 +1605,7 @@ impl CodeApp {
                 let has_path = self
                     .session
                     .buffer_of(prompt.node)
-                    .map(|b| b.path.is_some())
-                    .unwrap_or(false);
+                    .is_some_and(|b| b.path.is_some());
                 if has_path {
                     // Save synchronously; close only if it actually landed. A
                     // save that hits a disk conflict leaves the tab open so the
@@ -1808,7 +1798,7 @@ impl CodeApp {
             }
             Command::NextTheme => {
                 let n = themes().len();
-                self.theme_index = Some(self.theme_index.map(|i| (i + 1) % n).unwrap_or(1));
+                self.theme_index = Some(self.theme_index.map_or(1, |i| (i + 1) % n));
             }
             Command::GoToProblems => {
                 self.panel_visible = true;
@@ -1962,8 +1952,7 @@ impl CodeApp {
                     let from = self
                         .find_current
                         .and_then(|i| self.find_matches.get(i))
-                        .map(|m| (m.line, m.col + 1))
-                        .unwrap_or((line, col));
+                        .map_or((line, col), |m| (m.line, m.col + 1));
                     self.focus_match(crate::find::next_from(&self.find_matches, from.0, from.1));
                 }
                 FindEvent::Prev => {
@@ -1971,8 +1960,7 @@ impl CodeApp {
                     let from = self
                         .find_current
                         .and_then(|i| self.find_matches.get(i))
-                        .map(|m| (m.line, m.col))
-                        .unwrap_or((line, col));
+                        .map_or((line, col), |m| (m.line, m.col));
                     self.focus_match(crate::find::prev_from(&self.find_matches, from.0, from.1));
                 }
                 FindEvent::ReplaceCurrent => self.replace_current(doc),
@@ -2051,8 +2039,7 @@ impl CodeApp {
         if self
             .search_job
             .as_ref()
-            .map(|j| j.is_finished())
-            .unwrap_or(false)
+            .is_some_and(super::search::Job::is_finished)
         {
             self.search_job = None;
         }
@@ -2063,9 +2050,7 @@ impl CodeApp {
     fn push_search_state(&mut self) {
         let query = self
             .search_job
-            .as_ref()
-            .map(|j| j.query().needle.clone())
-            .unwrap_or_else(|| self.last_search_needle.clone());
+            .as_ref().map_or_else(|| self.last_search_needle.clone(), |j| j.query().needle.clone());
         self.panel.set_search(SearchState {
             query,
             rows: self
@@ -2155,7 +2140,7 @@ impl CodeApp {
 
     /// LSP `languageId` string for a language (the server's expected token).
     fn language_id(lang: crate::model::Language) -> &'static str {
-        use crate::model::Language::*;
+        use crate::model::Language::{Rust, Python, TypeScript, JavaScript, Go, C, Cpp, Toml, Json, Yaml, Html, Css, Markdown, Shell, PlainText};
         match lang {
             Rust => "rust",
             Python => "python",
@@ -2185,7 +2170,7 @@ impl CodeApp {
     fn lsp_enabled(&self) -> bool {
         if matches!(
             std::env::var("QOS_CODE_LSP").as_deref(),
-            Ok("0") | Ok("off") | Ok("false")
+            Ok("0" | "off" | "false")
         ) {
             return false;
         }
@@ -2296,7 +2281,7 @@ impl CodeApp {
                 crate::lsp::LspEvent::Initialized => {
                     // Only claim ready if nothing is still in flight; the
                     // initialize response usually lands before indexing starts.
-                    if !self.lsp.as_ref().map(|c| c.is_busy()).unwrap_or(false) {
+                    if !self.lsp.as_ref().is_some_and(super::lsp::LspClient::is_busy) {
                         self.lsp_status = LspStatus::Ready {
                             server: self.lsp_server_name(),
                         };
@@ -2314,9 +2299,7 @@ impl CodeApp {
 
     fn lsp_server_name(&self) -> String {
         self.lsp
-            .as_ref()
-            .map(|c| c.server_name().to_string())
-            .unwrap_or_else(|| "Language server".to_string())
+            .as_ref().map_or_else(|| "Language server".to_string(), |c| c.server_name().to_string())
     }
 
     /// Push the active buffer's LSP diagnostics into the editor's inline model
@@ -2423,7 +2406,7 @@ impl CodeApp {
     /// failed to spawn). Used by `--shots` staging and the embed tests to read
     /// the live shell session without a GPU scene.
     pub fn shots_terminal_grid_text(&self) -> Option<String> {
-        self.terminal.as_ref().map(|t| t.grid_text())
+        self.terminal.as_ref().map(terminal::TerminalWidget::grid_text)
     }
 
     /// Stage the find bar over the active buffer with a real query, so the shot
@@ -2511,8 +2494,7 @@ impl CodeApp {
                 .session
                 .project
                 .get(*id)
-                .map(|n| n.is_folder())
-                .unwrap_or(true)
+                .is_none_or(super::model::TreeNode::is_folder)
         });
         if let Some(id) = first {
             self.open_node(id);
@@ -2640,7 +2622,7 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
     let byte = text.find(needle)?;
     let prefix = &text[..byte];
     let line = prefix.matches('\n').count();
-    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
     let start_col = text[line_start..byte].chars().count();
     let end_col = start_col + needle.chars().count();
     Some((line, start_col, end_col))
@@ -2663,12 +2645,11 @@ impl Widget for CodeApp {
 
         // A jump queued by a search hit or a cross-file definition lands once
         // the target buffer is actually bound.
-        if let Some((line, col)) = self.pending_jump {
-            if self.editor.is_bound() {
+        if let Some((line, col)) = self.pending_jump
+            && self.editor.is_bound() {
                 self.editor.move_caret_to(line, col);
                 self.pending_jump = None;
             }
-        }
 
         // Pump the embedded terminal: its `sync` drains the PTY reader and
         // reflects it into the grid (the plain `ui::App` loop never calls
@@ -2683,8 +2664,8 @@ impl Widget for CodeApp {
         // Language server: start on demand (opt-in), stream edits out as
         // `didChange`, and drain diagnostics/completions/hover back in.
         self.maybe_start_lsp(state);
-        if self.lsp.is_some() {
-            if let Some((node, uri)) = self
+        if self.lsp.is_some()
+            && let Some((node, uri)) = self
                 .session
                 .active_buffer()
                 .map(|b| b.node)
@@ -2700,7 +2681,6 @@ impl Widget for CodeApp {
                     self.lsp_sent_text = text;
                 }
             }
-        }
         self.poll_lsp();
 
         self.check_disk_staleness();
@@ -2817,8 +2797,8 @@ impl Widget for CodeApp {
                     flex_grow: 1.0,
                     flex_basis: Dimension::length(0.0),
                     gap: Size {
-                        width: length(0.0),
-                        height: length(0.0),
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
                     },
                     ..Default::default()
                 },
@@ -2841,25 +2821,25 @@ impl Widget for CodeApp {
                         height: Dimension::percent(1.0),
                     },
                     gap: Size {
-                        width: length(0.0),
-                        height: length(0.0),
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
                     },
                     ..Default::default()
                 },
                 &[content_node],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
@@ -2875,8 +2855,8 @@ impl Widget for CodeApp {
         if let Some(content_node) = self.content_node {
             let content_layout = taffy.layout(content_node).unwrap();
             let content_origin = Point::new(
-                new_origin.x + content_layout.location.x as f64,
-                new_origin.y + content_layout.location.y as f64,
+                new_origin.x + f64::from(content_layout.location.x),
+                new_origin.y + f64::from(content_layout.location.y),
             );
             if let Some(n) = self.sidebar_node {
                 self.sidebar.apply_layout(taffy, n, content_origin);
@@ -2885,8 +2865,8 @@ impl Widget for CodeApp {
             if let Some(col) = self.editor_col_node {
                 let col_layout = taffy.layout(col).unwrap();
                 let col_origin = Point::new(
-                    content_origin.x + col_layout.location.x as f64,
-                    content_origin.y + col_layout.location.y as f64,
+                    content_origin.x + f64::from(col_layout.location.x),
+                    content_origin.y + f64::from(col_layout.location.y),
                 );
                 if let Some(n) = self.tabs_node {
                     self.tabs.apply_layout(taffy, n, col_origin);
@@ -3061,15 +3041,13 @@ impl Widget for CodeApp {
         taffy: &TaffyTree<()>,
     ) {
         // The palette, when open, owns all keyboard input.
-        if self.palette.is_visible() {
-            if let WindowEvent::KeyboardInput { .. } = event {
-                if self.palette.handle_key(event) {
+        if self.palette.is_visible()
+            && let WindowEvent::KeyboardInput { .. } = event
+                && self.palette.handle_key(event) {
                     *handled = true;
                     self.drain_child_events(state);
                     return;
                 }
-            }
-        }
 
         // Track the cursor (MouseInput carries no coords) so the hamburger and
         // scrim hit-tests below have a position to work with.
@@ -3094,8 +3072,7 @@ impl Widget for CodeApp {
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                if let Some((choice, _)) = self
+                && let Some((choice, _)) = self
                     .close_prompt_buttons
                     .iter()
                     .find(|(_, r)| r.contains(self.last_cursor))
@@ -3103,7 +3080,6 @@ impl Widget for CodeApp {
                 {
                     self.resolve_close_prompt(state, choice);
                 }
-            }
             *handled = true;
             return;
         }
@@ -3111,8 +3087,8 @@ impl Widget for CodeApp {
         let overlay = self.sidebar_layout() == SplitLayout::Overlay;
 
         // Esc dismisses an open overlay flap before anything else sees it.
-        if overlay && self.sidebar_open() {
-            if let WindowEvent::KeyboardInput {
+        if overlay && self.sidebar_open()
+            && let WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key: Key::Named(winit::keyboard::NamedKey::Escape),
@@ -3126,7 +3102,6 @@ impl Widget for CodeApp {
                 *handled = true;
                 return;
             }
-        }
 
         // Left-click routing for the overlay-specific affordances.
         if let WindowEvent::MouseInput {
@@ -3219,8 +3194,7 @@ impl Widget for CodeApp {
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                if let Some((choice, _)) = self
+                && let Some((choice, _)) = self
                     .conflict_buttons
                     .iter()
                     .find(|(_, r)| r.contains(self.last_cursor))
@@ -3228,15 +3202,14 @@ impl Widget for CodeApp {
                 {
                     self.resolve_conflict(state, choice);
                 }
-            }
             *handled = true;
             return;
         }
 
         // The find bar takes keyboard input while it is open (its fields own
         // typing; Enter and Escape are its transport).
-        if self.find.is_visible() {
-            if let Some(n) = self.find_node {
+        if self.find.is_visible()
+            && let Some(n) = self.find_node {
                 let before = *handled;
                 self.find.handle_event(
                     event,
@@ -3254,7 +3227,6 @@ impl Widget for CodeApp {
                     return;
                 }
             }
-        }
 
         // Terminal input capture: while the Terminal dock tab shows a live
         // terminal, a click in its content region focuses the shell and routes
@@ -3313,8 +3285,8 @@ impl Widget for CodeApp {
             SplitLayout::Docked => self.flap.reveal() > 0.001,
             SplitLayout::Overlay => self.sidebar_open(),
         };
-        if sidebar_active {
-            if let Some(n) = self.sidebar_node {
+        if sidebar_active
+            && let Some(n) = self.sidebar_node {
                 self.sidebar.handle_event(
                     event,
                     scale_factor,
@@ -3327,24 +3299,20 @@ impl Widget for CodeApp {
                     taffy,
                 );
             }
-        }
 
         // While the overlay sidebar is open, it captures pointer presses over
         // its area so clicks don't leak to the content behind it (the tree only
         // self-marks `handled` on a row hit — empty rows would otherwise fall
         // through). The scrim outside it was already handled above.
-        if overlay && self.sidebar_open() {
-            if let WindowEvent::MouseInput {
+        if overlay && self.sidebar_open()
+            && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                if self.overlay_sidebar_rect.contains(self.last_cursor) {
+                && self.overlay_sidebar_rect.contains(self.last_cursor) {
                     *handled = true;
                 }
-            }
-        }
 
         if let Some(n) = self.tabs_node {
             self.tabs.handle_event(
@@ -3359,8 +3327,8 @@ impl Widget for CodeApp {
                 taffy,
             );
         }
-        if self.panel_visible {
-            if let Some(n) = self.panel_node {
+        if self.panel_visible
+            && let Some(n) = self.panel_node {
                 self.panel.handle_event(
                     event,
                     scale_factor,
@@ -3373,7 +3341,6 @@ impl Widget for CodeApp {
                     taffy,
                 );
             }
-        }
         if let Some(n) = self.editor_node {
             self.editor.handle_event(
                 event,
@@ -3408,7 +3375,7 @@ impl Widget for CodeApp {
         let _ = self.panel.take_tab_changed();
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CodeApp"
     }
 

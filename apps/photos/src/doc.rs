@@ -119,7 +119,7 @@ impl PhotosDoc {
 
     fn get_str(doc: &AutoCommit, key: &str) -> Option<String> {
         match doc.get(&ROOT, key) {
-            Ok(Some((Value::Scalar(s), _))) => s.to_str().map(|s| s.to_string()),
+            Ok(Some((Value::Scalar(s), _))) => s.to_str().map(std::string::ToString::to_string),
             _ => None,
         }
     }

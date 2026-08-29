@@ -156,9 +156,7 @@ impl OpenImage {
     /// Derive the display name from a path.
     pub fn from_path(path: &str, width: u32, height: u32) -> Self {
         let name = std::path::Path::new(path)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string());
+            .file_name().map_or_else(|| path.to_string(), |s| s.to_string_lossy().into_owned());
         Self {
             path: path.to_string(),
             name,
@@ -183,8 +181,8 @@ impl OpenImage {
     /// caller asking the resource surface for dimensions gets back.
     pub fn edited_size(&self, edits: &Edits) -> (u32, u32) {
         let c = edits.crop.clamped();
-        let w = ((self.width as f64) * c.w).round().max(1.0) as u32;
-        let h = ((self.height as f64) * c.h).round().max(1.0) as u32;
+        let w = (f64::from(self.width) * c.w).round().max(1.0) as u32;
+        let h = (f64::from(self.height) * c.h).round().max(1.0) as u32;
         if edits.rotate_quarters % 2 == 1 {
             (h, w)
         } else {

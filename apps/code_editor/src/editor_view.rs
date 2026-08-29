@@ -54,10 +54,10 @@ pub enum LspAsk {
 /// (LSP-numbered). Falls back to a neutral dot for kinds we don't specialise.
 fn completion_kind_glyph(kind: Option<u8>) -> &'static str {
     match kind {
-        Some(2) | Some(3) => "\u{0192}",  // Method / Function — ƒ
-        Some(5) | Some(10) => "\u{25C8}", // Field / Property — ◈
+        Some(2 | 3) => "\u{0192}",  // Method / Function — ƒ
+        Some(5 | 10) => "\u{25C8}", // Field / Property — ◈
         Some(6) => "\u{25CB}",            // Variable — ○
-        Some(7) | Some(8) => "\u{25A0}",  // Class / Interface — ■
+        Some(7 | 8) => "\u{25A0}",  // Class / Interface — ■
         Some(9) => "\u{25A3}",            // Module — ▣
         Some(14) => "\u{2726}",           // Keyword — ✦
         Some(21) => "\u{25C6}",           // Constant — ◆
@@ -141,7 +141,7 @@ pub struct EditorView {
     cached_text: String,
     /// Soft-tab width for the active language.
     indent_width: usize,
-    /// Last known cursor position in logical pixels, updated on CursorMoved so
+    /// Last known cursor position in logical pixels, updated on `CursorMoved` so
     /// click handlers can hit-test without threading the position through.
     last_cursor: Point,
     /// Shared press→move→release selection gesture (the toolkit's click ladder:
@@ -301,7 +301,7 @@ impl EditorView {
     pub fn selection_len(&self) -> usize {
         self.carets
             .iter()
-            .filter_map(|c| c.selection())
+            .filter_map(Caret::selection)
             .map(|(s, e)| self.range_char_len(s, e))
             .sum()
     }
@@ -324,7 +324,7 @@ impl EditorView {
         self.lines = if text.is_empty() {
             vec![String::new()]
         } else {
-            text.split('\n').map(|s| s.to_string()).collect()
+            text.split('\n').map(std::string::ToString::to_string).collect()
         };
         // split('\n') on "a\n" yields ["a", ""]; that trailing empty line is
         // the editable line after the final newline, which is what we want.
@@ -507,11 +507,10 @@ impl EditorView {
 
     /// Paste clipboard text at the caret, replacing any selection.
     fn paste_clipboard(&mut self, doc: &mut AutoCommit) {
-        if let Some(t) = clipboard_paste() {
-            if !t.is_empty() {
+        if let Some(t) = clipboard_paste()
+            && !t.is_empty() {
                 self.insert(doc, &t);
             }
-        }
     }
 
     // ---- language-server surface -----------------------------------------
@@ -814,14 +813,13 @@ impl EditorView {
         // A plain horizontal arrow with a live selection collapses to the
         // selection edge instead of moving one character past it — every
         // native editor does this, and so does `TextInput`.
-        if dx != 0 && dy == 0 && !extend {
-            if let Some((s, e)) = self.carets[0].selection() {
+        if dx != 0 && dy == 0 && !extend
+            && let Some((s, e)) = self.carets[0].selection() {
                 let target = if dx < 0 { s } else { e };
                 self.carets[0] = Caret::at(target.0, target.1);
                 self.scroll_to_caret();
                 return;
             }
-        }
         let c = &mut self.carets[0];
         if extend && c.anchor.is_none() {
             c.anchor = Some((c.line, c.col));
@@ -901,14 +899,13 @@ impl EditorView {
 
     /// Add a caret on the line below the lowest current caret (multi-cursor).
     fn add_caret_below(&mut self) {
-        if let Some(last) = self.carets.iter().max_by_key(|c| c.line).copied() {
-            if last.line + 1 < self.lines.len() {
+        if let Some(last) = self.carets.iter().max_by_key(|c| c.line).copied()
+            && last.line + 1 < self.lines.len() {
                 let cols = self.lines[last.line + 1].chars().count();
                 self.carets
                     .push(Caret::at(last.line + 1, last.col.min(cols)));
                 self.dirty = true;
             }
-        }
     }
 
     /// Insert a newline plus auto-indent matching the current line's leading
@@ -1091,8 +1088,7 @@ impl EditorView {
                 let after = &line[line
                     .char_indices()
                     .nth(lead)
-                    .map(|(i, _)| i)
-                    .unwrap_or(line.len())..];
+                    .map_or(line.len(), |(i, _)| i)..];
                 if let Some(rest) = after.strip_prefix(token) {
                     let mut remove = token.chars().count();
                     if rest.starts_with(' ') {
@@ -1209,17 +1205,17 @@ impl Widget for EditorView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -1236,7 +1232,7 @@ impl Widget for EditorView {
         let (mw, _) =
             text_renderer.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
         if mw > 0.0 {
-            self.cell_w = mw as f64;
+            self.cell_w = f64::from(mw);
         }
 
         // Editor background.
@@ -1415,8 +1411,7 @@ impl Widget for EditorView {
                     // Byte offsets → char offset for x positioning.
                     let prefix = &line.as_bytes()[..span.start.min(line.len())];
                     let char_col = std::str::from_utf8(prefix)
-                        .map(|s| s.chars().count())
-                        .unwrap_or(0);
+                        .map_or(0, |s| s.chars().count());
                     let seg = line.get(span.start..span.end.min(line.len())).unwrap_or("");
                     if seg.is_empty() {
                         continue;
@@ -1460,8 +1455,7 @@ impl Widget for EditorView {
             let line_len = self
                 .lines
                 .get(d.line)
-                .map(|l| l.chars().count())
-                .unwrap_or(0);
+                .map_or(0, |l| l.chars().count());
             let start_col = d.start_col.min(line_len);
             let end_col = if d.end_col == usize::MAX {
                 line_len
@@ -1622,8 +1616,8 @@ impl Widget for EditorView {
                         detail,
                         FONT_SIZE - 1.0,
                         c.text_dim,
-                        transform * Affine::translate((px + 34.0 + lw as f64, ry + 3.5)),
-                        Some((width - 40.0 - lw as f64) as f32),
+                        transform * Affine::translate((px + 34.0 + f64::from(lw), ry + 3.5)),
+                        Some((width - 40.0 - f64::from(lw)) as f32),
                         TextWeight::Regular,
                         false,
                         true,
@@ -1636,9 +1630,9 @@ impl Widget for EditorView {
         if let Some(hover) = self.hover_text.clone() {
             let first: String = hover.lines().take(4).collect::<Vec<_>>().join("\n");
             let (tw, _) = text_renderer.measure(&first, FONT_SIZE, None);
-            let width = (tw as f64 + 20.0).min(self.rect.width() - (gutter_w + 20.0));
+            let width = (f64::from(tw) + 20.0).min(self.rect.width() - (gutter_w + 20.0));
             let lines = first.lines().count().max(1);
-            let height = lines as f64 * (FONT_SIZE as f64 + 4.0) + 12.0;
+            let height = lines as f64 * (f64::from(FONT_SIZE) + 4.0) + 12.0;
             let px = caret_x
                 .min(self.rect.x1 - width - 8.0)
                 .max(self.rect.x0 + gutter_w + 2.0);
@@ -1667,7 +1661,7 @@ impl Widget for EditorView {
                     transform
                         * Affine::translate((
                             px + 10.0,
-                            py + 6.0 + i as f64 * (FONT_SIZE as f64 + 4.0),
+                            py + 6.0 + i as f64 * (f64::from(FONT_SIZE) + 4.0),
                         )),
                     Some((width - 20.0) as f32),
                 );
@@ -1706,12 +1700,11 @@ impl Widget for EditorView {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
-                } => {
-                    if self.empty_action_rect.contains(self.last_cursor) {
+                }
+                    if self.empty_action_rect.contains(self.last_cursor) => {
                         self.empty_action = true;
                         *handled = true;
                     }
-                }
                 _ => {}
             }
             return;
@@ -1805,7 +1798,7 @@ impl Widget for EditorView {
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.rect.contains(self.last_cursor) {
                     let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => *y as f64 * 3.0,
+                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 3.0,
                         MouseScrollDelta::PixelDelta(p) => p.y / LINE_HEIGHT,
                     };
                     let max = (self.lines.len() as f64 - 1.0).max(0.0);
@@ -1851,7 +1844,7 @@ impl Widget for EditorView {
                             *handled = true;
                             return;
                         }
-                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Tab) => {
+                        Key::Named(NamedKey::Enter | NamedKey::Tab) => {
                             self.accept_completion(state);
                             *handled = true;
                             return;
@@ -2015,15 +2008,14 @@ impl Widget for EditorView {
                         // Printable text insertion. `text` carries the
                         // resolved character(s) for the key (handles shift,
                         // layout, dead keys).
-                        if !ctrl {
-                            if let Some(t) = text {
+                        if !ctrl
+                            && let Some(t) = text {
                                 let s: &str = t.as_str();
-                                if !s.is_empty() && !s.chars().any(|c| c.is_control()) {
+                                if !s.is_empty() && !s.chars().any(char::is_control) {
                                     self.insert(state, s);
                                     *handled = true;
                                 }
                             }
-                        }
                     }
                 }
             }
@@ -2031,7 +2023,7 @@ impl Widget for EditorView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "EditorView"
     }
 

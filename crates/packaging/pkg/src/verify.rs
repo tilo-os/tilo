@@ -1,7 +1,7 @@
 //! `verify` — given a [`PackageId`] and the blob store holding the
 //! package, checks every cryptographic invariant:
 //!
-//! 1. The signed-root blob is present and its hash matches the PackageId.
+//! 1. The signed-root blob is present and its hash matches the `PackageId`.
 //! 2. The signed-root carries a signature (not unsigned).
 //! 3. The signature verifies against the embedded publisher identity
 //!    over the signing-bytes prefix.
@@ -216,7 +216,7 @@ pub fn verify_with_trust<S: BlobStore>(
     Verification::Trusted { manifest }
 }
 
-/// Walk the manifest's [[trust.attested_by]] rows against the
+/// Walk the manifest's [[`trust.attested_by`]] rows against the
 /// trusted-attestor registry; returns the id of the first row whose
 /// signature verifies against a trusted attestor's pubkey with matching scope.
 fn find_matching_attestor(
