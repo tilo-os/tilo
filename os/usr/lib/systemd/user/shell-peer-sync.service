@@ -1,8 +1,8 @@
 [Unit]
-Description=qOS libp2p peer-sync (opt-in)
+Description=qOS Iroh peer-sync (opt-in)
 Documentation=file:///usr/share/doc/qos/peer-sync.md
-# Peer-sync is privacy-sensitive (mdns broadcasts the device, gossipsub
-# accepts connections from peers). We deliberately do NOT bind this to
+# Peer-sync is privacy-sensitive because it makes the device reachable to
+# invited peers. We deliberately do NOT bind this to
 # graphical-session.target so a `systemctl --user enable` only takes
 # effect on the *next* session — preventing a silent enable from being
 # the user's first surprise at login.

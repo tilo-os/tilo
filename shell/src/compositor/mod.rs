@@ -64,7 +64,7 @@ pub fn parse_mode_from_args() -> Mode {
     parse_mode(&borrowed)
 }
 
-/// Process-global wrapper around [`parse_peer_sync`]. v1 default OFF — callers opt in via `--enable-peer-sync` to spin up the libp2p stack.
+/// Process-global wrapper around [`parse_peer_sync`]. v1 default OFF — callers opt in via `--enable-peer-sync` to spin up the Iroh stack.
 pub fn parse_peer_sync_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
     let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();

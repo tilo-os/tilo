@@ -74,7 +74,12 @@ dirs.workspace = true
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
 wayland-protocols = "0.32.12"
-libp2p.workspace = true
+iroh.workspace = true
+iroh-base.workspace = true
+iroh-gossip.workspace = true
+bytes.workspace = true
+futures-lite.workspace = true
+blake3.workspace = true
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "backend_winit",
@@ -159,11 +164,8 @@ libc.workspace = true
 # the namespace, so it layers on top of bwrap + seccomp + netns. Linux-only;
 # best-effort at runtime (degrades silently on kernels without Landlock).
 landlock.workspace = true
-# Phase 3 Task 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
-# `network::invite` encodes / decodes signed peer-invite tokens as base64-url
-# wrapped JSON, with the owner's libp2p PeerId rendered as base58. Both crates
-# are already pulled in transitively by libp2p; pinning them here is a one-line
-# Cargo edit and avoids relying on transitive re-exports of unrelated deps.
+# Peer invitations are base64-url wrapped signed JSON tickets containing the
+# owner's stable iroh EndpointAddr.
 base64.workspace = true
 # Phase 4 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
 # software H.264 encode/decode for foreign-surface streaming between peers.
@@ -206,7 +208,7 @@ qos-bluez = { path = "../crates/system/qos-bluez" }
 png.workspace = true
 # Phase 3 of `2026-06-29-spaces-channels-and-cryptographic-roles.md`:
 # the broker validates inbound `SignedOp` envelopes against the
-# channel's role table before fan-out; the libp2p actor carries them
+# channel's role table before fan-out; the Iroh actor carries them
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `qos-collab-types`.
 collab-types = { path = "../crates/collab/collab-types" }
@@ -244,6 +246,7 @@ desktop-entry = { package = "qos-desktop-entry", path = "../crates/system/deskto
 # the cert against the workspace owner's root key and cross-check
 # the revocation list before accepting any of the peer's CRDT ops.
 qos-user-identity = { path = "../crates/identity/qos-user-identity" }
+qos-relay = { path = "../crates/hosting/qos-relay" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry
@@ -314,7 +317,7 @@ vello_encoding.workspace = true
 tempfile.workspace = true
 # `tests/portal_test.rs` joins the server- and client-side handshake of an
 # in-process p2p zbus pair via `futures_util::try_join!`. Already pulled in
-# transitively (libp2p, zbus, tokio) — pinning it here is just for the
+# transitively (Iroh, zbus, tokio) — pinning it here is just for the
 # `try_join!` macro at the test-fixture call site.
 futures-util.workspace = true
 # Serializes the 8 `apply_grants`-calling tests in `sandbox::profile`

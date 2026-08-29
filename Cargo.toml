@@ -49,7 +49,6 @@ default-members = [
     "crates/collab/channel-crypto",
     "crates/collab/collab-link",
     "crates/collab/frame-link",
-    "crates/collab/relay",
     "crates/collab/qos-callstream",
     "crates/packaging/pkg",
     "crates/packaging/collab-probe",
@@ -160,7 +159,6 @@ members = [
     "crates/collab/channel-crypto",
     "crates/collab/collab-link",
     "crates/collab/frame-link",
-    "crates/collab/relay",
     "crates/collab/qos-callstream",
     "crates/packaging/pkg",
     "crates/packaging/collab-probe",
@@ -416,24 +414,12 @@ zeroize = "1"
 bip39 = "2"
 
 # ---------------------------------------------------------------------------
-# Peer-to-peer transport and content addressing
+# Collaboration transport and content addressing
 # ---------------------------------------------------------------------------
 iroh = "1.0.3"
 iroh-base = "1.0.3"
 iroh-blobs = "0.103.0"
 iroh-gossip = "0.101.0"
-libp2p = { version = "0.56", features = [
-    "dns",
-    "gossipsub",
-    "macros",
-    "mdns",
-    "noise",
-    "tcp",
-    "tokio",
-    "websocket",
-    "yamux",
-] }
-
 # ---------------------------------------------------------------------------
 # Media: images, codecs, capture and playback
 #

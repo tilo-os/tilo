@@ -2,11 +2,11 @@
 //!
 //! Host A opens a share, host B subscribes as a viewer. Video frames flow
 //! through the dedicated substream, not `NeighbourMsg::SurfaceFrame`
-//! gossipsub — under paint-side stall the sender's bounded queue drops old
-//! frames and increments the drop counter, while gossipsub still carries
+//! gossip — under paint-side stall the sender's bounded queue drops old
+//! frames and increments the drop counter, while gossip still carries
 //! the `SurfaceStreamStart`/`SurfaceStreamEnd` announcements.
 //!
-//! In-process, no real libp2p: substream framing + backpressure is
+//! In-process, no real Iroh: substream framing + backpressure is
 //! transport-agnostic. Real QUIC lives in `two_netns_share.rs`.
 
 use std::time::Instant;
@@ -45,7 +45,7 @@ fn gradient(width: u32, height: u32) -> Vec<u8> {
 
 /// Frames drain in order with monotonic sequence numbers.
 #[test]
-fn substream_carries_frames_gossipsub_carries_announcements() {
+fn substream_carries_frames_gossip_carries_announcements() {
     const W: u32 = 128;
     const H: u32 = 128;
     let session =
