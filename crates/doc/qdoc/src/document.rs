@@ -741,7 +741,7 @@ mod tests {
         let a = d.insert_block(None, "paragraph");
         let b = d.insert_block(Some(&a), "paragraph");
         let c = d.insert_block(Some(&a), "paragraph"); // between a and b
-        assert_eq!(d.blocks_in_order(), vec![a.clone(), c.clone(), b.clone()]);
+        assert_eq!(d.blocks_in_order(), vec![a.clone(), c.clone(), b]);
         assert_eq!(d.block_kind(&c).as_deref(), Some("paragraph"));
     }
 
@@ -970,7 +970,7 @@ mod tests {
         assert_eq!(d.change_kind(&del), Some(crate::snapshot::ChangeKind::Del));
         assert_eq!(d.change_author(&ins).as_deref(), Some("Grace"));
         assert_eq!(d.change_date(&del).as_deref(), Some("2021-07-08"));
-        assert!(d.materialize().changes.len() == 2);
+        assert_eq!(d.materialize().changes.len(), 2);
 
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();

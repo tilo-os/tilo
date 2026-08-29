@@ -74,7 +74,7 @@ impl HistoryView {
                 path.line_to(Point::new(x1, y1));
             } else {
                 // S-curve between lanes.
-                let my = (y0 + y1) / 2.0;
+                let my = f64::midpoint(y0, y1);
                 path.curve_to(Point::new(x0, my), Point::new(x1, my), Point::new(x1, y1));
             }
             scene.stroke(&Stroke::new(2.0), t, color, None, &path);
@@ -176,7 +176,7 @@ impl HistoryView {
                 meta_y,
                 None,
             );
-            let aw = tr.measure(&commit.author_name, 11.0, None).0 as f64;
+            let aw = f64::from(tr.measure(&commit.author_name, 11.0, None).0);
             let meta = format!("·  {}", commit.when);
             draw::text(
                 scene,
@@ -192,7 +192,7 @@ impl HistoryView {
 
             // Short hash, right-aligned.
             let short: String = commit.id.chars().take(7).collect();
-            let hw = draw::mono_width(tr, &short, 11.5) as f64;
+            let hw = f64::from(draw::mono_width(tr, &short, 11.5));
             draw::mono(
                 scene,
                 tr,
@@ -258,9 +258,9 @@ impl HistoryView {
             Some(w),
             TextWeight::Semibold,
         );
-        let sh = tr
+        let sh = f64::from(tr
             .measure_weighted(&commit.summary, 16.0, Some(w), TextWeight::Semibold)
-            .1 as f64;
+            .1);
         y += sh + 14.0;
 
         // Author block with avatar.
@@ -347,7 +347,7 @@ impl HistoryView {
                 y,
                 Some(w),
             );
-            let bh = tr.measure(&commit.body, 13.0, Some(w)).1 as f64;
+            let bh = f64::from(tr.measure(&commit.body, 13.0, Some(w)).1);
             y += bh + 18.0;
         }
 
@@ -390,7 +390,7 @@ impl HistoryView {
                     Some(w - 80.0),
                 );
                 let counts = format!("+{} -{}", f.additions, f.deletions);
-                let cw = draw::mono_width(tr, &counts, 10.5) as f64;
+                let cw = f64::from(draw::mono_width(tr, &counts, 10.5));
                 draw::mono(
                     scene,
                     tr,

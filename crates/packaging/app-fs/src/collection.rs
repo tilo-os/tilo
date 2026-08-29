@@ -35,7 +35,7 @@ const MAGIC: &[u8; 8] = b"QOSCOL\0\0";
 /// hash.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Collection {
-    /// Sorted by path (BTreeMap iteration order), so [`encode`]
+    /// Sorted by path (`BTreeMap` iteration order), so [`encode`]
     /// is deterministic.
     ///
     /// [`encode`]: Self::encode

@@ -67,6 +67,12 @@ pub struct MergeView {
     pending_action: Option<DiffmergeAction>,
 }
 
+impl Default for MergeView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MergeView {
     pub fn new() -> Self {
         Self {
@@ -204,7 +210,7 @@ impl MergeView {
     fn scroll_hunk_into_view(&mut self, hunk: usize) {
         if let Some((top, bot)) = self.hunk_spans.get(hunk).copied() {
             let vh = self.source_band_height();
-            let mid = (top + bot) / 2.0;
+            let mid = f64::midpoint(top, bot);
             self.scroll_y = (mid - vh / 2.0).max(0.0).min(self.max_scroll());
         }
     }
@@ -221,7 +227,7 @@ impl MergeView {
     }
 
     fn content_height(&self) -> f64 {
-        self.hunk_spans.last().map(|(_, b)| *b).unwrap_or(0.0)
+        self.hunk_spans.last().map_or(0.0, |(_, b)| *b)
     }
 
     fn max_scroll(&self) -> f64 {
@@ -275,15 +281,14 @@ impl Widget for MergeView {
             if let (Some(h), Some(c)) = (
                 self.model.hunks.get_mut(hunk),
                 HunkChoice::from_str(&choice),
-            ) {
-                if h.is_change {
+            )
+                && h.is_change {
                     let res = c.to_resolution();
                     if h.resolution != res {
                         h.resolution = res;
                         self.dirty = true;
                     }
                 }
-            }
         }
     }
 
@@ -303,17 +308,17 @@ impl Widget for MergeView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_spans();
     }
@@ -370,7 +375,7 @@ impl Widget for MergeView {
         let band_h = self.source_band_height();
         let band_bot = band_top + band_h;
         for k in 1..3 {
-            let x = r.x0 + k as f64 * col_w;
+            let x = r.x0 + f64::from(k) * col_w;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -637,7 +642,7 @@ impl Widget for MergeView {
                 // Only scroll the source band when the cursor is above the
                 // merged divider; otherwise let the merged band stay put.
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (-*y as f64) * 60.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * 60.0,
                     MouseScrollDelta::PixelDelta(pp) => -pp.y,
                 };
                 self.scroll_by(dy);
@@ -662,7 +667,7 @@ impl Widget for MergeView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MergeView"
     }
 
@@ -792,7 +797,7 @@ fn draw_code_segments(
             None,
         );
         let (w, _) = tr.measure(&seg, FONT_SIZE, None);
-        x += w as f64;
+        x += f64::from(w);
     }
 }
 

@@ -657,8 +657,7 @@ impl NavShell {
         let now = Instant::now();
         let dt = self
             .last_tick
-            .map(|t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT))
-            .unwrap_or(0.0);
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT));
         self.last_tick = Some(now);
 
         let a = self.sidebar_flap.tick(self.sidebar_split_layout(), dt);
@@ -781,17 +780,17 @@ impl Widget for NavShell {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // A resize crossing the breakpoint drops a stale sidebar preference
         // so it returns to auto behaviour.
@@ -1083,7 +1082,7 @@ impl Widget for NavShell {
         v
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NavShell"
     }
 
@@ -1103,8 +1102,7 @@ impl Widget for NavShell {
             || self
                 .sidebar
                 .as_ref()
-                .map(|s| s.needs_animation_frame())
-                .unwrap_or(false)
+                .is_some_and(|s| s.needs_animation_frame())
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1125,8 +1123,7 @@ impl Widget for NavShell {
             || self
                 .sidebar
                 .as_ref()
-                .map(|s| s.needs_idle_sync())
-                .unwrap_or(false)
+                .is_some_and(|s| s.needs_idle_sync())
     }
 }
 

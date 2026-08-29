@@ -26,16 +26,16 @@ pub const LIST_ROW_H: f64 = 78.0;
 pub const FOLDER_ROW_H: f64 = 36.0;
 /// Height of an account header in the sidebar.
 pub const ACCOUNT_HEADER_H: f64 = 44.0;
-/// Geometry of the NavShell top-left chip (collapse / hamburger / back),
+/// Geometry of the `NavShell` top-left chip (collapse / hamburger / back),
 /// mirrored from `ui`'s `NavShell` so a pane header can vertically centre its
 /// title on the chip beside it and space itself a consistent gap away. The chip
 /// is a `CHIP_SIZE`-square inset `CHIP_INSET` from the pane's top-left corner.
 pub const CHIP_INSET: f64 = 12.0;
 pub const CHIP_SIZE: f64 = 36.0;
-/// Horizontal room the NavShell hamburger/chevron chip needs at a pane's
+/// Horizontal room the `NavShell` hamburger/chevron chip needs at a pane's
 /// top-left; pane headers inset their leading content past it.
 pub const CHIP_CLEARANCE: f64 = 52.0;
-/// Horizontal room the NavShell "Back" chip needs (chevron + label).
+/// Horizontal room the `NavShell` "Back" chip needs (chevron + label).
 pub const BACK_CLEARANCE: f64 = 118.0;
 
 pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
@@ -75,7 +75,7 @@ pub fn elide(
         return String::new();
     }
     let (w, _) = tr.measure_weighted(text, size, None, weight);
-    if (w as f64) <= max_w {
+    if f64::from(w) <= max_w {
         return text.to_string();
     }
     let mut chars: Vec<char> = text.chars().collect();
@@ -83,7 +83,7 @@ pub fn elide(
         chars.pop();
         let cand = format!("{}…", chars.iter().collect::<String>().trim_end());
         let (cw, _) = tr.measure_weighted(&cand, size, None, weight);
-        if (cw as f64) <= max_w {
+        if f64::from(cw) <= max_w {
             return cand;
         }
     }
@@ -103,8 +103,8 @@ pub fn avatar_color(theme: &Theme, email: &str, tint: u8) -> Color {
         Color::from_rgb8(217, 70, 239),
         Color::from_rgb8(20, 184, 166),
     ];
-    let h = email.bytes().fold(tint as u32, |a, b| {
-        a.wrapping_mul(31).wrapping_add(b as u32)
+    let h = email.bytes().fold(u32::from(tint), |a, b| {
+        a.wrapping_mul(31).wrapping_add(u32::from(b))
     });
     palette[(h as usize) % palette.len()]
 }
@@ -132,8 +132,8 @@ pub fn draw_avatar(
     tint: u8,
 ) {
     if let Some(img) = images.get(&gravatar_url(&addr.email)) {
-        let iw = img.width as f64;
-        let ih = img.height as f64;
+        let iw = f64::from(img.width);
+        let ih = f64::from(img.height);
         if iw > 0.0 && ih > 0.0 {
             let rect = Rect::new(
                 center.x - radius,
@@ -181,8 +181,8 @@ pub fn md5_hex(input: &[u8]) -> String {
     let digest = md5(input);
     let mut s = String::with_capacity(32);
     for b in digest {
-        s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-        s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
+        s.push(char::from_digit(u32::from(b >> 4), 16).unwrap());
+        s.push(char::from_digit(u32::from(b & 0xf), 16).unwrap());
     }
     s
 }

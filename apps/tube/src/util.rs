@@ -28,7 +28,7 @@ pub fn initials(name: &str) -> String {
 pub fn fnv1a(s: &str) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
     for b in s.bytes() {
-        h ^= b as u32;
+        h ^= u32::from(b);
         h = h.wrapping_mul(0x0100_0193);
     }
     h

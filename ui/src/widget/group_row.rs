@@ -63,7 +63,7 @@ impl WheelJumpAccum {
 /// matching Niri's `Mod+Shift+WheelScrollDown → focus-column-right`.
 pub fn wheel_jump_detents(delta: &MouseScrollDelta) -> f64 {
     match delta {
-        MouseScrollDelta::LineDelta(x, y) => (-x - y) as f64,
+        MouseScrollDelta::LineDelta(x, y) => f64::from(-x - y),
         MouseScrollDelta::PixelDelta(pp) => (-pp.x - pp.y) / JUMP_PX_PER_DETENT,
     }
 }
@@ -904,7 +904,7 @@ impl GroupRow {
     }
 
     pub fn group_drag_active(&self) -> bool {
-        self.group_drag.map(|d| d.moved).unwrap_or(false)
+        self.group_drag.is_some_and(|d| d.moved)
     }
 
     pub fn group_reorder_target(&self) -> Option<usize> {
@@ -961,8 +961,8 @@ impl GroupRow {
                 // Don't start a group drag while a tab-detach or resize
                 // drag is already in flight, or one is already tracked.
                 if self.group_drag.is_some()
-                    || self.groups.iter().any(|g| g.drag_in_flight())
-                    || self.handles.iter().any(|h| h.is_dragging())
+                    || self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight)
+                    || self.handles.iter().any(super::resize_handle::ResizeHandle::is_dragging)
                 {
                     return false;
                 }
@@ -1118,7 +1118,7 @@ impl Widget for GroupRow {
         self.handle_node_ids.clear();
         let mut children: Vec<NodeId> = Vec::with_capacity(group_nodes.len() + desired_handles);
         if maximized_idx.is_some() {
-            for gn in group_nodes.iter() {
+            for gn in &group_nodes {
                 children.push(*gn);
             }
         } else {
@@ -1140,15 +1140,15 @@ impl Widget for GroupRow {
             let mut style = taffy.style(node).unwrap().clone();
             style.flex_shrink = 0.0;
             if let Some(max_i) = maximized_idx {
-                if i != max_i {
-                    style.display = Display::None;
-                } else {
+                if i == max_i {
                     // `maximized` already carries this grow style from
                     // `WindowGroup::build_layout`; a fullscreen-promoted
                     // group doesn't, so set it here too.
                     style.size.width = Dimension::auto();
                     style.flex_grow = 1.0e6;
                     style.flex_basis = Dimension::length(0.0);
+                } else {
+                    style.display = Display::None;
                 }
             }
             taffy.set_style(node, style).unwrap();
@@ -1189,17 +1189,17 @@ impl Widget for GroupRow {
                 &children,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // `group_left_edges` (the snap targets) is CANVAS-x, not
         // taffy-local-x: canvas-x = leading_inset + taffy.x, and
@@ -1215,10 +1215,10 @@ impl Widget for GroupRow {
         let mut spans: Vec<(u64, f64, f64)> = Vec::with_capacity(self.node_ids.len());
         for (i, &cn) in self.node_ids.iter().enumerate() {
             let cl = taffy.layout(cn).unwrap();
-            edges.push(self.leading_inset + cl.location.x as f64);
-            local_x.push(cl.location.x as f64);
-            let left = self.leading_inset + cl.location.x as f64;
-            let right = left + cl.size.width as f64;
+            edges.push(self.leading_inset + f64::from(cl.location.x));
+            local_x.push(f64::from(cl.location.x));
+            let left = self.leading_inset + f64::from(cl.location.x);
+            let right = left + f64::from(cl.size.width);
             if spans_aligned {
                 spans.push((self.groups[i].id, left, right));
             }
@@ -1281,7 +1281,7 @@ impl Widget for GroupRow {
             self.laid_spans = spans;
             let steady = self.snap_anim.is_none()
                 && !self.group_drag_active()
-                && !self.handles.iter().any(|h| h.is_dragging());
+                && !self.handles.iter().any(super::resize_handle::ResizeHandle::is_dragging);
             if geometry_moved
                 && steady
                 && let Some(target) = self.strip_frame_target(&self.laid_spans)
@@ -1373,8 +1373,7 @@ impl Widget for GroupRow {
                 let dx = offsets
                     .iter()
                     .find(|(id, _)| *id == g.id)
-                    .map(|(_, from)| from * remaining)
-                    .unwrap_or(0.0);
+                    .map_or(0.0, |(_, from)| from * remaining);
                 let t = if dx.abs() > f64::EPSILON {
                     transform * Affine::translate((dx, 0.0))
                 } else {
@@ -1389,7 +1388,7 @@ impl Widget for GroupRow {
         // During a make-space slide, each handle travels with the group
         // on its right — otherwise two adjacent white cards read as one
         // wide window mid-slide.
-        let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
+        let any_drag = self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight);
         if !any_drag && maximized_idx.is_none() {
             let remaining = 1.0 - self.shift_anim_t();
             let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
@@ -1405,8 +1404,7 @@ impl Widget for GroupRow {
                 // side of. Still-opening counts as shown: it's already a
                 // card with real edges at the width it's waiting to fill.
                 let shown = |g: Option<&WindowGroup>| {
-                    g.map(|g| Widget::presented(g) || Widget::opening(g))
-                        .unwrap_or(false)
+                    g.is_some_and(|g| Widget::presented(g) || Widget::opening(g))
                 };
                 if !shown(self.groups.get(i)) || !shown(self.groups.get(i + 1)) {
                     continue;
@@ -1415,8 +1413,7 @@ impl Widget for GroupRow {
                     .groups
                     .get(i + 1)
                     .and_then(|g| offsets.iter().find(|(id, _)| *id == g.id))
-                    .map(|(_, from)| from * remaining)
-                    .unwrap_or(0.0);
+                    .map_or(0.0, |(_, from)| from * remaining);
                 let t = if dx.abs() > f64::EPSILON {
                     transform * Affine::translate((dx, 0.0))
                 } else {
@@ -1437,7 +1434,7 @@ impl Widget for GroupRow {
             } else if ins >= self.groups.len() {
                 self.groups.last().unwrap().get_rect().x1 + 5.0
             } else {
-                (self.groups[ins - 1].get_rect().x1 + self.groups[ins].get_rect().x0) / 2.0
+                f64::midpoint(self.groups[ins - 1].get_rect().x1, self.groups[ins].get_rect().x0)
             };
             let y0 = self.rect.y0;
             let y1 = self.rect.y1;
@@ -1478,7 +1475,7 @@ impl Widget for GroupRow {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             // Gate on an active drag so the "drop here" indicator never
             // shows for idle cursor motion.
-            let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
+            let any_drag = self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight);
             self.hover_gap_idx = if any_drag {
                 self.gap_index_for(self.last_cursor)
             } else {
@@ -1525,7 +1522,7 @@ impl Widget for GroupRow {
         // Resize handles dispatch FIRST so a press in the gap claims the
         // event before adjacent groups see it. Skipped during any
         // child's tab-drag, which owns the gap itself.
-        let any_drag_inflight = self.groups.iter().any(|g| g.drag_in_flight());
+        let any_drag_inflight = self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight);
         if !any_drag_inflight {
             for (i, h) in self.handles.iter_mut().enumerate() {
                 let Some(&node_id) = self.handle_node_ids.get(i) else {
@@ -1631,7 +1628,7 @@ impl Widget for GroupRow {
         // CursorMoved only reclassifies on motion, so a child that
         // dropped its `pending_drag` internally could otherwise leave
         // this stuck once every drag has cleared.
-        if self.hover_gap_idx.is_some() && !self.groups.iter().any(|g| g.drag_in_flight()) {
+        if self.hover_gap_idx.is_some() && !self.groups.iter().any(super::window_group::WindowGroup::drag_in_flight) {
             self.hover_gap_idx = None;
         }
 
@@ -1777,7 +1774,7 @@ impl Widget for GroupRow {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "GroupRow"
     }
 
@@ -1854,8 +1851,8 @@ impl Widget for GroupRow {
         if self.scroll_dirty {
             return true;
         }
-        self.groups.iter().any(|g| g.needs_redraw())
-            || self.handles.iter().any(|h| h.needs_redraw())
+        self.groups.iter().any(super::Widget::needs_redraw)
+            || self.handles.iter().any(super::Widget::needs_redraw)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1864,7 +1861,7 @@ impl Widget for GroupRow {
         // otherwise never reach the shell's overlay host.
         self.snap_in_flight()
             || self.shift_in_flight()
-            || self.groups.iter().any(|g| g.needs_animation_frame())
+            || self.groups.iter().any(super::Widget::needs_animation_frame)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1875,7 +1872,7 @@ impl Widget for GroupRow {
         let children = self
             .groups
             .iter_mut()
-            .map(|g| g.take_structure_dirty())
+            .map(super::Widget::take_structure_dirty)
             .fold(false, |acc, d| acc || d);
         // Forces a rebuild next frame while snapping, since `apply_layout`
         // (where `tick_snap_at` lives) otherwise only runs on events.

@@ -269,8 +269,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         .iter()
         .map(|a| a.order)
         .max()
-        .map(|m| m + 1)
-        .unwrap_or(0);
+        .map_or(0, |m| m + 1);
     let next_color = (accounts.len() % 7) as u8;
     root = root.with_action(ActionSpec::prompted(
         "add-account",
@@ -496,7 +495,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             AuthDoc::list_accounts(&state.doc).len(),
@@ -646,7 +645,7 @@ mod tests {
         assert_eq!(accts[0].secret, "JBSWY3DPEHPK3PXP");
     }
 
-    /// Reorder is deterministic against the document: MoveDown swaps the first
+    /// Reorder is deterministic against the document: `MoveDown` swaps the first
     /// two accounts' order values, applied straight to the doc.
     #[test]
     fn move_down_action_swaps_order_in_the_doc() {

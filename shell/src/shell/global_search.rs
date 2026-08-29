@@ -9,7 +9,7 @@
 
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
-/// Alpha the shell overlay host tints the GlobalSearch surface with. Kept
+/// Alpha the shell overlay host tints the `GlobalSearch` surface with. Kept
 /// in sync with [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`].
 pub const PALETTE_SURFACE_ALPHA: f32 = 1.0;
 

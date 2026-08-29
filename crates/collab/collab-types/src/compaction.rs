@@ -32,7 +32,7 @@ use crate::op::SignedOp;
 use crate::role::OpClass;
 
 /// A signed compaction checkpoint payload. `(artifact, up_to_seq)`
-/// jointly identify "every op with this artifact id and seq ≤ up_to_seq
+/// jointly identify "every op with this artifact id and seq ≤ `up_to_seq`
 /// is eligible for eviction"; `prefix_hash` lets a recipient verify it
 /// matches the op stream they observed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,7 +74,7 @@ pub enum CompactionError {
     /// postcard, wrong type" from "garbage bytes".
     #[error("compaction op had the wrong op_class: {actual:?}")]
     WrongOpClass {
-        /// The op_class the envelope actually carried, for audit-log triage.
+        /// The `op_class` the envelope actually carried, for audit-log triage.
         actual: OpClass,
     },
 }

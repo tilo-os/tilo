@@ -41,7 +41,7 @@ pub const FUSE_ROOT_ID: u64 = 1;
 /// Attribute/entry kernel TTL — generous, since a qOS payload is
 /// immutable for the mount's lifetime (content-addressed; a new
 /// package id publishes rather than mutates).
-pub const TTL: Duration = Duration::from_secs(60 * 60);
+pub const TTL: Duration = Duration::from_hours(1);
 
 /// Default kernel max-readahead (1 MiB, matching fs/'s workspace
 /// mount) — large enough that one mmap fault pulls a meaningful prefix into cache.
@@ -53,7 +53,7 @@ pub const DEFAULT_CACHE_PAGES: usize = 4096;
 
 /// The Filesystem implementation.
 pub struct QosAppFs<S: BlobStore + 'static> {
-    /// Indexed by inode-1 (FUSE_ROOT_ID is inode 1, stored at index 0).
+    /// Indexed by inode-1 (`FUSE_ROOT_ID` is inode 1, stored at index 0).
     entries: Vec<Entry>,
     /// Cache fronting `store`, wrapped in `Arc` so concurrent FUSE workers share state cheaply.
     cache: Arc<PageCache<S>>,
@@ -177,7 +177,7 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
         Arc::clone(&self.cache)
     }
 
-    /// Number of inodes (1 + file_count + dir_count) — for introspection/tests.
+    /// Number of inodes (1 + `file_count` + `dir_count`) — for introspection/tests.
     pub fn inode_count(&self) -> usize {
         self.entries.len()
     }
@@ -319,12 +319,9 @@ impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let entry = match self.entries.get((ino.0 - 1) as usize) {
-            Some(e) => e,
-            None => {
-                reply.error(Errno::ENOENT);
-                return;
-            }
+        let entry = if let Some(e) = self.entries.get((ino.0 - 1) as usize) { e } else {
+            reply.error(Errno::ENOENT);
+            return;
         };
         let (hash, blob_size) = match entry {
             Entry::Blob { hash, size } => (*hash, *size),

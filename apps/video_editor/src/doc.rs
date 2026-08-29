@@ -99,8 +99,8 @@ impl VideoDoc {
         let proj = Self::map(doc, "project");
         let _ = doc.put(&proj, "name", p.name.as_str());
         let _ = doc.put(&proj, "fps", p.fps);
-        let _ = doc.put(&proj, "width", p.width as i64);
-        let _ = doc.put(&proj, "height", p.height as i64);
+        let _ = doc.put(&proj, "width", i64::from(p.width));
+        let _ = doc.put(&proj, "height", i64::from(p.height));
     }
 
     pub fn upsert_media(doc: &mut AutoCommit, m: &MediaItem) {
@@ -109,10 +109,10 @@ impl VideoDoc {
         let _ = doc.put(&obj, "name", m.name.as_str());
         let _ = doc.put(&obj, "kind", m.kind.as_str());
         let _ = doc.put(&obj, "duration", m.duration);
-        let _ = doc.put(&obj, "width", m.width as i64);
-        let _ = doc.put(&obj, "height", m.height as i64);
+        let _ = doc.put(&obj, "width", i64::from(m.width));
+        let _ = doc.put(&obj, "height", i64::from(m.height));
         let _ = doc.put(&obj, "fps", m.fps);
-        let _ = doc.put(&obj, "palette", m.palette as i64);
+        let _ = doc.put(&obj, "palette", i64::from(m.palette));
         // FUSE-media seam: the CRDT carries the workspace path + hydration
         // state, never the bytes (see crate::media).
         let _ = doc.put(&obj, "path", m.path.as_str());
@@ -124,7 +124,7 @@ impl VideoDoc {
         let obj = Self::ensure_child(doc, &tracks, &t.id.to_string());
         let _ = doc.put(&obj, "name", t.name.as_str());
         let _ = doc.put(&obj, "kind", t.kind.as_str());
-        let _ = doc.put(&obj, "index", t.index as i64);
+        let _ = doc.put(&obj, "index", i64::from(t.index));
         let _ = doc.put(&obj, "muted", t.muted);
         let _ = doc.put(&obj, "locked", t.locked);
     }
@@ -140,7 +140,7 @@ impl VideoDoc {
         let _ = doc.put(&obj, "opacity", c.opacity);
         let _ = doc.put(&obj, "volume", c.volume);
         let _ = doc.put(&obj, "transition", c.transition.as_str());
-        let _ = doc.put(&obj, "palette", c.palette as i64);
+        let _ = doc.put(&obj, "palette", i64::from(c.palette));
         let _ = doc.put(&obj, "brightness", c.filters.brightness);
         let _ = doc.put(&obj, "contrast", c.filters.contrast);
         let _ = doc.put(&obj, "saturation", c.filters.saturation);

@@ -34,8 +34,7 @@ const MAX_DT: f64 = 0.1;
 fn dt_since(last: &mut Option<Instant>) -> f64 {
     let now = Instant::now();
     let dt = last
-        .map(|t| now.duration_since(t).as_secs_f64().min(MAX_DT))
-        .unwrap_or(0.0);
+        .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_DT));
     *last = Some(now);
     dt
 }

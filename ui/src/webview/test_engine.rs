@@ -62,7 +62,7 @@ impl TestEngine {
         // the definition.
         let mut h: u32 = 2166136261;
         for b in uri.bytes() {
-            h ^= b as u32;
+            h ^= u32::from(b);
             h = h.wrapping_mul(16777619);
         }
         [(h >> 16) as u8, (h >> 8) as u8, h as u8]

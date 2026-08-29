@@ -94,11 +94,10 @@ pub fn application_dirs() -> Vec<PathBuf> {
 }
 
 fn data_home() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
-        if !dir.is_empty() {
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
+        && !dir.is_empty() {
             return Some(PathBuf::from(dir));
         }
-    }
     let home = std::env::var_os("HOME")?;
     if home.is_empty() {
         return None;
@@ -176,12 +175,11 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
             stats.other_desktop += 1;
             continue;
         }
-        if let Some(try_exec) = entry.try_exec.as_deref() {
-            if !program_exists(try_exec) {
+        if let Some(try_exec) = entry.try_exec.as_deref()
+            && !program_exists(try_exec) {
                 stats.try_exec_missing += 1;
                 continue;
             }
-        }
         entries.push(entry);
     }
     entries.sort_by(|a, b| {
@@ -226,8 +224,7 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>)
         // both export entries as symlinks.
         let is_dir = if file_type.is_symlink() {
             std::fs::metadata(&path)
-                .map(|m| m.is_dir())
-                .unwrap_or(false)
+                .is_ok_and(|m| m.is_dir())
         } else {
             file_type.is_dir()
         };
@@ -275,8 +272,7 @@ pub fn program_exists(program: &str) -> bool {
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]

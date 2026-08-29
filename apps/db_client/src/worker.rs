@@ -118,16 +118,13 @@ impl DbWorker {
     pub fn block_until_idle(&mut self) -> Vec<DbReply> {
         let mut out = Vec::new();
         while self.outstanding > 0 {
-            match self.rx.recv() {
-                Ok(reply) => {
-                    self.outstanding -= 1;
-                    out.push(reply);
-                }
-                Err(_) => {
-                    // Sender hung up; nothing more will arrive.
-                    self.outstanding = 0;
-                    break;
-                }
+            if let Ok(reply) = self.rx.recv() {
+                self.outstanding -= 1;
+                out.push(reply);
+            } else {
+                // Sender hung up; nothing more will arrive.
+                self.outstanding = 0;
+                break;
             }
         }
         out

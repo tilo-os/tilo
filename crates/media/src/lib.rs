@@ -13,7 +13,7 @@
 //! * [`MediaEngine`] — the control surface: `open` / `play` / `pause` /
 //!   `seek_ms` / `set_volume`, a monotonic playhead, `duration`, buffering %,
 //!   and a [`MediaEvent`] stream drained with [`MediaEngine::poll`]. With
-//!   `--features decode` it drives a real GStreamer `playbin`→`appsink` pipeline
+//!   `--features decode` it drives a real `GStreamer` `playbin`→`appsink` pipeline
 //!   with real audio out; without it a synthesized-frame fallback keeps
 //!   hermetic builds green.
 //! * [`TransportState`] + [`TransportSync`] — collaborative "follow-the-host"
@@ -26,7 +26,7 @@
 //!   node graph (devices + per-application streams), move one app's stream
 //!   between output devices, adjust per-stream volume/mute, switch the default
 //!   device, and diff enumerations for hotplug. Every media surface plays
-//!   *through* PipeWire; this is where the OS routes it.
+//!   *through* `PipeWire`; this is where the OS routes it.
 
 pub mod audio;
 pub mod engine;
@@ -55,6 +55,5 @@ pub use transport::{
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }

@@ -294,17 +294,17 @@ impl Widget for BluetoothPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
@@ -373,7 +373,7 @@ impl Widget for BluetoothPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BluetoothPane"
     }
 
@@ -386,8 +386,7 @@ impl Widget for BluetoothPane {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -440,9 +439,9 @@ mod tests {
         let rec = Arc::new(RecordingDispatcher::default());
         let devs = sample_devices();
         let pane = BluetoothPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
-            devs.clone(),
+            devs,
         );
         assert_eq!(pane.devices().len(), 2);
         let names: Vec<&str> = pane.devices().iter().map(|d| d.name.as_str()).collect();
@@ -492,11 +491,11 @@ mod tests {
             },
         ];
         let lister: BtLister = {
-            let a = after.clone();
+            let a = after;
             Arc::new(move || Ok(a.clone()))
         };
         let mut pane = BluetoothPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
             sample_devices(),
         )
@@ -534,7 +533,7 @@ mod tests {
         let bt = Arc::new(RecordingBt::default());
         let lister: BtLister = Arc::new(|| Ok(Vec::new()));
         let mut pane = BluetoothPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
             sample_devices(),
         )

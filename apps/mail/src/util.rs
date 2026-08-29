@@ -8,8 +8,8 @@
 pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64; // [0, 399]
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) as i64 + 2) / 5 + d as i64 - 1;
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * i64::from(if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(d) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     era * 146097 + doe - 719468
 }
@@ -34,7 +34,7 @@ const MONTHS: [&str; 12] = [
 
 /// Epoch-minutes for a Y/M/D H:M (UTC).
 pub fn minutes_of(y: i64, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
-    days_from_civil(y, mo, d) * 1440 + h as i64 * 60 + mi as i64
+    days_from_civil(y, mo, d) * 1440 + i64::from(h) * 60 + i64::from(mi)
 }
 
 /// Compact relative timestamp for the message-list column:
@@ -57,8 +57,7 @@ pub fn format_relative(ts_min: i64, now_min: i64) -> String {
         let (_, mo, d) = civil_from_days(that_day);
         format!("{} {}", MONTHS[(mo - 1) as usize], d)
     }
-    .to_string()
-    .pipe(|s| if delta < 0 { format!("{s}") } else { s })
+    .pipe(|s| if delta < 0 { s } else { s })
 }
 
 /// Full absolute timestamp for the reader header, e.g. `Jun 30, 2026, 13:42`.
@@ -79,16 +78,14 @@ pub fn format_absolute(ts_min: i64) -> String {
 /// Resolve the directory attachments are saved into. Honors
 /// `QOS_MAIL_DOWNLOADS`, then `$HOME/Downloads`, then the system temp dir.
 pub fn downloads_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("QOS_MAIL_DOWNLOADS") {
-        if !dir.is_empty() {
+    if let Ok(dir) = std::env::var("QOS_MAIL_DOWNLOADS")
+        && !dir.is_empty() {
             return std::path::PathBuf::from(dir);
         }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty() {
             return std::path::Path::new(&home).join("Downloads");
         }
-    }
     std::env::temp_dir()
 }
 

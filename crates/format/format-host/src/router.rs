@@ -47,8 +47,8 @@ impl Router {
         let mut next: HashMap<String, ActiveProvider> = HashMap::new();
         let current = self.providers.read().clone();
         for entry in &reg.providers {
-            if let Some(existing) = current.get(&entry.package) {
-                if existing.entry.wasm == entry.wasm {
+            if let Some(existing) = current.get(&entry.package)
+                && existing.entry.wasm == entry.wasm {
                     // Same wasm file → reuse the loaded component, refresh
                     // the registry metadata.
                     next.insert(
@@ -60,7 +60,6 @@ impl Router {
                     );
                     continue;
                 }
-            }
             let comp = LoadedComponent::from_path(&self.engine, &entry.wasm)
                 .map_err(|e| anyhow::anyhow!("loading provider {}: {e:#}", entry.package))?;
             next.insert(
@@ -103,14 +102,14 @@ impl Router {
         candidates.first().map(|p| (*p).clone())
     }
 
-    /// detect(): try the hinted MIME first; if no provider matches, ask each
+    /// `detect()`: try the hinted MIME first; if no provider matches, ask each
     /// loaded provider in package-id order and take the highest-scoring
     /// result. Returns `(detected, provider_id)` so the client knows which
     /// provider to route subsequent importAs calls to.
     pub fn detect(&self, head: &[u8], hint: &str) -> (format_provider_wit::Detected, String) {
-        if !hint.is_empty() {
-            if let Some(p) = self.best_for_mime(hint) {
-                if let Ok(d) = p.component.detect(head) {
+        if !hint.is_empty()
+            && let Some(p) = self.best_for_mime(hint)
+                && let Ok(d) = p.component.detect(head) {
                     return (
                         format_provider_wit::Detected {
                             confidence: format_provider_wit::Confidence {
@@ -119,11 +118,9 @@ impl Router {
                             },
                             mime: d.mime,
                         },
-                        p.entry.package.clone(),
+                        p.entry.package,
                     );
                 }
-            }
-        }
         let providers = self.providers.read().clone();
         let mut keys: Vec<&String> = providers.keys().collect();
         keys.sort();
@@ -139,7 +136,7 @@ impl Router {
                     },
                     mime: d.mime,
                 };
-                if best.as_ref().map(|(_, _, s)| score > *s).unwrap_or(true) {
+                if best.as_ref().is_none_or(|(_, _, s)| score > *s) {
                     best = Some((detected, p.entry.package.clone(), score));
                 }
             }

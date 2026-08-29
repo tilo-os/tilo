@@ -25,7 +25,7 @@ fn png() -> Vec<u8> {
     v.extend_from_slice(&[8, 6, 0, 0, 0]);
     v.extend_from_slice(&[0u8; 4]); // crc, unchecked here
     // A recognisable run, trivially findable if the bytes were ever inlined.
-    v.extend(std::iter::repeat(0xA5).take(4096));
+    v.extend(std::iter::repeat_n(0xA5, 4096));
     v
 }
 

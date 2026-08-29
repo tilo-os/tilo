@@ -20,7 +20,7 @@ pub fn trash_dir() -> Option<PathBuf> {
 
 /// Whether `path` is the home-trash files directory.
 pub fn is_trash_dir(path: &Path) -> bool {
-    trash_dir().map(|t| path == t).unwrap_or(false)
+    trash_dir().is_some_and(|t| path == t)
 }
 
 /// Ensure the trash files directory exists, so opening an empty trash shows an
@@ -47,8 +47,7 @@ fn trash_item_backs(item: &trash::TrashItem, files_name: &OsStr) -> bool {
         .file_name()
         .and_then(|f| f.to_str())
         .and_then(|f| f.strip_suffix(".trashinfo"))
-        .map(|stem| OsStr::new(stem) == files_name)
-        .unwrap_or(false)
+        .is_some_and(|stem| OsStr::new(stem) == files_name)
 }
 
 /// The trash items backing the given in-trash file paths (matched by their
@@ -56,7 +55,7 @@ fn trash_item_backs(item: &trash::TrashItem, files_name: &OsStr) -> bool {
 fn trash_items_for(entries: &[PathBuf]) -> Result<Vec<trash::TrashItem>, String> {
     let wanted: Vec<_> = entries
         .iter()
-        .filter_map(|p| p.file_name().map(|n| n.to_owned()))
+        .filter_map(|p| p.file_name().map(std::borrow::ToOwned::to_owned))
         .collect();
     Ok(trash::os_limited::list()
         .map_err(|e| e.to_string())?
@@ -177,14 +176,11 @@ pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or_else(|| "Source has no file name".to_string())?;
     let dest = unique_destination(dest_dir, &name);
-    match std::fs::rename(src, &dest) {
-        Ok(()) => Ok(dest),
-        Err(_) => {
-            // Likely a cross-filesystem move — copy then remove.
-            copy_recursive(src, &dest).map_err(|e| e.to_string())?;
-            remove_path(src).map_err(|e| e.to_string())?;
-            Ok(dest)
-        }
+    if let Ok(()) = std::fs::rename(src, &dest) { Ok(dest) } else {
+        // Likely a cross-filesystem move — copy then remove.
+        copy_recursive(src, &dest).map_err(|e| e.to_string())?;
+        remove_path(src).map_err(|e| e.to_string())?;
+        Ok(dest)
     }
 }
 

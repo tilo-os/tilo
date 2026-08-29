@@ -11,7 +11,7 @@
 //!      * `Info`    → an informational line (e.g. fprintd "Place your
 //!                    finger on the reader"); surfaced to the UI and
 //!                    answered with `None` so the conversation advances.
-//!      * `Error`   → a PAM_ERROR_MSG conversation message (e.g. fprintd
+//!      * `Error`   → a `PAM_ERROR_MSG` conversation message (e.g. fprintd
 //!                    "swipe didn't match, try again"). This is *not* a
 //!                    terminal failure — the authoritative result is a
 //!                    top-level [`Response::Error`]/[`Response::Success`].
@@ -264,7 +264,7 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
 /// (session-lock), as opposed to *login* ([`run_exchange`], which launches
 /// the session on success).
 ///
-/// The CreateSession + auth-message answering is identical to
+/// The `CreateSession` + auth-message answering is identical to
 /// [`run_exchange`], but on the authoritative [`Response::Success`] this
 /// sends `CancelSession` (tearing down greetd's transient session slot) and
 /// returns `Ok(())` — it never sends `StartSession`, so no session is

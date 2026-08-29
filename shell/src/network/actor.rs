@@ -165,8 +165,7 @@ impl Actor {
         let peer = crate::network::behaviour::peer_liveness_handle(self.swarm.local_peer_id());
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as u64);
         let msg = NeighbourMsg::Heartbeat { peer, ts };
         let bytes = match serde_json::to_vec(&msg) {
             Ok(b) => b,
@@ -273,20 +272,18 @@ impl Actor {
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(
                 gossipsub::Event::Subscribed { peer_id, topic },
             )) => {
-                if let Some(ws) = ws_for_topic(&self.subscribers, &topic) {
-                    if let Some(tx) = self.subscribers.get(&ws) {
+                if let Some(ws) = ws_for_topic(&self.subscribers, &topic)
+                    && let Some(tx) = self.subscribers.get(&ws) {
                         let _ = tx.send(NetEvent::PeerJoined { ws, peer: peer_id }).await;
                     }
-                }
             }
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(
                 gossipsub::Event::Unsubscribed { peer_id, topic },
             )) => {
-                if let Some(ws) = ws_for_topic(&self.subscribers, &topic) {
-                    if let Some(tx) = self.subscribers.get(&ws) {
+                if let Some(ws) = ws_for_topic(&self.subscribers, &topic)
+                    && let Some(tx) = self.subscribers.get(&ws) {
                         let _ = tx.send(NetEvent::PeerLeft { ws, peer: peer_id }).await;
                     }
-                }
             }
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                 let any_discovered = !list.is_empty();

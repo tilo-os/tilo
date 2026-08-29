@@ -23,11 +23,11 @@ pub const MAX_REFRESH_HZ: u32 = 1000;
 /// Convert a millihertz refresh rate (winit's monitor API, and EDID's precision) into a frame
 /// interval. `None` outside [`MIN_REFRESH_HZ`]..=[`MAX_REFRESH_HZ`], so the caller falls back rather than adopting a nonsense cadence.
 pub fn interval_from_millihertz(mhz: u32) -> Option<Duration> {
-    if mhz < MIN_REFRESH_HZ * 1000 || mhz > MAX_REFRESH_HZ * 1000 {
+    if !(MIN_REFRESH_HZ * 1000..=MAX_REFRESH_HZ * 1000).contains(&mhz) {
         return None;
     }
     // nanos = 1e12 / mhz, in u64 to keep sub-nanosecond error from compounding across a long deadline series.
-    Some(Duration::from_nanos(1_000_000_000_000u64 / mhz as u64))
+    Some(Duration::from_nanos(1_000_000_000_000u64 / u64::from(mhz)))
 }
 
 /// Convert a whole-hertz refresh rate (DRM's `Mode::vrefresh`) into a frame interval.
@@ -39,12 +39,12 @@ pub fn interval_from_hz(hz: u32) -> Option<Duration> {
 /// `pixel_clock / (htotal * vtotal)`, `clock_khz` in kHz. Matters for non-whole-number modes —
 /// a 59.94 Hz panel reports `vrefresh = 60`, and pacing at 60.000 Hz drifts a full frame every ~16s until [`FrameClock::note_presented`] pulls it back.
 pub fn interval_from_mode_timing(clock_khz: u32, htotal: u32, vtotal: u32) -> Option<Duration> {
-    let denom = (htotal as u64).checked_mul(vtotal as u64)?;
+    let denom = u64::from(htotal).checked_mul(u64::from(vtotal))?;
     if denom == 0 || clock_khz == 0 {
         return None;
     }
     // millihertz = clock_khz * 1000 (Hz per pixel-clock unit) * 1000 (Hz→mHz) / (htotal * vtotal).
-    let mhz = (clock_khz as u64)
+    let mhz = u64::from(clock_khz)
         .checked_mul(1_000_000)?
         .checked_div(denom)?;
     interval_from_millihertz(u32::try_from(mhz).ok()?)
@@ -66,7 +66,7 @@ pub fn parse_refresh_override(raw: Option<&str>) -> Option<Duration> {
         return None;
     }
     let mhz = (hz * 1000.0).round();
-    if mhz < 0.0 || mhz > u32::MAX as f64 {
+    if mhz < 0.0 || mhz > f64::from(u32::MAX) {
         return None;
     }
     interval_from_millihertz(mhz as u32)
@@ -75,15 +75,12 @@ pub fn parse_refresh_override(raw: Option<&str>) -> Option<Duration> {
 /// [`parse_refresh_override`] against the process environment, warning when a value was set but rejected — a silently-ignored override would make a bench run report the fallback rate as the requested one.
 pub fn refresh_override_from_env() -> Option<Duration> {
     let raw = std::env::var(REFRESH_HZ_ENV).ok()?;
-    match parse_refresh_override(Some(&raw)) {
-        Some(d) => Some(d),
-        None => {
-            eprintln!(
-                "nirios compositor: ignoring {REFRESH_HZ_ENV}={raw:?} \
-                 (supported range is {MIN_REFRESH_HZ}..={MAX_REFRESH_HZ} Hz)"
-            );
-            None
-        }
+    if let Some(d) = parse_refresh_override(Some(&raw)) { Some(d) } else {
+        eprintln!(
+            "nirios compositor: ignoring {REFRESH_HZ_ENV}={raw:?} \
+             (supported range is {MIN_REFRESH_HZ}..={MAX_REFRESH_HZ} Hz)"
+        );
+        None
     }
 }
 
@@ -191,8 +188,8 @@ impl FrameClock {
 
 /// Clamp an interval into the range the refresh bounds imply, so a caller constructing a clock directly from a bad duration can't park the compositor.
 fn sane(interval: Duration) -> Duration {
-    let min = Duration::from_nanos(1_000_000_000 / MAX_REFRESH_HZ as u64);
-    let max = Duration::from_nanos(1_000_000_000 / MIN_REFRESH_HZ as u64);
+    let min = Duration::from_nanos(1_000_000_000 / u64::from(MAX_REFRESH_HZ));
+    let max = Duration::from_nanos(1_000_000_000 / u64::from(MIN_REFRESH_HZ));
     interval.clamp(min, max)
 }
 

@@ -223,7 +223,7 @@ impl PanelsView {
                 c.text_primary
             };
             draw::fill_round(scene, t, brect, 6.0, bg);
-            let lw = tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0 as f64;
+            let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
             draw::text_weighted(
                 scene,
                 tr,
@@ -268,9 +268,9 @@ impl PanelsView {
             None,
             TextWeight::Semibold,
         );
-        let cw = tr
+        let cw = f64::from(tr
             .measure_weighted(title, 13.0, None, TextWeight::Semibold)
-            .0 as f64;
+            .0);
         draw::pill(
             scene,
             tr,
@@ -384,12 +384,12 @@ impl PanelsView {
                 rx -= dw + 8.0;
             }
             let tip = &b.tip;
-            let tw = draw::mono_width(tr, tip, 11.0) as f64;
+            let tw = f64::from(draw::mono_width(tr, tip, 11.0));
             rx -= tw;
             draw::mono(scene, tr, t, tip, 11.0, c.neutral[5], rx, y + 1.0);
             if b.ahead > 0 || b.behind > 0 {
                 let ab = format!("↑{} ↓{}", b.ahead, b.behind);
-                let abw = tr.measure(&ab, 10.5, None).0 as f64;
+                let abw = f64::from(tr.measure(&ab, 10.5, None).0);
                 rx -= abw + 10.0;
                 draw::text(scene, tr, t, &ab, 10.5, c.text_dim, rx, y + 1.0, None);
             }
@@ -442,11 +442,11 @@ impl PanelsView {
                 Color::from_rgba8(a.r(), a.g(), a.b(), 220),
                 None,
             );
-            let nw = tr
+            let nw = f64::from(tr
                 .measure_weighted(&tag.name, 12.0, None, TextWeight::Medium)
-                .0 as f64
+                .0)
                 + 20.0;
-            let tw = draw::mono_width(tr, &tag.target, 11.0) as f64;
+            let tw = f64::from(draw::mono_width(tr, &tag.target, 11.0));
             draw::mono(
                 scene,
                 tr,
@@ -522,7 +522,7 @@ impl PanelsView {
                 body.x0 + 16.0,
                 y + 1.0,
             );
-            let iw = draw::mono_width(tr, &idx, 11.0) as f64;
+            let iw = f64::from(draw::mono_width(tr, &idx, 11.0));
             draw::text(
                 scene,
                 tr,
@@ -537,7 +537,7 @@ impl PanelsView {
 
             // "Apply" affordance on the right.
             let label = "Apply";
-            let lw = tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0 as f64;
+            let lw = f64::from(tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0);
             let lx = body.x1 - lw - 14.0;
             draw::text_weighted(
                 scene,

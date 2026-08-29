@@ -79,14 +79,14 @@ mod tests {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     struct Guard<'a> {
         _lock: MutexGuard<'a, ()>,
         prev: Option<std::ffi::OsString>,
     }
-    impl<'a> Drop for Guard<'a> {
+    impl Drop for Guard<'_> {
         fn drop(&mut self) {
             match &self.prev {
                 Some(v) => unsafe { std::env::set_var("QOS_APPS_DATA_DIR", v) },

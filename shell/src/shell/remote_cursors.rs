@@ -97,7 +97,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn ui::widget::Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
         node
     }
 
@@ -109,10 +109,10 @@ impl ui::widget::Widget for RemoteCursorOverlay {
     ) {
         let l = taffy.layout(node).unwrap();
         self.rect = vello::kurbo::Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -135,7 +135,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             return;
         }
         let clip_rect =
-            vello::kurbo::Rect::new(bx as f64, by as f64, (bx + bw) as f64, (by + bh) as f64);
+            vello::kurbo::Rect::new(f64::from(bx), f64::from(by), f64::from(bx + bw), f64::from(by + bh));
 
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -149,11 +149,11 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         let chip_bg = theme.tokens.colors.surfaces.raised;
         let chip_border = theme.tokens.colors.border_standard;
         let label_color = theme.tokens.colors.text_primary;
-        let chip_radius = theme.tokens.radii.sm as f64;
+        let chip_radius = f64::from(theme.tokens.radii.sm);
 
         for cursor in cursors {
             let [px, py] = cursor.position;
-            let apex = vello::kurbo::Point::new(px as f64, py as f64);
+            let apex = vello::kurbo::Point::new(f64::from(px), f64::from(py));
             let color = peer_color_to_peniko(cursor.color);
 
             let mut caret = vello::kurbo::BezPath::new();
@@ -164,8 +164,8 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &caret);
 
             let (text_w, _text_h) = text_renderer.measure(&cursor.label, label_size, None);
-            let chip_w = text_w as f64 + CHIP_PADDING_X * 2.0;
-            let chip_h = label_size as f64 + CHIP_PADDING_Y * 2.0;
+            let chip_w = f64::from(text_w) + CHIP_PADDING_X * 2.0;
+            let chip_h = f64::from(label_size) + CHIP_PADDING_Y * 2.0;
             let chip_x = apex.x + CARET_SIZE + CHIP_OFFSET;
             let chip_y = apex.y + CARET_SIZE + CHIP_OFFSET;
             let chip_rect =
@@ -230,7 +230,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         // Purely visual: cursor motion is fed via `PresenceCtx`, not winit events.
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RemoteCursorOverlay"
     }
 

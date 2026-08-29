@@ -163,14 +163,11 @@ impl DkgSession {
                 public_key_package: dummy_public_key_package_placeholder()?,
             },
         );
-        let r1_secret = match prev {
-            DkgPhase::Round1Sent { secret } => secret,
-            _ => {
-                self.phase = prev;
-                return Err(ThresholdError::DkgStateMisuse(
-                    "receive_round1 called outside Round1Sent",
-                ));
-            }
+        let r1_secret = if let DkgPhase::Round1Sent { secret } = prev { secret } else {
+            self.phase = prev;
+            return Err(ThresholdError::DkgStateMisuse(
+                "receive_round1 called outside Round1Sent",
+            ));
         };
 
         // Decode peer round-1 packages.

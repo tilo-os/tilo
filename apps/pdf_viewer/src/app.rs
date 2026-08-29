@@ -97,8 +97,7 @@ fn today_ymd() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs() as i64);
     ymd_from_unix_secs(secs)
 }
 
@@ -118,7 +117,7 @@ fn ymd_from_unix_secs(secs: i64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
     let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     let year = if m <= 2 { y + 1 } else { y };
-    format!("{:04}-{:02}-{:02}", year, m, d)
+    format!("{year:04}-{m:02}-{d:02}")
 }
 
 /// A plausible hand-drawn signature as normalised `[0,1]²` strokes, used to seed
@@ -129,7 +128,7 @@ fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
     let n = 64;
     let flourish: Vec<(f64, f64)> = (0..=n)
         .map(|i| {
-            let t = i as f64 / n as f64;
+            let t = f64::from(i) / f64::from(n);
             let x = 0.06 + 0.86 * t;
             let y = 0.55 - 0.34 * (t * PI * 2.6).sin() * (1.0 - 0.35 * t);
             (x, y)
@@ -659,7 +658,7 @@ impl PdfApp {
         self.raster_text.insert(1, layer.clone());
         // Select a single word ("keeper") exactly as a double-click would — via
         // the shared word_range — so the still frame shows a word selection + HUD.
-        let idx = text.find("keeper").map(|b| b + 2).unwrap_or(6);
+        let idx = text.find("keeper").map_or(6, |b| b + 2);
         let (s, e) = layer.word_range(idx);
         self.selection = Some(TextSelection {
             page: 1,
@@ -1286,8 +1285,7 @@ impl PdfApp {
         let is_pdf = path
             .extension()
             .and_then(|s| s.to_str())
-            .map(|e| e.eq_ignore_ascii_case("pdf"))
-            .unwrap_or(false)
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
             || bytes.starts_with(b"%PDF");
         let rz = self.raster.as_mut().unwrap();
         let result = if is_pdf {
@@ -1295,7 +1293,7 @@ impl PdfApp {
                 .map(|n| format!("Imported {n} page(s) — Save to keep them"))
         } else {
             rz.import_image(&bytes, at)
-                .map(|_| "Imported image as a page — Save to keep it".to_string())
+                .map(|()| "Imported image as a page — Save to keep it".to_string())
         };
         match result {
             Ok(note) => {
@@ -1610,8 +1608,7 @@ impl PdfApp {
         let (pgw, pgh) = self
             .raster
             .as_ref()
-            .map(|r| r.page_size(page_idx))
-            .unwrap_or((self.pw(), self.ph()));
+            .map_or((self.pw(), self.ph()), |r| r.page_size(page_idx));
         // Render (or reuse) the page at ~2x so the crop is crisp.
         let bucket = ((pgw * 2.0).round() as u32).clamp(96, 4096);
         let Some(img) = self
@@ -1805,20 +1802,19 @@ impl PdfApp {
                 }
                 self.selected_anno = last_id;
             }
-            Tool::Ink => {
-                if d.points.len() >= 2 {
+            Tool::Ink
+                if d.points.len() >= 2 => {
                     let a = Annotation {
                         id: Annotation::new_id(),
                         page: d.page,
                         kind: AnnoKind::Ink {
-                            points: d.points.clone(),
+                            points: d.points,
                         },
                         color: self.swatch,
                         author: self.author.clone(),
                     };
                     self.perform_action(state, crate::actions::add_annotation_action(&a));
                 }
-            }
             _ => {}
         }
         self.reload(state);
@@ -1882,8 +1878,7 @@ impl PdfApp {
     fn is_editing(&self, target: &EditTarget) -> bool {
         self.editing
             .as_ref()
-            .map(|e| &e.target == target)
-            .unwrap_or(false)
+            .is_some_and(|e| &e.target == target)
     }
 
     /// Write the active edit's text to its durable home and clear the edit.
@@ -1899,8 +1894,7 @@ impl PdfApp {
                     .comments
                     .iter()
                     .find(|c| c.id == id)
-                    .map(|c| !c.replies.is_empty())
-                    .unwrap_or(false);
+                    .is_some_and(|c| !c.replies.is_empty());
                 if trimmed.is_empty() && !has_replies {
                     self.delete_target(&DeleteTarget::Comment(id), state);
                     return;
@@ -2027,11 +2021,10 @@ impl PdfApp {
                         hit = Some(a.id.clone());
                     }
                 }
-                AnnoKind::Highlight { rect } => {
-                    if rect.contains(pt.0, pt.1) && hit.is_none() {
+                AnnoKind::Highlight { rect }
+                    if rect.contains(pt.0, pt.1) && hit.is_none() => {
                         hit = Some(a.id.clone());
                     }
-                }
                 _ => {}
             }
         }
@@ -2087,12 +2080,11 @@ impl PdfApp {
     /// Move a note's *local* cached anchor for live drag feedback (the CRDT is
     /// only written once, on release, so a drag is a single undo step).
     fn move_note_local(&mut self, id: &str, x: f64, y: f64) {
-        if let Some(a) = self.annotations.iter_mut().find(|a| a.id == id) {
-            if let AnnoKind::Note { x: nx, y: ny } = &mut a.kind {
+        if let Some(a) = self.annotations.iter_mut().find(|a| a.id == id)
+            && let AnnoKind::Note { x: nx, y: ny } = &mut a.kind {
                 *nx = x;
                 *ny = y;
             }
-        }
         self.dirty = true;
     }
 
@@ -2253,11 +2245,9 @@ impl PdfApp {
                     .iter()
                     .find(|c| &c.id == id)
                     .and_then(|c| c.anno_id.clone())
-                {
-                    if self.selected_anno.as_deref() == Some(anno.as_str()) {
+                    && self.selected_anno.as_deref() == Some(anno.as_str()) {
                         self.selected_anno = None;
                     }
-                }
                 self.perform_action(state, crate::actions::delete_comment_action(id));
             }
             DeleteTarget::Signature(id) => {
@@ -2303,11 +2293,10 @@ impl PdfApp {
                         return Some(DeleteTarget::Annotation(a.id.clone()));
                     }
                 }
-                AnnoKind::Highlight { rect } => {
-                    if rect.contains(pt.0, pt.1) {
+                AnnoKind::Highlight { rect }
+                    if rect.contains(pt.0, pt.1) => {
                         return Some(DeleteTarget::Annotation(a.id.clone()));
                     }
-                }
                 _ => {}
             }
         }
@@ -2437,8 +2426,8 @@ impl PdfApp {
     /// draw and the click handler agree on its rect.
     fn empty_open_button_rect(&self) -> Rect {
         let canvas = self.canvas_rect;
-        let cx = (canvas.x0 + canvas.x1) / 2.0;
-        let cy = (canvas.y0 + canvas.y1) / 2.0;
+        let cx = f64::midpoint(canvas.x0, canvas.x1);
+        let cy = f64::midpoint(canvas.y0, canvas.y1);
         let w = 150.0;
         let h = 38.0;
         Rect::new(cx - w / 2.0, cy + 78.0, cx + w / 2.0, cy + 78.0 + h)
@@ -2457,8 +2446,7 @@ fn ensure_pdf_extension(path: std::path::PathBuf) -> std::path::PathBuf {
     let is_pdf = path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("pdf"))
-        .unwrap_or(false);
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
     if is_pdf {
         path
     } else {
@@ -2541,17 +2529,17 @@ impl Widget for PdfApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.reconcile_overlay();
         self.recompute_regions();
@@ -2585,7 +2573,7 @@ impl Widget for PdfApp {
         self.on_event(event, scale_factor, modifiers, state, handled);
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PdfApp"
     }
 
@@ -2779,7 +2767,7 @@ mod tests {
 
     /// Run one full `ui::App`-equivalent frame against `app`: build the taffy
     /// tree, compute layout at `w`×`h`, apply it, then draw. Mirrors
-    /// `ui::App`'s RedrawRequested sequence so a driven test exercises the
+    /// `ui::App`'s `RedrawRequested` sequence so a driven test exercises the
     /// *live* path, not a shortcut.
     ///
     /// A PNG is written to `out` **only when `PDF_SHOTS=1`** in the
@@ -3386,7 +3374,7 @@ mod tests {
         // After its linger, with the pointer away, it hides again.
         app.page_bubble = ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
         app.page_bubble
-            .poke(std::time::Instant::now() - std::time::Duration::from_millis(10));
+            .poke(std::time::Instant::now().checked_sub(std::time::Duration::from_millis(10)).unwrap());
         app.last_mouse = Point::new(10.0, 110.0);
         app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         assert_eq!(
@@ -3962,7 +3950,7 @@ mod tests {
             .expect("an ink stroke was created");
         match &ink.kind {
             AnnoKind::Ink { points } => {
-                assert!(points.len() >= 2, "the polyline retains its points")
+                assert!(points.len() >= 2, "the polyline retains its points");
             }
             _ => unreachable!(),
         }
@@ -4241,7 +4229,7 @@ mod tests {
         // init the shot harness pays on every `full_frame` call.
         let mut tr = TextRenderer::new();
         // Drive one full 5-pass frame against the shared renderer.
-        let mut frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
+        let frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             app.sync(&mut st.doc, &st.root);
@@ -4335,7 +4323,7 @@ mod tests {
         let (w, h) = (1280.0f64, 800.0f64);
         let mut tr = TextRenderer::new();
 
-        let mut frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
+        let frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             app.sync(&mut st.doc, &st.root);
@@ -4425,7 +4413,7 @@ mod tests {
             .chars
             .iter()
             .filter(|c| c.rect.w > 1.0 && c.rect.h > 1.0)
-            .cloned()
+            .copied()
             .collect();
         assert!(printable.len() >= 4, "page 1 has a run of printable glyphs");
         printable.sort_by(|a, b| {
@@ -4503,7 +4491,7 @@ mod tests {
             .chars
             .iter()
             .find(|c| c.rect.w > 1.0 && c.rect.h > 1.0)
-            .cloned()
+            .copied()
             .expect("a printable glyph with a real box");
         let (cx, cy) = probe.rect.center();
         let hit = layer.char_at(cx, cy).expect("hit-test lands on a glyph");
@@ -4866,9 +4854,9 @@ mod tests {
         let hdr = app.comment_header_layout(card);
 
         assert!(
-            hdr.name_x + hdr.name_max as f64 <= hdr.chip.x0,
+            hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0,
             "the author name stops before the resolve chip (name ends {}, chip at {})",
-            hdr.name_x + hdr.name_max as f64,
+            hdr.name_x + f64::from(hdr.name_max),
             hdr.chip.x0
         );
         assert!(
@@ -4890,7 +4878,7 @@ mod tests {
         let shown = truncate_to_width(&mut tr, long, 11.5, hdr.name_max);
         let (w, _) = tr.measure(&shown, 11.5, None);
         assert!(
-            w as f32 <= hdr.name_max + 0.5,
+            w <= hdr.name_max + 0.5,
             "the truncated name ({shown:?}, {w}px) fits within the bounded width {}px",
             hdr.name_max
         );

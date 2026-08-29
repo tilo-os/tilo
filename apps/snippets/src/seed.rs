@@ -21,7 +21,7 @@ pub fn starter_library() -> Vec<Snippet> {
         let mut s = Snippet::blank(folder);
         s.title = title.to_string();
         s.language = language;
-        s.tags = tags.iter().map(|t| t.to_string()).collect();
+        s.tags = tags.iter().map(std::string::ToString::to_string).collect();
         s.description = description.to_string();
         s.body = body.to_string();
         s.favorite = favorite;

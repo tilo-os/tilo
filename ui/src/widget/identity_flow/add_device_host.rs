@@ -299,17 +299,17 @@ impl Widget for AddDeviceHostScreen {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_w = 520.0;
         let card_h = 540.0;
@@ -418,7 +418,7 @@ impl Widget for AddDeviceHostScreen {
             .unwrap_or_else(|| "------".to_string());
         text_renderer.draw_text(
             scene,
-            &format!("Code: {}", code_label),
+            &format!("Code: {code_label}"),
             18.0,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((card.x0 + pad, self.qr_rect.y1 + 16.0)),
@@ -479,7 +479,7 @@ impl Widget for AddDeviceHostScreen {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AddDeviceHostScreen"
     }
 

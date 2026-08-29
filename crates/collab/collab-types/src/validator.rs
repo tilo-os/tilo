@@ -363,7 +363,7 @@ impl ChannelState {
             .canonical()
             .map_err(RedactionError::Malformed)?;
         let mut rewritten = 0usize;
-        for entry in self.op_log.iter_mut() {
+        for entry in &mut self.op_log {
             if OpId::from_op(entry) == target && entry.op_class != OpClass::Redact {
                 // Snapshot the pre-redaction envelope for audit + stable compaction
                 // prefix hash. Only the first sighting matters — replays of the same
@@ -507,7 +507,7 @@ pub fn validate_inbound_op(
         // disallowed. Bounded by max_in_memory_ops; original_envelopes isn't
         // consulted since a previously-redacted Redact would have been
         // refused here on first apply, so by induction the cache never holds one.
-        for entry in channel_state.op_log.iter() {
+        for entry in &channel_state.op_log {
             if entry.op_class == OpClass::Redact && OpId::from_op(entry) == req.target_op_id {
                 return Err(ValidationError::RecursiveRedaction {
                     target: req.target_op_id,
@@ -623,7 +623,7 @@ fn highest_cleared_at(
         }
         for claim in &att.claims {
             if let Claim::ClearedAt(c) = claim
-                && best.map(|(b, _)| c > &b).unwrap_or(true)
+                && best.map_or(true, |(b, _)| c > &b)
             {
                 best = Some((*c, att.issued_by));
             }

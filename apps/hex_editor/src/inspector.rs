@@ -72,7 +72,7 @@ pub fn decode_uleb128(bytes: &[u8], offset: usize) -> Option<(u64, usize)> {
     let mut consumed = 0usize;
     for &b in &bytes[offset..] {
         consumed += 1;
-        let low = (b & 0x7F) as u64;
+        let low = u64::from(b & 0x7F);
         // Guard against shifting past the width of u64.
         if shift >= 64 {
             return None;
@@ -96,7 +96,7 @@ pub fn decode_sleb128(bytes: &[u8], offset: usize) -> Option<(i64, usize)> {
         if shift >= 64 {
             return None;
         }
-        let low = (b & 0x7F) as i64;
+        let low = i64::from(b & 0x7F);
         result |= low << shift;
         shift += 7;
         if b & 0x80 == 0 {
@@ -129,12 +129,12 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
             });
             rows.push(Interpretation {
                 label: "bin",
-                value: format!("{:08b}", b),
+                value: format!("{b:08b}"),
                 width: 1,
             });
             rows.push(Interpretation {
                 label: "oct",
-                value: format!("0o{:o}", b),
+                value: format!("0o{b:o}"),
                 width: 1,
             });
             rows.push(Interpretation {
@@ -218,7 +218,7 @@ pub fn inspect(bytes: &[u8], offset: usize, endian: Endian) -> Vec<Interpretatio
             arr.copy_from_slice(&ord);
             Interpretation {
                 label: "f32",
-                value: format_float(f32::from_le_bytes(arr) as f64),
+                value: format_float(f64::from(f32::from_le_bytes(arr))),
                 width: 4,
             }
         }
@@ -282,11 +282,11 @@ fn format_float(v: f64) -> String {
         }
     } else if v.abs() >= 1e-4 && v.abs() < 1e9 {
         // Plain decimal with up to 6 significant fractional digits.
-        let s = format!("{:.6}", v);
+        let s = format!("{v:.6}");
         let trimmed = s.trim_end_matches('0').trim_end_matches('.');
         trimmed.to_string()
     } else {
-        format!("{:e}", v)
+        format!("{v:e}")
     }
 }
 
@@ -299,7 +299,7 @@ fn printable_char(b: u8) -> String {
         b'\r' => "'\\r'".to_string(),
         b'\t' => "'\\t'".to_string(),
         0 => "'\\0'".to_string(),
-        _ => format!("\\x{:02x}", b),
+        _ => format!("\\x{b:02x}"),
     }
 }
 

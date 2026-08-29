@@ -77,8 +77,7 @@ pub fn decode_address(id: &str) -> Option<ActionAddress> {
 pub fn app_of(resource_id: &str) -> &str {
     resource_id
         .split_once('.')
-        .map(|(head, _)| head)
-        .unwrap_or(resource_id)
+        .map_or(resource_id, |(head, _)| head)
 }
 
 /// The action id an application exports so that it can be opened.
@@ -828,7 +827,7 @@ fn keywords(rest: &str) -> Vec<String> {
     rest.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| significant(w))
-        .map(|w| w.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 

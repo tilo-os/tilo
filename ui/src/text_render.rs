@@ -242,7 +242,7 @@ impl TextRenderer {
         MeasureKey {
             text_hash: hasher.finish(),
             size_bits: size.to_bits(),
-            max_width_bits: max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX),
+            max_width_bits: max_width.map_or(u32::MAX, f32::to_bits),
             weight: weight.to_u16(),
             generation: self.generation,
         }
@@ -418,7 +418,7 @@ impl TextRenderer {
             transform,
             max_width,
             TextWeight::Regular,
-        )
+        );
     }
 
     /// Draw `text` with explicit weight + italic + optional monospace family
@@ -605,7 +605,7 @@ impl TextRenderer {
         let key = ShapeKey {
             text_hash: hasher.finish(),
             size_bits: size.to_bits(),
-            max_width_bits: max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX),
+            max_width_bits: max_width.map_or(u32::MAX, f32::to_bits),
             weight: weight.to_u16(),
             italic,
             family: family.cache_hash(),
@@ -636,7 +636,7 @@ impl TextRenderer {
         for run in buffer.layout_runs() {
             let mut current_face: Option<cosmic_text::fontdb::ID> = None;
             let mut glyphs: Vec<vello::Glyph> = Vec::new();
-            for g in run.glyphs.iter() {
+            for g in run.glyphs {
                 if current_face != Some(g.font_id) && !glyphs.is_empty() {
                     runs.push(GlyphRun {
                         face_id: current_face.unwrap(),
@@ -645,7 +645,7 @@ impl TextRenderer {
                 }
                 current_face = Some(g.font_id);
                 glyphs.push(vello::Glyph {
-                    id: g.glyph_id as u32,
+                    id: u32::from(g.glyph_id),
                     x: g.x,
                     y: run.line_y + g.y,
                 });
@@ -731,15 +731,14 @@ impl TextRenderer {
     ) {
         use crate::richtext::BaselineShift;
         let resolve = |c: Option<cosmic_text::Color>| {
-            c.map(|c| Color::from_rgb8(c.r(), c.g(), c.b()))
-                .unwrap_or(color)
+            c.map_or(color, |c| Color::from_rgb8(c.r(), c.g(), c.b()))
         };
 
         // Highlight bands paint behind glyphs so the ink reads on top.
         for &(s, e, [br, bg, bb]) in &layout.backgrounds {
             let band = Color::from_rgb8(br, bg, bb);
             for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
-                let rect = vello::kurbo::Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64);
+                let rect = vello::kurbo::Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
                 scene.fill(vello::peniko::Fill::NonZero, transform, band, None, &rect);
             }
         }
@@ -753,7 +752,7 @@ impl TextRenderer {
             let mut batch: Vec<cosmic_text::LayoutGlyph> = Vec::new();
             let mut size = 16.0f32;
             let mut batch_size = 16.0f32;
-            for g in run.glyphs.iter() {
+            for g in run.glyphs {
                 let g_shift = layout.baseline_at(g.start);
                 // Flush when face, colour, glyph size, or baseline-shift change.
                 let changed = face != Some(g.font_id)
@@ -797,15 +796,15 @@ impl TextRenderer {
         }
         for &(s, e) in &layout.underlines {
             for (x0, _y0, x1, y1) in layout.selection_rects(s, e) {
-                let uy = (y1 - 2.0) as f64;
-                let rect = vello::kurbo::Rect::new(x0 as f64, uy, x1 as f64, uy + 1.5);
+                let uy = f64::from(y1 - 2.0);
+                let rect = vello::kurbo::Rect::new(f64::from(x0), uy, f64::from(x1), uy + 1.5);
                 scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
             }
         }
         for &(s, e) in &layout.strikes {
             for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
-                let my = ((y0 + y1) / 2.0) as f64;
-                let rect = vello::kurbo::Rect::new(x0 as f64, my, x1 as f64, my + 1.5);
+                let my = f64::from(f32::midpoint(y0, y1));
+                let rect = vello::kurbo::Rect::new(f64::from(x0), my, f64::from(x1), my + 1.5);
                 scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
             }
         }
@@ -830,7 +829,7 @@ impl TextRenderer {
         let vello_glyphs: Vec<vello::Glyph> = glyphs
             .iter()
             .map(|g| vello::Glyph {
-                id: g.glyph_id as u32,
+                id: u32::from(g.glyph_id),
                 x: g.x,
                 y: line_y + g.y,
             })

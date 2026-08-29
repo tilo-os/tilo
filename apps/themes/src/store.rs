@@ -94,7 +94,7 @@ pub fn active_id(text: &str) -> Option<String> {
     root.get(SECTION)?
         .get("id")?
         .as_str()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Parse the active [`ThemeSpec`] from a settings document, if present.

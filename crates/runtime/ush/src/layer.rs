@@ -112,7 +112,7 @@ pub fn upper_filesystem_supported(path: &Path) -> Result<(), LayerError> {
     // SAFETY: `buf` is fully written by a successful `statfs`; `c_path` is a
     // valid NUL-terminated path that outlives the call.
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
+    if unsafe { libc::statfs(c_path.as_ptr(), &raw mut buf) } != 0 {
         // Unable to tell is not the same as unusable. Let the mount decide.
         return Ok(());
     }
@@ -330,7 +330,7 @@ fn mirror_directories(src: &Path, dst: &Path) -> Result<(), LayerError> {
         .into_iter()
         // An unreadable directory in the base is not a reason to refuse the layer —
         // the guest won't be able to write into it either, matching the base.
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
     {
         if !entry.file_type().is_dir() {
             continue;
@@ -342,11 +342,10 @@ fn mirror_directories(src: &Path, dst: &Path) -> Result<(), LayerError> {
             continue;
         }
         let target = dst.join(rel);
-        if let Err(e) = std::fs::create_dir_all(&target) {
-            if e.kind() != std::io::ErrorKind::AlreadyExists {
+        if let Err(e) = std::fs::create_dir_all(&target)
+            && e.kind() != std::io::ErrorKind::AlreadyExists {
                 return Err(io(&target, e));
             }
-        }
     }
     Ok(())
 }

@@ -36,8 +36,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Viewport: explicit `--viewport WxH` wins; otherwise narrow scenarios
         // render at a phone-ish width (so the rail resolves to an overlay
         // flap), everything else at the default 16:10 canvas.
-        let viewport = parse_viewport(&args).unwrap_or_else(|| match scenario.as_deref() {
-            Some("narrow") | Some("narrow_closed") => NARROW_SHOTS_VIEWPORT,
+        let viewport = parse_viewport(&args).unwrap_or(match scenario.as_deref() {
+            Some("narrow" | "narrow_closed") => NARROW_SHOTS_VIEWPORT,
             _ => DEFAULT_SHOTS_VIEWPORT,
         });
         render_shot_to_png(slides::app_root_demo(scenario.as_deref()), viewport, &out)?;
@@ -99,7 +99,7 @@ fn parse_viewport(args: &[String]) -> Option<(u32, u32)> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),

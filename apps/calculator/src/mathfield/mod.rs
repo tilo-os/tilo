@@ -85,7 +85,7 @@ impl MathField {
     }
 
     /// The current content as a linear string the engine parses. The editor
-    /// stores `·` for multiplication (GeoGebra style); the engine wants `*`.
+    /// stores `·` for multiplication (`GeoGebra` style); the engine wants `*`.
     pub fn linear(&self) -> String {
         engine_linear(&self.editor.to_linear())
     }
@@ -144,7 +144,7 @@ impl MathField {
     /// centered when it fits and top-aligned + scrolled when it is taller than
     /// the field, so the field never grows with the formula.
     fn content_origin(&self) -> Point {
-        let h = self.layout.as_ref().map(|l| l.height).unwrap_or(0.0);
+        let h = self.layout.as_ref().map_or(0.0, |l| l.height);
         let view_h = self.rect.height();
         let y = if h <= view_h {
             self.rect.y0 + (view_h - h) / 2.0
@@ -184,7 +184,7 @@ impl MathField {
         };
         let view_w = self.view_w();
         let view_h = self.rect.height();
-        let content_h = self.layout.as_ref().map(|l| l.height).unwrap_or(0.0);
+        let content_h = self.layout.as_ref().map_or(0.0, |l| l.height);
         let margin = 8.0f64;
         if let Some((cx, ctop, cbot)) = caret {
             if cx < self.scroll.x + margin {
@@ -475,7 +475,7 @@ impl MathField {
     /// so a taller formula makes its card taller instead of being clipped.
     pub fn content_height(&mut self, tr: &mut TextRenderer) -> f64 {
         self.relayout(tr);
-        self.layout.as_ref().map(|l| l.height).unwrap_or(0.0)
+        self.layout.as_ref().map_or(0.0, |l| l.height)
     }
 }
 

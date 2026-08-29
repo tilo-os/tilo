@@ -42,7 +42,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--narrow` (or a sub-breakpoint `--viewport WxH`) renders the
         // collapsed layout with the drive-list flap revealed over its scrim.
         let narrow = args.iter().any(|a| a == "--narrow")
-            || parse_viewport_arg(&args).is_some_and(|(w, _)| (w as f64) < 900.0);
+            || parse_viewport_arg(&args).is_some_and(|(w, _)| f64::from(w) < 900.0);
         let viewport = parse_viewport_arg(&args).unwrap_or(if narrow {
             NARROW_SHOTS_VIEWPORT
         } else {
@@ -145,7 +145,7 @@ fn parse_val_arg(args: &[String], flag: &str) -> Option<String> {
 }
 
 /// Run one offscreen frame against the app and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 /// `narrow` snaps the drive-list flap open *after* layout so the collapsed
 /// overlay is captured settled rather than mid-animation.
 fn render_shot_to_png(

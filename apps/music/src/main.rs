@@ -88,8 +88,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // + real cover art off-thread, wait for it to settle, then render.
         let live = args.iter().any(|a| a == "--live")
             || std::env::var("QOS_MUSIC_LIVE")
-                .map(|v| !v.is_empty())
-                .unwrap_or(false);
+                .is_ok_and(|v| !v.is_empty());
         if live {
             let play = parse_value_arg(&args, "--play")
                 .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
@@ -288,7 +287,7 @@ fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Best-effort GStreamer decode of the resolved stream to a fake sink (no
+/// Best-effort `GStreamer` decode of the resolved stream to a fake sink (no
 /// speakers needed). Only compiled with the `audio` feature; on missing codec
 /// plugins it reports honestly rather than claiming audio it didn't produce.
 #[cfg(all(feature = "live", feature = "audio"))]
@@ -481,7 +480,7 @@ fn run_bench(n: usize, viewport: (u32, u32)) -> Result<(), Box<dyn std::error::E
 }
 
 /// Run one offscreen frame against `widget` and return the drawn Vello scene.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_widget_frame(
     widget: &mut dyn Widget,
     state: &mut ui::State,

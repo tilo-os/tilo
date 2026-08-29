@@ -156,7 +156,7 @@ impl Storage {
     }
 }
 
-/// The server's own greeting: name, description, base_url plus
+/// The server's own greeting: name, description, `base_url` plus
 /// the owner pubkey pinned by clients. Sits in `handshake.toml`
 /// so operators can edit it with a text editor.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

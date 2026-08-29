@@ -70,7 +70,7 @@ impl Button {
             icon: None,
             size: None,
             style: ButtonStyle::Neutral,
-            on_click_path: on_click_path.map(|s| s.to_string()),
+            on_click_path: on_click_path.map(std::string::ToString::to_string),
             on_click: None,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -288,7 +288,7 @@ pub fn face_colors(
             } else {
                 0
             };
-            let shift = |a: u8| (a as f32 * 0.85 + toward as f32 * 0.15).round() as u8;
+            let shift = |a: u8| (f32::from(a) * 0.85 + f32::from(toward) * 0.15).round() as u8;
             let active = Color::from_rgba8(shift(d.r()), shift(d.g()), shift(d.b()), d.a());
             let bg = if interact.hovered || interact.pressed {
                 active
@@ -406,10 +406,10 @@ impl<'a> ButtonFace<'a> {
     }
     /// The visible label, or the explicit `accessible_name` when it's empty.
     pub fn spoken_name(&self) -> &str {
-        if !self.label.is_empty() {
-            self.label
-        } else {
+        if self.label.is_empty() {
             self.accessible_name.unwrap_or("")
+        } else {
+            self.label
         }
     }
     /// Exposed for tests and callers that want the resolved palette
@@ -489,7 +489,7 @@ impl Button {
                     text_renderer.measure_weighted(&label, face.text_size, None, face.weight);
                 let gap = if icon.is_some() { 6.0 } else { 0.0 };
                 let icon_w = if icon.is_some() { icon_px } else { 0.0 };
-                let cluster_w = icon_w + gap + text_width as f64;
+                let cluster_w = icon_w + gap + f64::from(text_width);
                 let start_x = rect.center().x - cluster_w / 2.0;
                 if let Some(icon) = icon {
                     let iy = rect.center().y - icon_px / 2.0;
@@ -503,7 +503,7 @@ impl Button {
                     );
                 }
                 let text_x = start_x + icon_w + gap;
-                let text_y = rect.y0 + (rect.height() - face.text_size as f64) / 2.0;
+                let text_y = rect.y0 + (rect.height() - f64::from(face.text_size)) / 2.0;
                 text_renderer.draw_text_weighted(
                     scene,
                     &label,
@@ -542,17 +542,17 @@ impl Widget for Button {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
@@ -582,7 +582,7 @@ impl Widget for Button {
             if self.enabled {
                 out_scene.append(&self.cached, Some(inner));
             } else {
-                let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+                let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
                 out_scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
@@ -613,7 +613,7 @@ impl Widget for Button {
             },
         );
 
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -663,7 +663,7 @@ impl Widget for Button {
                 let (text_width, _) = text_renderer.measure(&label, text_size as f32, None);
                 let gap = if icon.is_some() { 6.0 } else { 0.0 };
                 let icon_w = if icon.is_some() { icon_px } else { 0.0 };
-                let cluster_w = icon_w + gap + text_width as f64;
+                let cluster_w = icon_w + gap + f64::from(text_width);
                 let start_x = self.rect.center().x - cluster_w / 2.0;
                 if let Some(icon) = icon {
                     let iy = self.rect.center().y - icon_px / 2.0;
@@ -692,7 +692,7 @@ impl Widget for Button {
         if self.enabled {
             out_scene.append(&self.cached, Some(out_transform));
         } else {
-            let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+            let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
             out_scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -797,7 +797,7 @@ impl Widget for Button {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Button"
     }
 
@@ -874,9 +874,7 @@ impl Widget for Button {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let label = i18n!(&self.label);
-        let name = if !label.is_empty() {
-            Some(label)
-        } else {
+        let name = if label.is_empty() {
             // Icon-only: prefer the explicit accessible name, else fall
             // back to the tooltip text so the glyph is never silent when
             // a tooltip is set.
@@ -885,6 +883,8 @@ impl Widget for Button {
                 .map(|n| i18n!(n))
                 .or_else(|| self.tooltip.as_ref().map(|t| i18n!(t)))
                 .filter(|n| !n.is_empty())
+        } else {
+            Some(label)
         };
         Some(
             AccessNode::new(Role::Button)

@@ -7,7 +7,7 @@
 //! records what to capture and is where the consent prompt fires (a
 //! valid `restore_token` pre-approves the session and skips it);
 //! `Start` re-checks consent (unless restored), provisions a real
-//! PipeWire node per selected source, and — when the session asked to
+//! `PipeWire` node per selected source, and — when the session asked to
 //! persist — returns a fresh `restore_token` so the next share can skip the prompt.
 //!
 //! `OpenPipeWireRemote` is a frontend-interface method in the reference
@@ -15,7 +15,7 @@
 //! harness) can get a real, scoped remote fd directly from the compositor's provisioner.
 //!
 //! [`ScreenCastStreamProvisioner`] lets tests substitute a
-//! [`MockScreenCastProvisioner`] for the real PipeWire connection.
+//! [`MockScreenCastProvisioner`] for the real `PipeWire` connection.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -25,7 +25,7 @@ use zbus::names::OwnedUniqueName;
 use zbus::object_server::SignalContext;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
-use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+use crate::shell::state::{Capability, GRANT_ONCE};
 
 #[cfg(test)]
 use super::PromptOutcome;
@@ -113,7 +113,7 @@ impl ScreenCastBackend {
         cursor_mode::ALL
     }
 
-    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise PascalCase it to `Version`).
+    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
     #[zbus(property, name = "version")]
     async fn version(&self) -> u32 {
         SCREENCAST_VERSION
@@ -218,11 +218,11 @@ impl ScreenCastBackend {
             entry.restored = restored;
         }
 
-        let code = if allowed { 0 } else { 1 };
+        let code = u32::from(!allowed);
         (code, HashMap::new())
     }
 
-    /// `Start` — provision a real PipeWire node per selected source and
+    /// `Start` — provision a real `PipeWire` node per selected source and
     /// return the streams. Issues a fresh `restore_token` when the session asked to persist.
     async fn start(
         &self,
@@ -312,7 +312,7 @@ impl ScreenCastBackend {
         start_response(infos, restore_token, session.persist_mode)
     }
 
-    /// `OpenPipeWireRemote` — hand back the fd of a PipeWire remote the app
+    /// `OpenPipeWireRemote` — hand back the fd of a `PipeWire` remote the app
     /// attaches the provisioned nodes to. See the module docs for where this sits relative to the reference frontend.
     async fn open_pipe_wire_remote(
         &self,
@@ -325,8 +325,7 @@ impl ScreenCastBackend {
             .sessions
             .lock()
             .ok()
-            .map(|s| s.contains_key(&key))
-            .unwrap_or(false);
+            .is_some_and(|s| s.contains_key(&key));
         if !known {
             return Err(zbus::fdo::Error::AccessDenied(
                 "OpenPipeWireRemote for an unknown ScreenCast session".into(),
@@ -395,7 +394,7 @@ fn start_response(
 ) -> (u32, HashMap<String, OwnedValue>) {
     let mut results: HashMap<String, OwnedValue> = HashMap::new();
     let streams: Vec<(u32, HashMap<String, OwnedValue>)> =
-        infos.into_iter().map(|i| i.into_stream_tuple()).collect();
+        infos.into_iter().map(super::screencast_pipewire::PipewireStreamInfo::into_stream_tuple).collect();
     if let Ok(o) = OwnedValue::try_from(Value::new(streams)) {
         results.insert("streams".to_string(), o);
     }

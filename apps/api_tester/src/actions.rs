@@ -185,15 +185,14 @@ impl ApiTesterAction {
                 request_id,
                 name,
             } => {
-                if let Some(c) = find_collection_mut(cols, collection_id) {
-                    if let Some(r) = c
+                if let Some(c) = find_collection_mut(cols, collection_id)
+                    && let Some(r) = c
                         .requests
                         .iter_mut()
                         .find(|r| r.id.to_string() == *request_id)
                     {
                         r.name = name.clone();
                     }
-                }
             }
             ApiTesterAction::DeleteRequest {
                 collection_id,

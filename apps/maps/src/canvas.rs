@@ -155,7 +155,7 @@ impl MapPalette {
 
 /// The signal colour for a congestion level, resolved from the palette.
 pub fn traffic_color(pal: &MapPalette, level: crate::traffic::Congestion) -> Color {
-    use crate::traffic::Congestion::*;
+    use crate::traffic::Congestion::{Free, Moderate, Heavy, Severe};
     match level {
         Free => pal.traffic_free,
         Moderate => pal.traffic_moderate,
@@ -312,12 +312,11 @@ pub fn draw_tiles(
         let have_exact = tiles_layer.get(*id).is_some();
         if !have_exact {
             // (2) ancestor placeholder (blurry lower-z fill for zoom-in / pan).
-            if let Some((anc_id, levels)) = tiles_layer.ancestor_placeholder(*id) {
-                if let Some(anc_img) = tiles_layer.get(anc_id).cloned() {
+            if let Some((anc_id, levels)) = tiles_layer.ancestor_placeholder(*id)
+                && let Some(anc_img) = tiles_layer.get(anc_id).cloned() {
                     tiles::paint_ancestor(scene, t, &anc_img, anc_id, *id, levels, *rect);
                     painted_any = true;
                 }
-            }
             // (3) descendant placeholder (sharp higher-z fill for zoom-out).
             if tiles::paint_descendants(scene, t, tiles_layer, *id, *rect, 2) {
                 painted_any = true;
@@ -371,8 +370,8 @@ pub fn draw_grid_substrate(
     for (_, rect) in &tiles {
         // Quarter-tile minor grid for a paper-like texture.
         for k in 1..4 {
-            let fx = rect.x0 + rect.width() * k as f64 / 4.0;
-            let fy = rect.y0 + rect.height() * k as f64 / 4.0;
+            let fx = rect.x0 + rect.width() * f64::from(k) / 4.0;
+            let fy = rect.y0 + rect.height() * f64::from(k) / 4.0;
             draw::line(
                 scene,
                 t,
@@ -828,14 +827,13 @@ pub fn draw_pois(
             clip,
         );
     }
-    if let Some(sel) = selected {
-        if let Some(poi) = pois.iter().find(|p| p.id == sel) {
+    if let Some(sel) = selected
+        && let Some(poi) = pois.iter().find(|p| p.id == sel) {
             let p = proj.project(poi.pos);
             if clip.contains(p) {
                 draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true, icons, clip);
             }
         }
-    }
     scene.pop_layer();
 }
 
@@ -888,8 +886,8 @@ fn draw_poi_dot(
         let size = if selected { 12.0 } else { 11.0 };
         let tw = draw::measure_w(tr, &poi.name, size);
         let lx = p.x + r + 6.0;
-        let ly = p.y - size as f64 * 0.72;
-        let plate = Rect::new(lx - 4.0, ly - 1.0, lx + tw + 6.0, ly + size as f64 + 3.0);
+        let ly = p.y - f64::from(size) * 0.72;
+        let plate = Rect::new(lx - 4.0, ly - 1.0, lx + tw + 6.0, ly + f64::from(size) + 3.0);
         // Only draw the name plate when it fits in the map area, so it is never
         // sliced at the drawer / screen edge into an unreadable fragment. The
         // marker still shows; the info card / list already carries the name.
@@ -955,7 +953,7 @@ pub fn draw_category_icon(
         Category::Landmark => {
             let mut pts = Vec::with_capacity(10);
             for k in 0..10 {
-                let ang = -std::f64::consts::FRAC_PI_2 + k as f64 * std::f64::consts::PI / 5.0;
+                let ang = -std::f64::consts::FRAC_PI_2 + f64::from(k) * std::f64::consts::PI / 5.0;
                 let rad = if k % 2 == 0 { s } else { s * 0.45 };
                 pts.push(Point::new(c.x + rad * ang.cos(), c.y + rad * ang.sin()));
             }
@@ -1179,7 +1177,7 @@ fn pin_path(anchor: Point, head_r: f64, height: f64) -> vello::kurbo::BezPath {
     p.line_to(pt(theta_r));
     let n = 32;
     for i in 1..=n {
-        p.line_to(pt(theta_r + sweep * (i as f64 / n as f64)));
+        p.line_to(pt(theta_r + sweep * (f64::from(i) / f64::from(n))));
     }
     p.line_to(anchor);
     p.close_path();

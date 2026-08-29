@@ -176,7 +176,7 @@ impl DrmDispatchState {
                         device: device_id,
                         connector: s.connector_id,
                     },
-                    size: (w as u32, h as u32),
+                    size: (u32::from(w), u32::from(h)),
                     mm: s.physical_mm,
                 }
             })
@@ -357,7 +357,7 @@ impl DrmDispatchState {
             // The remaining three all happen inside the scanouts, which
             // live on the render thread, so they travel together as one ordered `Resume` — splitting would let a frame slip between modeset and unpause.
             SessionAction::ResetOutputs => {
-                let dpms_on = self.session.as_ref().map(|s| s.dpms_on()).unwrap_or(true);
+                let dpms_on = self.session.as_ref().is_none_or(super::session::SessionState::dpms_on);
                 self.command(ScanoutCommand::Resume { dpms_on });
             }
             SessionAction::RestoreDpms | SessionAction::ResumeScanout => {}
@@ -575,7 +575,7 @@ impl DrmRuntime {
                 .cloned()
                 .collect()
         } else {
-            kms_gpus.clone()
+            kms_gpus
         };
         let mut session_for_enum = session.clone();
         let connectors = enumerate_connectors(&mut session_for_enum, &enum_gpus);
@@ -604,7 +604,7 @@ impl DrmRuntime {
         handle
             .insert_source(
                 session_notifier,
-                move |event, _, state: &mut DrmDispatchState| {
+                move |event, (), state: &mut DrmDispatchState| {
                     use smithay::backend::session::Event as SeatEvent;
                     let tick = match event {
                         SeatEvent::ActivateSession => {
@@ -630,7 +630,7 @@ impl DrmRuntime {
         // hotplug plan decides whether that implies any work. `Changed` is
         // what a monitor plugged into a live card raises, so treating it as a no-op means plugging in a display does nothing.
         handle
-            .insert_source(udev, move |event, _, state: &mut DrmDispatchState| {
+            .insert_source(udev, move |event, (), state: &mut DrmDispatchState| {
                 use smithay::backend::udev::UdevEvent;
                 match event {
                     UdevEvent::Added { device_id, path } => {
@@ -654,7 +654,7 @@ impl DrmRuntime {
         handle
             .insert_source(
                 libinput_backend,
-                move |event, _, state: &mut DrmDispatchState| match event {
+                move |event, (), state: &mut DrmDispatchState| match event {
                     // A device appearing is the only moment libinput will
                     // accept its configuration (at startup and on real hot-plug) — the arm that makes persisted input settings reach the hardware at all.
                     InputEvent::DeviceAdded { mut device } => {
@@ -678,8 +678,8 @@ impl DrmRuntime {
                     // Relative motion (mouse): accumulate + clamp to output.
                     InputEvent::PointerMotion { event } => {
                         let (w, h) = state.output_size;
-                        let max_x = (w.max(1) - 1) as f64;
-                        let max_y = (h.max(1) - 1) as f64;
+                        let max_x = f64::from(w.max(1) - 1);
+                        let max_y = f64::from(h.max(1) - 1);
                         let x = (state.pointer.0 + event.delta_x()).clamp(0.0, max_x);
                         let y = (state.pointer.1 + event.delta_y()).clamp(0.0, max_y);
                         state.pointer = (x, y);
@@ -818,10 +818,7 @@ impl DrmRuntime {
 
         // Compile the xkb keymap once at startup from the session's `XKB_DEFAULT_*` environment (installer-seeded, PAM-exported); a failure is non-fatal, running pointer-only rather than refusing to boot.
         let keyboard = KeyboardXkb::new();
-        match &keyboard {
-            Some(_) => tracing::info!("DRM backend: xkb keyboard initialised"),
-            None => tracing::warn!("DRM backend: xkb keymap unavailable; keyboard input disabled"),
-        }
+        if keyboard.is_some() { tracing::info!("DRM backend: xkb keyboard initialised") } else { tracing::warn!("DRM backend: xkb keymap unavailable; keyboard input disabled") }
 
         // The persisted preferences, read once here so the same values drive libinput device config, gesture direction and the per-output scale override.
         let input = InputSettings::load();
@@ -865,7 +862,7 @@ impl DrmRuntime {
         let mut scanouts = dispatch.adopt_builds(scanout_builds);
         dispatch.relayout_outputs();
         // `adopt_builds` leaves positions provisional; the relayout above computed the real ones, so copy them onto the entries the presenter will own.
-        for entry in scanouts.iter_mut() {
+        for entry in &mut scanouts {
             if let Some(live) = dispatch.live.iter().find(|l| l.id == entry.id) {
                 entry.position = live.position;
             }
@@ -873,7 +870,7 @@ impl DrmRuntime {
         scanouts.sort_by_key(|e| e.id.0);
         // Start the pointer in the middle of the combined space.
         let (ow, oh) = dispatch.output_size;
-        dispatch.pointer = (ow as f64 / 2.0, oh as f64 / 2.0);
+        dispatch.pointer = (f64::from(ow) / 2.0, f64::from(oh) / 2.0);
         dispatch
             .hw_cursor
             .move_to(dispatch.pointer.0, dispatch.pointer.1);
@@ -928,7 +925,7 @@ impl DrmRuntime {
             ..GestureConfig::default()
         });
         let mut devices = std::mem::take(&mut self.dispatch.devices);
-        for device in devices.iter_mut() {
+        for device in &mut devices {
             self.dispatch.configure_device(device);
         }
         self.dispatch.devices = devices;
@@ -980,11 +977,11 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
 }
 
 /// The `display.scale` the user has set, or `None`. Distinguishing
-/// "unset" from "set to 1.0" is the point: unset derives the scale from the panel, 1.0 means the user chose 100% on a HiDPI panel.
+/// "unset" from "set to 1.0" is the point: unset derives the scale from the panel, 1.0 means the user chose 100% on a `HiDPI` panel.
 fn load_display_scale_override() -> Option<f64> {
     settings_store::load_section("display")
         .get("scale")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .filter(|s| (0.5..=3.0).contains(s))
 }
 
@@ -1116,11 +1113,11 @@ impl KeyboardXkb {
         let _ = self.state.update_key(keycode, direction);
 
         let new_mods = self.current_mods();
-        let modifiers_changed = if new_mods != self.mods {
+        let modifiers_changed = if new_mods == self.mods {
+            None
+        } else {
             self.mods = new_mods;
             Some(Modifiers::from(new_mods))
-        } else {
-            None
         };
 
         // Derive the logical key from the *keysym* (not UTF-8 output) so chords like Ctrl+K resolve to `Character("k")`, not the control character.
@@ -1262,7 +1259,7 @@ where
         )
         .map_err(|e| format!("session.open({path:?}): errno={:?}", e.as_errno()))?;
     let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
-    let dev_id_raw: u64 = device_fd.dev_id().map_err(|e| format!("dev_id: {e}"))? as u64;
+    let dev_id_raw: u64 = device_fd.dev_id().map_err(|e| format!("dev_id: {e}"))?;
 
     let (drm_device, _notifier) = DrmDevice::new(device_fd, /* disable_connectors */ false)
         .map_err(|e| format!("DrmDevice::new: {e}"))?;

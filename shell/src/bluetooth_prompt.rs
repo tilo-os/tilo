@@ -14,7 +14,7 @@ use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Tra
 use qos_bluez::{PairingPrompt, PairingReply, PairingRequest};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Banner, Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, Widget};
+use ui::widget::{Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -129,15 +129,14 @@ impl PairingPromptView {
             ))));
         }
 
-        if let PairingPrompt::DisplayPasskey { entered, .. } = &self.request.prompt {
-            if *entered > 0 {
+        if let PairingPrompt::DisplayPasskey { entered, .. } = &self.request.prompt
+            && *entered > 0 {
                 body = body.push(Box::new(
                     Text::new(&format!("{entered} of 6 digits entered"))
                         .with_size(12.0)
                         .with_color(theme.text_dim),
                 ));
             }
-        }
 
         if let PairingPrompt::AuthorizeService { uuid } = &self.request.prompt {
             body = body.push(Box::new(
@@ -297,25 +296,23 @@ impl Widget for PairingPromptView {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+                && let Some(&cn) = children.first() {
                     c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
                 }
-            }
-        }
     }
 
     fn draw(
@@ -344,9 +341,9 @@ impl Widget for PairingPromptView {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+                && let Some(&cn) = children.first() {
                     c.handle_event(
                         event,
                         scale_factor,
@@ -359,14 +356,12 @@ impl Widget for PairingPromptView {
                         taffy,
                     );
                 }
-            }
-        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
             .as_ref()
-            .map(|c| c.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .into_iter()
             .collect()
     }
@@ -379,7 +374,7 @@ impl Widget for PairingPromptView {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PairingPromptView"
     }
 
@@ -396,8 +391,7 @@ impl Widget for PairingPromptView {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }

@@ -476,11 +476,10 @@ impl ChromeState {
     pub fn commit_workspace_name(&mut self) {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
-            if !trimmed.is_empty() {
-                if let Some(ws) = self.tree_mut().active_workspace_mut() {
+            if !trimmed.is_empty()
+                && let Some(ws) = self.tree_mut().active_workspace_mut() {
                     ws.name = trimmed.to_string();
                 }
-            }
             self.bump();
         }
     }
@@ -516,7 +515,7 @@ impl ChromeState {
     pub fn handle_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
         let tab_id = {
             let mut tree = self.tree_mut();
-            super::workspace_drop::apply_workspace_drop_from_path(&mut *tree, path)
+            super::workspace_drop::apply_workspace_drop_from_path(&mut tree, path)
         };
         if tab_id.is_some() {
             self.bump();
@@ -537,7 +536,7 @@ impl ChromeState {
         let tab_id = {
             let mut tree = self.tree_mut();
             super::workspace_drop::apply_workspace_drop_at_from_path(
-                &mut *tree, path, strip_id, group_id,
+                &mut tree, path, strip_id, group_id,
             )
         };
         if let Some(tab_id) = tab_id {
@@ -712,7 +711,7 @@ impl ChromeState {
         if count == 0 {
             return false;
         }
-        let next = (focused as i64 + dir.signum() as i64).clamp(0, count as i64 - 1) as usize;
+        let next = (focused as i64 + i64::from(dir.signum())).clamp(0, count as i64 - 1) as usize;
         self.focus_strip_index(next)
     }
 

@@ -30,15 +30,12 @@ const VIDEO_EXT: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi"];
 /// point the app at the P2P workspace), otherwise `$XDG_PICTURES_DIR/Camera`,
 /// falling back to `~/Pictures/Camera`.
 pub fn resolve_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("CAMERA_DIR") {
-        if !dir.is_empty() {
+    if let Ok(dir) = std::env::var("CAMERA_DIR")
+        && !dir.is_empty() {
             return PathBuf::from(dir);
         }
-    }
     let pics = dirs::picture_dir().unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|h| h.join("Pictures"))
-            .unwrap_or_else(|| PathBuf::from("."))
+        dirs::home_dir().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
     });
     pics.join("Camera")
 }
@@ -46,7 +43,7 @@ pub fn resolve_dir() -> PathBuf {
 fn ext_lower(path: &Path) -> Option<String> {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
 }
 
 fn kind_for(ext: &str) -> Option<CaptureKind> {
@@ -64,8 +61,7 @@ fn mtime_secs(path: &Path) -> i64 {
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Scan `dir` for image/video files, newest first. Missing directory ⇒ empty
@@ -100,20 +96,17 @@ pub fn scan(dir: &Path, favorites: &HashSet<String>) -> Vec<Capture> {
                 }
             }
             CaptureKind::Video => {
-                if ext == "avi" {
-                    if let Some((vw, vh, d)) = video::probe_avi(&path) {
+                if ext == "avi"
+                    && let Some((vw, vh, d)) = video::probe_avi(&path) {
                         w = vw;
                         h = vh;
                         dur_ms = d;
                     }
-                }
             }
         }
         let label = path
             .file_stem()
-            .and_then(|s| s.to_str())
-            .map(prettify_stem)
-            .unwrap_or_else(|| id.clone());
+            .and_then(|s| s.to_str()).map_or_else(|| id.clone(), prettify_stem);
         out.push(Capture {
             id: id.clone(),
             kind,
@@ -181,12 +174,12 @@ fn write_jpeg(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
     let w = std::io::BufWriter::new(file);
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(w, 90);
     enc.write_image(&rgb, frame.w, frame.h, ExtendedColorType::Rgb8)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(())
 }
 
 fn png_io(e: png::EncodingError) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+    std::io::Error::other(e.to_string())
 }
 
 /// Decode `path` and downscale to at most `w`×`h`, returning tightly packed
@@ -242,7 +235,7 @@ pub fn timestamp_name() -> String {
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64;
+    let doe = (z - era * 146_097);
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);

@@ -55,7 +55,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         installed,
     };
     let fh = |name: &str, desc: &str, cat: &str, installed: InstalledState| StoreItem {
-        id: format!("org.example.{}", name),
+        id: format!("org.example.{name}"),
         name: name.into(),
         description: desc.into(),
         categories: vec![cat.into()],

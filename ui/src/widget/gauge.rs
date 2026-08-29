@@ -166,7 +166,7 @@ impl RingGauge {
             &track,
         );
 
-        let frac = frac.clamp(0.0, 1.0) as f64;
+        let frac = f64::from(frac.clamp(0.0, 1.0));
         if frac > 0.0 {
             let arc = Arc::new(center, (radius, radius), -FRAC_PI_2, frac * TAU, 0.0);
             let stroke = Stroke::new(thickness)
@@ -179,8 +179,8 @@ impl RingGauge {
         if !big.is_empty() {
             let size = tokens.typography.scale.xl;
             let (bw, bh) = text_renderer.measure_weighted(big, size, None, TextWeight::Bold);
-            let bx = center.x - bw as f64 / 2.0;
-            let by = center.y - bh as f64 / 2.0 - if small.is_empty() { 0.0 } else { 4.0 };
+            let bx = center.x - f64::from(bw) / 2.0;
+            let by = center.y - f64::from(bh) / 2.0 - if small.is_empty() { 0.0 } else { 4.0 };
             text_renderer.draw_text_weighted(
                 scene,
                 big,
@@ -193,8 +193,8 @@ impl RingGauge {
             if !small.is_empty() {
                 let ss = tokens.typography.scale.xs;
                 let (sw, _) = text_renderer.measure(small, ss, None);
-                let sx = center.x - sw as f64 / 2.0;
-                let sy = center.y + bh as f64 / 2.0 - 2.0;
+                let sx = center.x - f64::from(sw) / 2.0;
+                let sy = center.y + f64::from(bh) / 2.0 - 2.0;
                 text_renderer.draw_text(
                     scene,
                     small,
@@ -227,17 +227,17 @@ impl Widget for RingGauge {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -291,7 +291,7 @@ impl Widget for RingGauge {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RingGauge"
     }
 
@@ -417,7 +417,7 @@ impl BarGauge {
                 value,
                 tokens.typography.scale.sm,
                 tokens.colors.text_dim,
-                transform * Affine::translate((rect.x1 - vw as f64, rect.y0)),
+                transform * Affine::translate((rect.x1 - f64::from(vw), rect.y0)),
                 None,
             );
         }
@@ -432,7 +432,7 @@ impl BarGauge {
             &RoundedRect::from_rect(track, radius),
         );
 
-        let frac = frac.clamp(0.0, 1.0) as f64;
+        let frac = f64::from(frac.clamp(0.0, 1.0));
         if frac > 0.0 {
             let fill = Rect::new(
                 track.x0,
@@ -469,17 +469,17 @@ impl Widget for BarGauge {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -519,7 +519,7 @@ impl Widget for BarGauge {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BarGauge"
     }
 

@@ -1,9 +1,9 @@
 //! Audio output engine.
 //!
-//! Real playback uses a GStreamer `playbin` (gated behind the `audio` cargo
+//! Real playback uses a `GStreamer` `playbin` (gated behind the `audio` cargo
 //! feature). The default build compiles a silent stub with the same public
 //! surface, so the UI, the offline `--shots` screenshot and CI stay free of a
-//! system GStreamer dependency.
+//! system `GStreamer` dependency.
 //!
 //! ## Real audio out — an explicit sink chain, never a `fakesink`
 //!
@@ -19,32 +19,32 @@
 //!
 //! ## Fetching googlevideo streams
 //!
-//! A resolved YouTube stream URL can't be handed straight to playbin's
+//! A resolved `YouTube` stream URL can't be handed straight to playbin's
 //! `souphttpsrc`: to enable seeking it issues an open-ended `Range: bytes=0-`
 //! request, and googlevideo answers that with `403 Forbidden` — it only serves
 //! **bounded** byte ranges. So the engine stages the stream to a temp file
 //! with `reqwest` using bounded `Range` requests instead, then plays that
 //! local file through the ordinary playbin path — see
 //! [`spawn_stream_download`] and [`AudioEngine::pump`]. A `file://` uri (a
-//! cached track) plays directly. The engine also services the GStreamer bus
+//! cached track) plays directly. The engine also services the `GStreamer` bus
 //! so a genuinely failed pipeline is never reported as still playing.
 //!
-//! ffmpeg / ALSA / PulseAudio crates are deliberately not used — `playbin`
+//! ffmpeg / ALSA / `PulseAudio` crates are deliberately not used — `playbin`
 //! already negotiates decode + the system sink.
 //!
 //! ## System dependency (host + OS image)
 //!
 //! Audible output needs, in the runtime environment:
-//! - a GStreamer **audio sink** plugin — `gstreamer1-plugin-pipewire`
+//! - a `GStreamer` **audio sink** plugin — `gstreamer1-plugin-pipewire`
 //!   (`pipewiresink`) and/or `gstreamer1-plugins-good` (`pulsesink`), plus a
 //!   running PipeWire/Pulse server. Without one, `autoaudiosink` silently
 //!   falls back to `fakesink` and the user hears nothing.
-//! - an **AAC / Opus decoder** for the streams YouTube Music serves —
+//! - an **AAC / Opus decoder** for the streams `YouTube` Music serves —
 //!   `gstreamer1-libav` (`avdec_aac`, `avdec_opus`) and/or
 //!   `gstreamer1-plugins-bad-free` (`faad`). `gstreamer1-plugins-base` +
 //!   `-good` can demux (`qtdemux`) the staged file but cannot decode AAC, so
 //!   playback is silent without one. (The stream itself is fetched by
-//!   `reqwest`, so no GStreamer HTTP-source plugin is needed.)
+//!   `reqwest`, so no `GStreamer` HTTP-source plugin is needed.)
 
 /// A handle to the audio backend. Cheap to construct; owns the pipeline
 /// when the `audio` feature is enabled.
@@ -74,7 +74,7 @@ struct Inner {
     /// The human-readable text of the last fatal bus error, so the transport can
     /// surface a real message ("Can't stream: …") instead of silently freezing.
     error_msg: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    /// Set when the pipeline posts end-of-stream. A YouTube "free" (no-PoToken)
+    /// Set when the pipeline posts end-of-stream. A `YouTube` "free" (no-PoToken)
     /// direct URL is SABR-gated to its first ~1-minute segment, so the staged
     /// file ends early and the pipeline EOSes before the track's metadata
     /// duration; the transport reads this to advance to the next track instead
@@ -91,7 +91,7 @@ struct Inner {
 /// A live HTTP stream being staged to a temp file so it can be played locally.
 ///
 /// googlevideo 403s playbin's `souphttpsrc` (its open-ended `Range: bytes=0-`
-/// request is refused; YouTube only serves **bounded** ranges from byte 0), so
+/// request is refused; `YouTube` only serves **bounded** ranges from byte 0), so
 /// the media is fetched with `reqwest` — which *does* get bounded ranges — into
 /// this temp file, then played through the ordinary (proven) playbin file path.
 #[cfg(all(feature = "audio", feature = "live"))]
@@ -120,7 +120,7 @@ struct Inner {
 
 impl AudioEngine {
     /// Build an engine. Infallible for the stub build. With `--features
-    /// audio`, `playbin` is a core GStreamer element (`gstreamer1-plugins-base`)
+    /// audio`, `playbin` is a core `GStreamer` element (`gstreamer1-plugins-base`)
     /// that this feature depends on, so a failure to construct it means the
     /// deployment is missing that runtime dependency rather than a condition
     /// callers can route around — this panics with a diagnostic rather than
@@ -214,7 +214,7 @@ impl AudioEngine {
             self.inner.playbin.set_property("mute", false);
             self.inner
                 .playbin
-                .set_property("volume", self.volume as f64);
+                .set_property("volume", f64::from(self.volume));
         }
     }
 
@@ -282,7 +282,7 @@ impl AudioEngine {
     /// The target is clamped to the pipeline's *real* seekable duration (leaving
     /// a small guard before the end) so a seek can never land past EOS. That is
     /// the bug behind "can't seek while playing": the app computes a target from
-    /// the track's YouTube metadata duration, but the media the pipeline holds
+    /// the track's `YouTube` metadata duration, but the media the pipeline holds
     /// may be shorter (a truncated stream) — seeking to metadata-50% then ran
     /// off the end of the file, the pipeline hit EOS, and the transport snapped
     /// to the end / advanced. With a fully-rangeable source and this clamp, a
@@ -316,7 +316,7 @@ impl AudioEngine {
             use gstreamer::prelude::*;
             self.inner
                 .playbin
-                .set_property("volume", self.volume as f64);
+                .set_property("volume", f64::from(self.volume));
         }
     }
 
@@ -329,7 +329,7 @@ impl AudioEngine {
     }
 
     /// Query the pipeline's current playhead in milliseconds, when the live
-    /// GStreamer backend is running and a position is available. The UI uses
+    /// `GStreamer` backend is running and a position is available. The UI uses
     /// this to drive a *real* (not simulated) playhead while audio plays;
     /// `None` falls back to the local simulated playhead.
     pub fn position_ms(&self) -> Option<u64> {
@@ -339,7 +339,7 @@ impl AudioEngine {
             self.inner
                 .playbin
                 .query_position::<gstreamer::ClockTime>()
-                .map(|p| p.mseconds())
+                .map(gstreamer::ClockTime::mseconds)
         }
         #[cfg(not(feature = "audio"))]
         {
@@ -355,7 +355,7 @@ impl AudioEngine {
             self.inner
                 .playbin
                 .query_duration::<gstreamer::ClockTime>()
-                .map(|d| d.mseconds())
+                .map(gstreamer::ClockTime::mseconds)
         }
         #[cfg(not(feature = "audio"))]
         {
@@ -398,7 +398,7 @@ impl AudioEngine {
         }
     }
 
-    /// Service the GStreamer bus (non-blocking): drain pending messages so they
+    /// Service the `GStreamer` bus (non-blocking): drain pending messages so they
     /// don't accumulate, and latch a fatal error so the transport stops
     /// pretending to play. Called once per frame from the app's tick. Also
     /// returns whether an error is currently latched, for diagnostics.
@@ -415,18 +415,17 @@ impl AudioEngine {
                 });
                 if let Some((path, want)) = staged {
                     let has_bytes = std::fs::metadata(&path)
-                        .map(|m| m.len() > 0)
-                        .unwrap_or(false);
+                        .is_ok_and(|m| m.len() > 0);
                     if has_bytes {
                         let uri = format!("file://{}", path.display());
-                        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
                         tracing::info!(target: "music::audio", %uri, bytes, want_play = want, "staged file ready — switching playbin to local file and rolling");
                         let _ = self.inner.playbin.set_state(gstreamer::State::Null);
                         self.inner.playbin.set_property("uri", &uri);
                         self.inner.playbin.set_property("mute", false);
                         self.inner
                             .playbin
-                            .set_property("volume", self.volume as f64);
+                            .set_property("volume", f64::from(self.volume));
                         if want {
                             let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
                         }
@@ -471,7 +470,7 @@ impl AudioEngine {
                             // (match by element name to avoid a type mismatch on
                             // the `Object`/`Element` comparison).
                             let pb_name = self.inner.playbin.name();
-                            if sc.src().map(|s| s.name() == pb_name).unwrap_or(false) {
+                            if sc.src().is_some_and(|s| s.name() == pb_name) {
                                 tracing::debug!(target: "music::audio", from = ?sc.old(), to = ?sc.current(), pending = ?sc.pending(), "playbin state changed");
                             }
                         }
@@ -505,7 +504,7 @@ impl AudioEngine {
     }
 
     /// Whether the pipeline has reached end-of-stream. A free (no-PoToken)
-    /// YouTube direct URL is SABR-gated to its first ~1-minute segment, so the
+    /// `YouTube` direct URL is SABR-gated to its first ~1-minute segment, so the
     /// staged file ends before the track's metadata duration and the pipeline
     /// EOSes early; the transport reads this to advance to the next track rather
     /// than freeze at the truncation point. Always `false` for the silent stub.
@@ -659,7 +658,7 @@ impl AudioEngine {
 }
 
 /// The HTTP `User-Agent`s of the player clients rustypipe resolves streams
-/// through (its default order with no BotGuard is `[Ios, Tv]`). We present the
+/// through (its default order with no `BotGuard` is `[Ios, Tv]`). We present the
 /// client UA matching the URL's `c=` param on the media fetch to mirror the
 /// client that signed it. Values mirror rustypipe's own client UAs (crate 0.11).
 #[cfg(all(feature = "audio", feature = "live"))]
@@ -673,7 +672,7 @@ const TV_UA: &str = "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 
 /// A signed **googlevideo** URL is presented with the client UA matching its
 /// `c=` query param (`c=IOS`, `c=TV`, …), mirroring the client that signed it.
 /// Any other source (notably an Invidious `local` proxy) gets a plain browser
-/// UA — those proxies expect a normal browser, not the iOS YouTube app.
+/// UA — those proxies expect a normal browser, not the iOS `YouTube` app.
 #[cfg(all(feature = "audio", feature = "live"))]
 fn ua_for_uri(uri: &str) -> &'static str {
     if uri.contains("googlevideo.com") {

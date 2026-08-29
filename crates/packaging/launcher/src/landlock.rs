@@ -6,7 +6,7 @@
 //! read-write paths get the full access set), then install the ruleset
 //! on the *child* process after bwrap has set up the mount namespace
 //! but before the entrypoint takes over — bwrap itself needs broad FS
-//! access to mount/bind/pivot_root, so it can't be Landlocked.
+//! access to `mount/bind/pivot_root`, so it can't be Landlocked.
 //!
 //! Today [`apply_plan`] is the in-process restriction point. Real
 //! wiring through bwrap-via-shim is the compositor's pattern (see

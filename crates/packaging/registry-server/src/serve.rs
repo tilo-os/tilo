@@ -42,7 +42,7 @@ struct AppStateInner {
     storage: Storage,
     identity: ServerIdentity,
     /// Owner allowlist — hot-read on every POST, hot-write on
-    /// `add-publisher`, so guard with an RwLock.
+    /// `add-publisher`, so guard with an `RwLock`.
     allowlist: RwLock<PublisherAllowlist>,
 }
 
@@ -65,7 +65,7 @@ impl AppState {
 }
 
 /// The one-and-only HTTP handler — dispatched to by
-/// hyper::service_fn.
+/// `hyper::service_fn`.
 pub async fn handle(
     state: AppState,
     req: Request<Incoming>,
@@ -293,7 +293,7 @@ async fn publisher_may_add_new(state: &AppState, entry: &RegistryEntry) -> bool 
     let mut key = [0u8; 32];
     key.copy_from_slice(&bytes);
     let g = state.inner.allowlist.read().await;
-    g.get(&key).map(|row| row.can_add_new).unwrap_or(false)
+    g.get(&key).is_some_and(|row| row.can_add_new)
 }
 
 // ---- response helpers ------------------------------------------

@@ -15,7 +15,6 @@
 //! "state lives in the CRDT" contract.
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -40,7 +39,6 @@ use crate::media::MediaEngine;
 use crate::model::{self, Channel, Id, Message, User, Workspace};
 use crate::permissions::ChatPermissions;
 use crate::responsive::{FlapMode, FlapState, LEFT_BREAKPOINT, RIGHT_BREAKPOINT};
-use crate::storage;
 
 // --- Fixed chrome metrics (logical px) ------------------------------------
 pub(crate) const RAIL_W: f64 = 68.0;
@@ -249,7 +247,7 @@ pub(crate) enum Hit {
     CallMute,
     CallDeafen,
     CallAudioOnly,
-    /// Start/stop sharing this peer's screen (portal ScreenCast).
+    /// Start/stop sharing this peer's screen (portal `ScreenCast`).
     CallShareScreen,
     CallExpand,
     CallLeave,
@@ -407,7 +405,7 @@ pub struct ChatApp {
     pub(crate) remote_screens: HashMap<String, vello::peniko::ImageData>,
 
     /// The screen-capture source seam. Consulted before a share starts so the
-    /// real xdg-desktop-portal ScreenCast flow (behind `live-media`) can be
+    /// real xdg-desktop-portal `ScreenCast` flow (behind `live-media`) can be
     /// swapped for an injected fake in tests. The default [`SystemPortal`]
     /// returns `None` in the default build — honest gating, never a faked share.
     pub(crate) portal: Box<dyn crate::call::ScreenPortal>,
@@ -454,7 +452,7 @@ impl ChatApp {
     /// The live instance: resolves this peer's real identity. The document
     /// itself is loaded and written by `app-state` (see `main`), so nothing
     /// here touches disk. The resolved identity is what makes two running
-    /// instances genuinely different participants rather than two "u_me"s
+    /// instances genuinely different participants rather than two "`u_me"s`
     /// colliding.
     pub fn new() -> Self {
         let mut app = Self::bare();
@@ -662,12 +660,11 @@ impl ChatApp {
     pub(crate) fn reaction_toggle_action(&self, msg: &str, emoji: &str) -> ChatAction {
         let reacting = self
             .message(msg)
-            .map(|m| {
+            .is_some_and(|m| {
                 m.reactions
                     .iter()
                     .any(|r| r.emoji == emoji && r.reacted_by(&self.me.id))
-            })
-            .unwrap_or(false);
+            });
         if reacting {
             actions::remove_reaction_action(&self.active_channel, msg, emoji, &self.me.id)
         } else {
@@ -681,9 +678,7 @@ impl ChatApp {
         let author = self.user_name(&m.author);
         let snippet: String = if m.text.trim().is_empty() {
             m.attachment
-                .as_ref()
-                .map(|a| a.name().to_string())
-                .unwrap_or_else(|| "(no text)".to_string())
+                .as_ref().map_or_else(|| "(no text)".to_string(), |a| a.name().to_string())
         } else {
             m.text.trim().chars().take(40).collect()
         };
@@ -855,7 +850,7 @@ impl ChatApp {
             if self.mic.is_none() {
                 self.mic = crate::audio::MicCapture::new();
             }
-            let packets = self.mic.as_mut().map(|m| m.poll()).unwrap_or_default();
+            let packets = self.mic.as_mut().map(super::audio::MicCapture::poll).unwrap_or_default();
             for pkt in packets {
                 let seq = self.next_media_seq();
                 self.media.transport_mut().send(MediaObject {
@@ -892,8 +887,8 @@ impl ChatApp {
                 }
                 _ => None,
             };
-            if let Some(nalus) = nalus {
-                if !nalus.is_empty() {
+            if let Some(nalus) = nalus
+                && !nalus.is_empty() {
                     // Feed the host tile's VideoPlayer so this peer sees its own
                     // camera (the surface yields its placeholder to a real frame).
                     self.video.feed_frame(&nalus);
@@ -906,7 +901,6 @@ impl ChatApp {
                         payload: nalus,
                     });
                 }
-            }
         } else {
             self.camera = None;
             self.cam_encoder = None;
@@ -990,15 +984,15 @@ impl ChatApp {
 
     /// Acquire a screen-share source through the portal seam: check the
     /// `ShareScreen` permission, then ask [`self.portal`](Self) for a source
-    /// (the real xdg-desktop-portal ScreenCast picker behind `live-media`; an
+    /// (the real xdg-desktop-portal `ScreenCast` picker behind `live-media`; an
     /// honest `None` in the default build; an injected fake in tests). On a
-    /// grant, open the PipeWire capture + a shared-stack video sender and
+    /// grant, open the `PipeWire` capture + a shared-stack video sender and
     /// publish the screen track (behind `live-media`) and return `true`.
     /// Returns `false` — never fabricating a share — when permission is denied
     /// or the portal grants nothing. The caller flips `call.sharing` + the
     /// shared voice membership.
     ///
-    /// The source selection stays the xdg-desktop-portal ScreenCast picker;
+    /// The source selection stays the xdg-desktop-portal `ScreenCast` picker;
     /// the encode + framing route through [`qos_callstream::VideoStreamSender`]
     /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
     /// `SharedFlatpakSession` performs — instead of a second in-app codec.
@@ -1291,7 +1285,7 @@ impl ChatApp {
     pub(crate) fn voice_in(&self, channel: &str) -> &[crate::model::VoiceMember] {
         self.voice_members
             .get(channel)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(&[])
     }
 
@@ -1370,8 +1364,7 @@ impl ChatApp {
             .channel(&self.active_channel)
             .map(|c| c.workspace.clone())
             != Some(self.active_ws.clone())
-        {
-            if let Some(first) = self
+            && let Some(first) = self
                 .ws_channels()
                 .into_iter()
                 .find(|c| c.kind == model::ChannelKind::Text)
@@ -1379,7 +1372,6 @@ impl ChatApp {
             {
                 self.active_channel = first;
             }
-        }
         // Unread is per-peer derived state, not stored: the channel in view is
         // always read (0); every other channel shows its top-level messages
         // beyond this peer's read watermark. The watermark itself is advanced
@@ -1467,9 +1459,7 @@ impl ChatApp {
         let mut in_voice: HashMap<&str, String> = HashMap::new();
         for (ch_id, members) in &self.voice_members {
             let ch_name = self
-                .channel(ch_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| ch_id.clone());
+                .channel(ch_id).map_or_else(|| ch_id.clone(), |c| c.name.clone());
             for m in members {
                 in_voice.insert(m.user.as_str(), ch_name.clone());
             }
@@ -1581,7 +1571,7 @@ impl ChatApp {
     pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
         let w = (self.center_right() - self.center_left() - 48.0).max(40.0) as f32;
         let (_, h) = tr.measure(self.draft_main.as_str(), 15.0, Some(w));
-        (COMPOSER_MIN_H + (h as f64 - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H)
+        (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H)
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
         let h = self.composer_height(tr);
@@ -1635,22 +1625,20 @@ impl ChatApp {
     /// channel + message lists refresh).
     pub(crate) fn ensure_selection(&mut self) -> bool {
         let mut ws_changed = false;
-        if !self.workspaces.iter().any(|w| w.id == self.active_ws) {
-            if let Some(first) = self.workspaces.first() {
+        if !self.workspaces.iter().any(|w| w.id == self.active_ws)
+            && let Some(first) = self.workspaces.first() {
                 self.active_ws = first.id.clone();
                 self.active_channel.clear();
                 ws_changed = true;
             }
-        }
         // Drop a stale open thread whose parent isn't in this workspace.
-        if let Some(t) = self.thread_open.clone() {
-            if self.message(&t).is_none() {
+        if let Some(t) = self.thread_open.clone()
+            && self.message(&t).is_none() {
                 self.thread_open = None;
                 if self.focus == Focus::Thread {
                     self.focus = Focus::Main;
                 }
             }
-        }
         ws_changed
     }
 
@@ -1680,7 +1668,7 @@ impl ChatApp {
 
     /// The host-tile video rect for the current call mode, including the
     /// dragged overlay offset (docked huddle only — the expanded grid is
-    /// anchored). The single source of truth for both the VideoPlayer node
+    /// anchored). The single source of truth for both the `VideoPlayer` node
     /// placement and the surrounding call chrome.
     pub(crate) fn call_video_rect(&self) -> Rect {
         if self.call.expanded {
@@ -1820,7 +1808,7 @@ impl Widget for ChatApp {
         let video_node = taffy.new_leaf(video_style).unwrap();
         node_map.insert(
             video_node,
-            &mut self.video as *mut VideoPlayer as *mut dyn Widget,
+            &raw mut self.video as *mut dyn Widget,
         );
         self.video_node = Some(video_node);
 
@@ -1828,15 +1816,15 @@ impl Widget for ChatApp {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: percent(1.0),
-                        height: percent(1.0),
+                        width: percent(1.0_f32),
+                        height: percent(1.0_f32),
                     },
                     ..Default::default()
                 },
                 &[video_node],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         self.root_node = Some(root);
         root
     }
@@ -1844,10 +1832,10 @@ impl Widget for ChatApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if let Some(vn) = self.video_node {
             // Shift the video by the dragged overlay offset (huddle only; the
@@ -2046,8 +2034,7 @@ impl Widget for ChatApp {
     /// unused — the same fields the sidebar's own channel click sets.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::ChannelSearchProvider::parse_action_id(action_id)
-        {
-            if let Some(ws) = self.channel(&id).map(|c| c.workspace.clone()) {
+            && let Some(ws) = self.channel(&id).map(|c| c.workspace.clone()) {
                 self.active_ws = ws;
                 self.active_channel = id;
                 self.thread_open = None;
@@ -2055,10 +2042,9 @@ impl Widget for ChatApp {
                 self.focus = Focus::Main;
                 self.caret = 0;
             }
-        }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ChatApp"
     }
 

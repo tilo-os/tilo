@@ -63,7 +63,7 @@ fn generate_noise_bytes() -> Vec<u8> {
 
         let alpha = (state & 0xFF) as u8;
         // [0, 255] -> [0, 40] so the tallest speck is barely visible.
-        let alpha = (alpha as u16 * 40 / 255) as u8;
+        let alpha = (u16::from(alpha) * 40 / 255) as u8;
         bytes.push(0xFF);
         bytes.push(0xFF);
         bytes.push(0xFF);
@@ -118,7 +118,7 @@ fn ground_stops(theme: &Theme) -> (Color, Color) {
 fn shade(color: Color, factor: f32) -> Color {
     let [r, g, b, a] = color.to_rgba8().to_u8_array();
     let f = factor.clamp(0.0, 1.0);
-    let m = |v: u8| (v as f32 * f).round().clamp(0.0, 255.0) as u8;
+    let m = |v: u8| (f32::from(v) * f).round().clamp(0.0, 255.0) as u8;
     Color::from_rgba8(m(r), m(g), m(b), a)
 }
 
@@ -127,9 +127,9 @@ fn shade(color: Color, factor: f32) -> Color {
 /// result only drains the tint — never lightens or darkens.
 fn settle_toward_neutral(color: Color, amount: f32) -> Color {
     let [r, g, b, a] = color.to_rgba8().to_u8_array();
-    let luma = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+    let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
     let k = amount.clamp(0.0, 1.0);
-    let mix = |v: u8| (v as f32 + (luma - v as f32) * k).round().clamp(0.0, 255.0) as u8;
+    let mix = |v: u8| (f32::from(v) + (luma - f32::from(v)) * k).round().clamp(0.0, 255.0) as u8;
     Color::from_rgba8(mix(r), mix(g), mix(b), a)
 }
 
@@ -292,8 +292,8 @@ impl Widget for DesktopBackdrop {
             display: taffy::Display::Flex,
             flex_shrink: 0.0,
             size: taffy::Size {
-                width: percent(1.0),
-                height: percent(1.0),
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
             },
             ..Default::default()
         };
@@ -303,17 +303,17 @@ impl Widget for DesktopBackdrop {
         } else {
             taffy.new_leaf(style).unwrap()
         };
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
 
         if let Some(child) = &mut self.child {
@@ -406,7 +406,7 @@ impl Widget for DesktopBackdrop {
         self.rect
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DesktopBackdrop"
     }
 
@@ -427,8 +427,7 @@ impl Widget for DesktopBackdrop {
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false)
+            .is_some_and(|c| c.take_structure_dirty())
     }
 
     /// A pure function of `self.rect`'s size, so it never reports dirty
@@ -439,8 +438,7 @@ impl Widget for DesktopBackdrop {
             || self
                 .child
                 .as_ref()
-                .map(|c| c.needs_redraw())
-                .unwrap_or(false)
+                .is_some_and(|c| c.needs_redraw())
     }
 
     /// Forward layout-dirty queries to the child — the backdrop has no
@@ -450,8 +448,7 @@ impl Widget for DesktopBackdrop {
     fn is_layout_dirty(&self) -> bool {
         self.child
             .as_ref()
-            .map(|c| c.is_layout_dirty())
-            .unwrap_or(false)
+            .is_some_and(|c| c.is_layout_dirty())
     }
 
     fn mark_drawn(&mut self) {

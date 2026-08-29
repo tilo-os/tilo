@@ -563,7 +563,7 @@ mod tests {
         someone_elses.parent = Some("m1".into());
         let msgs = [
             msg("m1", "u_ada", "@Claude x", 100),
-            reply.clone(),
+            reply,
             someone_elses,
         ];
         let found = record_of(&msgs, ME, "m1").expect("the agent's own reply");

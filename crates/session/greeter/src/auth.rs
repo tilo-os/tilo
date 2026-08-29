@@ -48,7 +48,7 @@ impl AuthUpdate {
     pub fn encode(&self) -> String {
         match self {
             AuthUpdate::Prompt { text, is_error } => {
-                format!("P{SEP}{}{SEP}{text}", if *is_error { 1 } else { 0 })
+                format!("P{SEP}{}{SEP}{text}", i32::from(*is_error))
             }
             AuthUpdate::Accepted => "A".to_string(),
             AuthUpdate::Failed { message, detail } => {

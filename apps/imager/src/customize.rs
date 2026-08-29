@@ -578,7 +578,7 @@ impl CustomizePanel {
             "⤓ Export unattended config",
             12.0,
             c.accent[7],
-            (g.export.x0 + g.export.x1) / 2.0 - ew as f64 / 2.0,
+            f64::midpoint(g.export.x0, g.export.x1) - f64::from(ew) / 2.0,
             g.export.y0 + 8.0,
             None,
             TextWeight::Semibold,
@@ -719,7 +719,7 @@ impl CustomizePanel {
                     };
                 };
                 match &key_ev.logical_key {
-                    Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape) => {
+                    Key::Named(NamedKey::Enter | NamedKey::Escape) => {
                         self.blur();
                         CzResponse {
                             handled: true,

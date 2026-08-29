@@ -100,17 +100,17 @@ impl Widget for Spinner {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -122,7 +122,7 @@ impl Widget for Spinner {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        let size = self.size as f64;
+        let size = f64::from(self.size);
         let dot_r = size * DOT_RADIUS_FRAC;
         let orbit_r = size * ORBIT_RADIUS_FRAC;
         let centre = self.rect.center();
@@ -166,7 +166,7 @@ impl Widget for Spinner {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Spinner"
     }
 

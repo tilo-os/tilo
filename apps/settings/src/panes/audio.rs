@@ -16,16 +16,16 @@
 //! ([`parse_wpctl_status`]); when more than one output (or input) device
 //! exists a picker is shown, and choosing one runs `wpctl set-default <id>`
 //! through [`DeviceControl`], persisting the choice to [`AudioPrefs`]. On a
-//! host with no PipeWire the enumerator returns nothing, so the picker simply
+//! host with no `PipeWire` the enumerator returns nothing, so the picker simply
 //! isn't shown (no fabricated devices) and the volume/mute/input controls
 //! still act on the current default.
 //!
-//! **Per-application routing** enumerates the PipeWire node graph via
+//! **Per-application routing** enumerates the `PipeWire` node graph via
 //! [`media::audio`] (`pw-dump`): each application stream that is playing (or
 //! recording) becomes a row with a picker that routes just that app to a chosen
 //! device — the music app to the headphones while the browser stays on the
 //! speakers — plus per-app volume and mute. Moving a stream writes the
-//! WirePlumber `target.object` metadata; per-app volume/mute go through `wpctl`
+//! `WirePlumber` `target.object` metadata; per-app volume/mute go through `wpctl`
 //! on the stream's node id. The graph is re-read on a throttle so a newly
 //! plugged headset (or a freshly started app) appears without reopening
 //! Settings. Empty means empty: no application playing ⇒ no fabricated rows.
@@ -68,14 +68,14 @@ use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{AudioPrefs, SystemPrefs};
 use crate::widgets::{caption, card, choice_row_described, rows, setting_row};
 
-/// How often the pane re-reads the PipeWire graph while it is open, so a
+/// How often the pane re-reads the `PipeWire` graph while it is open, so a
 /// device plugged in (a headset) or an application that just started playing
 /// appears without reopening Settings. Cheap enough for an actively-viewed
 /// pane; the enumeration is one `pw-dump`.
 const HOTPLUG_INTERVAL: Duration = Duration::from_millis(1_500);
 
 /// CRDT key prefix for a per-application stream's routing/volume/mute, keyed by
-/// its PipeWire node id. `audio.stream.<id>.sink` holds the chosen output
+/// its `PipeWire` node id. `audio.stream.<id>.sink` holds the chosen output
 /// label (or [`FOLLOW_DEFAULT`]); `.volume` the perceptual gain; `.muted` the
 /// mute.
 fn stream_sink_key(id: u32) -> String {
@@ -143,7 +143,7 @@ fn run_wpctl(args: &[&str]) -> Result<(), String> {
 /// `wpctl status`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioDevice {
-    /// PipeWire node id — the handle `wpctl set-default <id>` takes.
+    /// `PipeWire` node id — the handle `wpctl set-default <id>` takes.
     pub id: u32,
     pub name: String,
     /// Whether this device is the current system default for its class.
@@ -258,7 +258,7 @@ pub fn parse_wpctl_status(stdout: &str) -> AudioDevices {
 }
 
 /// Enumerate the audio devices via `wpctl status`. Best-effort: an empty set
-/// when `wpctl` is missing or fails, so a non-qOS host with no PipeWire shows
+/// when `wpctl` is missing or fails, so a non-qOS host with no `PipeWire` shows
 /// no device pickers rather than fabricated devices.
 fn list_audio_devices() -> AudioDevices {
     let Ok(out) = Command::new("wpctl").arg("status").output() else {
@@ -323,7 +323,7 @@ pub struct AudioPane {
     input: Arc<dyn InputControl>,
     device: Arc<dyn DeviceControl>,
     devices: AudioDevices,
-    /// The PipeWire node graph: the per-application streams the "Applications"
+    /// The `PipeWire` node graph: the per-application streams the "Applications"
     /// / "Recording" cards route, plus the devices they can be routed to.
     graph: AudioGraph,
     /// Side-effect surface for editing the graph (route a stream, per-app
@@ -497,7 +497,7 @@ impl AudioPane {
         self
     }
 
-    /// Test / `--shots` builder: inject a PipeWire [`AudioGraph`] and the
+    /// Test / `--shots` builder: inject a `PipeWire` [`AudioGraph`] and the
     /// [`GraphControl`] recorder so the per-application routing path is
     /// exercised without touching `pw-dump` / `pw-metadata`. A static
     /// enumerator returns the same graph, so any hotplug re-enumeration is a
@@ -524,7 +524,7 @@ impl AudioPane {
         &self.devices
     }
 
-    /// The enumerated PipeWire graph (tests read this to assert hotplug
+    /// The enumerated `PipeWire` graph (tests read this to assert hotplug
     /// re-enumeration landed).
     pub fn graph(&self) -> &AudioGraph {
         &self.graph
@@ -712,7 +712,7 @@ impl AudioPane {
         let _ = state.put(
             root,
             stream_volume_key(s.id).as_str(),
-            automerge::ScalarValue::F64(vol as f64),
+            automerge::ScalarValue::F64(f64::from(vol)),
         );
         let _ = state.put(
             root,
@@ -835,13 +835,13 @@ impl Widget for AudioPane {
             let _ = state.put(
                 root,
                 VOLUME_KEY,
-                automerge::ScalarValue::F64(self.initial_volume as f64),
+                automerge::ScalarValue::F64(f64::from(self.initial_volume)),
             );
             let _ = state.put(root, MUTED_KEY, automerge::ScalarValue::Boolean(false));
             let _ = state.put(
                 root,
                 INPUT_VOLUME_KEY,
-                automerge::ScalarValue::F64(self.initial_input as f64),
+                automerge::ScalarValue::F64(f64::from(self.initial_input)),
             );
             let _ = state.put(
                 root,
@@ -985,17 +985,17 @@ impl Widget for AudioPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
@@ -1064,7 +1064,7 @@ impl Widget for AudioPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AudioPane"
     }
 
@@ -1138,7 +1138,7 @@ mod tests {
         let _ = doc.put(&root, VOLUME_KEY, automerge::ScalarValue::F64(0.30));
         pane.sync(&mut doc, &root);
         let calls = rec.calls();
-        assert_eq!(calls.len(), 1, "expected one dispatch, got {:?}", calls);
+        assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
         assert!(calls[0].starts_with("set_volume("));
         assert!(calls[0].contains("30."), "expected 30 in {:?}", calls[0]);
     }
@@ -1226,7 +1226,7 @@ Video
         let dev = Arc::new(RecordingDevice::default());
         let devices = parse_wpctl_status(sample_status());
         let mut pane = AudioPane::with_controls(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             Arc::new(RealInput),
             0.5,
             0.75,
@@ -1250,7 +1250,7 @@ Video
         let dev = Arc::new(RecordingDevice::default());
         let devices = parse_wpctl_status(sample_status());
         let mut pane = AudioPane::with_controls(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             Arc::new(RealInput),
             0.5,
             0.75,
@@ -1271,7 +1271,7 @@ Video
         let rec = Arc::new(RecordingDispatcher::default());
         let input = Arc::new(RecordingInput::default());
         let mut pane = AudioPane::with_controls(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             input.clone(),
             0.5,
             0.75,

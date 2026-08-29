@@ -61,7 +61,7 @@ impl InstalledApp {
     /// leading dot tolerated).
     pub fn opens_extension(&self, ext: &str) -> bool {
         let want = ext.trim().trim_start_matches('.').to_ascii_lowercase();
-        !want.is_empty() && self.opens_extensions.iter().any(|e| *e == want)
+        !want.is_empty() && self.opens_extensions.contains(&want)
     }
 }
 
@@ -208,11 +208,10 @@ fn identities_match(identities: &[String], app_id: &str) -> bool {
 /// its trailing component (`dev.qos.hello` ↔ `hello`).
 fn identities_for_package(package_id: &str) -> Vec<String> {
     let mut out = vec![package_id.to_string()];
-    if let Some(last) = package_id.rsplit('.').next() {
-        if !last.is_empty() && last != package_id {
+    if let Some(last) = package_id.rsplit('.').next()
+        && !last.is_empty() && last != package_id {
             out.push(last.to_string());
         }
-    }
     out
 }
 
@@ -326,11 +325,10 @@ fn write_capabilities_file(
 
 /// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
 pub fn runtime_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        if !dir.is_empty() {
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
+        && !dir.is_empty() {
             return PathBuf::from(dir);
         }
-    }
     // SAFETY: getuid always succeeds.
     let uid = unsafe { libc::getuid() };
     PathBuf::from(format!("/run/user/{uid}"))
@@ -382,11 +380,10 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
 pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     {
         let cache = APP_CACHE.lock().expect("APP_CACHE poisoned");
-        if let Some((apps, at)) = cache.as_ref() {
-            if at.elapsed() < APP_CACHE_TTL {
+        if let Some((apps, at)) = cache.as_ref()
+            && at.elapsed() < APP_CACHE_TTL {
                 return Ok(apps.clone());
             }
-        }
     }
     let apps = read_installed_apps()?;
     *APP_CACHE.lock().expect("APP_CACHE poisoned") = Some((apps.clone(), Instant::now()));
@@ -448,13 +445,11 @@ fn launcher_bin_candidates_from(
     current_exe: Option<PathBuf>,
 ) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if dev_overrides {
-        if let Some(explicit) = explicit {
-            if !explicit.is_empty() {
+    if dev_overrides
+        && let Some(explicit) = explicit
+            && !explicit.is_empty() {
                 out.push(PathBuf::from(explicit));
             }
-        }
-    }
     if let Some(dir) = current_exe.as_ref().and_then(|exe| exe.parent()) {
         out.push(dir.join("qos-launcher"));
     }
@@ -777,14 +772,13 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
     // Not launched by this session, but the machine still has it: a
     // package's manifest name is the app's name regardless of who
     // started the window.
-    if let Ok(apps) = installed_apps() {
-        if let Some(app) = apps
+    if let Ok(apps) = installed_apps()
+        && let Some(app) = apps
             .iter()
             .find(|a| app_id_matches_package(app_id, &a.package_id))
         {
             return Some(app.display_name.clone());
         }
-    }
     // Nor a package launched this session — maybe a host app started
     // another way; its `.desktop` entry gives a nicer label than the raw id.
     crate::shell::host_apps::app_for_window_id(app_id).map(|app| app.name)
@@ -885,9 +879,7 @@ pub(crate) fn set_wayland_socket_path(path: Option<PathBuf>) {
 
 /// Rendered `OsString` form of the socket name for logging.
 pub fn wayland_socket_display() -> OsString {
-    wayland_socket()
-        .map(|p| p.into_os_string())
-        .unwrap_or_else(|| OsString::from("<none>"))
+    wayland_socket().map_or_else(|| OsString::from("<none>"), std::path::PathBuf::into_os_string)
 }
 
 #[cfg(test)]

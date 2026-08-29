@@ -157,7 +157,7 @@ impl ImagerDoc {
         }
     }
     pub fn set_selected(doc: &mut AutoCommit, idx: Option<usize>) {
-        let v = idx.map(|i| i as i64).unwrap_or(-1);
+        let v = idx.map_or(-1, |i| i as i64);
         let _ = doc.put(&ROOT, "selected", v);
     }
 

@@ -107,7 +107,7 @@ impl Theme {
             accent_primary: c.accent[ACCENT_PRIMARY_IDX],
             accent_hover: c.accent[ACCENT_HOVER_IDX],
             status_success: c.semantic.success,
-            radius_standard: tokens.radii.md as f64,
+            radius_standard: f64::from(tokens.radii.md),
             padding_standard: tokens.spacing.s3,
             gap_standard: tokens.spacing.s3,
             reduce_motion: false,
@@ -448,7 +448,7 @@ impl Theme {
     pub fn configured() -> Self {
         match Self::configured_id().as_deref() {
             Some("light") => Self::light(),
-            Some("high-contrast") | Some("high_contrast") => Self::high_contrast(),
+            Some("high-contrast" | "high_contrast") => Self::high_contrast(),
             _ => Self::dark(),
         }
     }
@@ -518,7 +518,7 @@ impl Theme {
         let key: String = name
             .chars()
             .filter(|c| c.is_alphanumeric())
-            .flat_map(|c| c.to_lowercase())
+            .flat_map(char::to_lowercase)
             .collect();
         Some(match key.as_str() {
             "dark" | "qosdark" => Self::dark(),
@@ -604,7 +604,7 @@ impl Theme {
 
         self.tokens.font_size_base *= factor;
 
-        self.radius_standard = self.tokens.radii.md as f64;
+        self.radius_standard = f64::from(self.tokens.radii.md);
         self.padding_standard = self.tokens.spacing.s3;
         self.gap_standard = self.tokens.spacing.s3;
 

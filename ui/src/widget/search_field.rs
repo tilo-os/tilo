@@ -168,7 +168,7 @@ impl SearchField {
         const SIZE: f32 = 11.0;
         let (tw, _) = text_renderer.measure(LABEL, SIZE, None);
         let chip_h = 20.0_f64;
-        let chip_w = tw as f64 + 14.0;
+        let chip_w = f64::from(tw) + 14.0;
         let right_inset = 10.0_f64;
         let cy = self.rect.center().y;
         let chip = Rect::new(
@@ -242,17 +242,17 @@ impl Widget for SearchField {
                 &[child],
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let child_node = taffy.children(node).unwrap()[0];
         self.input
@@ -271,7 +271,7 @@ impl Widget for SearchField {
             return;
         }
         let focused = self.input.is_focused();
-        let pill = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
+        let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -411,7 +411,7 @@ impl Widget for SearchField {
         self.input.on_commit();
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SearchField"
     }
 

@@ -2,7 +2,7 @@
 //! interfaces. Each capnp method translates requests onto the upstream
 //! broker via [`UpstreamHandle`] and returns a Promise the RPC runtime
 //! drives. Server structs hold `Rc`-wrapped state so they can live under
-//! the LocalSet without Send bounds.
+//! the `LocalSet` without Send bounds.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -230,8 +230,8 @@ impl channel_handle::Server for BridgeChannel {
 fn fill_scrollback_batch(mut b: scrollback_batch::Builder<'_>, reply: ScrollbackReply) {
     let (mut earliest, mut latest) = (0u64, 0u64);
     if !reply.ops.is_empty() {
-        earliest = reply.ops.first().map(|op| op.seq).unwrap_or(0);
-        latest = reply.ops.last().map(|op| op.seq).unwrap_or(0);
+        earliest = reply.ops.first().map_or(0, |op| op.seq);
+        latest = reply.ops.last().map_or(0, |op| op.seq);
     }
     let n = reply.ops.len() as u32;
     let mut ops = b.reborrow().init_ops(n);

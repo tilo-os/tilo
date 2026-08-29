@@ -52,7 +52,7 @@ fn editing_a_page_through_the_block_editor_persists_to_disk() {
     let body = read_body(tmp.path(), welcome_id);
     // After our edit the body should be "# Hello\n" turned into
     // markdown by the editor's serializer.
-    assert!(body.contains("# Hello"), "got body: {:?}", body);
+    assert!(body.contains("# Hello"), "got body: {body:?}");
 }
 
 #[test]

@@ -204,7 +204,7 @@ impl PickRequest {
     /// The filter dropdown labels, in order. Lets an app assert on the chooser
     /// it configured without opening one.
     pub fn filter_names(&self) -> Vec<&str> {
-        self.filters.iter().map(|f| f.name()).collect()
+        self.filters.iter().map(FileFilter::name).collect()
     }
 
     /// The filename this request seeds a Save dialog with, if it is one.

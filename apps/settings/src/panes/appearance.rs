@@ -59,8 +59,7 @@ fn ui_scale_label(scale: f64) -> &'static str {
     UI_SCALES
         .iter()
         .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
-        .map(|(label, _)| *label)
-        .unwrap_or("100%")
+        .map_or("100%", |(label, _)| *label)
 }
 
 /// Map a UI-scale label back to its factor, if recognised.
@@ -88,8 +87,7 @@ pub fn text_size_label(scale: f64) -> &'static str {
     TEXT_SIZES
         .iter()
         .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
-        .map(|(label, _)| *label)
-        .unwrap_or("Default")
+        .map_or("Default", |(label, _)| *label)
 }
 
 /// Map a text-size label back to its scale factor, if recognised. Shared with
@@ -137,7 +135,7 @@ impl AppearancePane {
     fn build_composition(&self) -> Box<dyn Widget> {
         let theme_opts: Vec<String> = AppearancePrefs::THEMES
             .iter()
-            .map(|t| t.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         let theme = Dropdown::new(theme_opts, THEME_KEY)
             .with_id("appearance.theme")
@@ -193,11 +191,11 @@ impl AppearancePane {
                 value_row("Active theme", &resolved.name),
                 value_row(
                     "UI scale",
-                    &format!("{:.0}%", resolved.ui_scale as f64 * 100.0),
+                    &format!("{:.0}%", f64::from(resolved.ui_scale) * 100.0),
                 ),
                 value_row(
                     "Text scale",
-                    &format!("{:.0}%", resolved.text_scale as f64 * 100.0),
+                    &format!("{:.0}%", f64::from(resolved.text_scale) * 100.0),
                 ),
                 value_row(
                     "Reduced motion",
@@ -339,17 +337,17 @@ impl Widget for AppearancePane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
@@ -418,7 +416,7 @@ impl Widget for AppearancePane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AppearancePane"
     }
 

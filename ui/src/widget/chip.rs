@@ -115,7 +115,7 @@ impl Chip {
 
     fn intrinsic_width(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
         let (w, _) = text_renderer.measure(&self.label, theme.tokens.typography.scale.sm, None);
-        let mut total = PAD_X * 2.0 + w as f64;
+        let mut total = PAD_X * 2.0 + f64::from(w);
         if self.dot.is_some() {
             total += DOT_D + GAP;
         }
@@ -253,7 +253,7 @@ impl Chip {
             ChipLead::Dot(_) => DOT_D + GAP,
             ChipLead::Glyph(_) => height * 0.44 + GAP,
         };
-        PAD_X * 2.0 + lead_w + w as f64
+        PAD_X * 2.0 + lead_w + f64::from(w)
     }
 
     /// No layout node, caching, or widget instance — for a list that lays
@@ -287,7 +287,7 @@ impl Chip {
         let fade = |c: Color, f: f32| c.with_alpha_factor(f * a);
 
         let colors = &theme.tokens.colors;
-        let pill = RoundedRect::from_rect(rect, theme.tokens.radii.full as f64);
+        let pill = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.full));
 
         // Surface + border. A tinted chip carries its accent at the same
         // 0.18 fill / full-strength border the selected widget state uses,
@@ -373,7 +373,7 @@ impl Chip {
             &shown,
             size,
             fade(label_col, 1.0),
-            transform * Affine::translate((x, cy - lh as f64 / 2.0)),
+            transform * Affine::translate((x, cy - f64::from(lh) / 2.0)),
             None,
         );
     }
@@ -390,7 +390,7 @@ fn truncate_to_width(
     text_renderer: &mut TextRenderer,
 ) -> String {
     let (full, _) = text_renderer.measure(label, size, None);
-    if (full as f64) <= avail {
+    if f64::from(full) <= avail {
         return label.to_string();
     }
     let chars: Vec<char> = label.chars().collect();
@@ -401,7 +401,7 @@ fn truncate_to_width(
         let mut cand: String = chars[..take].iter().collect();
         cand.push('…');
         let (w, _) = text_renderer.measure(&cand, size, None);
-        if (w as f64) <= avail {
+        if f64::from(w) <= avail {
             return cand;
         }
     }
@@ -419,7 +419,7 @@ impl Widget for Chip {
     ) -> NodeId {
         // Approximate width from a fixed advance; measure() refines it.
         let approx = PAD_X * 2.0
-            + self.label.chars().count() as f64 * (theme.tokens.typography.scale.sm as f64 * 0.6)
+            + self.label.chars().count() as f64 * (f64::from(theme.tokens.typography.scale.sm) * 0.6)
             + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
             + if self.removable { GAP + X_D } else { 0.0 };
         let node = taffy
@@ -432,7 +432,7 @@ impl Widget for Chip {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -451,10 +451,10 @@ impl Widget for Chip {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -472,7 +472,7 @@ impl Widget for Chip {
         let accent = theme.accent_primary;
         let selected = self.selectable && self.selected;
 
-        let pill = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
+        let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
         let bg = if selected {
             accent.with_alpha_factor(0.18)
         } else {
@@ -502,17 +502,17 @@ impl Widget for Chip {
 
         let size = theme.tokens.typography.scale.sm;
         let (lw, lh) = text_renderer.measure(&self.label, size, None);
-        self.label_w = lw as f64;
+        self.label_w = f64::from(lw);
         let label_col = if selected { accent } else { theme.text_primary };
         text_renderer.draw_text(
             scene,
             &self.label,
             size,
             label_col,
-            transform * Affine::translate((x, cy - lh as f64 / 2.0)),
+            transform * Affine::translate((x, cy - f64::from(lh) / 2.0)),
             None,
         );
-        x += lw as f64;
+        x += f64::from(lw);
 
         if self.removable {
             x += GAP;
@@ -572,7 +572,7 @@ impl Widget for Chip {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Chip"
     }
 

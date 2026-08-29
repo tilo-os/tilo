@@ -51,16 +51,13 @@ pub fn parse_wg_transfer(out: &str) -> Option<Transfer> {
         let _peer = cols.next();
         let rx = cols.next();
         let tx = cols.next();
-        let (rx, tx) = match (rx, tx) {
-            (Some(rx), Some(tx)) => (rx, tx),
-            _ => {
-                // Whitespace fallback.
-                let mut ws = line.split_whitespace();
-                let _ = ws.next();
-                match (ws.next(), ws.next()) {
-                    (Some(rx), Some(tx)) => (rx, tx),
-                    _ => continue,
-                }
+        let (rx, tx) = if let (Some(rx), Some(tx)) = (rx, tx) { (rx, tx) } else {
+            // Whitespace fallback.
+            let mut ws = line.split_whitespace();
+            let _ = ws.next();
+            match (ws.next(), ws.next()) {
+                (Some(rx), Some(tx)) => (rx, tx),
+                _ => continue,
             }
         };
         let (Ok(rx), Ok(tx)) = (rx.trim().parse::<u64>(), tx.trim().parse::<u64>()) else {
@@ -125,7 +122,7 @@ pub fn read_sys_bytes(iface: &str) -> Option<Transfer> {
     Some(Transfer { rx, tx })
 }
 
-/// Read the real WireGuard peer transfer totals via `wg show <iface> transfer`.
+/// Read the real `WireGuard` peer transfer totals via `wg show <iface> transfer`.
 /// `None` if `wg` is absent, the interface does not exist, or the command
 /// fails.
 pub fn read_wg_transfer(iface: &str) -> Option<Transfer> {
@@ -165,7 +162,7 @@ pub fn probe_interface_up(iface: &str) -> Option<bool> {
 }
 
 /// Read the best available real transfer counters for a connection:
-/// `wg show transfer` for WireGuard (per-peer, VPN-accurate), otherwise the
+/// `wg show transfer` for `WireGuard` (per-peer, VPN-accurate), otherwise the
 /// tunnel interface's sysfs counters. `None` when no real source is readable.
 pub fn read_transfer(conn: &Connection) -> Option<Transfer> {
     let iface = crate::config::iface_name(conn);
@@ -179,16 +176,14 @@ pub fn read_transfer(conn: &Connection) -> Option<Transfer> {
     }
 }
 
-/// Whether an OpenVPN daemon for this connection is running, via
-/// `pgrep -f <config-path>`. OpenVPN's tun device name is kernel-assigned, so
+/// Whether an `OpenVPN` daemon for this connection is running, via
+/// `pgrep -f <config-path>`. `OpenVPN`'s tun device name is kernel-assigned, so
 /// process presence is the reliable real signal (matching on the specific
 /// config path avoids counting an unrelated tunnel). `None` if `pgrep` is
 /// unavailable.
 pub fn openvpn_running(conn: &Connection) -> Option<bool> {
     let needle = conn
-        .config_path()
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| format!("{}.ovpn", conn.name));
+        .config_path().map_or_else(|| format!("{}.ovpn", conn.name), std::string::ToString::to_string);
     let out = Command::new("pgrep").args(["-f", &needle]).output().ok()?;
     match out.status.code() {
         Some(0) => Some(true),  // at least one matching process

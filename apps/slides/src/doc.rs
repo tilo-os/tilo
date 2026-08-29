@@ -97,11 +97,10 @@ impl SlidesDoc {
         };
         let n = doc.length(&elements);
         for j in 0..n {
-            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j) {
-                if str_field(doc, &e, "id").as_deref() == Some(elem_id) {
+            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j)
+                && str_field(doc, &e, "id").as_deref() == Some(elem_id) {
                     return Some(e);
                 }
-            }
         }
         None
     }
@@ -334,20 +333,18 @@ impl SlidesDoc {
     }
 
     pub fn remove_element(doc: &mut AutoCommit, slide_idx: usize, elem_id: &str) {
-        if let Some(slide) = Self::slide_obj(doc, slide_idx) {
-            if let Ok(Some((Value::Object(ObjType::List), elements))) = doc.get(&slide, "elements")
+        if let Some(slide) = Self::slide_obj(doc, slide_idx)
+            && let Ok(Some((Value::Object(ObjType::List), elements))) = doc.get(&slide, "elements")
             {
                 let n = doc.length(&elements);
                 for j in 0..n {
-                    if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j) {
-                        if str_field(doc, &e, "id").as_deref() == Some(elem_id) {
+                    if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j)
+                        && str_field(doc, &e, "id").as_deref() == Some(elem_id) {
                             let _ = doc.delete(&elements, j);
                             return;
                         }
-                    }
                 }
             }
-        }
     }
 
     /// Insert a slide at `at` (clamped). Returns nothing; caller refreshes.
@@ -361,11 +358,10 @@ impl SlidesDoc {
     }
 
     pub fn remove_slide(doc: &mut AutoCommit, idx: usize) {
-        if let Some(slides) = Self::slides_list_get(doc) {
-            if idx < doc.length(&slides) {
+        if let Some(slides) = Self::slides_list_get(doc)
+            && idx < doc.length(&slides) {
                 let _ = doc.delete(&slides, idx);
             }
-        }
     }
 
     /// Move the slide at `from` to `to` (both pre-move indices semantics:
@@ -464,7 +460,7 @@ impl SlidesDoc {
 
 fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -472,7 +468,7 @@ fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
 fn text_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     match doc.get(obj, key) {
         Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).ok(),
-        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(|s| s.to_string()),
+        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }

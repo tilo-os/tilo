@@ -84,7 +84,7 @@ struct Fields {
     mtime: Field,
 }
 
-/// Small keys/values, so a bare VecDeque + linear scan beats a real LRU crate.
+/// Small keys/values, so a bare `VecDeque` + linear scan beats a real LRU crate.
 struct QueryCache {
     entries: VecDeque<(String, usize, Vec<ContentHit>)>,
     capacity: usize,
@@ -158,7 +158,7 @@ impl FilesIndex {
         {
             let writer_handle = Arc::clone(&writer_handle);
             let cache = Arc::clone(&cache);
-            let index = index.clone();
+            let index = index;
             let home = home.to_owned();
             let stem = fields.stem;
             let path = fields.path;
@@ -212,21 +212,19 @@ impl FilesIndex {
         if needle.trim().is_empty() {
             return Vec::new();
         }
-        if let Ok(cache) = self.cache.lock() {
-            if let Some(hit) = cache.get(needle, limit) {
+        if let Ok(cache) = self.cache.lock()
+            && let Some(hit) = cache.get(needle, limit) {
                 return hit;
             }
-        }
         // Throttled reader-reload — see READER_RELOAD_INTERVAL_MS.
         {
             let now = Instant::now();
             let mut should_reload = true;
             if let Ok(mut slot) = self.last_reload.lock() {
-                if let Some(prev) = *slot {
-                    if now.duration_since(prev) < Duration::from_millis(READER_RELOAD_INTERVAL_MS) {
+                if let Some(prev) = *slot
+                    && now.duration_since(prev) < Duration::from_millis(READER_RELOAD_INTERVAL_MS) {
                         should_reload = false;
                     }
-                }
                 if should_reload {
                     *slot = Some(now);
                 }
@@ -260,11 +258,10 @@ impl FilesIndex {
         }
         // Only cache non-empty results — an empty one often just means the
         // walker hasn't reached these files yet.
-        if !out.is_empty() {
-            if let Ok(mut cache) = self.cache.lock() {
+        if !out.is_empty()
+            && let Ok(mut cache) = self.cache.lock() {
                 cache.put(needle.to_string(), limit, out.clone());
             }
-        }
         out
     }
 }
@@ -364,8 +361,7 @@ fn walk_and_index(
             .modified()
             .ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         if existing.get(path).copied() == Some(mtime) {
             continue;
         }
@@ -391,7 +387,7 @@ fn walk_and_index(
         count += 1;
         since_commit += 1;
         if since_commit >= COMMIT_BATCH
-            || last_commit.elapsed().map(|d| d.as_secs()).unwrap_or(0) >= COMMIT_INTERVAL_SECS
+            || last_commit.elapsed().map_or(0, |d| d.as_secs()) >= COMMIT_INTERVAL_SECS
         {
             writer.commit().ok();
             since_commit = 0;

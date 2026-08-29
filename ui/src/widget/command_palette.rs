@@ -217,7 +217,7 @@ impl CommandEntry {
                 self.argument = Some(ArgumentSpec {
                     prefill: Some(prefill),
                     ..Default::default()
-                })
+                });
             }
         }
         self
@@ -261,8 +261,7 @@ impl CommandEntry {
         }
         self.description
             .as_deref()
-            .map(|d| fuzzy_score(query, d).is_some())
-            .unwrap_or(false)
+            .is_some_and(|d| fuzzy_score(query, d).is_some())
     }
 }
 
@@ -271,7 +270,7 @@ impl CommandEntry {
 /// information than the middle. Trailing-ellipsis case is
 /// [`TextRenderer::elide_to_width`].
 fn elide_middle(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 || tr.measure(text, size, None).0 as f64 <= max_w {
+    if max_w <= 0.0 || f64::from(tr.measure(text, size, None).0) <= max_w {
         return text.to_string();
     }
     let chars: Vec<char> = text.chars().collect();
@@ -283,7 +282,7 @@ fn elide_middle(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> Str
         let candidate: String = chars[..head].iter().collect::<String>()
             + "\u{2026}"
             + &chars[n - tail..].iter().collect::<String>();
-        if tr.measure(&candidate, size, None).0 as f64 <= max_w {
+        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
             return candidate;
         }
     }
@@ -296,8 +295,8 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-    let q: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
-    let t: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
+    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
     let mut qi = 0usize;
     let mut matches = 0i32;
     let mut gaps = 0i32;
@@ -575,8 +574,7 @@ impl CommandPalette {
         let any_subtitle = self.visible.iter().any(|&i| {
             self.entries
                 .get(i)
-                .map(|e| e.description.is_some())
-                .unwrap_or(false)
+                .is_some_and(|e| e.description.is_some())
         });
         match self.mode {
             PaletteMode::Search if !any_subtitle => ROW_HEIGHT,
@@ -679,7 +677,7 @@ impl CommandPalette {
                 return;
             }
             // No list navigation while typing an argument.
-            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => {
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) => {
                 return;
             }
             _ => {}
@@ -970,7 +968,7 @@ impl CommandPalette {
     }
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
-        (0..self.visible.len()).find(|&i| self.row_rect(i).map(|r| r.contains(p)).unwrap_or(false))
+        (0..self.visible.len()).find(|&i| self.row_rect(i).is_some_and(|r| r.contains(p)))
     }
 
     /// `rounded-3xl` = 24 px (Tailwind).
@@ -982,7 +980,7 @@ impl CommandPalette {
         const ICON_W: f64 = 24.0;
         const EDGE: f64 = 12.0;
         const GAP: f64 = 10.0;
-        let cy = (row.y0 + row.y1) / 2.0;
+        let cy = f64::midpoint(row.y0, row.y1);
         let icon_y0 = cy - ICON_W / 2.0;
         let icon_rect = Rect::new(
             row.x0 + EDGE,
@@ -1044,7 +1042,7 @@ impl CommandPalette {
     /// `rounded-full` pill, `px-2 py-1` (≈ 12 px horizontal padding).
     fn chip_rect(strip: Rect, x: f64, width: f64) -> Rect {
         let h = (strip.height() - 8.0).max(20.0);
-        let cy = (strip.y0 + strip.y1) / 2.0;
+        let cy = f64::midpoint(strip.y0, strip.y1);
         Rect::new(x, cy - h / 2.0, x + width, cy + h / 2.0)
     }
 
@@ -1070,7 +1068,7 @@ impl CommandPalette {
             (SearchScope::All, "ALL"),
         ] {
             let (w, _) = text_renderer.measure(label, chip_text_size, None);
-            let chip_w = w as f64 + 16.0;
+            let chip_w = f64::from(w) + 16.0;
             let chip = Self::chip_rect(strip, x, chip_w);
             let active = self.search_filter.scope == scope;
             self.draw_chip(
@@ -1088,7 +1086,7 @@ impl CommandPalette {
 
         let ft_label = "FULL TEXT";
         let (ft_w, _) = text_renderer.measure(ft_label, chip_text_size, None);
-        let ft_chip_w = ft_w as f64 + 16.0;
+        let ft_chip_w = f64::from(ft_w) + 16.0;
         let ft_chip = Self::chip_rect(strip, strip.x1 - ft_chip_w, ft_chip_w);
         let ft_on = self.search_filter.full_text;
         let ft_active_fill = Color::from_rgba8(34, 197, 94, 51); // emerald-500/20
@@ -1110,7 +1108,7 @@ impl CommandPalette {
         for ft in Filetype::ALL {
             let label = ft.label();
             let (w, _) = text_renderer.measure(label, chip_text_size, None);
-            let chip_w = w as f64 + 16.0;
+            let chip_w = f64::from(w) + 16.0;
             if fx + chip_w > max_x {
                 break;
             }
@@ -1150,8 +1148,8 @@ impl CommandPalette {
         let shape = RoundedRect::from_rect(chip, radius);
         scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
         let (w, h) = text_renderer.measure(label, text_size, None);
-        let tx = (chip.x0 + chip.x1) / 2.0 - w as f64 / 2.0;
-        let ty = (chip.y0 + chip.y1) / 2.0 - h as f64 / 2.0;
+        let tx = f64::midpoint(chip.x0, chip.x1) - f64::from(w) / 2.0;
+        let ty = f64::midpoint(chip.y0, chip.y1) - f64::from(h) / 2.0;
         text_renderer.draw_text(
             scene,
             label,
@@ -1184,7 +1182,7 @@ impl CommandPalette {
 
         let size = (theme.tokens.typography.scale.xs).max(9.0);
         let dim = colors.text_dim;
-        let cy = (footer.y0 + footer.y1) / 2.0;
+        let cy = f64::midpoint(footer.y0, footer.y1);
         let chip_h = (footer.height() - 12.0).max(13.0);
 
         let mut x = footer.x0 + 6.0;
@@ -1202,7 +1200,7 @@ impl CommandPalette {
         };
         for (key, label) in hints {
             let (kw, kh) = text_renderer.measure(key, size, None);
-            let chip_w = (kw as f64 + 10.0).max(chip_h);
+            let chip_w = (f64::from(kw) + 10.0).max(chip_h);
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
             let chip_shape = RoundedRect::from_rect(chip_rect, 4.0);
             scene.fill(
@@ -1226,8 +1224,8 @@ impl CommandPalette {
                 dim,
                 transform
                     * Affine::translate((
-                        chip_rect.x0 + (chip_rect.width() - kw as f64) / 2.0,
-                        chip_rect.y0 + (chip_rect.height() - kh as f64) / 2.0,
+                        chip_rect.x0 + (chip_rect.width() - f64::from(kw)) / 2.0,
+                        chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
                     )),
                 None,
             );
@@ -1238,10 +1236,10 @@ impl CommandPalette {
                 label,
                 size,
                 dim,
-                transform * Affine::translate((x, cy - lh as f64 / 2.0)),
+                transform * Affine::translate((x, cy - f64::from(lh) / 2.0)),
                 None,
             );
-            x += lw as f64 + 12.0;
+            x += f64::from(lw) + 12.0;
         }
 
         let n = self.result_total();
@@ -1257,7 +1255,7 @@ impl CommandPalette {
                 &right,
                 size,
                 dim,
-                transform * Affine::translate((footer.x1 - sw as f64 - 6.0, cy - sh as f64 / 2.0)),
+                transform * Affine::translate((footer.x1 - f64::from(sw) - 6.0, cy - f64::from(sh) / 2.0)),
                 None,
             );
         }
@@ -1284,7 +1282,7 @@ impl CommandPalette {
         for row in &self.rows[start..end] {
             match row {
                 VisualRow::Header { label, total } => {
-                    let hy = y + (HEADER_HEIGHT - header_size as f64) / 2.0 + 2.0;
+                    let hy = y + (HEADER_HEIGHT - f64::from(header_size)) / 2.0 + 2.0;
                     let upper = label.to_uppercase();
                     text_renderer.draw_text(
                         scene,
@@ -1301,7 +1299,7 @@ impl CommandPalette {
                         &count,
                         header_size,
                         colors.text_dim,
-                        transform * Affine::translate((x1 - 12.0 - cw as f64, hy)),
+                        transform * Affine::translate((x1 - 12.0 - f64::from(cw), hy)),
                         None,
                     );
                     y += HEADER_HEIGHT;
@@ -1358,7 +1356,7 @@ impl CommandPalette {
         // to the title's weight to survive.
         let subtitle_ink = colors.ink_on(row_ground, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST);
         if selected {
-            let shape = RoundedRect::from_rect(row, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md));
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1389,7 +1387,7 @@ impl CommandPalette {
         let mut text_x = row.x0 + 12.0;
         if let Some(icon) = entry.icon {
             let size = 16.0;
-            let cy = (row.y0 + row.y1) / 2.0;
+            let cy = f64::midpoint(row.y0, row.y1);
             let icon_rect = Rect::new(
                 row.x0 + 12.0,
                 cy - size / 2.0,
@@ -1410,9 +1408,9 @@ impl CommandPalette {
         let mut text_right = row.x1 - 12.0;
         if let Some(kb) = &entry.keybinding {
             let (kw, kh) = text_renderer.measure(kb, desc_size, None);
-            let chip_w = kw as f64 + 14.0;
-            let chip_h = kh as f64 + 8.0;
-            let cy = (row.y0 + row.y1) / 2.0;
+            let chip_w = f64::from(kw) + 14.0;
+            let chip_h = f64::from(kh) + 8.0;
+            let cy = f64::midpoint(row.y0, row.y1);
             let chip = Rect::new(
                 row.x1 - chip_w - 8.0,
                 cy - chip_h / 2.0,
@@ -1441,7 +1439,7 @@ impl CommandPalette {
                 kb,
                 desc_size,
                 colors.ink_on(kb_fill, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST),
-                transform * Affine::translate((chip.x0 + 7.0, chip.center().y - kh as f64 / 2.0)),
+                transform * Affine::translate((chip.x0 + 7.0, chip.center().y - f64::from(kh) / 2.0)),
                 None,
             );
             text_right = chip.x0 - 8.0;
@@ -1460,50 +1458,47 @@ impl CommandPalette {
                 color,
                 transform
                     * Affine::translate((
-                        row.x1 - hw as f64 - 14.0,
-                        (row.y0 + row.y1) / 2.0 - hh as f64 / 2.0,
+                        row.x1 - f64::from(hw) - 14.0,
+                        f64::midpoint(row.y0, row.y1) - f64::from(hh) / 2.0,
                     )),
                 None,
             );
-            text_right = row.x1 - hw as f64 - 22.0;
+            text_right = row.x1 - f64::from(hw) - 22.0;
         }
         let avail = (text_right - text_x).max(0.0);
 
-        match &entry.description {
-            Some(desc) => {
-                let label = text_renderer.elide_to_width(&entry.label, label_size, avail as f32);
-                let sub = elide_middle(text_renderer, desc, desc_size, avail);
-                let block = label_size as f64 + 3.0 + desc_size as f64;
-                let ly = row.y0 + (row.height() - block) / 2.0;
-                text_renderer.draw_text(
-                    scene,
-                    &label,
-                    label_size,
-                    colors.text_primary,
-                    transform * Affine::translate((text_x, ly)),
-                    None,
-                );
-                text_renderer.draw_text(
-                    scene,
-                    &sub,
-                    desc_size,
-                    subtitle_ink,
-                    transform * Affine::translate((text_x, ly + label_size as f64 + 3.0)),
-                    None,
-                );
-            }
-            None => {
-                let label = text_renderer.elide_to_width(&entry.label, label_size, avail as f32);
-                let ly = row.y0 + (row.height() - label_size as f64) / 2.0;
-                text_renderer.draw_text(
-                    scene,
-                    &label,
-                    label_size,
-                    colors.text_primary,
-                    transform * Affine::translate((text_x, ly)),
-                    None,
-                );
-            }
+        if let Some(desc) = &entry.description {
+            let label = text_renderer.elide_to_width(&entry.label, label_size, avail as f32);
+            let sub = elide_middle(text_renderer, desc, desc_size, avail);
+            let block = f64::from(label_size) + 3.0 + f64::from(desc_size);
+            let ly = row.y0 + (row.height() - block) / 2.0;
+            text_renderer.draw_text(
+                scene,
+                &label,
+                label_size,
+                colors.text_primary,
+                transform * Affine::translate((text_x, ly)),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                &sub,
+                desc_size,
+                subtitle_ink,
+                transform * Affine::translate((text_x, ly + f64::from(label_size) + 3.0)),
+                None,
+            );
+        } else {
+            let label = text_renderer.elide_to_width(&entry.label, label_size, avail as f32);
+            let ly = row.y0 + (row.height() - f64::from(label_size)) / 2.0;
+            text_renderer.draw_text(
+                scene,
+                &label,
+                label_size,
+                colors.text_primary,
+                transform * Affine::translate((text_x, ly)),
+                None,
+            );
         }
     }
 
@@ -1522,8 +1517,8 @@ impl CommandPalette {
         if bottom <= top {
             return;
         }
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let cy = (top + bottom) / 2.0;
+        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
+        let cy = f64::midpoint(top, bottom);
         let icon_size = 24.0;
         icons::draw_icon(
             scene,
@@ -1552,7 +1547,7 @@ impl CommandPalette {
             &title,
             title_size,
             colors.text_primary,
-            transform * Affine::translate((cx - tw as f64 / 2.0, cy)),
+            transform * Affine::translate((cx - f64::from(tw) / 2.0, cy)),
             None,
         );
         let hint_size = (theme.tokens.typography.scale.xs).max(10.0);
@@ -1563,7 +1558,7 @@ impl CommandPalette {
             hint,
             hint_size,
             colors.text_dim,
-            transform * Affine::translate((cx - hw as f64 / 2.0, cy + title_size as f64 + 6.0)),
+            transform * Affine::translate((cx - f64::from(hw) / 2.0, cy + f64::from(title_size) + 6.0)),
             None,
         );
     }
@@ -1655,17 +1650,17 @@ impl Widget for CommandPalette {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -1698,7 +1693,7 @@ impl Widget for CommandPalette {
         // body rather than floating beside it.
         let row_rect = self.input_row_rect();
         let layout = self.compute_input_layout(row_rect);
-        let field_shape = RoundedRect::from_rect(row_rect, theme.tokens.radii.lg as f64);
+        let field_shape = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.lg));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1731,7 +1726,7 @@ impl Widget for CommandPalette {
         // pressed by now, and two different chords open this palette at two
         // scopes — one label would misname one of them.
         let text_size = theme.tokens.typography.scale.base;
-        let text_y = layout.input_rect.y0 + (layout.input_rect.height() - text_size as f64) / 2.0;
+        let text_y = layout.input_rect.y0 + (layout.input_rect.height() - f64::from(text_size)) / 2.0;
         let mut tx = layout.input_rect.x0;
         let avail = layout.input_rect.width();
         if let Some(arg) = &self.arg_state {
@@ -1746,7 +1741,7 @@ impl Widget for CommandPalette {
                     None,
                 );
                 let (hw, _) = text_renderer.measure(&heading, text_size, None);
-                tx += hw as f64;
+                tx += f64::from(hw);
             }
             let (body, color) = if arg.buffer.is_empty() {
                 (arg.placeholder.as_str(), colors.text_dim)
@@ -1932,7 +1927,7 @@ impl Widget for CommandPalette {
                     "x" | "X" => {
                         let r = self.query_selection.range();
                         if !r.is_empty() {
-                            clipboard_copy(&self.query[r.clone()]);
+                            clipboard_copy(&self.query[r]);
                             self.delete_query_selection();
                         }
                         *handled = true;
@@ -1961,7 +1956,7 @@ impl Widget for CommandPalette {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CommandPalette"
     }
 

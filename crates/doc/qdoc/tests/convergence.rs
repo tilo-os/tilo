@@ -57,7 +57,7 @@ fn apply(doc: &mut Document, ops: &[Op]) {
         let blocks = doc.blocks_in_order();
         let pick = |i: u8| blocks.get((i as usize) % blocks.len().max(1)).cloned();
         let block_len =
-            |doc: &Document, b: &str| doc.block_text(b).map(|t| t.chars().count()).unwrap_or(0);
+            |doc: &Document, b: &str| doc.block_text(b).map_or(0, |t| t.chars().count());
         match op {
             Op::InsertPara(i) => {
                 let after = if blocks.is_empty() { None } else { pick(*i) };
@@ -82,7 +82,7 @@ fn apply(doc: &mut Document, ops: &[Op]) {
                     let len = block_len(doc, &b);
                     let (s, e) = subrange(len, *sz, *f);
                     if e > s {
-                        let pts = 8 + (*sz as i64 % 24); // 8..=31pt
+                        let pts = 8 + (i64::from(*sz) % 24); // 8..=31pt
                         doc.add_mark(&b, s, e, "fontSize", pts);
                     }
                 }

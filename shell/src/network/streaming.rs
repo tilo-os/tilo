@@ -34,7 +34,7 @@ pub use qos_callstream::throttle::StreamingThrottle;
 pub enum InputEvent {
     /// Pointer moved to logical `(x, y)`, surface-local; [`crate::network::input_firewall`] translates it into the owner's output space.
     PointerMotion { x: f64, y: f64 },
-    /// Mouse button transitioned to `pressed`; `button` mirrors smithay's libinput-style codes (e.g. 272 = BTN_LEFT).
+    /// Mouse button transitioned to `pressed`; `button` mirrors smithay's libinput-style codes (e.g. 272 = `BTN_LEFT`).
     PointerButton { button: u32, pressed: bool },
     /// Peer's pointer entered `surface` — grabs keyboard focus onto the peer's virtual seat, emitted once on hover/click into the `PeerView`.
     PointerEnter { surface: SurfaceIdWire },
@@ -63,13 +63,13 @@ pub type SurfaceIdWire = crate::network::protocol::SurfaceId;
 /// the compositor drains them via
 /// [`crate::compositor::state::State::apply_remote_desktop_action`].
 ///
-/// Coordinates mirror the RemoteDesktop spec: relative motion is a
+/// Coordinates mirror the `RemoteDesktop` spec: relative motion is a
 /// `(dx, dy)` delta, absolute a point; button/keycode use Linux evdev codes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RemoteAction {
     /// Relative pointer motion (`NotifyPointerMotion`).
     PointerMotionRelative { dx: f64, dy: f64 },
-    /// Absolute pointer motion (`NotifyPointerMotionAbsolute`); `stream` is the PipeWire node id the coordinate is relative to.
+    /// Absolute pointer motion (`NotifyPointerMotionAbsolute`); `stream` is the `PipeWire` node id the coordinate is relative to.
     PointerMotionAbsolute { stream: u32, x: f64, y: f64 },
     /// Pointer button (`NotifyPointerButton`); `button` is an evdev code (e.g. `BTN_LEFT` = 272).
     PointerButton { button: i32, pressed: bool },

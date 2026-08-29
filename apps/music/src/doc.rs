@@ -135,7 +135,7 @@ pub fn seed(doc: &mut AutoCommit, lib: &Library, playback: &Playback) {
             .expect("album");
         let _ = doc.put(&m, "title", al.title.as_str());
         let _ = doc.put(&m, "artist_id", al.artist_id.as_str());
-        let _ = doc.put(&m, "year", al.year as i64);
+        let _ = doc.put(&m, "year", i64::from(al.year));
     }
 
     let tracks = doc
@@ -189,8 +189,8 @@ fn write_track(doc: &mut AutoCommit, tracks: &ObjId, t: &Track) {
     let _ = doc.put(&m, "title", t.title.as_str());
     let _ = doc.put(&m, "album_id", t.album_id.as_str());
     let _ = doc.put(&m, "artist_id", t.artist_id.as_str());
-    let _ = doc.put(&m, "track_no", t.track_no as i64);
-    let _ = doc.put(&m, "duration_s", t.duration_s as i64);
+    let _ = doc.put(&m, "track_no", i64::from(t.track_no));
+    let _ = doc.put(&m, "duration_s", i64::from(t.duration_s));
     let _ = doc.put(&m, "yt_id", t.yt_id.as_str());
     let _ = doc.put(&m, "plays", t.plays as i64);
 }
@@ -234,7 +234,7 @@ pub fn write_playback(doc: &mut AutoCommit, pb: &Playback) {
     let _ = doc.put(&m, "position_ms", pb.position_ms as i64);
     let _ = doc.put(&m, "shuffle", pb.shuffle);
     let _ = doc.put(&m, "repeat", pb.repeat.as_str());
-    let _ = doc.put(&m, "volume", pb.volume as i64);
+    let _ = doc.put(&m, "volume", i64::from(pb.volume));
 }
 
 /// A live (YouTube-Music) search result to merge into the library. Kept a plain
@@ -250,7 +250,7 @@ pub struct LiveTrack {
     pub album_id: String,
     pub album_title: String,
     pub duration_s: u32,
-    /// The YouTube video id the stream is resolved from.
+    /// The `YouTube` video id the stream is resolved from.
     pub yt_id: String,
 }
 

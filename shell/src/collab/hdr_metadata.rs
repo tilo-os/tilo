@@ -6,8 +6,8 @@
 //!   chromaticities and reference white point of the *mastering
 //!   display*, plus the min/max luminance the content was authored
 //!   against.
-//! - **CTA-861.3 content light level** — MaxCLL (peak pixel over the
-//!   entire program) and MaxFALL (peak frame-average over the
+//! - **CTA-861.3 content light level** — `MaxCLL` (peak pixel over the
+//!   entire program) and `MaxFALL` (peak frame-average over the
 //!   entire program). Lets the display's tone mapper size its
 //!   compression to the actual content, not the container's worst case.
 //!
@@ -78,10 +78,10 @@ impl MasteringDisplayColorVolume {
 /// u16 nits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentLightLevel {
-    /// MaxCLL — peak single-pixel luminance over the entire program.
+    /// `MaxCLL` — peak single-pixel luminance over the entire program.
     /// `0` = unknown, decoders skip.
     pub max_content_light_level: u16,
-    /// MaxFALL — peak frame-average luminance over the entire program.
+    /// `MaxFALL` — peak frame-average luminance over the entire program.
     /// `0` = unknown.
     pub max_frame_average_light_level: u16,
 }

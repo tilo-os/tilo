@@ -2,15 +2,15 @@
 //!
 //! Modes:
 //! - default: run the live winit event loop via `ui::App`. The root app is
-//!   `online()`: it spawns the fetch worker and pulls real YouTube data
+//!   `online()`: it spawns the fetch worker and pulls real `YouTube` data
 //!   (home/trending/search/…) via the `live` backend, degrading to the
 //!   bundled sample when the network is unreachable.
 //! - `--shots PATH`: render one offscreen frame to a PNG and exit (headless
 //!   screenshot; identical passes to the live app). Always offline/hermetic.
-//! - `--probe [Q]`: construct the real backend, run a live YouTube search for
+//! - `--probe [Q]`: construct the real backend, run a live `YouTube` search for
 //!   `Q` (default "rust programming") + trending, print what came back, and
 //!   exit. Proof that live fetch works; requires `--features live`.
-//! - `--probe-trending`: prove the Home/Trending feed — YouTube's retired
+//! - `--probe-trending`: prove the Home/Trending feed — `YouTube`'s retired
 //!   dedicated endpoint failing for real, then the composed real "popular"
 //!   feed (view-count-sorted search).
 //! - `--probe-play [ID]`: prove real playback — resolve a googlevideo H.264
@@ -21,7 +21,7 @@
 //!   *sequence* of real frames over `SECONDS` through one reused decoder.
 //!
 //! Shots-only flags:
-//! - `--viewport WxH`: render at WxH logical px instead of the default
+//! - `--viewport WxH`: render at `WxH` logical px instead of the default
 //!   1280x800. A sub-`NAV_BREAKPOINT` width exercises the responsive
 //!   overlay-flap layout.
 //! - `--narrow`: build the narrow variant (rail collapsed to an open overlay
@@ -142,7 +142,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // resolves the responsive layout (rail default, grid columns, watch
         // player size) from the true width instead of the unknown-width
         // fallback. Shots-only — the live event loop below is untouched.
-        let mut app = tube::TubeApp::new().with_viewport(vw as f64, vh as f64);
+        let mut app = tube::TubeApp::new().with_viewport(f64::from(vw), f64::from(vh));
         if empty_loading {
             app = app.with_loading_home_shot();
         } else if palette {
@@ -505,7 +505,7 @@ fn run_probe_stream(
     let total_dur: f64 = plan
         .durations
         .iter()
-        .map(|d| *d as f64 / plan.timescale as f64)
+        .map(|d| f64::from(*d) / f64::from(plan.timescale))
         .sum();
     println!(
         "  PLANNED {} media fragments from {} bytes of init+sidx (\u{2248}{:.0}s of video @ {}fps)",
@@ -600,8 +600,7 @@ fn run_probe_stream(
             let dur = plan
                 .durations
                 .get(fragments_used - 1)
-                .map(|d| *d as f64 / plan.timescale as f64)
-                .unwrap_or(0.0);
+                .map_or(0.0, |d| f64::from(*d) / f64::from(plan.timescale));
             println!(
                 "  [fragment {fragments_used}: {} bytes, {:.2}s → {} access units → {} frames decoded]",
                 bytes.len(),
@@ -652,7 +651,7 @@ fn run_probe_stream(
     let distinct: std::collections::HashSet<u64> = records.iter().map(|r| r.4).collect();
     let fps = n as f64 / elapsed.max(1e-6);
     // Frames decoded ÷ stream fps = seconds of actual video that plays.
-    let video_secs = n as f64 / (handle.fps as f64).max(1.0);
+    let video_secs = n as f64 / f64::from(handle.fps).max(1.0);
     println!(
         "probe-stream: decoded {n} frames in {elapsed:.2}s across {fragments_used} fragments \
          ({} KiB) → {fps:.1} fps decode throughput (stream is {} fps).",
@@ -668,7 +667,7 @@ fn run_probe_stream(
         "  That is \u{2248}{video_secs:.0}s of continuous {} video, decoded at {:.0}x real time \
          (headroom to keep up easily at the stream's {} fps).",
         handle.quality,
-        fps / (handle.fps as f64).max(1.0),
+        fps / f64::from(handle.fps).max(1.0),
         handle.fps
     );
     println!(
@@ -706,13 +705,13 @@ fn run_probe_stream(
 fn checksum(rgba: &[u8]) -> u64 {
     let mut h: u64 = 1469598103934665603; // FNV-1a offset basis
     for &b in rgba.iter().step_by(97) {
-        h ^= b as u64;
+        h ^= u64::from(b);
         h = h.wrapping_mul(1099511628211);
     }
     h
 }
 
-/// `--probe-trending`: prove the Home/Trending feed is real. Shows YouTube's
+/// `--probe-trending`: prove the Home/Trending feed is real. Shows `YouTube`'s
 /// dedicated trending endpoint failing for real, then the composed popular feed
 /// (view-count-sorted search) that replaces it — with real titles.
 #[cfg(feature = "live")]
@@ -785,7 +784,7 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// `--live-shots <dir> [query]`: render REAL offscreen stills — a search page
-/// with real YouTube results + fetched thumbnails, and a watch page with a real
+/// with real `YouTube` results + fetched thumbnails, and a watch page with a real
 /// frame decoded through the shared media engine from a rangeable proxy stream.
 #[cfg(all(feature = "live", feature = "media"))]
 fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -942,8 +941,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
                 for v in &items.videos {
                     if smodel
                         .channel(&v.channel_id)
-                        .map(|c| c.avatar_url.is_empty())
-                        .unwrap_or(true)
+                        .is_none_or(|c| c.avatar_url.is_empty())
                     {
                         *freq.entry(v.channel_id.clone()).or_insert(0) += 1;
                     }
@@ -1034,7 +1032,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             let home_app = tube::TubeApp::new()
                 .with_viewport(1280.0, 860.0)
                 .with_model_for_test(hmodel)
-                .with_image_store(store.clone());
+                .with_image_store(store);
             let home_png = out_dir.join("home.png");
             render_shot_to_png(
                 Box::new(home_app) as Box<dyn Widget>,
@@ -1063,7 +1061,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
                     .chain(pvids.iter().map(|v| v.thumbnail_url.clone()))
                     .collect();
                 pmodel.upsert_playlist(pl.clone());
-                pmodel.route = Route::Playlist(pid.clone());
+                pmodel.route = Route::Playlist(pid);
                 let pstore = tube::images::image_store();
                 prewarm(&pstore, &purls);
                 pstore.block_until_idle(Duration::from_secs(30));
@@ -1122,30 +1120,27 @@ fn run_probe_ytdlp(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("probe-ytdlp: backend = {}", backend.name());
 
     println!("probe-ytdlp: searching YouTube for {query:?} …");
-    let (first_id, first_channel) = match backend.search(query)? {
-        BackendResult::Videos(vs) => {
-            if vs.is_empty() {
-                eprintln!("probe-ytdlp: EMPTY result set — reached yt-dlp but nothing parsed.");
-                std::process::exit(2);
-            }
-            println!("  {} REAL results from YouTube:", vs.len());
-            for (i, v) in vs.iter().take(10).enumerate() {
-                println!(
-                    "  {:>2}. [{}] {} — {} ({} views)\n        thumb={}",
-                    i + 1,
-                    v.id,
-                    v.title,
-                    v.channel_name,
-                    v.views,
-                    short_url(&v.thumbnail_url)
-                );
-            }
-            (vs[0].id.clone(), vs[0].channel_id.clone())
+    let (first_id, first_channel) = if let BackendResult::Videos(vs) = backend.search(query)? {
+        if vs.is_empty() {
+            eprintln!("probe-ytdlp: EMPTY result set — reached yt-dlp but nothing parsed.");
+            std::process::exit(2);
         }
-        _ => {
-            println!("probe-ytdlp: unexpected result variant");
-            return Ok(());
+        println!("  {} REAL results from YouTube:", vs.len());
+        for (i, v) in vs.iter().take(10).enumerate() {
+            println!(
+                "  {:>2}. [{}] {} — {} ({} views)\n        thumb={}",
+                i + 1,
+                v.id,
+                v.title,
+                v.channel_name,
+                v.views,
+                short_url(&v.thumbnail_url)
+            );
         }
+        (vs[0].id.clone(), vs[0].channel_id.clone())
+    } else {
+        println!("probe-ytdlp: unexpected result variant");
+        return Ok(());
     };
 
     println!("\nprobe-ytdlp: video_details [{first_id}] …");
@@ -1438,7 +1433,7 @@ fn run_probe_avatars(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// `--probe-gst <id> [seconds]`: prove the GStreamer decode path. Resolves a
+/// `--probe-gst <id> [seconds]`: prove the `GStreamer` decode path. Resolves a
 /// real stream URL via yt-dlp and decodes a *sequence* of real frames, using
 /// per-frame checksums to prove the picture actually moves (not one still).
 #[cfg(all(feature = "live", feature = "media"))]
@@ -1597,7 +1592,7 @@ fn run_probe_play(_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The real proof: construct the live backend, hit YouTube, print what came
+/// The real proof: construct the live backend, hit `YouTube`, print what came
 /// back. Compiled to do real work only under `--features live`.
 #[cfg(feature = "live")]
 fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -1662,7 +1657,7 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         Ok(BackendResult::Videos(vs)) => println!(
             "  {} recommendations; first: {:?}",
             vs.len(),
-            vs.first().map(|v| v.title.as_str()).unwrap_or("<none>")
+            vs.first().map_or("<none>", |v| v.title.as_str())
         ),
         Ok(_) => {}
         Err(e) => eprintln!("  related failed: {e}"),
@@ -1679,8 +1674,7 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
             uploads.len(),
             uploads
                 .first()
-                .map(|v| v.title.as_str())
-                .unwrap_or("<none>")
+                .map_or("<none>", |v| v.title.as_str())
         ),
         Ok(_) => {}
         Err(e) => eprintln!("  channel_videos failed: {e}"),
@@ -1692,7 +1686,7 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         Ok(BackendResult::Videos(vs)) => println!(
             "  {} videos; first: {:?}",
             vs.len(),
-            vs.first().map(|v| v.title.as_str()).unwrap_or("<none>")
+            vs.first().map_or("<none>", |v| v.title.as_str())
         ),
         Ok(_) => {}
         Err(e) => eprintln!("  trending failed: {e}"),
@@ -1790,9 +1784,7 @@ fn run_bench_scroll(
         let id = m
             .videos
             .iter()
-            .find(|v| !v.comments.is_empty())
-            .map(|v| v.id.clone())
-            .unwrap_or_else(|| m.videos[0].id.clone());
+            .find(|v| !v.comments.is_empty()).map_or_else(|| m.videos[0].id.clone(), |v| v.id.clone());
         if let Some(v) = m.videos.iter_mut().find(|v| v.id == id) {
             let base = v.comments.clone();
             let mut i = 0usize;
@@ -1822,7 +1814,7 @@ fn run_bench_scroll(
             _ => String::new(),
         };
         let mut app = tube::TubeApp::new()
-            .with_viewport(w as f64, h as f64)
+            .with_viewport(f64::from(w), f64::from(h))
             .with_model_for_test(model);
         // Load + pause a real (synthesized) frame so the bench measures the true
         // per-frame cost of a paused-but-loaded watch page.
@@ -1939,7 +1931,7 @@ fn run_bench_scroll(
             let t = Instant::now();
             let mut scene = Scene::new();
             let prev =
-                presence.push_viewport(vello::kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
+                presence.push_viewport(vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
             widget.draw_with_presence(
                 &mut scene,
                 Affine::IDENTITY,
@@ -2034,7 +2026,7 @@ fn parse_route_arg(args: &[String]) -> Option<tube::model::Route> {
     let spec = loop {
         let arg = iter.next()?;
         if arg == "--route" {
-            break iter.next()?.to_string();
+            break iter.next()?.clone();
         }
         if let Some(rest) = arg.strip_prefix("--route=") {
             break rest.to_string();
@@ -2092,7 +2084,7 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),

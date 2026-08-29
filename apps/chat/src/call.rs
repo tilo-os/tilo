@@ -13,7 +13,7 @@
 //!   built separately; until it lands this defaults to allow-all via
 //!   [`AllowAll`], and the call code asks the seam before every action so
 //!   wiring in the real checker later is a one-line swap.
-//! * [`SoundEngine`] — short join/leave cues, played through GStreamer when
+//! * [`SoundEngine`] — short join/leave cues, played through `GStreamer` when
 //!   the `live-media` build feature and an audio sink are available, and a
 //!   silent no-op otherwise (so `--shots` and headless CI never need an
 //!   audio device).
@@ -33,7 +33,7 @@ pub enum CallAction {
     Speak,
     /// Enable the camera (leave audio-only).
     Camera,
-    /// Start sharing the screen (portal ScreenCast).
+    /// Start sharing the screen (portal `ScreenCast`).
     ShareScreen,
 }
 
@@ -73,13 +73,13 @@ impl CallPermissions for AllowAll {
     }
 }
 
-/// A screen-capture source handed back by the portal: the PipeWire node to
+/// A screen-capture source handed back by the portal: the `PipeWire` node to
 /// consume plus the capture size to encode at. The single value the share flow
 /// needs from the portal, kept transport-agnostic so a test can mint one
 /// without a real desktop portal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenSource {
-    /// PipeWire node id to open the capture on.
+    /// `PipeWire` node id to open the capture on.
     pub node: u32,
     pub width: u32,
     pub height: u32,
@@ -89,7 +89,7 @@ pub struct ScreenSource {
 ///
 /// A share never invents a stream: it asks a `ScreenPortal` for a source and
 /// only proceeds if one is granted. The real implementation ([`SystemPortal`])
-/// drives the **xdg-desktop-portal ScreenCast** picker via ashpd behind the
+/// drives the **xdg-desktop-portal `ScreenCast`** picker via ashpd behind the
 /// `live-media` feature and returns `None` everywhere else (headless, the
 /// default build, a cancelled picker) — so the default build gates honestly.
 /// Tests inject a fake that returns a source, exercising the whole share state
@@ -100,7 +100,7 @@ pub trait ScreenPortal {
     fn request(&self) -> Option<ScreenSource>;
 }
 
-/// The production portal: a real xdg-desktop-portal ScreenCast request behind
+/// The production portal: a real xdg-desktop-portal `ScreenCast` request behind
 /// `live-media`, an honest `None` otherwise.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemPortal;
@@ -370,7 +370,7 @@ mod sound {
 
     /// Plays short join/leave cues.
     ///
-    /// With the `live-media` feature and a working GStreamer audio sink the
+    /// With the `live-media` feature and a working `GStreamer` audio sink the
     /// cue is a tiny synthesised tone played through `autoaudiosink`. Without
     /// it (the default build, `--shots`, headless CI) every method is a
     /// silent no-op — the call UX degrades gracefully with no audio device

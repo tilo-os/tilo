@@ -39,7 +39,7 @@ pub const RESIZE_HANDLE_PX: f64 = 6.0;
 
 pub fn min_group_px(strip_usable_px: f64) -> f64 {
     let usable = strip_usable_px.max(1.0);
-    (usable * WIDTH_MIN_PERMILLE as f64 / 1000.0)
+    (usable * f64::from(WIDTH_MIN_PERMILLE) / 1000.0)
         .max(WIDTH_FLOOR_PX)
         .min(usable)
 }
@@ -53,7 +53,7 @@ pub fn max_group_px(strip_usable_px: f64) -> f64 {
 pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
     let usable = strip_usable_px.max(1.0);
     let raw = (px.max(0.0) / usable * 1000.0).round();
-    (raw.clamp(WIDTH_MIN_PERMILLE as f64, WIDTH_MAX_PERMILLE as f64)) as u16
+    (raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE))) as u16
 }
 
 /// 420ms: mirrors the reference concept's spring timing
@@ -97,7 +97,7 @@ impl WindowWidth {
     }
 
     pub fn fraction(&self) -> f64 {
-        self.permille() as f64 / 1000.0
+        f64::from(self.permille()) / 1000.0
     }
 
     /// Clamped into `[min_group_px, max_group_px]` so a fraction can
@@ -299,7 +299,7 @@ impl WindowGroup {
     }
     pub fn update_resize(&mut self, pointer_x: f32) {
         if let Some((origin_x, origin_w)) = self.resize_origin {
-            let delta = (pointer_x - origin_x) as f64;
+            let delta = f64::from(pointer_x - origin_x);
             let usable = self.strip_usable_px;
             let clamped = (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
             let next = WindowWidth::from_px(clamped, usable);
@@ -323,7 +323,7 @@ impl WindowGroup {
         let before = self.width;
         match w {
             WindowWidth::Fraction(p) => {
-                self.width = WindowWidth::Fraction(p.clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE))
+                self.width = WindowWidth::Fraction(p.clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE));
             }
             other => self.width = other,
         }
@@ -368,7 +368,7 @@ impl WindowGroup {
         store: &crate::record::RecordStore,
         record_for: impl Fn(u64) -> crate::record::RecordCheckout,
     ) {
-        for (tab_id, host) in self.hosts.iter_mut() {
+        for (tab_id, host) in &mut self.hosts {
             host.bind_record(store.clone(), record_for(*tab_id));
         }
     }
@@ -407,7 +407,7 @@ impl WindowGroup {
 
     /// Not gated by `cfg(any(test, debug_assertions))`: `ui`'s `cfg(test)`
     /// only applies when `ui` itself is under test, so the downstream
-    /// shell's `--release` test build (debug_assertions off) would lose
+    /// shell's `--release` test build (`debug_assertions` off) would lose
     /// this method.
     pub fn publish_maximize_intent_for_tests(&mut self) {
         let active = self.bar.active_id();
@@ -688,8 +688,7 @@ impl Widget for WindowGroup {
     }
     fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
         self.active_host_mut()
-            .map(|h| h.update(s, p))
-            .unwrap_or(false)
+            .is_some_and(|h| h.update(s, p))
     }
     fn build_layout(
         &mut self,
@@ -740,16 +739,16 @@ impl Widget for WindowGroup {
         let node = taffy
             .new_with_children(style, &[bar_node, tile_node])
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let children = taffy.children(node).unwrap();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
@@ -793,7 +792,7 @@ impl Widget for WindowGroup {
                 (started.elapsed().as_millis() as f32 / GROUP_CLOSE_FADE_MS as f32).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - raw).powi(3);
             let alpha = (1.0 - eased).max(0.0);
-            let scale = (1.0 - 0.05 * eased) as f64;
+            let scale = f64::from(1.0 - 0.05 * eased);
             (alpha, 0.0, 0.0, scale)
         } else if let Some(started) = self.spawned_at {
             let elapsed = started.elapsed();
@@ -875,7 +874,7 @@ impl Widget for WindowGroup {
             .collect();
         for (id, started) in closing_ids {
             let elapsed = started.elapsed().as_secs_f64();
-            let raw = (elapsed / (CLOSE_FADE_MS as f64 / 1000.0)).clamp(0.0, 1.0);
+            let raw = (elapsed / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - raw).powi(3);
             let alpha = (1.0 - eased) as f32;
             let scale = 1.0 + (-0.05) * eased; // 1.0 → 0.95
@@ -963,7 +962,7 @@ impl Widget for WindowGroup {
                     .unwrap_or_default();
                 let title_size = theme.tokens.typography.scale.xs;
                 let (tw, th) = tr.measure(&active_title, title_size, None);
-                let title_pill_w = (tw as f64 + 24.0).max(80.0);
+                let title_pill_w = (f64::from(tw) + 24.0).max(80.0);
                 let title_pill = Rect::new(
                     self.rect.x0 + pad,
                     y0,
@@ -979,8 +978,8 @@ impl Widget for WindowGroup {
                 );
                 let (title_fill, title_border) = crate::surface::chip_colors(theme, false);
                 crate::surface::pill(scene, transform, title_pill, title_fill, title_border, None);
-                let title_tx = title_pill.center().x - tw as f64 / 2.0;
-                let title_ty = title_pill.center().y - th as f64 / 2.0;
+                let title_tx = title_pill.center().x - f64::from(tw) / 2.0;
+                let title_ty = title_pill.center().y - f64::from(th) / 2.0;
                 tr.draw_text(
                     scene,
                     &active_title,
@@ -1033,7 +1032,7 @@ impl Widget for WindowGroup {
                 let label = "Restore";
                 let (_lw, lh) = tr.measure(label, title_size, None);
                 let lx = self.restore_rect.x0 + 28.0;
-                let ly = self.restore_rect.center().y - lh as f64 / 2.0;
+                let ly = self.restore_rect.center().y - f64::from(lh) / 2.0;
                 tr.draw_text(
                     scene,
                     label,
@@ -1310,7 +1309,7 @@ impl Widget for WindowGroup {
             );
         }
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "WindowGroup"
     }
     /// **Any**, not all: a group with one live window and a second still
@@ -1372,8 +1371,7 @@ impl Widget for WindowGroup {
         // ancestors wouldn't otherwise see the bar's drag/spawn signals.
         let spawn_in_flight = self
             .spawned_at
-            .map(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS))
-            .unwrap_or(false);
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS));
         let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
         let close_in_flight = self
             .closing_hosts
@@ -1390,8 +1388,7 @@ impl Widget for WindowGroup {
             .hosts
             .iter()
             .find(|(i, _)| *i == active_id)
-            .map(|(_, h)| h.needs_animation_frame())
-            .unwrap_or(false);
+            .is_some_and(|(_, h)| h.needs_animation_frame());
         spawn_in_flight
             || close_in_flight
             || group_close_in_flight

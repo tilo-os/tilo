@@ -30,7 +30,7 @@ use crate::widget::Widget;
 /// invisible; above 10.0 the sampling artifacts dominate over content.
 const ZOOM_MIN: f32 = 0.1;
 const ZOOM_MAX: f32 = 10.0;
-/// Per-notch zoom factor: one wheel tick (LineDelta y == 1.0) multiplies
+/// Per-notch zoom factor: one wheel tick (`LineDelta` y == 1.0) multiplies
 /// the zoom by `ZOOM_STEP`. Chosen to feel responsive without skipping
 /// over detail — `1.1` per notch matches Krita/Inkscape defaults.
 const ZOOM_STEP: f32 = 1.1;
@@ -92,8 +92,8 @@ impl ImageViewer {
     /// Returns `0.0` if either the image or the viewport has a zero
     /// dimension — callers must check before using the result.
     fn base_scale(&self) -> f64 {
-        let iw = self.image.width as f64;
-        let ih = self.image.height as f64;
+        let iw = f64::from(self.image.width);
+        let ih = f64::from(self.image.height);
         if iw <= 0.0 || ih <= 0.0 {
             return 0.0;
         }
@@ -113,7 +113,7 @@ impl ImageViewer {
         if base <= 0.0 {
             return None;
         }
-        let total_scale = base * self.zoom as f64;
+        let total_scale = base * f64::from(self.zoom);
         // Centre of the rect — the image is anchored here at pan=0.
         let cx = (self.rect.x0 + self.rect.x1) * 0.5;
         let cy = (self.rect.y0 + self.rect.y1) * 0.5;
@@ -147,17 +147,17 @@ impl Widget for ImageViewer {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -190,9 +190,9 @@ impl Widget for ImageViewer {
         if base <= 0.0 {
             return;
         }
-        let total_scale = base * self.zoom as f64;
-        let iw = self.image.width as f64;
-        let ih = self.image.height as f64;
+        let total_scale = base * f64::from(self.zoom);
+        let iw = f64::from(self.image.width);
+        let ih = f64::from(self.image.height);
         let dw = iw * total_scale;
         let dh = ih * total_scale;
         let cx = (self.rect.x0 + self.rect.x1) * 0.5;
@@ -246,7 +246,7 @@ impl Widget for ImageViewer {
                     let _ = start;
                     let base = self.base_scale();
                     if base > 0.0 {
-                        let total_scale = base * self.zoom as f64;
+                        let total_scale = base * f64::from(self.zoom);
                         let delta = logical - prev_pos;
                         self.pan += Vec2::new(delta.x / total_scale, delta.y / total_scale);
                         *handled = true;
@@ -314,7 +314,7 @@ impl Widget for ImageViewer {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ImageViewer"
     }
 

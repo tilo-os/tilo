@@ -213,7 +213,7 @@ impl OpfPackage {
                     && n.attribute("content").is_some()
             })
             .and_then(|n| n.attribute("content"))
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         // Manifest: id -> (href, properties, media-type)
         let mut manifest = HashMap::new();
@@ -338,7 +338,7 @@ fn parse_nav_doc(src: &str, base: &str) -> HashMap<String, String> {
             let is_toc = n
                 .attributes()
                 .any(|a| a.name() == "type" && a.value().contains("toc"));
-            if is_toc { 0 } else { 1 }
+            i32::from(!is_toc)
         });
     let scope = nav.unwrap_or_else(|| doc.root_element());
     for a in scope.descendants().filter(|n| n.has_tag_name("a")) {

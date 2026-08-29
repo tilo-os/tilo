@@ -272,25 +272,22 @@ impl CalcModel {
         if trimmed.is_empty() {
             return None;
         }
-        match engine::evaluate(&trimmed, &self.ctx()) {
-            Ok(v) => {
-                let result = engine::format_number(v);
-                let entry = HistoryEntry {
-                    expr: trimmed,
-                    result: result.clone(),
-                };
-                self.history.insert(0, entry.clone());
-                self.history.truncate(64);
-                self.ans = v;
-                self.expr = result;
-                self.after_equals = true;
-                Some(entry)
-            }
-            Err(_) => {
-                // Leave the expression intact; the result line shows the error.
-                self.after_equals = false;
-                None
-            }
+        if let Ok(v) = engine::evaluate(&trimmed, &self.ctx()) {
+            let result = engine::format_number(v);
+            let entry = HistoryEntry {
+                expr: trimmed,
+                result: result.clone(),
+            };
+            self.history.insert(0, entry.clone());
+            self.history.truncate(64);
+            self.ans = v;
+            self.expr = result;
+            self.after_equals = true;
+            Some(entry)
+        } else {
+            // Leave the expression intact; the result line shows the error.
+            self.after_equals = false;
+            None
         }
     }
 
@@ -384,7 +381,7 @@ impl Key {
             Key::Digit(_) | Key::Dot | Key::DoubleZero => KeyRole::Digit,
             Key::Equals => KeyRole::Accent,
             Key::Clear | Key::Backspace => KeyRole::Warm,
-            Key::Ins("+") | Key::Ins("-") | Key::Ins("*") | Key::Ins("/") => KeyRole::Operator,
+            Key::Ins("+" | "-" | "*" | "/") => KeyRole::Operator,
             _ => KeyRole::Function,
         }
     }
@@ -459,7 +456,7 @@ impl KeypadLayout {
     /// The row-major key list for this layout. Each layout is a dense grid of
     /// `cols()` columns.
     pub fn keys(self) -> Vec<Key> {
-        use Key::*;
+        use Key::{Clear, Backspace, Ins, Digit, Dot, Equals, Percent, Wrap, ToggleSign, Ans, DoubleZero};
         match self {
             // 4 cols × 6 rows — the everyday essentials.
             KeypadLayout::Compact => vec![

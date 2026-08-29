@@ -44,7 +44,7 @@ fn build_peer_swarm() -> Swarm<PeerBehaviour> {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(PeerBehaviour { gossipsub })
         })
         .expect("with_behaviour")
-        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_mins(1)))
         .build()
 }
 
@@ -104,7 +104,7 @@ async fn message_forwarded_via_relay_without_direct_peer_dial() {
         .expect("relay listen addr");
 
     // Append `/p2p/<peerid>` so peers can authenticate the dial.
-    let relay_full: Multiaddr = format!("{}/p2p/{}", relay_addr, relay_peer_id)
+    let relay_full: Multiaddr = format!("{relay_addr}/p2p/{relay_peer_id}")
         .parse()
         .expect("multiaddr");
 

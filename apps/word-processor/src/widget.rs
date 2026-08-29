@@ -1,5 +1,5 @@
 //! `WordProcessorWidget` — the `ui::Widget` for the word processor. Renders the
-//! `qdoc` document as a centered page (à la LibreOffice Writer) using the
+//! `qdoc` document as a centered page (à la `LibreOffice` Writer) using the
 //! `RichTextLayout` primitive: word-wrapped paragraphs, headings, list bullets,
 //! inline **bold**/*italic*/underline, a selection highlight, and a caret. Maps
 //! pointer + keyboard onto the editing model (selection, formatting, save).
@@ -191,9 +191,9 @@ impl ChromeColors {
 /// Relative luminance (0..1) of a colour — used only to decide whether a theme's
 /// "lightest" surface is light enough to serve as paper.
 fn luminance(c: Color) -> f64 {
-    let r = c.r() as f64 / 255.0;
-    let g = c.g() as f64 / 255.0;
-    let b = c.b() as f64 / 255.0;
+    let r = f64::from(c.r()) / 255.0;
+    let g = f64::from(c.g()) / 255.0;
+    let b = f64::from(c.b()) / 255.0;
     0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
@@ -438,7 +438,7 @@ fn draw_field_box(
         &shown,
         13.0,
         col,
-        transform * Affine::translate((r.x0 + 8.0, (r.y0 + r.y1) / 2.0 - 8.0)),
+        transform * Affine::translate((r.x0 + 8.0, f64::midpoint(r.y0, r.y1) - 8.0)),
         None,
     );
 }
@@ -690,8 +690,7 @@ fn fmt_num(v: f32) -> String {
 fn char_to_byte(text: &str, char_off: usize) -> usize {
     text.char_indices()
         .nth(char_off)
-        .map(|(b, _)| b)
-        .unwrap_or(text.len())
+        .map_or(text.len(), |(b, _)| b)
 }
 fn byte_to_char(text: &str, byte_off: usize) -> usize {
     let b = byte_off.min(text.len());
@@ -709,7 +708,7 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
     let mut tops: Vec<(f64, f64)> = layout
         .selection_rects(0, text.len().max(1))
         .into_iter()
-        .map(|(_, y0, _, y1)| (y0 as f64, (y1 - y0) as f64))
+        .map(|(_, y0, _, y1)| (f64::from(y0), f64::from(y1 - y0)))
         .collect();
     // `selection_rects` may emit several spans on the same line (one per run); keep
     // one entry per distinct top, preferring the larger height for that line.
@@ -722,7 +721,7 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
             false
         }
     });
-    let total_h = layout.height() as f64;
+    let total_h = f64::from(layout.height());
     if tops.is_empty() {
         return vec![(0.0, total_h.max(1.0))];
     }
@@ -978,8 +977,7 @@ fn next_line_spacing(cur: f64) -> f64 {
                 .partial_cmp(&(**b - cur).abs())
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .map(|(i, _)| i)
-        .unwrap_or(0);
+        .map_or(0, |(i, _)| i);
     LINE_SPACINGS[(idx + 1) % LINE_SPACINGS.len()]
 }
 
@@ -1559,7 +1557,7 @@ struct Laid {
     /// the full shaped-layout height; for a split slice it is only the height of
     /// the lines that fall on this slice's page.
     height: f64,
-    /// Y where the shaped layout's internal origin (line_top = 0) maps on screen.
+    /// Y where the shaped layout's internal origin (`line_top` = 0) maps on screen.
     /// All layout-relative geometry (`selection_rects`, `caret_geometry`, `hit`)
     /// is measured from here, so a line at internal `line_top` draws at
     /// `layout_y + line_top`. Equals `y_top` for an unsplit block; for the lower
@@ -2418,7 +2416,7 @@ impl WordProcessorWidget {
 
     /// **Save As**: pick a destination through the host portal. The format is
     /// chosen from the extension the user types/selects (`.docx` → Word, `.odt`
-    /// → OpenDocument, …); the current document is written there on drain and
+    /// → `OpenDocument`, …); the current document is written there on drain and
     /// becomes the document's path. Also the fallback first-save path for an
     /// untitled document (no more silent `~/Untitled.md`).
     fn request_save_as(&mut self) {
@@ -2429,9 +2427,7 @@ impl WordProcessorWidget {
         let suggested = self
             .path
             .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|f| f.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Untitled.md".to_string());
+            .and_then(|p| p.file_name()).map_or_else(|| "Untitled.md".to_string(), |f| f.to_string_lossy().into_owned());
         self.portal_rx = Some(
             portal::PickRequest::save("Save as", "Save", &suggested)
                 .filter(portal::FileFilter::new("Word document").glob("*.docx"))
@@ -2691,15 +2687,11 @@ impl WordProcessorWidget {
             // Wrap in word boundaries so the whole-word toggle composes with regex.
             pattern = format!(r"\b(?:{pattern})\b");
         }
-        let re = match regex::RegexBuilder::new(&pattern)
+        let re = if let Ok(re) = regex::RegexBuilder::new(&pattern)
             .case_insensitive(!self.find_case)
-            .build()
-        {
-            Ok(re) => re,
-            Err(_) => {
-                self.find_regex_error = true;
-                return;
-            }
+            .build() { re } else {
+            self.find_regex_error = true;
+            return;
         };
         for b in &self.blocks {
             for m in re.find_iter(&b.text) {
@@ -2817,7 +2809,7 @@ impl WordProcessorWidget {
             None,
             &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
         );
-        let cy = (bar.y0 + bar.y1) / 2.0;
+        let cy = f64::midpoint(bar.y0, bar.y1);
         let fy0 = cy - 13.0;
         let mut x = bar.x0 + 12.0;
 
@@ -2977,7 +2969,7 @@ impl WordProcessorWidget {
             _ => {
                 if let Some(t) = typed
                     && !t.is_empty()
-                    && !t.chars().any(|c| c.is_control())
+                    && !t.chars().any(char::is_control)
                 {
                     if self.find_on_replace {
                         self.replace_query.push_str(t);
@@ -3029,7 +3021,7 @@ impl WordProcessorWidget {
     fn band_caret_from_pointer(&mut self, p: Point, extend: bool) {
         let mut hit: Option<(String, usize)> = None;
         for rl in &self.region_laid {
-            let h = rl.layout.height() as f64;
+            let h = f64::from(rl.layout.height());
             if p.y >= rl.origin.y && p.y < rl.origin.y + h {
                 let byte = rl
                     .layout
@@ -3091,8 +3083,7 @@ impl WordProcessorWidget {
                 let byte = self
                     .layout_cache
                     .get(&l.id)
-                    .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (p.y - l.layout_y) as f32))
-                    .unwrap_or(0);
+                    .map_or(0, |(_, lay)| lay.hit((p.x - l.text_x) as f32, (p.y - l.layout_y) as f32));
                 hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 break;
             }
@@ -3113,8 +3104,7 @@ impl WordProcessorWidget {
                 let byte = self
                     .layout_cache
                     .get(&l.id)
-                    .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, lay.height() - 1.0))
-                    .unwrap_or(0);
+                    .map_or(0, |(_, lay)| lay.hit((p.x - l.text_x) as f32, lay.height() - 1.0));
                 hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
             }
         }
@@ -3251,7 +3241,7 @@ impl WordProcessorWidget {
                 vec![],
                 1.0,
             );
-            total_h += layout.height() as f64;
+            total_h += f64::from(layout.height());
             shaped.push(layout);
         }
         // Stack from the top of the band (headers) or just enough above the band
@@ -3279,7 +3269,7 @@ impl WordProcessorWidget {
                 ctf * Affine::translate((origin.x, origin.y)),
                 ink,
             );
-            let h = layout.height() as f64;
+            let h = f64::from(layout.height());
             if editing {
                 let b = &blocks[idx];
                 laid.push(RegionLaid {
@@ -3364,10 +3354,10 @@ impl WordProcessorWidget {
             let eb = char_to_byte(&rl.text, e.1);
             for (rx0, ry0, rx1, ry1) in rl.layout.selection_rects(sb, eb) {
                 let r = Rect::new(
-                    rl.origin.x + rx0 as f64,
-                    rl.origin.y + ry0 as f64,
-                    rl.origin.x + rx1 as f64,
-                    rl.origin.y + ry1 as f64,
+                    rl.origin.x + f64::from(rx0),
+                    rl.origin.y + f64::from(ry0),
+                    rl.origin.x + f64::from(rx1),
+                    rl.origin.y + f64::from(ry1),
                 );
                 scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &r);
             }
@@ -3376,10 +3366,10 @@ impl WordProcessorWidget {
             let byte = char_to_byte(&rl.text, caret.offset);
             let (cx, cy, ch) = rl.layout.caret_geometry(byte);
             let c = Rect::new(
-                rl.origin.x + cx as f64,
-                rl.origin.y + cy as f64,
-                rl.origin.x + cx as f64 + CARET_WIDTH,
-                rl.origin.y + cy as f64 + ch as f64,
+                rl.origin.x + f64::from(cx),
+                rl.origin.y + f64::from(cy),
+                rl.origin.x + f64::from(cx) + CARET_WIDTH,
+                rl.origin.y + f64::from(cy) + f64::from(ch),
             );
             scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &c);
         }
@@ -3424,8 +3414,7 @@ impl WordProcessorWidget {
     /// The `space_after` of the focused block's style.
     fn focused_space_after(&self) -> f64 {
         self.focused_style_key()
-            .map(|k| self.sheet.get(&k).space_after as f64)
-            .unwrap_or(8.0)
+            .map_or(8.0, |k| f64::from(self.sheet.get(&k).space_after))
     }
 
     /// `(x-center, y)` of the spacing grip — centered in the gap *after the
@@ -3437,7 +3426,7 @@ impl WordProcessorWidget {
             .iter()
             .find(|l| l.id == self.inner.caret.block)
             .or_else(|| self.laid.first())?;
-        let cx = (self.page_rect.x0 + self.page_rect.x1) / 2.0;
+        let cx = f64::midpoint(self.page_rect.x0, self.page_rect.x1);
         Some((cx, l.y_top + l.height + self.focused_space_after() / 2.0))
     }
 
@@ -3458,7 +3447,7 @@ impl WordProcessorWidget {
                 } else {
                     (p.y - c).abs()
                 };
-                if along && d <= GUIDE_GRAB && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                if along && d <= GUIDE_GRAB && best.is_none_or(|(_, bd)| d < bd) {
                     best = Some((side, d));
                 }
             }
@@ -3535,12 +3524,11 @@ impl WordProcessorWidget {
         self.blocks
             .iter()
             .find(|b| b.id == block)
-            .map(|b| match b.attrs.get(key) {
+            .map_or(0.0, |b| match b.attrs.get(key) {
                 Some(AttrVal::Float(f)) => *f,
                 Some(AttrVal::Int(n)) => *n as f64,
                 _ => 0.0,
             })
-            .unwrap_or(0.0)
     }
 
     /// Map an unscaled content x (the page coordinate space) to screen x using the
@@ -3626,7 +3614,7 @@ impl WordProcessorWidget {
         let text_right_sx = self.content_x_to_screen(page_x + page_w - self.margins.right);
         // Clamp drawing to the band's visible width.
         let clip = |x: f64| x.clamp(band.x0, band.x1);
-        let mid = (band.y0 + band.y1) / 2.0;
+        let mid = f64::midpoint(band.y0, band.y1);
 
         // The whole page span: a recessed "field" tone (the margins area).
         scene.fill(
@@ -3665,7 +3653,7 @@ impl WordProcessorWidget {
         let text_right_cx = page_x + page_w - self.margins.right;
         let max_in = ((text_right_cx - text_left_cx) / unit_px).ceil() as i32;
         for i in 0..=max_in {
-            let cx = text_left_cx + i as f64 * unit_px;
+            let cx = text_left_cx + f64::from(i) * unit_px;
             let sx = self.content_x_to_screen(cx);
             if sx < band.x0 - 2.0 || sx > band.x1 + 2.0 {
                 continue;
@@ -3690,7 +3678,7 @@ impl WordProcessorWidget {
             }
             // Quarter-inch minor ticks between this inch and the next.
             for q in 1..4 {
-                let qcx = cx + q as f64 * unit_px / 4.0;
+                let qcx = cx + f64::from(q) * unit_px / 4.0;
                 if qcx > text_right_cx + 1.0 {
                     break;
                 }
@@ -4008,12 +3996,11 @@ impl WordProcessorWidget {
             for side in [Side::Left, Side::Right, Side::Top, Side::Bottom] {
                 let (vert, c) = guide_axis(page, e, side);
                 let active = drag
-                    .map(|g| match g.kind {
+                    .is_some_and(|g| match g.kind {
                         DragKind::Proportional => true,
                         DragKind::Pair => g.side == side || g.side.opposite() == side,
                         DragKind::Single => g.side == side,
-                    })
-                    .unwrap_or(false);
+                    });
                 let col = if active {
                     accent
                 } else {
@@ -4028,9 +4015,9 @@ impl WordProcessorWidget {
                 scene.fill(Fill::NonZero, transform, col, None, &line);
                 // grip dot at the line's midpoint
                 let (gx, gy) = if vert {
-                    (c, (page.y0 + page.y1) / 2.0)
+                    (c, f64::midpoint(page.y0, page.y1))
                 } else {
-                    ((page.x0 + page.x1) / 2.0, c)
+                    (f64::midpoint(page.x0, page.x1), c)
                 };
                 scene.fill(
                     Fill::NonZero,
@@ -4097,7 +4084,7 @@ impl WordProcessorWidget {
             &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0),
         );
 
-        let cy = (bar.y0 + bar.y1) / 2.0;
+        let cy = f64::midpoint(bar.y0, bar.y1);
         let mut x = bar.x0 + 12.0;
         self.layout_chips.clear();
         for (mode, label) in [
@@ -4140,9 +4127,7 @@ impl WordProcessorWidget {
             ),
             LayoutMode::Spacing => {
                 let name = self
-                    .focused_style_key()
-                    .map(|k| crate::styles::style_display_name(&k, &self.sheet.get(&k)))
-                    .unwrap_or_else(|| t("style-body"));
+                    .focused_style_key().map_or_else(|| t("style-body"), |k| crate::styles::style_display_name(&k, &self.sheet.get(&k)));
                 t_args(
                     "layout-spacing-readout",
                     &[
@@ -4608,13 +4593,12 @@ impl WordProcessorWidget {
             .blocks
             .iter()
             .find(|b| Some(&b.id) == img_id.as_ref())
-            .map(|b| {
+            .map_or((false, false), |b| {
                 (
                     matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
                     matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
                 )
-            })
-            .unwrap_or((false, false));
+            });
         tr.draw_text(
             scene,
             &t("panel-image-flip"),
@@ -4679,7 +4663,7 @@ impl WordProcessorWidget {
         draw_btn(scene, transform, tr, &cc, plus, "+", false, true);
         // Value box.
         let editing = self.editing_field == Some(field);
-        let scrubbing = self.scrub.map(|s| s.field == field).unwrap_or(false);
+        let scrubbing = self.scrub.is_some_and(|s| s.field == field);
         let border = if editing || scrubbing {
             cc.accent
         } else {
@@ -4705,13 +4689,13 @@ impl WordProcessorWidget {
             fmt_num(value)
         };
         let approx = text.chars().count() as f64 * 7.0;
-        let tx = (vb.x0 + vb.x1) / 2.0 - approx / 2.0;
+        let tx = f64::midpoint(vb.x0, vb.x1) - approx / 2.0;
         tr.draw_text(
             scene,
             &text,
             12.5,
             cc.text,
-            transform * Affine::translate((tx, (vb.y0 + vb.y1) / 2.0 - 8.0)),
+            transform * Affine::translate((tx, f64::midpoint(vb.y0, vb.y1) - 8.0)),
             None,
         );
         self.panel_hits.push((vb, PanelHit::Num(field)));
@@ -4759,11 +4743,11 @@ impl WordProcessorWidget {
                 continue;
             }
             let cy = l.y_top + self.scroll_y; // content-space top
-            if first.as_ref().map(|(y, _)| cy < *y).unwrap_or(true) {
+            if first.as_ref().is_none_or(|(y, _)| cy < *y) {
                 first = Some((cy, l.id.clone()));
             }
             // The deepest heading whose top is at/above the viewport top.
-            if cy <= view_top + 1.0 && best.as_ref().map(|(y, _)| cy >= *y).unwrap_or(true) {
+            if cy <= view_top + 1.0 && best.as_ref().is_none_or(|(y, _)| cy >= *y) {
                 best = Some((cy, l.id.clone()));
             }
         }
@@ -4926,7 +4910,7 @@ impl WordProcessorWidget {
         let approx = msg.chars().count() as f64 * 7.4 + 32.0;
         let w = approx.clamp(160.0, (self.rect.width() - 40.0).max(160.0));
         let h = 34.0;
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let y1 = self.rect.y1 - LAYOUT_BAR_H - 14.0;
         let r = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
         let shape = vello::kurbo::RoundedRect::from_rect(r, 8.0);
@@ -4948,7 +4932,7 @@ impl WordProcessorWidget {
             &msg,
             13.0,
             cc.on_accent,
-            transform * Affine::translate((cx - tw / 2.0, (r.y0 + r.y1) / 2.0 - 8.0)),
+            transform * Affine::translate((cx - tw / 2.0, f64::midpoint(r.y0, r.y1) - 8.0)),
             None,
         );
     }
@@ -4996,11 +4980,11 @@ fn draw_btn(
     );
     let approx = label.chars().count() as f64 * 6.6;
     let tx = if center {
-        ((r.x0 + r.x1) / 2.0 - approx / 2.0).max(r.x0 + 4.0)
+        (f64::midpoint(r.x0, r.x1) - approx / 2.0).max(r.x0 + 4.0)
     } else {
         r.x0 + 8.0
     };
-    let ty = (r.y0 + r.y1) / 2.0 - 8.0;
+    let ty = f64::midpoint(r.y0, r.y1) - 8.0;
     tr.draw_text(
         scene,
         label,
@@ -5282,17 +5266,17 @@ impl Widget for WordProcessorWidget {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -5397,7 +5381,7 @@ impl Widget for WordProcessorWidget {
         // top of the (scrolled) content stays pinned to the canvas top as zoom
         // changes. The toolbar/find-bar/status bar are drawn with the unscaled
         // `transform` and are unaffected.
-        self.zoom_anchor = Point::new((canvas.x0 + canvas.x1) / 2.0, canvas.y0);
+        self.zoom_anchor = Point::new(f64::midpoint(canvas.x0, canvas.x1), canvas.y0);
         let ctf = self.content_transform(transform);
 
         // Per-side page geometry — every margin is independently customizable.
@@ -5475,7 +5459,7 @@ impl Widget for WordProcessorWidget {
                 && let Some(f) = active_float.take()
                 && f.page == cur_page
             {
-                y = y.max(f.bottom + self.sheet.get("body").space_after as f64);
+                y = y.max(f.bottom + f64::from(self.sheet.get("body").space_after));
             }
             if let Some(tid) = cell_table(b) {
                 ol_counts.clear();
@@ -5487,7 +5471,7 @@ impl Widget for WordProcessorWidget {
                 let cells = &blocks[start..bi];
                 let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
                 let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
-                let col_w = content_w as f64 / ncols as f64;
+                let col_w = f64::from(content_w) / ncols as f64;
                 // Measure every row first so the whole table can paginate as one
                 // unit (it is never split mid-row across a page boundary).
                 // A measured table row: `(row_height, cells)`, each cell as
@@ -5535,7 +5519,7 @@ impl Widget for WordProcessorWidget {
                                     )
                                 }
                             };
-                            let cell_h = layout.height() as f64;
+                            let cell_h = f64::from(layout.height());
                             row_h = row_h.max(cell_h + 2.0 * cell_pad);
                             new_cache.insert(cell.id.clone(), (key, layout));
                             row_items.push((c, cell_h, cell));
@@ -5546,7 +5530,7 @@ impl Widget for WordProcessorWidget {
                 let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
                 // Break to the next page if a manual page break is set on the
                 // first cell, or the whole table would not fit.
-                let force_break = cells.first().map(block_page_break_before).unwrap_or(false);
+                let force_break = cells.first().is_some_and(block_page_break_before);
                 let item_top = if placed_on_page
                     && (force_break || y + table_h > page_content_bottom(cur_page) + 0.5)
                 {
@@ -5594,7 +5578,7 @@ impl Widget for WordProcessorWidget {
                     }
                     ry += row_h;
                 }
-                y = ry + self.sheet.get("body").space_after as f64;
+                y = ry + f64::from(self.sheet.get("body").space_after);
             } else if b.kind == "image" {
                 ol_counts.clear();
                 let hash = match b.attrs.get("blob") {
@@ -5612,7 +5596,7 @@ impl Widget for WordProcessorWidget {
                     .image_cache
                     .get(&hash)
                     .and_then(|o| o.as_ref())
-                    .map(|im| im.intrinsic_size());
+                    .map(ui::widget::Image::intrinsic_size);
                 // Display size: an explicit `width`/`height` attr (set by importers
                 // or a resize handle) wins; otherwise fit the decoded intrinsic size
                 // to the content column. Either way the final width is clamped to the
@@ -5620,15 +5604,15 @@ impl Widget for WordProcessorWidget {
                 // requested-but-too-wide image scales down without distorting.
                 let (draw_w, draw_h) = match image_explicit_size(b) {
                     Some((ew, eh)) if ew > 0.0 && eh > 0.0 => {
-                        let w = ew.min(content_w as f64);
+                        let w = ew.min(f64::from(content_w));
                         (w, (eh * (w / ew)).max(8.0))
                     }
                     _ => match intrinsic {
                         Some((iw, ih)) if iw > 0 && ih > 0 => {
-                            let w = (iw as f64).min(content_w as f64);
-                            (w, (ih as f64 * (w / iw as f64)).max(8.0))
+                            let w = f64::from(iw).min(f64::from(content_w));
+                            (w, (f64::from(ih) * (w / f64::from(iw))).max(8.0))
                         }
-                        _ => ((content_w as f64).min(280.0), 90.0),
+                        _ => (f64::from(content_w).min(280.0), 90.0),
                     },
                 };
                 // Image blocks carry a trivial empty layout (used only so pointer
@@ -5670,7 +5654,7 @@ impl Widget for WordProcessorWidget {
                     let img_x = if left {
                         content_x
                     } else {
-                        content_x + content_w as f64 - draw_w
+                        content_x + f64::from(content_w) - draw_w
                     };
                     const FLOAT_GUTTER: f64 = 12.0;
                     laid.push(Laid {
@@ -5705,7 +5689,7 @@ impl Widget for WordProcessorWidget {
                     // wrap is centered in the column; inline images stay left-aligned.
                     let centered = image_anchor(b) != "inline";
                     let img_x = if centered {
-                        content_x + ((content_w as f64 - draw_w) / 2.0).max(0.0)
+                        content_x + ((f64::from(content_w) - draw_w) / 2.0).max(0.0)
                     } else {
                         content_x
                     };
@@ -5727,7 +5711,7 @@ impl Widget for WordProcessorWidget {
                         cell_row: None,
                         page: cur_page,
                     });
-                    y = item_top + draw_h + self.sheet.get("body").space_after as f64;
+                    y = item_top + draw_h + f64::from(self.sheet.get("body").space_after);
                 }
                 bi += 1;
             } else {
@@ -5740,7 +5724,7 @@ impl Widget for WordProcessorWidget {
                 // left of the text. Ordered items number per level.
                 let (indent, bullet) = if b.kind == "list_item" {
                     let level = list_level(b);
-                    let indent = st.indent as f64 + level as f64 * LIST_INDENT_STEP;
+                    let indent = f64::from(st.indent) + level as f64 * LIST_INDENT_STEP;
                     // Keep the ordered counters sized to the current depth; entering
                     // a shallower level drops the deeper counters so they restart.
                     ol_counts.truncate(level + 1);
@@ -5758,7 +5742,7 @@ impl Widget for WordProcessorWidget {
                 } else {
                     ol_counts.clear();
                     // Style indent + the paragraph's own ruler indent attr.
-                    (st.indent as f64 + block_indent_attr(b), None)
+                    (f64::from(st.indent) + block_indent_attr(b), None)
                 };
                 // Coarse float-wrap: if a floated image is active on this page and
                 // this block's top still falls within the image band, narrow the
@@ -5768,7 +5752,7 @@ impl Widget for WordProcessorWidget {
                 // narrowing — draw + hit-test only need the shared x-origin offset.
                 let (float_reserve, float_offset) = match active_float {
                     Some(f)
-                        if f.page == cur_page && y + st.space_before as f64 + 0.5 < f.bottom =>
+                        if f.page == cur_page && y + f64::from(st.space_before) + 0.5 < f.bottom =>
                     {
                         // Subtract the reserved column from the wrap width; for a
                         // left float, shift the text origin right by the same amount.
@@ -5818,12 +5802,12 @@ impl Widget for WordProcessorWidget {
                         )
                     }
                 };
-                let block_h = layout.height() as f64;
+                let block_h = f64::from(layout.height());
                 // Place with the style's space-before as the leading gap, breaking
                 // to the next page when the whole block would not fit before the
                 // bottom text margin (the lead is dropped at the top of a fresh
                 // page so the first paragraph hugs the top margin).
-                let top_candidate = y + st.space_before as f64;
+                let top_candidate = y + f64::from(st.space_before);
                 // A manual page break forces a fresh page; otherwise break only
                 // when the whole block would overflow the bottom text margin.
                 let force_break = block_page_break_before(b);
@@ -5841,14 +5825,14 @@ impl Widget for WordProcessorWidget {
                 // longer applies to this block — drop the x-origin offset so the
                 // block lays full-width on its new page. (The float only ever
                 // narrows blocks on its own page.)
-                let float_offset = if active_float.map(|f| f.page == cur_page).unwrap_or(false) {
+                let float_offset = if active_float.is_some_and(|f| f.page == cur_page) {
                     float_offset
                 } else {
                     0.0
                 };
                 let text_x = content_x + indent + float_offset;
                 let ink = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
-                let width = wrap_w as f64;
+                let width = f64::from(wrap_w);
                 // Does the whole block fit on the current page from `item_top`? If
                 // so this is the fast, unchanged single-`Laid` path. Otherwise the
                 // block is split at line boundaries across as many pages as needed.
@@ -5871,7 +5855,7 @@ impl Widget for WordProcessorWidget {
                         cell_row: None,
                         page: cur_page,
                     });
-                    y = item_top + block_h + st.space_after as f64;
+                    y = item_top + block_h + f64::from(st.space_after);
                 } else {
                     // Intra-block pagination: emit one `Laid` slice per page the
                     // block spans. Each slice shares the one cached layout (one id,
@@ -5927,7 +5911,7 @@ impl Widget for WordProcessorWidget {
                             slice_top = page_content_top(cur_page);
                             y = slice_top;
                         } else {
-                            y = slice_bottom + st.space_after as f64;
+                            y = slice_bottom + f64::from(st.space_after);
                         }
                     }
                 }
@@ -5942,7 +5926,7 @@ impl Widget for WordProcessorWidget {
                     if cur_page > f.page {
                         active_float = None;
                     } else if y >= f.bottom {
-                        y = y.max(f.bottom + st.space_after as f64);
+                        y = y.max(f.bottom + f64::from(st.space_after));
                         active_float = None;
                     }
                 }
@@ -5965,7 +5949,7 @@ impl Widget for WordProcessorWidget {
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
         let sy = self.scroll_y;
         if sy != 0.0 {
-            for l in laid.iter_mut() {
+            for l in &mut laid {
                 l.y_top -= sy;
                 l.layout_y -= sy;
                 if let Some(bx) = l.cell_box.as_mut() {
@@ -6064,7 +6048,7 @@ impl Widget for WordProcessorWidget {
             if !drew_footer && !foot_editing {
                 let label = t_args("page-indicator", &[arg("n", page_no as i64)]);
                 let approx = label.chars().count() as f64 * 6.4;
-                let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
+                let lx = f64::midpoint(sheet.x0, sheet.x1) - approx / 2.0;
                 let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
                 // Drawn in the inter-page gap on the canvas — chrome, so themed.
                 text_renderer.draw_text(
@@ -6164,16 +6148,15 @@ impl Widget for WordProcessorWidget {
                     .blocks
                     .iter()
                     .find(|b| b.id == l.id)
-                    .map(|b| {
+                    .map_or((false, false), |b| {
                         (
                             matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
                             matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
                         )
-                    })
-                    .unwrap_or((false, false));
+                    });
                 let itf = if fh || fv {
-                    let cx = (rect.x0 + rect.x1) / 2.0;
-                    let cy = (rect.y0 + rect.y1) / 2.0;
+                    let cx = f64::midpoint(rect.x0, rect.x1);
+                    let cy = f64::midpoint(rect.y0, rect.y1);
                     ctf * Affine::translate((cx, cy))
                         * Affine::scale_non_uniform(
                             if fh { -1.0 } else { 1.0 },
@@ -6321,10 +6304,10 @@ impl Widget for WordProcessorWidget {
                 } else {
                     for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
                         let r = Rect::new(
-                            l.text_x + rx0 as f64,
-                            ly + ry0 as f64,
-                            l.text_x + rx1 as f64,
-                            ly + ry1 as f64,
+                            l.text_x + f64::from(rx0),
+                            ly + f64::from(ry0),
+                            l.text_x + f64::from(rx1),
+                            ly + f64::from(ry1),
                         );
                         scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &r);
                     }
@@ -6339,10 +6322,10 @@ impl Widget for WordProcessorWidget {
                         let be = char_to_byte(&l.text, *ce);
                         for (rx0, ry0, rx1, ry1) in layout.selection_rects(bs, be) {
                             let r = Rect::new(
-                                l.text_x + rx0 as f64,
-                                ly + ry0 as f64,
-                                l.text_x + rx1 as f64,
-                                ly + ry1 as f64,
+                                l.text_x + f64::from(rx0),
+                                ly + f64::from(ry0),
+                                l.text_x + f64::from(rx1),
+                                ly + f64::from(ry1),
                             );
                             scene.fill(Fill::NonZero, ctf, FIND_HL, None, &r);
                         }
@@ -6361,10 +6344,10 @@ impl Widget for WordProcessorWidget {
                     let rects = layout.selection_rects(bs, be);
                     for &(rx0, ry0, rx1, ry1) in &rects {
                         let r = Rect::new(
-                            l.text_x + rx0 as f64,
-                            ly + ry0 as f64,
-                            l.text_x + rx1 as f64,
-                            ly + ry1 as f64,
+                            l.text_x + f64::from(rx0),
+                            ly + f64::from(ry0),
+                            l.text_x + f64::from(rx1),
+                            ly + f64::from(ry1),
                         );
                         scene.fill(Fill::NonZero, ctf, COMMENT_HL, None, &r);
                     }
@@ -6372,7 +6355,7 @@ impl Widget for WordProcessorWidget {
                     // the range's right edge (max rect x1) for the inline tab.
                     if let Some(&(_, ry0, _, _)) = rects.first() {
                         let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
-                        comment_markers.push((cid, ly + ry0 as f64, l.text_x + right_x as f64));
+                        comment_markers.push((cid, ly + f64::from(ry0), l.text_x + f64::from(right_x)));
                     }
                 }
             }
@@ -6396,17 +6379,17 @@ impl Widget for WordProcessorWidget {
                 let (ins_ranges, del_ranges) = block_change_decos(b);
                 for &(b0, b1) in &ins_ranges {
                     for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                        let uy = ly + ry1 as f64 - 2.0;
+                        let uy = ly + f64::from(ry1) - 2.0;
                         let line =
-                            Rect::new(l.text_x + rx0 as f64, uy, l.text_x + rx1 as f64, uy + 1.5);
+                            Rect::new(l.text_x + f64::from(rx0), uy, l.text_x + f64::from(rx1), uy + 1.5);
                         scene.fill(Fill::NonZero, ctf, TRACK_INS, None, &line);
                     }
                 }
                 for &(b0, b1) in &del_ranges {
                     for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                        let my = ly + ((ry0 + ry1) / 2.0) as f64;
+                        let my = ly + f64::from(f32::midpoint(ry0, ry1));
                         let line =
-                            Rect::new(l.text_x + rx0 as f64, my, l.text_x + rx1 as f64, my + 1.5);
+                            Rect::new(l.text_x + f64::from(rx0), my, l.text_x + f64::from(rx1), my + 1.5);
                         scene.fill(Fill::NonZero, ctf, TRACK_DEL, None, &line);
                     }
                 }
@@ -6416,7 +6399,7 @@ impl Widget for WordProcessorWidget {
                     let rects = layout.selection_rects(bs, be);
                     if let Some(&(_, ry0, _, _)) = rects.first() {
                         let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
-                        change_markers.push((cid, ly + ry0 as f64, l.text_x + right_x as f64));
+                        change_markers.push((cid, ly + f64::from(ry0), l.text_x + f64::from(right_x)));
                     }
                 }
             }
@@ -6428,8 +6411,8 @@ impl Widget for WordProcessorWidget {
             if let Some(spans) = spell_by_block.get(&l.id) {
                 for &(b0, b1) in spans {
                     for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                        let y = ly + ry1 as f64 - 1.0;
-                        draw_squiggle(scene, ctf, l.text_x + rx0 as f64, l.text_x + rx1 as f64, y);
+                        let y = ly + f64::from(ry1) - 1.0;
+                        draw_squiggle(scene, ctf, l.text_x + f64::from(rx0), l.text_x + f64::from(rx1), y);
                     }
                 }
             }
@@ -6452,20 +6435,18 @@ impl Widget for WordProcessorWidget {
                     // Anchor at the placeholder's left edge; fall back to the
                     // caret geometry if the glyph produced no selection rect.
                     let placeholder_rect = layout.selection_rects(bs, be).into_iter().next();
-                    let (mx, my) = placeholder_rect
-                        .map(|(rx0, ry0, _, _)| (rx0, ry0))
-                        .unwrap_or_else(|| {
+                    let (mx, my) = placeholder_rect.map_or_else(|| {
                             let (cx, cy, _) = layout.caret_geometry(bs);
                             (cx, cy)
-                        });
+                        }, |(rx0, ry0, _, _)| (rx0, ry0));
                     // Mask the U+FFFC object-replacement glyph (a box in some
                     // fonts) with paper so only the superscript number shows.
                     if let Some((rx0, ry0, rx1, ry1)) = placeholder_rect {
                         let mask = Rect::new(
-                            l.text_x + rx0 as f64,
-                            ly + ry0 as f64,
-                            l.text_x + rx1 as f64,
-                            ly + ry1 as f64,
+                            l.text_x + f64::from(rx0),
+                            ly + f64::from(ry0),
+                            l.text_x + f64::from(rx1),
+                            ly + f64::from(ry1),
                         );
                         scene.fill(Fill::NonZero, ctf, self.chrome.paper, None, &mask);
                     }
@@ -6477,7 +6458,7 @@ impl Widget for WordProcessorWidget {
                         &label,
                         sup_size,
                         l.ink,
-                        ctf * Affine::translate((l.text_x + mx as f64, ly + my as f64 - 1.0)),
+                        ctf * Affine::translate((l.text_x + f64::from(mx), ly + f64::from(my) - 1.0)),
                         None,
                     );
                     page_notes.entry(l.page).or_default().push(num);
@@ -6488,10 +6469,10 @@ impl Widget for WordProcessorWidget {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
                 let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(
-                    l.text_x + cx as f64,
-                    ly + cy as f64,
-                    l.text_x + cx as f64 + CARET_WIDTH,
-                    ly + cy as f64 + ch as f64,
+                    l.text_x + f64::from(cx),
+                    ly + f64::from(cy),
+                    l.text_x + f64::from(cx) + CARET_WIDTH,
+                    ly + f64::from(cy) + f64::from(ch),
                 );
                 scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &caret);
             }
@@ -6564,7 +6545,7 @@ impl Widget for WordProcessorWidget {
                     vec![],
                     1.0,
                 );
-                let body_h = body_layout.height() as f64;
+                let body_h = f64::from(body_layout.height());
                 let card_top = anchor_y.max(next_card_y);
                 // Header (author) + body + a footer row carrying the Resolve button.
                 let card_h = 22.0 + body_h + 8.0 + REVIEW_BTN + 6.0;
@@ -6764,7 +6745,7 @@ impl Widget for WordProcessorWidget {
                 if nums.is_empty() {
                     continue;
                 }
-                let line_h = (NOTE_FONT as f64 * 1.4).ceil();
+                let line_h = (f64::from(NOTE_FONT) * 1.4).ceil();
                 let area_h = nums.len() as f64 * line_h;
                 // Bottom of the text band on this page (above the footer margin).
                 let band_bottom = page_top + *page as f64 * page_pitch + letter_h - m.bottom - sy;
@@ -7019,7 +7000,7 @@ impl Widget for WordProcessorWidget {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 if ctrl {
@@ -7426,8 +7407,7 @@ impl Widget for WordProcessorWidget {
                         self.editing_field = Some(sc.field);
                         let cur = self
                             .focused_style_key()
-                            .map(|k| sc.field.get(&self.sheet.get(&k)))
-                            .unwrap_or(0.0);
+                            .map_or(0.0, |k| sc.field.get(&self.sheet.get(&k)));
                         self.edit_buf = fmt_num(cur);
                     }
                     self.dirty = true;
@@ -7843,12 +7823,11 @@ impl Widget for WordProcessorWidget {
             .blocks
             .iter()
             .find(|b| &b.id == caret_block)
-            .map(|b| char_to_byte(&b.text, self.inner.caret.offset))
-            .unwrap_or(self.inner.caret.offset);
+            .map_or(self.inner.caret.offset, |b| char_to_byte(&b.text, self.inner.caret.offset));
         Some((key, ui::PresencePayload::Caret { pos }))
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "WordProcessor"
     }
 
@@ -7923,7 +7902,7 @@ impl ui::widget::AppWidget for WordProcessorWidget {
         ui::widget::AppKind::Editor
     }
 
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "Document"
     }
 
@@ -8035,10 +8014,10 @@ impl WordProcessorWidget {
                         .into_iter()
                         .map(|(rx0, ry0, rx1, ry1)| {
                             Rect::new(
-                                l.text_x + rx0 as f64,
-                                l.y_top + ry0 as f64,
-                                l.text_x + rx1 as f64,
-                                l.y_top + ry1 as f64,
+                                l.text_x + f64::from(rx0),
+                                l.y_top + f64::from(ry0),
+                                l.text_x + f64::from(rx1),
+                                l.y_top + f64::from(ry1),
                             )
                         })
                         .collect();
@@ -8056,10 +8035,10 @@ impl WordProcessorWidget {
                 for (user, byte_pos) in list {
                     let (cx, cy, ch) = layout.caret_geometry(*byte_pos);
                     let rect = Rect::new(
-                        l.text_x + cx as f64,
-                        l.y_top + cy as f64,
-                        l.text_x + cx as f64 + CARET_WIDTH,
-                        l.y_top + cy as f64 + ch as f64,
+                        l.text_x + f64::from(cx),
+                        l.y_top + f64::from(cy),
+                        l.text_x + f64::from(cx) + CARET_WIDTH,
+                        l.y_top + f64::from(cy) + f64::from(ch),
                     );
                     let label = presence.display_name(user);
                     carets.push(RemoteCaretOverlay {
@@ -8105,10 +8084,10 @@ impl WordProcessorWidget {
                     .map(|(rx0, ry0, rx1, ry1)| {
                         (
                             Rect::new(
-                                l.text_x + rx0 as f64,
-                                l.y_top + ry0 as f64,
-                                l.text_x + rx1 as f64,
-                                l.y_top + ry1 as f64,
+                                l.text_x + f64::from(rx0),
+                                l.y_top + f64::from(ry0),
+                                l.text_x + f64::from(rx1),
+                                l.y_top + f64::from(ry1),
                             ),
                             alpha,
                         )
@@ -8144,8 +8123,8 @@ impl WordProcessorWidget {
         let pad_x = 5.0_f64;
         let pad_y = 2.0_f64;
         let (tw, _th) = text_renderer.measure(label, size, None);
-        let chip_w = tw as f64 + pad_x * 2.0;
-        let chip_h = size as f64 + pad_y * 2.0;
+        let chip_w = f64::from(tw) + pad_x * 2.0;
+        let chip_h = f64::from(size) + pad_y * 2.0;
         // Sit the pill just above the caret's top edge.
         let chip_x = caret_x;
         let chip_y = caret_top - chip_h - 2.0;
@@ -8185,20 +8164,17 @@ impl WordProcessorWidget {
             self.blocks
                 .iter()
                 .find(|b| &b.id == bid)
-                .map(|b| {
+                .is_some_and(|b| {
                     b.marks
                         .iter()
                         .any(|m| m.name == name && m.start <= *s && m.end >= *e)
                 })
-                .unwrap_or(false)
         })
     }
 
     fn current_block_style(&self) -> (String, Option<i64>) {
         let b = self.blocks.iter().find(|b| b.id == self.inner.caret.block);
-        let kind = b
-            .map(|b| b.kind.clone())
-            .unwrap_or_else(|| "paragraph".into());
+        let kind = b.map_or_else(|| "paragraph".into(), |b| b.kind.clone());
         let level = b.and_then(|b| match b.attrs.get("level") {
             Some(AttrVal::Int(n)) => Some(*n),
             _ => None,
@@ -8363,7 +8339,7 @@ impl WordProcessorWidget {
             }
             PanelHit::ToggleBold => self.edit_focused_style(state, true, |st| st.bold = !st.bold),
             PanelHit::ToggleItalic => {
-                self.edit_focused_style(state, true, |st| st.italic = !st.italic)
+                self.edit_focused_style(state, true, |st| st.italic = !st.italic);
             }
             // Direct paragraph formatting on the current paragraph(s), not the
             // named style — only the panel exposes these, not the toolbar.
@@ -8403,8 +8379,7 @@ impl WordProcessorWidget {
                 // (no movement) focuses the field for typing (handled on release).
                 let start_val = self
                     .focused_style_key()
-                    .map(|k| field.get(&self.sheet.get(&k)))
-                    .unwrap_or(0.0);
+                    .map_or(0.0, |k| field.get(&self.sheet.get(&k)));
                 self.editing_field = None;
                 self.scrub = Some(ScrubState {
                     field,
@@ -8475,8 +8450,7 @@ impl WordProcessorWidget {
     fn open_color_picker(&mut self) {
         let seed = self
             .focused_style_key()
-            .map(|k| self.sheet.get(&k).color)
-            .unwrap_or([0x1c, 0x1c, 0x20]);
+            .map_or([0x1c, 0x1c, 0x20], |k| self.sheet.get(&k).color);
         self.color_picker = Some(ColorPicker::new(Color::from_rgb8(
             seed[0], seed[1], seed[2],
         )));
@@ -8586,8 +8560,7 @@ impl WordProcessorWidget {
         let rect = self
             .color_picker
             .as_ref()
-            .map(|c| c.get_rect())
-            .unwrap_or(Rect::ZERO);
+            .map_or(Rect::ZERO, ui::Widget::get_rect);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Point::new(position.x / scale, position.y / scale);
@@ -8658,7 +8631,7 @@ impl WordProcessorWidget {
                 event, scale, mods, state, root, handled, &mut ft, node, &taffy,
             );
         }
-        let changed = self.color_picker.as_mut().and_then(|c| c.take_changed());
+        let changed = self.color_picker.as_mut().and_then(ui::widget::ColorPicker::take_changed);
         if let Some(col) = changed {
             let rgb = [col.r(), col.g(), col.b()];
             self.edit_focused_style(state, true, |st| st.color = rgb);
@@ -8695,8 +8668,7 @@ impl WordProcessorWidget {
             return sz;
         }
         self.focused_style_key()
-            .map(|k| self.sheet.get(&k).size)
-            .unwrap_or(16.5)
+            .map_or(16.5, |k| self.sheet.get(&k).size)
     }
 
     fn current_align(&self) -> String {
@@ -8716,8 +8688,7 @@ impl WordProcessorWidget {
         self.blocks
             .iter()
             .find(|b| b.id == self.inner.caret.block)
-            .map(|b| block_line_spacing(b) as f64)
-            .unwrap_or(1.0)
+            .map_or(1.0, |b| f64::from(block_line_spacing(b)))
     }
 
     /// The per-run `highlight` colour covering the font-probe position (just left
@@ -8861,7 +8832,7 @@ impl WordProcessorWidget {
                     if !overlaps {
                         continue;
                     }
-                    let Some(id) = m.value.as_str().map(|s| s.to_string()) else {
+                    let Some(id) = m.value.as_str().map(std::string::ToString::to_string) else {
                         continue;
                     };
                     if m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL {
@@ -9082,8 +9053,7 @@ impl WordProcessorWidget {
         let anchor_x = self
             .toolbar
             .first()
-            .map(|(_, r)| r.x0)
-            .unwrap_or(self.rect.x0 + 8.0);
+            .map_or(self.rect.x0 + 8.0, |(_, r)| r.x0);
         let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
         menu.open_at([anchor_x as f32, anchor_y as f32]);
         self.new_menu = menu;
@@ -9263,7 +9233,7 @@ impl WordProcessorWidget {
             None,
             &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
         );
-        let cy = (bar.y0 + bar.y1) / 2.0;
+        let cy = f64::midpoint(bar.y0, bar.y1);
         tr.draw_text(
             scene,
             &t("recovery-banner"),
@@ -9452,7 +9422,7 @@ impl WordProcessorWidget {
     ) {
         let cc = self.chrome;
         self.status_buttons.clear();
-        let cy = (row.y0 + row.y1) / 2.0;
+        let cy = f64::midpoint(row.y0, row.y1);
         let bw = 18.0;
         let bh = 18.0;
         let y0 = cy - bh / 2.0;
@@ -9675,8 +9645,8 @@ impl WordProcessorWidget {
             .find(|(a, _)| matches!(a, ToolAction::InsertImage))
         {
             let s = 18.0;
-            let cx = (r.x0 + r.x1) / 2.0;
-            let cy = (r.y0 + r.y1) / 2.0;
+            let cx = f64::midpoint(r.x0, r.x1);
+            let cy = f64::midpoint(r.y0, r.y1);
             let glyph = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0);
             Icon::Image.draw(scene, transform, glyph, self.chrome.text);
         }
@@ -9796,7 +9766,7 @@ impl WordProcessorWidget {
         tb: Rect,
     ) -> f64 {
         let cur = self.current_text_color();
-        let cy = (tb.y0 + tb.y1) / 2.0;
+        let cy = f64::midpoint(tb.y0, tb.y1);
         let sw = 20.0;
         let gap = 5.0;
         let n = STYLE_PALETTE.len() + 1; // +1 for the neutral default
@@ -9835,7 +9805,7 @@ impl WordProcessorWidget {
         self.toolbar.push((ToolAction::TextColor(None), nr));
         x += sw + gap;
 
-        for c in STYLE_PALETTE.iter() {
+        for c in &STYLE_PALETTE {
             let r = Rect::new(x, y0, x + sw, y0 + sw);
             let col = Color::from_rgb8(c[0], c[1], c[2]);
             scene.fill(
@@ -9873,7 +9843,7 @@ impl WordProcessorWidget {
         tb: Rect,
     ) {
         let cur = self.current_highlight_color();
-        let cy = (tb.y0 + tb.y1) / 2.0;
+        let cy = f64::midpoint(tb.y0, tb.y1);
         let sw = 20.0;
         let gap = 5.0;
         let n = HIGHLIGHT_PALETTE.len() + 1; // +1 for the neutral "no highlight"
@@ -9916,7 +9886,7 @@ impl WordProcessorWidget {
         self.toolbar.push((ToolAction::Highlight(None), nr));
         x += sw + gap;
 
-        for c in HIGHLIGHT_PALETTE.iter() {
+        for c in &HIGHLIGHT_PALETTE {
             let r = Rect::new(x, y0, x + sw, y0 + sw);
             let col = Color::from_rgb8(c[0], c[1], c[2]);
             scene.fill(

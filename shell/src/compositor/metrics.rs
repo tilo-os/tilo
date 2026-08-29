@@ -104,7 +104,7 @@ pub fn percentiles(values: &[u32]) -> Percentiles {
         let rank = ((p * n).div_ceil(100)).max(1);
         v[(rank - 1).min(n - 1) as usize]
     };
-    let sum: u64 = v.iter().map(|&x| x as u64).sum();
+    let sum: u64 = v.iter().map(|&x| u64::from(x)).sum();
     Percentiles {
         count: v.len() as u64,
         min: v[0],
@@ -169,7 +169,7 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         let mut prev: Option<u64> = None;
         for s in samples.iter().filter(|s| s.painted) {
             if let Some(p) = prev {
-                out.push(s.start_us.saturating_sub(p).min(u32::MAX as u64) as u32);
+                out.push(s.start_us.saturating_sub(p).min(u64::from(u32::MAX)) as u32);
             }
             prev = Some(s.start_us);
         }
@@ -178,9 +178,8 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
     let painted = samples.iter().filter(|s| s.painted).count() as u64;
     let span_us = samples
         .last()
-        .map(|s| s.start_us)
-        .unwrap_or(0)
-        .saturating_sub(samples.first().map(|s| s.start_us).unwrap_or(0));
+        .map_or(0, |s| s.start_us)
+        .saturating_sub(samples.first().map_or(0, |s| s.start_us));
     let fps = if span_us > 0 {
         painted as f64 * 1_000_000.0 / span_us as f64
     } else {
@@ -353,7 +352,7 @@ impl FrameRecorder {
 
     /// Record the refresh interval the loop is pacing to, so the summary can report how many frames landed on it.
     pub fn set_target_period(&mut self, period: Duration) {
-        self.target_period_us = period.as_micros().min(u32::MAX as u128) as u32;
+        self.target_period_us = period.as_micros().min(u128::from(u32::MAX)) as u32;
     }
 
     /// Start a new tick. `now` is the loop's own tick-start instant, so the recorder doesn't take a second clock reading.
@@ -364,8 +363,7 @@ impl FrameRecorder {
         let start_us = now.duration_since(self.start).as_micros() as u64;
         let period_us = self
             .prev_start_us
-            .map(|p| start_us.saturating_sub(p).min(u32::MAX as u64) as u32)
-            .unwrap_or(0);
+            .map_or(0, |p| start_us.saturating_sub(p).min(u64::from(u32::MAX)) as u32);
         self.prev_start_us = Some(start_us);
         self.cur = FrameSample {
             seq: self.seq,
@@ -422,7 +420,7 @@ impl FrameRecorder {
             self.cur.input_latency_us = Some(
                 done.saturating_duration_since(input_at)
                     .as_micros()
-                    .min(u32::MAX as u128) as u32,
+                    .min(u128::from(u32::MAX)) as u32,
             );
         }
     }
@@ -433,12 +431,11 @@ impl FrameRecorder {
             return;
         }
         let sample = self.cur;
-        if let Some(t) = self.trace.as_mut() {
-            if let Err(e) = sample.write_csv_row(t) {
+        if let Some(t) = self.trace.as_mut()
+            && let Err(e) = sample.write_csv_row(t) {
                 eprintln!("frame-metrics: trace write failed ({e}); disabling trace");
                 self.trace = None;
             }
-        }
         if sample.start_us >= self.warmup_us && self.samples.len() < MAX_RETAINED {
             self.samples.push(sample);
         }
@@ -496,7 +493,7 @@ impl Drop for FrameRecorder {
 }
 
 fn us(d: Duration) -> u32 {
-    d.as_micros().min(u32::MAX as u128) as u32
+    d.as_micros().min(u128::from(u32::MAX)) as u32
 }
 
 #[cfg(test)]

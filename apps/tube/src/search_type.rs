@@ -1,4 +1,4 @@
-//! Search-type seam — registering a "YouTube video" result type with qOS's
+//! Search-type seam — registering a "`YouTube` video" result type with qOS's
 //! coming **global-search** framework.
 //!
 //! Tube must *not* build a bespoke global search. The global-search framework
@@ -79,11 +79,11 @@ impl SearchHit {
 
     /// The app's router calls this when the framework activates a hit.
     pub fn parse_watch_link(link: &str) -> Option<String> {
-        link.strip_prefix("tube://watch/").map(|s| s.to_string())
+        link.strip_prefix("tube://watch/").map(std::string::ToString::to_string)
     }
 
     pub fn parse_channel_link(link: &str) -> Option<String> {
-        link.strip_prefix("tube://channel/").map(|s| s.to_string())
+        link.strip_prefix("tube://channel/").map(std::string::ToString::to_string)
     }
 }
 
@@ -93,7 +93,7 @@ impl SearchHit {
 /// across types; this provider only contributes Tube's rows.
 pub struct VideoSearchProvider<'a> {
     backend: &'a dyn YtBackend,
-    /// Whether DeArrow title correction is applied to contributed hits.
+    /// Whether `DeArrow` title correction is applied to contributed hits.
     dearrow: bool,
 }
 

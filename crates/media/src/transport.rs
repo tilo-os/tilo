@@ -48,7 +48,7 @@ impl TransportState {
             return self.position_ms;
         }
         let elapsed = now_ms.saturating_sub(self.epoch_ms);
-        self.position_ms + (elapsed as f64 * self.rate.max(0.0) as f64) as u64
+        self.position_ms + (elapsed as f64 * f64::from(self.rate.max(0.0))) as u64
     }
 }
 
@@ -205,7 +205,7 @@ impl TransportSync for CrdtTransport {
             .put(ROOT, K_POSITION, ScalarValue::Uint(state.position_ms));
         let _ = self
             .doc
-            .put(ROOT, K_RATE, ScalarValue::F64(state.rate as f64));
+            .put(ROOT, K_RATE, ScalarValue::F64(f64::from(state.rate)));
         let _ = self
             .doc
             .put(ROOT, K_EPOCH, ScalarValue::Uint(state.epoch_ms));

@@ -58,7 +58,7 @@ use crate::samples::{DEFAULT_INDEX, SAMPLES};
 use crate::worker::CompileWorker;
 
 /// Pixels-per-point the document is rasterised at. 2.0 keeps pages crisp on
-/// a HiDPI surface; preview zoom only scales the *display*, never the render
+/// a `HiDPI` surface; preview zoom only scales the *display*, never the render
 /// resolution (matching the behaviour the welcome doc advertises).
 const PPP: f32 = 2.0;
 
@@ -366,20 +366,17 @@ impl TypstApp {
     /// Get-or-create the `root["source"]` Text object, seeding it with the
     /// current sample the first time it's created.
     fn ensure_source_obj(&self, doc: &mut AutoCommit) -> ObjId {
-        match doc.get(&ROOT, "source") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => {
-                let id = doc
-                    .put_object(&ROOT, "source", ObjType::Text)
-                    .expect("put_object source on root never fails");
-                let seed = self
-                    .documents
-                    .get(self.current)
-                    .map(|d| d.source.clone())
-                    .unwrap_or_default();
-                let _ = doc.splice_text(&id, 0, 0, &seed);
-                id
-            }
+        if let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "source") { id } else {
+            let id = doc
+                .put_object(&ROOT, "source", ObjType::Text)
+                .expect("put_object source on root never fails");
+            let seed = self
+                .documents
+                .get(self.current)
+                .map(|d| d.source.clone())
+                .unwrap_or_default();
+            let _ = doc.splice_text(&id, 0, 0, &seed);
+            id
         }
     }
 
@@ -421,12 +418,11 @@ impl TypstApp {
         let Some(w) = self.worker.as_mut() else {
             return;
         };
-        if let Some(res) = w.poll() {
-            if res.seq >= self.applied_seq {
+        if let Some(res) = w.poll()
+            && res.seq >= self.applied_seq {
                 self.applied_seq = res.seq;
                 self.apply_output(res.output);
             }
-        }
     }
 
     fn apply_output(&mut self, out: CompileOutput) {
@@ -487,9 +483,7 @@ impl TypstApp {
         }
         let name = self
             .documents
-            .get(self.current)
-            .map(|d| d.name.clone())
-            .unwrap_or_else(|| "untitled.typ".into());
+            .get(self.current).map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
         self.io = Some((
             crate::portal::PendingIo::SaveTyp,
             crate::portal::request_save(&name),
@@ -502,14 +496,14 @@ impl TypstApp {
     fn save_typ_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let src = self.read_source(doc);
         match std::fs::write(path, src) {
-            Ok(_) => {
+            Ok(()) => {
                 self.set_flash(format!("Saved {}", path.display()));
                 // Adopt the chosen filename for the current document so a later
                 // Save suggests it again.
                 if let (Some(name), Some(cur)) = (
                     path.file_name()
                         .and_then(|n| n.to_str())
-                        .map(|s| s.to_string()),
+                        .map(std::string::ToString::to_string),
                     self.documents.get_mut(self.current),
                 ) {
                     cur.name = name;
@@ -528,9 +522,7 @@ impl TypstApp {
         }
         let stem = self
             .documents
-            .get(self.current)
-            .map(|d| d.name.clone())
-            .unwrap_or_else(|| "untitled.typ".into());
+            .get(self.current).map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
         let pdf_name = std::path::Path::new(&stem)
             .with_extension("pdf")
             .to_string_lossy()
@@ -577,9 +569,7 @@ impl TypstApp {
     ) -> Result<PathBuf, String> {
         let stem = self
             .documents
-            .get(self.current)
-            .map(|d| d.name.clone())
-            .unwrap_or_else(|| "untitled.typ".into());
+            .get(self.current).map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
         let pdf_name = std::path::Path::new(&stem)
             .with_extension("pdf")
             .to_string_lossy()
@@ -620,23 +610,19 @@ impl TypstApp {
             .to_string();
         // Focus an already-loaded copy of this file, or add it to the document
         // list, then splice its source into the CRDT via `load_document`.
-        let idx = match self
+        let idx = if let Some(i) = self
             .documents
             .iter()
-            .position(|d| d.name == name && d.from_disk)
-        {
-            Some(i) => {
-                self.documents[i].source = src;
-                i
-            }
-            None => {
-                self.documents.push(Document {
-                    name,
-                    source: src,
-                    from_disk: true,
-                });
-                self.documents.len() - 1
-            }
+            .position(|d| d.name == name && d.from_disk) {
+            self.documents[i].source = src;
+            i
+        } else {
+            self.documents.push(Document {
+                name,
+                source: src,
+                from_disk: true,
+            });
+            self.documents.len() - 1
         };
         self.load_document(doc, idx);
     }
@@ -656,13 +642,13 @@ impl TypstApp {
                         PendingIo::OpenTyp => self.open_typ_from(doc, &path),
                         PendingIo::SaveTyp => self.save_typ_to(doc, &path),
                         PendingIo::ExportPdf => match self.export_pdf_to_path(doc, &path) {
-                            Ok(_) => self.set_flash(format!("Exported {}", path.display())),
+                            Ok(()) => self.set_flash(format!("Exported {}", path.display())),
                             Err(e) => self.set_flash(format!("Export failed: {e}")),
                         },
                     },
                     PortalOutcome::Cancelled => {}
                     PortalOutcome::Failed(e) => {
-                        self.set_flash(format!("File chooser unavailable: {e}"))
+                        self.set_flash(format!("File chooser unavailable: {e}"));
                     }
                 }
             }
@@ -677,9 +663,9 @@ impl TypstApp {
         if let Ok(rd) = std::fs::read_dir(dir) {
             let mut entries: Vec<_> = rd
                 .flatten()
-                .filter(|e| e.path().extension().map(|x| x == "typ").unwrap_or(false))
+                .filter(|e| e.path().extension().is_some_and(|x| x == "typ"))
                 .collect();
-            entries.sort_by_key(|e| e.file_name());
+            entries.sort_by_key(std::fs::DirEntry::file_name);
             for e in entries {
                 let name = e.file_name().to_string_lossy().to_string();
                 if let Ok(src) = std::fs::read_to_string(e.path()) {
@@ -781,7 +767,7 @@ impl TypstApp {
     }
 
     fn compiling(&self) -> bool {
-        self.worker.as_ref().map(|w| w.in_flight()).unwrap_or(false)
+        self.worker.as_ref().is_some_and(super::worker::CompileWorker::in_flight)
     }
 
     /// Compute every pane rect from a content rect. Split out from
@@ -929,8 +915,8 @@ impl TypstApp {
         }
         let fg = if active { Color::WHITE } else { c.text_primary };
         let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
-        let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
-        let ty = rect.y0 + (rect.height() - PILL_FONT as f64 * 1.25) / 2.0;
+        let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
+        let ty = rect.y0 + (rect.height() - f64::from(PILL_FONT) * 1.25) / 2.0;
         tr.draw_text_weighted(
             scene,
             label,
@@ -945,7 +931,7 @@ impl TypstApp {
 
     fn pill_width(tr: &mut TextRenderer, label: &str) -> f64 {
         let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
-        tw as f64 + 22.0
+        f64::from(tw) + 22.0
     }
 
     fn draw_toolbar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1028,14 +1014,14 @@ impl TypstApp {
         let c = &theme.tokens.colors;
         let zlabel = format!("{:.0}%", self.preview.zoom() * 100.0);
         let (zw, _) = tr.measure_weighted(&zlabel, PILL_FONT, None, TextWeight::Medium);
-        let zchip_w = zw as f64 + 16.0;
+        let zchip_w = f64::from(zw) + 16.0;
         let zr = Rect::new(rx - zchip_w, y, rx, y + PILL_H);
         tr.draw_text_weighted(
             scene,
             &zlabel,
             PILL_FONT,
             c.text_dim,
-            t * Affine::translate((zr.x0 + 8.0, y + (PILL_H - PILL_FONT as f64 * 1.25) / 2.0)),
+            t * Affine::translate((zr.x0 + 8.0, y + (PILL_H - f64::from(PILL_FONT) * 1.25) / 2.0)),
             None,
             TextWeight::Medium,
         );
@@ -1120,9 +1106,7 @@ impl TypstApp {
 
         let name = self
             .documents
-            .get(self.current)
-            .map(|d| d.name.clone())
-            .unwrap_or_else(|| "untitled".into());
+            .get(self.current).map_or_else(|| "untitled".into(), |d| d.name.clone());
         let base = if with_index && multi {
             format!("{name}   {}/{}", self.current + 1, self.documents.len())
         } else {
@@ -1131,7 +1115,7 @@ impl TypstApp {
         // Elide to fit the cap.
         let label = elide_to_width(tr, &base, max_chip - 24.0);
         let (lw, _) = tr.measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
-        let chip_w = (lw as f64 + 24.0).min(max_chip);
+        let chip_w = (f64::from(lw) + 24.0).min(max_chip);
         let chip = Rect::new(x, y, x + chip_w, y + PILL_H);
         scene.fill(
             Fill::NonZero,
@@ -1145,7 +1129,7 @@ impl TypstApp {
             &label,
             PILL_FONT,
             c.text_primary,
-            t * Affine::translate((x + 12.0, y + (PILL_H - PILL_FONT as f64 * 1.25) / 2.0)),
+            t * Affine::translate((x + 12.0, y + (PILL_H - f64::from(PILL_FONT) * 1.25) / 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -1184,8 +1168,8 @@ impl TypstApp {
         let seg_prev = "Preview";
         let (ew, _) = tr.measure_weighted(seg_edit, PILL_FONT, None, TextWeight::Medium);
         let (pw, _) = tr.measure_weighted(seg_prev, PILL_FONT, None, TextWeight::Medium);
-        let ew = ew as f64 + 22.0;
-        let pw = pw as f64 + 22.0;
+        let ew = f64::from(ew) + 22.0;
+        let pw = f64::from(pw) + 22.0;
         let total = ew + pw;
         let x0 = (tb.x0 + tb.width() * 0.5 - total * 0.5).round();
         let outer = Rect::new(x0, y, x0 + total, y + PILL_H);
@@ -1298,8 +1282,8 @@ impl TypstApp {
         }
         let fg = if active { Color::WHITE } else { c.text_primary };
         let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
-        let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
-        let ty = rect.y0 + (rect.height() - PILL_FONT as f64 * 1.25) / 2.0;
+        let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
+        let ty = rect.y0 + (rect.height() - f64::from(PILL_FONT) * 1.25) / 2.0;
         tr.draw_text_weighted(
             scene,
             label,
@@ -1337,7 +1321,7 @@ impl TypstApp {
         let mut w: f64 = 150.0;
         for (lbl, _) in &items {
             let (lw, _) = tr.measure(lbl, PILL_FONT, None);
-            w = w.max(lw as f64 + 28.0);
+            w = w.max(f64::from(lw) + 28.0);
         }
         let h = items.len() as f64 * row_h + pad * 2.0;
         let x1 = self.toolbar_rect.x1 - 10.0;
@@ -1385,7 +1369,7 @@ impl TypstApp {
                 lbl,
                 PILL_FONT,
                 c.text_primary,
-                t * Affine::translate((row.x0 + 10.0, y + (row_h - PILL_FONT as f64 * 1.25) / 2.0)),
+                t * Affine::translate((row.x0 + 10.0, y + (row_h - f64::from(PILL_FONT) * 1.25) / 2.0)),
                 None,
             );
             self.menu_hits.push((act, row));
@@ -1404,11 +1388,11 @@ impl TypstApp {
         };
         scene.fill(Fill::NonZero, t, fill, None, &dr);
         // grip dots
-        let cx = (dr.x0 + dr.x1) / 2.0;
-        let cy = (dr.y0 + dr.y1) / 2.0;
+        let cx = f64::midpoint(dr.x0, dr.x1);
+        let cy = f64::midpoint(dr.y0, dr.y1);
         let dot_color = if active { Color::WHITE } else { c.text_dim };
         for k in -1i32..=1 {
-            let cyk = cy + k as f64 * 6.0;
+            let cyk = cy + f64::from(k) * 6.0;
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -1550,7 +1534,7 @@ impl TypstApp {
             );
             ui::status_bubble::draw_pill(scene, t, tr, theme, rrect, &right_label, text_size);
             // Semantic status dot, centred in the reserved leading slot.
-            let cy = (rrect.y0 + rrect.y1) / 2.0;
+            let cy = f64::midpoint(rrect.y0, rrect.y1);
             let dcx = rrect.x0 + 8.0 + dot_slot / 2.0;
             scene.fill(
                 Fill::NonZero,
@@ -1592,7 +1576,7 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
 /// toolbar font. Returns `s` untouched when it already fits.
 fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
     let (full, _) = tr.measure_weighted(s, PILL_FONT, None, TextWeight::Semibold);
-    if (full as f64) <= max_w || max_w <= 0.0 {
+    if f64::from(full) <= max_w || max_w <= 0.0 {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
@@ -1601,7 +1585,7 @@ fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
         keep -= 1;
         let candidate: String = chars[..keep].iter().collect::<String>() + "…";
         let (w, _) = tr.measure_weighted(&candidate, PILL_FONT, None, TextWeight::Semibold);
-        if (w as f64) <= max_w {
+        if f64::from(w) <= max_w {
             return candidate;
         }
     }
@@ -1656,17 +1640,17 @@ impl Widget for TypstApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.layout_in(rect);
     }
@@ -1828,15 +1812,14 @@ impl Widget for TypstApp {
                                 return;
                             }
                         }
-                        "a" => {
+                        "a"
                             // Select-all in the preview when it holds focus.
-                            if !self.editor.focused {
+                            if !self.editor.focused => {
                                 self.preview.select_all();
                                 self.dirty = true;
                                 *handled = true;
                                 return;
                             }
-                        }
                         // remaining a/c/x/v fall through to the editor's clipboard
                         _ => {}
                     }
@@ -1992,7 +1975,7 @@ impl Widget for TypstApp {
                 } else {
                     let (mut dx, mut dy) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => {
-                            (-(*x as f64) * 48.0, -(*y as f64) * 48.0)
+                            (-f64::from(*x) * 48.0, -f64::from(*y) * 48.0)
                         }
                         MouseScrollDelta::PixelDelta(pp) => (-pp.x, -pp.y),
                     };
@@ -2016,7 +1999,7 @@ impl Widget for TypstApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TypstEditor"
     }
 
@@ -2113,13 +2096,11 @@ mod tests {
     fn hit(app: &TypstApp, action: TbAction) -> Rect {
         app.toolbar_hits
             .iter()
-            .find(|(a, _)| *a == action)
-            .map(|(_, r)| *r)
-            .unwrap_or_else(|| panic!("toolbar action not drawn"))
+            .find(|(a, _)| *a == action).map_or_else(|| panic!("toolbar action not drawn"), |(_, r)| *r)
     }
 
     fn center(r: Rect) -> Point {
-        Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+        Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
     }
 
     #[test]
@@ -2541,7 +2522,7 @@ mod tests {
         // Inject an Open outcome and sync: the file loads into the CRDT source.
         app.io = Some((
             PendingIo::OpenTyp,
-            crate::portal::inject_for_test(PortalOutcome::Opened(src_path.clone())),
+            crate::portal::inject_for_test(PortalOutcome::Opened(src_path)),
         ));
         app.sync(&mut doc, &ROOT);
         assert!(
@@ -2630,7 +2611,7 @@ mod tests {
             ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
         app.status_bubble_right =
             ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
-        let past = now - std::time::Duration::from_millis(10);
+        let past = now.checked_sub(std::time::Duration::from_millis(10)).unwrap();
         app.status_bubble_left.poke(past);
         app.status_bubble_right.poke(past);
         app.mouse = Point::new(5.0, 5.0);

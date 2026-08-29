@@ -1,4 +1,4 @@
-//! OpenMLS provider wiring + per-member key material.
+//! `OpenMLS` provider wiring + per-member key material.
 //!
 //! One ciphersuite — `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` —
 //! with no negotiation: Ed25519 lines up with the rest of qOS (identity
@@ -42,7 +42,7 @@ pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_
 /// fresh `MemberKey` instead of duplicating it.
 pub struct MemberKey {
     /// Display name embedded in the MLS `BasicCredential`. Not secret —
-    /// carried in the on-wire Welcome and KeyPackage.
+    /// carried in the on-wire Welcome and `KeyPackage`.
     pub(crate) name: Vec<u8>,
     /// The Ed25519 keypair: public half committed in the credential, secret
     /// half stored under the same key in `provider.storage()`.

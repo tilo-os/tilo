@@ -66,7 +66,7 @@ pub enum NeighbourMsg {
     /// room left for `"av1"`/`"h265"`).
     SurfaceStreamStart {
         surface: SurfaceId,
-        /// Hashed libp2p PeerId of the owner; distinguishes concurrent shares in the
+        /// Hashed libp2p `PeerId` of the owner; distinguishes concurrent shares in the
         /// same workspace.
         source_peer: PeerId,
         width: u32,
@@ -104,7 +104,7 @@ pub enum NeighbourMsg {
         bit_depth: u8,
     },
     /// Explicit end-of-stream (owner tore down the share, or the surface
-    /// unmapped). Receivers drop their PeerView + decoder on receipt, instead of
+    /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
     /// waiting out the 15s heartbeat-eviction path that implicit end-of-stream
     /// (owner vanishes from gossipsub) still relies on.
     SurfaceStreamEnd {
@@ -124,7 +124,7 @@ pub enum NeighbourMsg {
     PermissionGrant { peer: PeerId, capability: String },
     /// Periodic liveness beacon — Actor publishes one per joined workspace every
     /// 5s; receivers evict peers silent for 15s. `peer` is the hashed libp2p
-    /// PeerId; `ts` is unix-millis.
+    /// `PeerId`; `ts` is unix-millis.
     Heartbeat { peer: PeerId, ts: u64 },
     /// App-level CRDT incremental — bridges app-side Automerge change blobs from
     /// the local `QUICK_COLLAB_SOCK` broker across hosts, opaque to the shell.
@@ -158,7 +158,7 @@ pub enum NeighbourMsg {
     /// back to unsigned, advisory-only fan-out). Boxed so this variant doesn't
     /// bloat `NeighbourMsg`'s stack size — postcard's wire shape is unaffected.
     AppCrdtIncrementalSigned {
-        /// Hashed libp2p PeerId of the publisher; used to filter self-published
+        /// Hashed libp2p `PeerId` of the publisher; used to filter self-published
         /// gossipsub echoes.
         peer: PeerId,
         /// App-id of the originating app, same routing key as
@@ -190,7 +190,7 @@ pub enum NeighbourMsg {
     /// so a peer stays visible to the whole room rather than only to apps with
     /// the same document open.
     AppPresence {
-        /// Hashed libp2p PeerId of the publisher; receiving shells drop their own
+        /// Hashed libp2p `PeerId` of the publisher; receiving shells drop their own
         /// echoes on it, and it's what the frame is attributed to once delivered.
         peer: PeerId,
         /// App-id of the originating app — first half of the delivery
@@ -222,7 +222,7 @@ pub enum NeighbourMsg {
     /// default), so publishing above the cap fails loudly rather than
     /// half-converging.
     AppCrdtSnapshot {
-        /// Hashed libp2p PeerId of the publisher; receiving shells drop their own
+        /// Hashed libp2p `PeerId` of the publisher; receiving shells drop their own
         /// gossipsub echoes on it, as on every App* variant.
         peer: PeerId,
         /// App-id of the originating app — first routing-key component.

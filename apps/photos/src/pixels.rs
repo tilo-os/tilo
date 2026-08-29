@@ -100,10 +100,10 @@ pub fn encode_png(img: &Rgba) -> Option<Vec<u8>> {
 /// user as "the crop deleted my photo").
 pub fn crop(src: &Rgba, rect: Rect01) -> Rgba {
     let rect = rect.clamped();
-    let x0 = ((rect.x * src.w as f64).floor() as u32).min(src.w - 1);
-    let y0 = ((rect.y * src.h as f64).floor() as u32).min(src.h - 1);
-    let w = ((rect.w * src.w as f64).round() as u32).clamp(1, src.w - x0);
-    let h = ((rect.h * src.h as f64).round() as u32).clamp(1, src.h - y0);
+    let x0 = ((rect.x * f64::from(src.w)).floor() as u32).min(src.w - 1);
+    let y0 = ((rect.y * f64::from(src.h)).floor() as u32).min(src.h - 1);
+    let w = ((rect.w * f64::from(src.w)).round() as u32).clamp(1, src.w - x0);
+    let h = ((rect.h * f64::from(src.h)).round() as u32).clamp(1, src.h - y0);
 
     let mut bytes = Vec::with_capacity((w as usize) * (h as usize) * 4);
     for y in 0..h {

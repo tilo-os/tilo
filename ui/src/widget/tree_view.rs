@@ -106,8 +106,7 @@ impl<T> TreeView<T> {
 
     pub fn toggle_expand(&mut self, id: NodeId) {
         if !Self::find_node(&self.root, id)
-            .map(TreeNode::is_branch)
-            .unwrap_or(false)
+            .is_some_and(TreeNode::is_branch)
         {
             return;
         }
@@ -194,17 +193,17 @@ impl<T: 'static> Widget for TreeView<T> {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let rows = self.visible_rows();
         self.row_rects = rows
@@ -228,7 +227,7 @@ impl<T: 'static> Widget for TreeView<T> {
     ) {
         let tokens = &theme.tokens;
         let text_size = tokens.typography.scale.sm;
-        let indent_px = tokens.spacing.s4 as f64;
+        let indent_px = f64::from(tokens.spacing.s4);
         let accent = tokens.colors.accent[ACCENT_PRIMARY_IDX];
 
         scene.fill(
@@ -276,7 +275,7 @@ impl<T: 'static> Widget for TreeView<T> {
             let depth_px = (*depth as f64) * indent_px;
             let glyph_x = self.rect.x0 + depth_px;
             let label_x = glyph_x + DISCLOSURE_WIDTH;
-            let text_y = y0 + (ROW_HEIGHT - text_size as f64) / 2.0;
+            let text_y = y0 + (ROW_HEIGHT - f64::from(text_size)) / 2.0;
 
             if is_branch_map.get(id).copied().unwrap_or(false) {
                 let glyph = if self.expanded.contains(id) {
@@ -345,8 +344,7 @@ impl<T: 'static> Widget for TreeView<T> {
                     let glyph_x0 = row_rect.x0 + (*depth as f64) * DISCLOSURE_WIDTH;
                     let glyph_x1 = glyph_x0 + DISCLOSURE_WIDTH;
                     let is_branch = Self::find_node(&self.root, *id)
-                        .map(TreeNode::is_branch)
-                        .unwrap_or(false);
+                        .is_some_and(TreeNode::is_branch);
                     if is_branch && pt.x >= glyph_x0 && pt.x < glyph_x1 {
                         self.toggle_expand(*id);
                     } else {
@@ -370,8 +368,7 @@ impl<T: 'static> Widget for TreeView<T> {
                 Key::Named(NamedKey::ArrowRight) => {
                     if let Some(fid) = self.focused {
                         let is_branch = Self::find_node(&self.root, fid)
-                            .map(TreeNode::is_branch)
-                            .unwrap_or(false);
+                            .is_some_and(TreeNode::is_branch);
                         if is_branch && !self.expanded.contains(&fid) {
                             self.expanded.insert(fid);
                             *handled = true;
@@ -381,8 +378,7 @@ impl<T: 'static> Widget for TreeView<T> {
                 Key::Named(NamedKey::ArrowLeft) => {
                     if let Some(fid) = self.focused {
                         let is_branch = Self::find_node(&self.root, fid)
-                            .map(TreeNode::is_branch)
-                            .unwrap_or(false);
+                            .is_some_and(TreeNode::is_branch);
                         if is_branch && self.expanded.contains(&fid) {
                             self.expanded.remove(&fid);
                             *handled = true;
@@ -419,7 +415,7 @@ impl<T: 'static> Widget for TreeView<T> {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TreeView"
     }
 

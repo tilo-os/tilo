@@ -330,8 +330,8 @@ impl ShellNetwork {
         let Ok(replica) = self.replica.lock() else {
             return empty;
         };
-        let labels = replica.tree.read().room_peer_labels(room);
-        labels
+        
+        replica.tree.read().room_peer_labels(room)
     }
 
     /// Workspace topic the next publish should use. Hard-codes
@@ -355,8 +355,7 @@ impl ShellNetwork {
     pub fn publish_presence(&self, key: String, point: (f64, f64)) {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_millis() as u64);
         let msg = NeighbourMsg::PresenceMoved {
             peer: self.local_peer_id_hash(),
             user: crate::shell::state::local_user_id(),
@@ -456,7 +455,7 @@ impl ShellNetwork {
             target: "qos_collab_probe",
             cluster = %cluster_id,
             in_room,
-            known = ?known.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+            known = ?known.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
             "PROBE is_in_room",
         );
         in_room

@@ -2,7 +2,7 @@
 //! downloaded byte prefix so [`crate::playback::Playback`] (an openh264 Annex-B
 //! decoder) can decode real frames.
 //!
-//! YouTube ships H.264 inside an ISO-BMFF (MP4) container. The NAL units there
+//! `YouTube` ships H.264 inside an ISO-BMFF (MP4) container. The NAL units there
 //! are **length-prefixed** (AVCC framing: a big-endian length of `lengthSize`
 //! bytes in front of each NAL) and the SPS/PPS live in the `avcC` box in the
 //! init segment — *not* inline. openh264 wants the opposite: Annex-B start-code
@@ -73,7 +73,7 @@ fn boxes(data: &[u8], start: usize, end: usize) -> Vec<Box4> {
     let mut pos = start;
     while pos + 8 <= end {
         let size32 = match be_u32(data, pos) {
-            Some(s) => s as u64,
+            Some(s) => u64::from(s),
             None => break,
         };
         let typ = [data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]];
@@ -119,7 +119,7 @@ fn child(data: &[u8], payload: (usize, usize), want: &[u8; 4]) -> Option<(usize,
         .map(|b| b.payload)
 }
 
-/// Parse an `avcC` (AVCDecoderConfigurationRecord) payload.
+/// Parse an `avcC` (`AVCDecoderConfigurationRecord`) payload.
 fn parse_avcc(b: &[u8]) -> Option<H264Config> {
     // configurationVersion(1) profile(1) compat(1) level(1) lengthSizeMinusOne(1)
     // numSPS(1) [len(2) sps]… numPPS(1) [len(2) pps]…
@@ -221,11 +221,10 @@ pub fn extract_annexb(data: &[u8]) -> Result<Demuxed, String> {
         .find(|b| &b.typ == b"moov")
         .and_then(|b| avc_config_from_moov(data, b.payload));
 
-    let length_size = cfg.as_ref().map(|c| c.length_size).unwrap_or(4);
+    let length_size = cfg.as_ref().map_or(4, |c| c.length_size);
     let (sps_count, pps_count) = cfg
         .as_ref()
-        .map(|c| (c.sps.len(), c.pps.len()))
-        .unwrap_or((0, 0));
+        .map_or((0, 0), |c| (c.sps.len(), c.pps.len()));
 
     let mut annexb = Vec::new();
     if let Some(cfg) = &cfg {
@@ -284,7 +283,7 @@ pub type AccessUnit = Vec<u8>;
 
 /// H.264 NAL unit type (low 5 bits of the NAL header byte). Type 5 = IDR slice.
 fn nal_type(nal: &[u8]) -> u8 {
-    nal.first().map(|b| b & 0x1f).unwrap_or(0)
+    nal.first().map_or(0, |b| b & 0x1f)
 }
 
 /// Parse an init segment (`ftyp`+`moov`) for the first video track's H.264
@@ -303,7 +302,7 @@ pub fn parse_init(data: &[u8]) -> Option<H264Config> {
 #[derive(Clone, Debug, Default)]
 pub struct SegmentIndex {
     /// Offset from the byte immediately after the `sidx` box to the first
-    /// fragment (almost always 0 for YouTube).
+    /// fragment (almost always 0 for `YouTube`).
     pub first_offset: u64,
     /// `referenced_size` per media fragment, in bytes.
     pub sizes: Vec<u32>,
@@ -329,7 +328,7 @@ pub fn parse_sidx(data: &[u8]) -> Option<SegmentIndex> {
     let mut off = 12usize;
     let first_offset = if version == 0 {
         // earliest_presentation_time(4) first_offset(4)
-        let v = be_u32(b, off + 4)? as u64;
+        let v = u64::from(be_u32(b, off + 4)?);
         off += 8;
         v
     } else {
@@ -502,7 +501,7 @@ fn split_samples_to_access_units(
         if au.is_empty() {
             return;
         }
-        let mut unit = Vec::with_capacity(sps_pps.len() * contains_idr as usize + au.len());
+        let mut unit = Vec::with_capacity(sps_pps.len() * usize::from(contains_idr) + au.len());
         if contains_idr {
             unit.extend_from_slice(sps_pps);
         }

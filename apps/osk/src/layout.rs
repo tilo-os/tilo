@@ -30,7 +30,7 @@ pub enum KeyAction {
     Enter,
     /// Emit a single space.
     Space,
-    /// Cycle the shift state (Off → Shift → CapsLock → Off).
+    /// Cycle the shift state (Off → Shift → `CapsLock` → Off).
     Shift,
     /// Toggle between the active letter layout and the symbols layer.
     SymbolsToggle,
@@ -116,7 +116,7 @@ impl Key {
     /// Whether this key produces an upper-/lower-casable letter.
     pub fn is_letter(&self) -> bool {
         matches!(&self.action, KeyAction::Char(s)
-            if s.chars().count() == 1 && s.chars().all(|c| c.is_alphabetic()))
+            if s.chars().count() == 1 && s.chars().all(char::is_alphabetic))
     }
 
     /// The label to render given the current shift state. Letters
@@ -144,7 +144,7 @@ impl Key {
 }
 
 /// Shift / caps-lock state. The transition cycle on tapping Shift is
-/// Off → Shift → CapsLock → Off (deterministic and unit-tested). A single
+/// Off → Shift → `CapsLock` → Off (deterministic and unit-tested). A single
 /// `Shift` is one-shot: it auto-resets to `Off` after the next character is
 /// emitted; `CapsLock` is sticky.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -526,13 +526,13 @@ pub fn key_rects(layout: &KeyboardLayout, area: Rect, shift: ShiftState) -> Vec<
         if total_weight <= 0.0 {
             continue;
         }
-        let unit_w = area.width() / total_weight as f64;
+        let unit_w = area.width() / f64::from(total_weight);
         let y0 = area.y0 + r as f64 * row_h;
         let y1 = y0 + row_h;
         // Accumulate width to avoid rounding gaps between adjacent keys.
         let mut x = area.x0;
         for (c, key) in row.iter().enumerate() {
-            let w = unit_w * key.width as f64;
+            let w = unit_w * f64::from(key.width);
             let rect = Rect::new(x, y0, x + w, y1);
             out.push((KeyId::new(r, c), rect));
             x += w;
@@ -572,7 +572,7 @@ mod tests {
         let l = KeyboardLayout::qwerty();
         let area = Rect::new(0.0, 0.0, 1000.0, 320.0);
         let rects = key_rects(&l, area, ShiftState::Off);
-        assert_eq!(rects.len(), l.rows.iter().map(|r| r.len()).sum::<usize>());
+        assert_eq!(rects.len(), l.rows.iter().map(std::vec::Vec::len).sum::<usize>());
 
         // Row 0 (10 equal keys) spans the full width with no gaps.
         let row0: Vec<_> = rects.iter().filter(|(id, _)| id.row == 0).collect();

@@ -183,8 +183,7 @@ impl Session {
                 self.mark_connected(true);
                 let sample = self
                     .active_connection()
-                    .map(|c| c.is_sample)
-                    .unwrap_or(false);
+                    .is_some_and(|c| c.is_sample);
                 self.status = if sample {
                     RunStatus::Idle
                 } else {
@@ -296,7 +295,7 @@ impl Session {
     /// decide whether to auto-connect a freshly-added one).
     pub fn set_connections(&mut self, mut incoming: Vec<ConnectionProfile>) {
         // Refill passwords the session already knows.
-        for p in incoming.iter_mut() {
+        for p in &mut incoming {
             if let Some(pw) = self.passwords.get(&p.id) {
                 p.password = pw.clone();
             }
@@ -304,16 +303,13 @@ impl Session {
         let active_id = self.connections.get(self.active).map(|c| c.id);
         self.connections = incoming;
         // Keep the same connection active if it still exists.
-        match active_id.and_then(|id| self.connections.iter().position(|c| c.id == id)) {
-            Some(pos) => self.active = pos,
-            None => {
-                self.active = 0;
-                // The active connection vanished: drop its stale view state.
-                self.connected = false;
-                self.query_result = None;
-                self.data_result = None;
-                self.set_schema(DatabaseSchema::default());
-            }
+        if let Some(pos) = active_id.and_then(|id| self.connections.iter().position(|c| c.id == id)) { self.active = pos } else {
+            self.active = 0;
+            // The active connection vanished: drop its stale view state.
+            self.connected = false;
+            self.query_result = None;
+            self.data_result = None;
+            self.set_schema(DatabaseSchema::default());
         }
     }
 
@@ -508,11 +504,11 @@ mod tests {
         let p = ConnectionProfile::new("A", Engine::Postgres);
         s.remember_password(p.id, "secret".into());
         // set_connections refills the password onto the in-memory profile...
-        s.set_connections(vec![p.clone()]);
+        s.set_connections(vec![p]);
         assert_eq!(s.connections[0].password, "secret");
         // ...but a profile with no remembered password stays empty.
         let q = ConnectionProfile::new("B", Engine::MySql);
-        s.set_connections(vec![q.clone()]);
+        s.set_connections(vec![q]);
         assert!(s.connections[0].password.is_empty());
     }
 }

@@ -53,13 +53,12 @@ pub fn parse_addr_list(s: &str) -> Vec<Addr> {
 }
 
 fn parse_single_addr(s: &str) -> Addr {
-    if let Some(open) = s.find('<') {
-        if let Some(close) = s[open..].find('>') {
+    if let Some(open) = s.find('<')
+        && let Some(close) = s[open..].find('>') {
             let name = s[..open].trim().trim_matches('"').to_string();
             let email = s[open + 1..open + close].trim().to_string();
             return Addr::new(name, email);
         }
-    }
     Addr::bare(s.to_string())
 }
 
@@ -127,9 +126,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
 
     let from = parsed
         .from()
-        .and_then(|a| a.first())
-        .map(addr_from_parsed)
-        .unwrap_or_else(|| Addr::bare("unknown@unknown"));
+        .and_then(|a| a.first()).map_or_else(|| Addr::bare("unknown@unknown"), addr_from_parsed);
 
     let to = parsed
         .to()
@@ -143,7 +140,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
     let subject = parsed.subject().unwrap_or("(no subject)").to_string();
     let body = parsed
         .body_text(0)
-        .map(|c| c.into_owned())
+        .map(std::borrow::Cow::into_owned)
         .unwrap_or_default();
     // The original text/html part, if the message carried a GENUINE one. The
     // reader renders it sandboxed in a WebView (remote content blocked by
@@ -160,7 +157,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         })
         .filter(|h| !h.trim().is_empty());
 
-    let rfc_message_id = parsed.message_id().map(|s| s.to_string());
+    let rfc_message_id = parsed.message_id().map(std::string::ToString::to_string);
 
     let attachments: Vec<Attachment> = parsed
         .attachments()
@@ -222,7 +219,7 @@ pub fn stable_message_id(message_id: &str) -> Uuid {
     fn fnv1a(bytes: &[u8], mut hash: u64) -> u64 {
         const PRIME: u64 = 0x0000_0100_0000_01B3;
         for &b in bytes {
-            hash ^= b as u64;
+            hash ^= u64::from(b);
             hash = hash.wrapping_mul(PRIME);
         }
         hash
@@ -233,7 +230,7 @@ pub fn stable_message_id(message_id: &str) -> Uuid {
         .trim_end_matches('>');
     let hi = fnv1a(norm.as_bytes(), 0xcbf2_9ce4_8422_2325);
     let lo = fnv1a(norm.as_bytes(), 0x0102_0304_0506_0708);
-    Uuid::from_u128(((hi as u128) << 64) | lo as u128)
+    Uuid::from_u128((u128::from(hi) << 64) | u128::from(lo))
 }
 
 /// Parse a raw RFC 5322 message fetched over IMAP, carrying the server's flag
@@ -263,11 +260,11 @@ pub fn parse_fetched(
 }
 
 fn addr_from_parsed(a: &mail_parser::Addr) -> Addr {
-    let name = a.name.as_ref().map(|c| c.to_string()).unwrap_or_default();
+    let name = a.name.as_ref().map(std::string::ToString::to_string).unwrap_or_default();
     let email = a
         .address
         .as_ref()
-        .map(|c| c.to_string())
+        .map(std::string::ToString::to_string)
         .unwrap_or_default();
     Addr::new(name, email)
 }

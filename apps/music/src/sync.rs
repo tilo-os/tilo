@@ -50,7 +50,7 @@ impl SyncSession {
     pub fn generate(&mut self, doc: &mut AutoCommit) -> Option<Vec<u8>> {
         doc.sync()
             .generate_sync_message(&mut self.state)
-            .map(|m| m.encode())
+            .map(automerge::sync::Message::encode)
     }
 
     /// Apply an inbound sync message to `doc`. Returns whether it decoded.

@@ -129,8 +129,8 @@ pub fn clamp_pointer(pointer: (f64, f64), extent: (i32, i32)) -> (f64, f64) {
         return (0.0, 0.0);
     }
     (
-        pointer.0.clamp(0.0, (extent.0 - 1) as f64),
-        pointer.1.clamp(0.0, (extent.1 - 1) as f64),
+        pointer.0.clamp(0.0, f64::from(extent.0 - 1)),
+        pointer.1.clamp(0.0, f64::from(extent.1 - 1)),
     )
 }
 

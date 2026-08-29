@@ -9,7 +9,7 @@
 //! This path is deliberately codec-in-Rust and source-agnostic: the same
 //! [`Recorder`] records frames coming off a real webcam (the `live-capture`
 //! pipeline hands it RGBA buffers) and the procedural frames used by the
-//! headless demo/tests. No GStreamer, no ffmpeg, no device required to
+//! headless demo/tests. No `GStreamer`, no ffmpeg, no device required to
 //! produce or verify a real encoded video.
 //!
 //! MJPEG (one JPEG per frame) is chosen over an inter-frame codec on purpose:
@@ -92,7 +92,7 @@ impl Recorder {
 
     /// Clip duration in milliseconds implied by the frame count and fps.
     pub fn duration_ms(&self) -> i64 {
-        (self.frames.len() as i64 * 1000) / self.fps as i64
+        (self.frames.len() as i64 * 1000) / i64::from(self.fps)
     }
 
     /// Mux the buffered frames into a complete AVI byte stream. Returns
@@ -196,7 +196,7 @@ fn chunk(tag: &[u8; 4], body: &[u8]) -> Vec<u8> {
 /// Mux JPEG `frames` into a complete AVI byte stream.
 fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
     let n = frames.len() as u32;
-    let max_frame = frames.iter().map(|f| f.len()).max().unwrap_or(0) as u32;
+    let max_frame = frames.iter().map(std::vec::Vec::len).max().unwrap_or(0) as u32;
 
     // --- movi list body: the sequence of "00dc" frame chunks. Track each
     // chunk's offset relative to the "movi" fourcc for the index. ---
@@ -309,7 +309,7 @@ pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     } else {
         FPS
     };
-    let dur_ms = (total_frames as i64 * 1000) / fps as i64;
+    let dur_ms = (i64::from(total_frames) * 1000) / i64::from(fps);
     Some((w, h, dur_ms))
 }
 

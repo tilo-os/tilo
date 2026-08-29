@@ -16,7 +16,7 @@ pub struct ProviderEntry {
     /// by clients in `importAs`/`exportAs`.
     pub package: String,
     /// Path to the WASM Component Model binary. Direct file path for now; a
-    /// content-addressed flavour (referring to qpkg PackageIds) is a sketched
+    /// content-addressed flavour (referring to qpkg `PackageIds`) is a sketched
     /// follow-up — see the host crate's open-questions.
     pub wasm: PathBuf,
     /// Semver-ish version string. Not parsed, just exposed for diagnostics.

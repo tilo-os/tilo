@@ -27,7 +27,7 @@ pub struct Autoconfig {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_tls: bool,
-    /// True when the provider's `authentication` element asks for OAuth2 —
+    /// True when the provider's `authentication` element asks for `OAuth2` —
     /// the account then presets to [`AuthMethod::OAuth`].
     pub oauth: bool,
 }
@@ -45,11 +45,10 @@ impl Autoconfig {
         if self.oauth {
             cfg.auth = AuthMethod::OAuth;
         }
-        if cfg.display_name.trim().is_empty() {
-            if let Some(name) = &self.display_name {
+        if cfg.display_name.trim().is_empty()
+            && let Some(name) = &self.display_name {
                 cfg.display_name = name.clone();
             }
-        }
     }
 }
 
@@ -131,9 +130,9 @@ fn extract_block<'a>(xml: &'a str, tag: &str, attr_value: &str) -> Option<&'a st
         let after = xml[open_start + open_prefix.len()..].chars().next();
         let is_boundary =
             matches!(after, Some(c) if c == ' ' || c == '>' || c == '\t' || c == '\n' || c == '/');
-        let gt = match xml[open_start..].find('>') {
-            Some(g) => open_start + g,
-            None => return None,
+        let gt = {
+            let g = xml[open_start..].find('>')?;
+            open_start + g
         };
         let opening = &xml[open_start..gt];
         let attr_ok = attr_value.is_empty()
@@ -337,7 +336,7 @@ pub fn parse_doh_mx(json: &str) -> Vec<(u16, String)> {
     answers
         .iter()
         // MX record type is 15.
-        .filter(|a| a.get("type").and_then(|t| t.as_u64()) == Some(15))
+        .filter(|a| a.get("type").and_then(serde_json::Value::as_u64) == Some(15))
         .filter_map(|a| {
             let data = a.get("data")?.as_str()?.trim();
             let (pref, host) = data.split_once(char::is_whitespace)?;
@@ -406,7 +405,7 @@ pub fn discover(email: &str) -> Option<Autoconfig> {
 }
 
 /// Resolve `domain`'s MX records via DNS-over-HTTPS and map them to a known
-/// provider. Tries Google and Cloudflare DoH endpoints. Network — `live` only.
+/// provider. Tries Google and Cloudflare `DoH` endpoints. Network — `live` only.
 #[cfg(feature = "live")]
 fn discover_via_mx(client: &reqwest::blocking::Client, domain: &str) -> Option<KnownProvider> {
     let endpoints = [

@@ -150,7 +150,7 @@ const DETAIL_ACTION_H: f64 = 46.0;
 /// drop the decimal. Mirrors [`crate::prefs::Prefs::interval_label`] so the
 /// pill and the popover options read identically.
 fn interval_label(ms: u64) -> String {
-    if ms % 1000 == 0 {
+    if ms.is_multiple_of(1000) {
         format!("{}s", ms / 1000)
     } else {
         format!("{:.1}s", ms as f32 / 1000.0)
@@ -401,7 +401,7 @@ impl MonitorApp {
         // A `last_refresh` well in the past makes the first `maybe_refresh`
         // fire on the first draw, replacing the empty seed with real data.
         let stale = Instant::now()
-            .checked_sub(Duration::from_secs(3600))
+            .checked_sub(Duration::from_hours(1))
             .unwrap_or_else(Instant::now);
         Self::build(MonitorModel::empty(), None, stale)
     }
@@ -652,9 +652,7 @@ impl MonitorApp {
             .model
             .processes
             .iter()
-            .find(|p| p.pid == pid)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "process".into());
+            .find(|p| p.pid == pid).map_or_else(|| "process".into(), |p| p.name.clone());
 
         let mut menu = ContextMenu::new();
         let sink = &self.pending_action;
@@ -832,7 +830,7 @@ impl MonitorApp {
             .map(|r| r.pid)
     }
 
-    /// Apply a [`ProcAction`] the context menu recorded. The CopyPid path
+    /// Apply a [`ProcAction`] the context menu recorded. The `CopyPid` path
     /// writes the pid to the real OS clipboard via [`ui::clipboard_copy`] (a
     /// silent no-op in a headless/locked-down session) and records it so the
     /// transient toast and tests can observe the action.
@@ -895,14 +893,14 @@ impl MonitorApp {
         if max_w <= 0.0 {
             return String::new();
         }
-        if tr.measure(s, size, None).0 as f64 <= max_w {
+        if f64::from(tr.measure(s, size, None).0) <= max_w {
             return s.to_string();
         }
         let mut out = s.to_string();
         while !out.is_empty() {
             out.pop();
             let cand = format!("{out}…");
-            if tr.measure(&cand, size, None).0 as f64 <= max_w {
+            if f64::from(tr.measure(&cand, size, None).0) <= max_w {
                 return cand;
             }
         }
@@ -912,8 +910,7 @@ impl MonitorApp {
     fn clock() -> String {
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         format!(
             "{:02}:{:02}:{:02}",
             (secs / 3600) % 24,
@@ -988,8 +985,7 @@ impl MonitorApp {
     /// window after a Copy PID action, then it expires on its own.
     fn copy_toast_active(&self) -> bool {
         self.copied_at
-            .map(|t| t.elapsed() < Duration::from_millis(TOAST_MS))
-            .unwrap_or(false)
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(TOAST_MS))
     }
 
     // ---- headless screenshot scenarios -----------------------------------
@@ -1114,11 +1110,11 @@ impl MonitorApp {
         let up = fmt_uptime(self.model.metrics.uptime_secs);
         let up_caption = format!("uptime {up}");
         let (upw, _) = tr.measure(&up_caption, xs, None);
-        let right_block_w = (clw as f64).max(upw as f64);
+        let right_block_w = f64::from(clw).max(f64::from(upw));
         let right_block_x0 = inner.x1 - right_block_w;
 
         let il = format!("⟳ {}", self.prefs.interval_label());
-        let iw = tr.measure_weighted(&il, xs, None, TextWeight::Medium).0 as f64 + 22.0;
+        let iw = f64::from(tr.measure_weighted(&il, xs, None, TextWeight::Medium).0) + 22.0;
         let pill_x1 = right_block_x0 - 16.0;
         let pill_x0 = pill_x1 - iw;
 
@@ -1143,7 +1139,7 @@ impl MonitorApp {
         };
         let pair_w = 2.0 * seg_w + 6.0;
         // Centre the pair in the gap, but never let it cross either edge.
-        let centre = (inner.x0 + inner.x1) / 2.0;
+        let centre = f64::midpoint(inner.x0, inner.x1);
         let cx = (centre - pair_w / 2.0).clamp(gap_l, (gap_r - pair_w).max(gap_l));
         let proc_r = Rect::new(cx, cy, cx + seg_w, cy + seg_h);
         let res_r = Rect::new(cx + seg_w + 6.0, cy, cx + 2.0 * seg_w + 6.0, cy + seg_h);
@@ -1181,7 +1177,7 @@ impl MonitorApp {
             &clock,
             cs,
             c.text_primary,
-            t * Affine::translate((inner.x1 - clw as f64, inner.y0 + 1.0)),
+            t * Affine::translate((inner.x1 - f64::from(clw), inner.y0 + 1.0)),
             None,
             TextWeight::Bold,
         );
@@ -1192,7 +1188,7 @@ impl MonitorApp {
                 &up_caption,
                 xs,
                 c.text_dim,
-                t * Affine::translate((inner.x1 - upw as f64, inner.y0 + 22.0)),
+                t * Affine::translate((inner.x1 - f64::from(upw), inner.y0 + 22.0)),
                 None,
             );
         }
@@ -1213,8 +1209,8 @@ impl MonitorApp {
             theme.tokens.typography.scale.sm,
             c.text_primary,
             t * Affine::translate((
-                interval_r.x0 + (interval_r.width() - tw as f64) / 2.0,
-                interval_r.y0 + (interval_r.height() - th as f64) / 2.0,
+                interval_r.x0 + (interval_r.width() - f64::from(tw)) / 2.0,
+                interval_r.y0 + (interval_r.height() - f64::from(th)) / 2.0,
             )),
             None,
             TextWeight::Medium,
@@ -1271,7 +1267,7 @@ impl MonitorApp {
             label,
             fs,
             text_color,
-            t * Affine::translate((icon_r.x1 + 8.0, r.center().y - th as f64 / 2.0)),
+            t * Affine::translate((icon_r.x1 + 8.0, r.center().y - f64::from(th) / 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -1316,7 +1312,7 @@ impl MonitorApp {
             [
                 Cell {
                     label: "CPU",
-                    value: format!("{:.0}%", overall),
+                    value: format!("{overall:.0}%"),
                     vcolor: charts::load_color(theme, overall / 100.0),
                     data: m.cpu_hist.as_slice().to_vec(),
                     max: 100.0,
@@ -1375,14 +1371,14 @@ impl MonitorApp {
             );
             let (lw, _) = tr.measure(cell.label, xs, None);
             let (vw, _) = tr.measure_weighted(&cell.value, sm, None, TextWeight::Bold);
-            let spark_top = if lw as f64 + 8.0 + vw as f64 <= inner.width() {
+            let spark_top = if f64::from(lw) + 8.0 + f64::from(vw) <= inner.width() {
                 // Roomy: headline value right-aligned on the label's line.
                 tr.draw_text_weighted(
                     scene,
                     &cell.value,
                     sm,
                     cell.vcolor,
-                    t * Affine::translate((inner.x1 - vw as f64, inner.y0 - 1.0)),
+                    t * Affine::translate((inner.x1 - f64::from(vw), inner.y0 - 1.0)),
                     None,
                     TextWeight::Bold,
                 );
@@ -1448,7 +1444,7 @@ impl MonitorApp {
                 overall / 100.0,
                 charts::load_color(theme, overall / 100.0),
                 theme,
-                &format!("{:.0}%", overall),
+                &format!("{overall:.0}%"),
                 "CPU LOAD",
             );
             let sx = inner.x0 + 138.0;
@@ -1500,7 +1496,7 @@ impl MonitorApp {
                 overall / 100.0,
                 charts::load_color(theme, overall / 100.0),
                 theme,
-                &format!("{:.0}%", overall),
+                &format!("{overall:.0}%"),
                 "CPU LOAD",
             );
             let la = format!(
@@ -1513,7 +1509,7 @@ impl MonitorApp {
                 &la,
                 xs,
                 c.text_dim,
-                t * Affine::translate((inner.center().x - lw as f64 / 2.0, inner.y1 - 12.0)),
+                t * Affine::translate((inner.center().x - f64::from(lw) / 2.0, inner.y1 - 12.0)),
                 None,
             );
         }
@@ -1613,7 +1609,7 @@ impl MonitorApp {
                 &vv,
                 fs,
                 c.text_primary,
-                t * Affine::translate((ii.x1 - vw as f64, *y)),
+                t * Affine::translate((ii.x1 - f64::from(vw), *y)),
                 None,
             );
             *y += 18.0;
@@ -1652,7 +1648,7 @@ impl MonitorApp {
         let ci = charts::panel(scene, t, core_panel, theme, layout::RAIL_CARD_PAD);
         tr.draw_text_weighted(
             scene,
-            &format!("Per-Core Utilisation  ·  {} threads", n),
+            &format!("Per-Core Utilisation  ·  {n} threads"),
             theme.tokens.typography.scale.sm,
             c.text_primary,
             t * Affine::translate((ci.x0, ci.y0)),
@@ -1676,7 +1672,7 @@ impl MonitorApp {
                 usage / 100.0,
                 charts::load_color(theme, usage / 100.0),
                 &format!("C{i}"),
-                &format!("{:.0}%", usage),
+                &format!("{usage:.0}%"),
             );
         }
     }
@@ -1796,7 +1792,7 @@ impl MonitorApp {
         let h_overflow = (content_w - avail_w).max(0.0);
         let hbar_h = if h_overflow > 0.5 { 7.0 } else { 0.0 };
         self.table_scroll_x = self.table_scroll_x.clamp(0.0, h_overflow as f32);
-        let sx = self.table_scroll_x as f64;
+        let sx = f64::from(self.table_scroll_x);
         // Absolute x of a content-space column edge after the horizontal scroll.
         let col_abs = |x: f64| cols_left + x - sx;
 
@@ -1830,7 +1826,7 @@ impl MonitorApp {
             }
             let (lw, lh) = tr.measure_weighted(&text, hfs, None, TextWeight::Semibold);
             let tx = if col.right {
-                x0 + col.w - lw as f64 - 6.0
+                x0 + col.w - f64::from(lw) - 6.0
             } else {
                 x0 + 2.0
             };
@@ -1839,7 +1835,7 @@ impl MonitorApp {
                 &text,
                 hfs,
                 color,
-                t * Affine::translate((tx, hdr.center().y - lh as f64 / 2.0)),
+                t * Affine::translate((tx, hdr.center().y - f64::from(lh) / 2.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -1893,7 +1889,7 @@ impl MonitorApp {
                 charts::fill_rrect(scene, t, row, 0.0, c.neutral[2]);
             }
 
-            let ty = row.center().y - fs as f64 / 2.0 - 1.0;
+            let ty = row.center().y - f64::from(fs) / 2.0 - 1.0;
             let txt = if selected { c.text_primary } else { c.text_dim };
             let name_color = c.text_primary;
 
@@ -1908,7 +1904,7 @@ impl MonitorApp {
                 let s = Self::truncate(tr, s, fs, col.w - 8.0);
                 let (sw, _) = tr.measure_weighted(&s, fs, None, weight);
                 let x = if col.right {
-                    x0 + col.w - sw as f64 - 6.0
+                    x0 + col.w - f64::from(sw) - 6.0
                 } else {
                     x0 + 2.0
                 };
@@ -2022,7 +2018,7 @@ impl MonitorApp {
             let thumb_h = (track.height() * frac_v).max(24.0);
             let max_off = (rows.len() - self.rows_per_page) as f64;
             let pos = if max_off > 0.0 {
-                self.scroll_off as f64 / max_off
+                f64::from(self.scroll_off) / max_off
             } else {
                 0.0
             };
@@ -2104,21 +2100,21 @@ impl MonitorApp {
         let back = Rect::new(
             back_x0,
             r.y0,
-            back_x0 + 34.0 + lw as f64 + 14.0,
+            back_x0 + 34.0 + f64::from(lw) + 14.0,
             r.y0 + bar_h - 4.0,
         );
         charts::fill_rrect(
             scene,
             t,
             back,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             c.surfaces.raised,
         );
         charts::stroke_rrect(
             scene,
             t,
             back,
-            theme.tokens.radii.md as f64,
+            f64::from(theme.tokens.radii.md),
             c.border_standard,
             1.0,
         );
@@ -2134,7 +2130,7 @@ impl MonitorApp {
             label,
             fs,
             c.text_primary,
-            t * Affine::translate((chev.x1 + 4.0, back.center().y - lh as f64 / 2.0)),
+            t * Affine::translate((chev.x1 + 4.0, back.center().y - f64::from(lh) / 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -2153,11 +2149,11 @@ impl MonitorApp {
     fn pills_cluster_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
         let fs = theme.tokens.typography.scale.sm;
         // Kernel-threads toggle (switch knob + label).
-        let mut w = tr.measure("kernel threads", fs, None).0 as f64 + 44.0;
+        let mut w = f64::from(tr.measure("kernel threads", fs, None).0) + 44.0;
         // Sum-mode pill exists only in tree mode.
         if self.tree_mode {
             let sum_text = format!("Σ {}", self.sum_mode.label());
-            w += TOOLBAR_PILL_GAP + tr.measure(&sum_text, fs, None).0 as f64 + 24.0;
+            w += TOOLBAR_PILL_GAP + f64::from(tr.measure(&sum_text, fs, None).0) + 24.0;
         }
         // Tree/Flat pill.
         let tree_text = if self.tree_mode {
@@ -2165,10 +2161,10 @@ impl MonitorApp {
         } else {
             "≣ Flat"
         };
-        w += TOOLBAR_PILL_GAP + tr.measure(tree_text, fs, None).0 as f64 + 24.0;
+        w += TOOLBAR_PILL_GAP + f64::from(tr.measure(tree_text, fs, None).0) + 24.0;
         // Confirm-kills pill (reserved so the toolbar stacks before the pill
         // cluster crowds the search box; dropped only at extreme-narrow widths).
-        w += TOOLBAR_PILL_GAP + tr.measure("Confirm kills", fs, None).0 as f64 + 24.0;
+        w += TOOLBAR_PILL_GAP + f64::from(tr.measure("Confirm kills", fs, None).0) + 24.0;
         w
     }
 
@@ -2220,7 +2216,7 @@ impl MonitorApp {
         // ---- filter pills, laid right→left in `pills_row` -----------------
         // Kernel-threads toggle (rightmost).
         let kt_label = "kernel threads";
-        let ktw = tr.measure(kt_label, fs, None).0 as f64 + 44.0;
+        let ktw = f64::from(tr.measure(kt_label, fs, None).0) + 44.0;
         let kt_r = Rect::new(
             pills_row.x1 - ktw,
             pills_row.y0 + 2.0,
@@ -2282,7 +2278,7 @@ impl MonitorApp {
             kt_label,
             fs,
             if on { c.text_primary } else { c.text_dim },
-            t * Affine::translate((knob_track.x1 + 6.0, kt_r.center().y - fs as f64 / 2.0 - 1.0)),
+            t * Affine::translate((knob_track.x1 + 6.0, kt_r.center().y - f64::from(fs) / 2.0 - 1.0)),
             None,
         );
         self.hit.kernel_toggle = kt_r;
@@ -2294,7 +2290,7 @@ impl MonitorApp {
         if self.tree_mode {
             let sum_label = self.sum_mode.label();
             let sum_text = format!("Σ {sum_label}");
-            let sw = tr.measure(&sum_text, fs, None).0 as f64 + 24.0;
+            let sw = f64::from(tr.measure(&sum_text, fs, None).0) + 24.0;
             let sum_r = Rect::new(
                 next_x1 - sw,
                 pills_row.y0 + 2.0,
@@ -2332,8 +2328,8 @@ impl MonitorApp {
                 fs,
                 if summing { c.text_primary } else { c.text_dim },
                 t * Affine::translate((
-                    sum_r.center().x - stw as f64 / 2.0,
-                    sum_r.center().y - fs as f64 / 2.0 - 1.0,
+                    sum_r.center().x - f64::from(stw) / 2.0,
+                    sum_r.center().y - f64::from(fs) / 2.0 - 1.0,
                 )),
                 None,
             );
@@ -2349,7 +2345,7 @@ impl MonitorApp {
         } else {
             "≣ Flat"
         };
-        let tw_ = tr.measure(tree_text, fs, None).0 as f64 + 24.0;
+        let tw_ = f64::from(tr.measure(tree_text, fs, None).0) + 24.0;
         let tree_r = Rect::new(
             next_x1 - tw_,
             pills_row.y0 + 2.0,
@@ -2390,8 +2386,8 @@ impl MonitorApp {
                 c.text_dim
             },
             t * Affine::translate((
-                tree_r.center().x - ttw as f64 / 2.0,
-                tree_r.center().y - fs as f64 / 2.0 - 1.0,
+                tree_r.center().x - f64::from(ttw) / 2.0,
+                tree_r.center().y - f64::from(fs) / 2.0 - 1.0,
             )),
             None,
         );
@@ -2403,7 +2399,7 @@ impl MonitorApp {
         // row; at extreme-narrow widths (where the toolbar is already stacked)
         // it's dropped rather than clipped off the left edge.
         let confirm_text = "Confirm kills";
-        let cfw = tr.measure(confirm_text, fs, None).0 as f64 + 24.0;
+        let cfw = f64::from(tr.measure(confirm_text, fs, None).0) + 24.0;
         let confirm_x1 = tree_r.x0 - TOOLBAR_PILL_GAP;
         let confirm_x0 = confirm_x1 - cfw;
         // Left edge of the pill cluster — the search box stops before this so
@@ -2442,8 +2438,8 @@ impl MonitorApp {
                 fs,
                 if ck { c.text_primary } else { c.text_dim },
                 t * Affine::translate((
-                    confirm_r.center().x - cftw as f64 / 2.0,
-                    confirm_r.center().y - fs as f64 / 2.0 - 1.0,
+                    confirm_r.center().x - f64::from(cftw) / 2.0,
+                    confirm_r.center().y - f64::from(fs) / 2.0 - 1.0,
                 )),
                 None,
             );
@@ -2488,7 +2484,7 @@ impl MonitorApp {
         );
         icons::draw_icon(scene, t, icon_r, Icon::Search, c.text_dim, 1.6);
         let tx = icon_r.x1 + 8.0;
-        let ty = search_r.center().y - fs as f64 / 2.0 - 1.0;
+        let ty = search_r.center().y - f64::from(fs) / 2.0 - 1.0;
         if self.filter.is_empty() && !self.search_focused {
             let placeholder = Self::truncate(tr, "Search processes…", fs, search_r.x1 - tx - 12.0);
             tr.draw_text(
@@ -2511,7 +2507,7 @@ impl MonitorApp {
             );
             if self.search_focused {
                 let (cw, _) = tr.measure(&shown, fs, None);
-                let caret_x = tx + cw as f64 + 1.0;
+                let caret_x = tx + f64::from(cw) + 1.0;
                 scene.stroke(
                     &Stroke::new(1.5),
                     t,
@@ -2536,8 +2532,8 @@ impl MonitorApp {
             let shown = self.visible_rows().len();
             let count = format!("{shown} of {total} shown");
             let (cw, _) = tr.measure(&count, fs, None);
-            let cxx = (search_r.x1 + cluster_left) / 2.0 - cw as f64 / 2.0;
-            if cluster_left - (search_r.x1 + 10.0) > cw as f64 + 8.0 {
+            let cxx = f64::midpoint(search_r.x1, cluster_left) - f64::from(cw) / 2.0;
+            if cluster_left - (search_r.x1 + 10.0) > f64::from(cw) + 8.0 {
                 tr.draw_text(
                     scene,
                     &count,
@@ -2545,7 +2541,7 @@ impl MonitorApp {
                     c.text_dim,
                     t * Affine::translate((
                         cxx.max(search_r.x1 + 10.0),
-                        pills_row.center().y - fs as f64 / 2.0 - 1.0,
+                        pills_row.center().y - f64::from(fs) / 2.0 - 1.0,
                     )),
                     None,
                 );
@@ -2587,7 +2583,7 @@ impl MonitorApp {
         let sm = theme.tokens.typography.scale.sm;
         let base = theme.tokens.typography.scale.base;
         let lg = theme.tokens.typography.scale.lg;
-        let ppid = p.ppid.map(|x| x.to_string()).unwrap_or_else(|| "—".into());
+        let ppid = p.ppid.map_or_else(|| "—".into(), |x| x.to_string());
         let cpu_col = charts::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
 
         let tall = inner.height() > 150.0;
@@ -2608,7 +2604,7 @@ impl MonitorApp {
                 None,
                 TextWeight::Bold,
             );
-            y += lg as f64 + 8.0;
+            y += f64::from(lg) + 8.0;
             let ident = format!("PID {}   ·   PPID {}   ·   {}", p.pid, ppid, p.user);
             tr.draw_text(
                 scene,
@@ -2618,7 +2614,7 @@ impl MonitorApp {
                 t * Affine::translate((content.x0, y)),
                 None,
             );
-            y += xs as f64 + 14.0;
+            y += f64::from(xs) + 14.0;
 
             // Command line.
             tr.draw_text_weighted(
@@ -2630,7 +2626,7 @@ impl MonitorApp {
                 None,
                 TextWeight::Semibold,
             );
-            y += xs as f64 + 4.0;
+            y += f64::from(xs) + 4.0;
             let cmd = Self::truncate(tr, &p.cmd, sm, content.width());
             tr.draw_text(
                 scene,
@@ -2640,7 +2636,7 @@ impl MonitorApp {
                 t * Affine::translate((content.x0, y)),
                 None,
             );
-            y += sm as f64 + 14.0;
+            y += f64::from(sm) + 14.0;
 
             scene.stroke(
                 &Stroke::new(1.0),
@@ -2668,11 +2664,11 @@ impl MonitorApp {
                 &cpu_val,
                 base,
                 cpu_col,
-                t * Affine::translate((content.x1 - cvw as f64, y - 2.0)),
+                t * Affine::translate((content.x1 - f64::from(cvw), y - 2.0)),
                 None,
                 TextWeight::Bold,
             );
-            y += base as f64 + 6.0;
+            y += f64::from(base) + 6.0;
             // The stat grid gets a fixed, comfortable stride; the sparkline
             // absorbs whatever vertical slack remains so a tall pane fills
             // top-to-bottom cleanly instead of leaving gaps between the rows.
@@ -2682,9 +2678,7 @@ impl MonitorApp {
                 ("THREADS", p.threads.to_string(), c.text_primary),
                 (
                     "OPEN FILES",
-                    p.open_files
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| "—".into()),
+                    p.open_files.map_or_else(|| "—".into(), |n| n.to_string()),
                     c.text_primary,
                 ),
                 ("STATUS", p.status.clone(), c.semantic.info),
@@ -2743,7 +2737,7 @@ impl MonitorApp {
                     &v,
                     base,
                     *color,
-                    t * Affine::translate((cx, cy + xs as f64 + 5.0)),
+                    t * Affine::translate((cx, cy + f64::from(xs) + 5.0)),
                     None,
                     TextWeight::Semibold,
                 );
@@ -2783,7 +2777,7 @@ impl MonitorApp {
                 &ident,
                 xs,
                 c.text_dim,
-                t * Affine::translate((inner.x0, inner.y0 + lg as f64 + 4.0)),
+                t * Affine::translate((inner.x0, inner.y0 + f64::from(lg) + 4.0)),
                 None,
             );
 
@@ -2815,8 +2809,8 @@ impl MonitorApp {
                     None,
                     TextWeight::Bold,
                 );
-                let w1 = tr.measure(label, xs, None).0 as f64;
-                let w2 = tr.measure_weighted(value, base, None, TextWeight::Bold).0 as f64;
+                let w1 = f64::from(tr.measure(label, xs, None).0);
+                let w2 = f64::from(tr.measure_weighted(value, base, None, TextWeight::Bold).0);
                 x + w1.max(w2) + 24.0
             };
             let mut x = inner.x0;
@@ -2843,9 +2837,7 @@ impl MonitorApp {
                 tr,
                 x,
                 "FILES",
-                &p.open_files
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "—".into()),
+                &p.open_files.map_or_else(|| "—".into(), |n| n.to_string()),
                 c.text_primary,
             );
 
@@ -2864,7 +2856,7 @@ impl MonitorApp {
         theme: &Theme,
         bar: Rect,
     ) {
-        let c = &theme.tokens.colors;
+        let _c = &theme.tokens.colors;
         let bh = (bar.height() - 8.0).clamp(26.0, 34.0);
         let by0 = bar.center().y - bh / 2.0;
         let bw = 92.0_f64.min((bar.width() - 8.0) / 2.0);
@@ -2917,7 +2909,7 @@ impl MonitorApp {
             tr,
             theme,
             &ButtonFace::new(rect, label)
-                .radius(theme.tokens.radii.md as f64)
+                .radius(f64::from(theme.tokens.radii.md))
                 .text_size(theme.tokens.typography.scale.sm)
                 .weight(TextWeight::Semibold)
                 .icon(icon)
@@ -3110,9 +3102,7 @@ impl MonitorApp {
             .model
             .processes
             .iter()
-            .find(|p| p.pid == pid)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "process".into());
+            .find(|p| p.pid == pid).map_or_else(|| "process".into(), |p| p.name.clone());
         let (title, signal_name, confirm_label) = match kind {
             StopKind::Term => ("Stop process?", "SIGTERM", "Stop"),
             StopKind::Kill => ("Kill process?", "SIGKILL", "Kill"),
@@ -3210,15 +3200,14 @@ impl MonitorApp {
         let Some((pid, kind)) = self.confirm_stop else {
             return;
         };
-        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-            if ke.state == ElementState::Pressed
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == ElementState::Pressed
                 && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
             {
                 self.do_stop(pid, kind, doc);
                 *handled = true;
                 return;
             }
-        }
         self.ensure_confirm_dialog(pid, kind);
         self.layout_confirm_dialog();
         let (confirm, cancel) = {
@@ -3265,7 +3254,7 @@ impl MonitorApp {
         let (lw, lh) = tr.measure_weighted(&label, fs, None, TextWeight::Medium);
         let pad = 16.0;
         let icon_w = 22.0;
-        let w = lw as f64 + pad * 2.0 + icon_w;
+        let w = f64::from(lw) + pad * 2.0 + icon_w;
         let h = 34.0;
         let cx = self.rect.center().x;
         let x0 = cx - w / 2.0;
@@ -3286,7 +3275,7 @@ impl MonitorApp {
             &label,
             fs,
             c.text_primary,
-            t * Affine::translate((icon_r.x1 + 8.0, toast.center().y - lh as f64 / 2.0)),
+            t * Affine::translate((icon_r.x1 + 8.0, toast.center().y - f64::from(lh) / 2.0)),
             None,
             TextWeight::Medium,
         );
@@ -3303,8 +3292,8 @@ impl MonitorApp {
     /// the row scrollbar never selects the row it overlaps.
     fn begin_scroll_interaction(&mut self, p: Point) -> bool {
         // Page bar (Resources whole-view). Present only on the Resources tab.
-        if let Some(sb) = self.hit.page_scrollbar {
-            if sb.track.contains(p) {
+        if let Some(sb) = self.hit.page_scrollbar
+            && sb.track.contains(p) {
                 if sb.thumb.contains(p) {
                     self.scroll_drag = Some(ScrollDrag::Page {
                         grab: p.y - sb.thumb.y0,
@@ -3317,10 +3306,9 @@ impl MonitorApp {
                 }
                 return true;
             }
-        }
         // Vertical row bar. Present only on the Processes tab.
-        if let Some(sb) = self.hit.v_scrollbar {
-            if sb.track.contains(p) {
+        if let Some(sb) = self.hit.v_scrollbar
+            && sb.track.contains(p) {
                 if sb.thumb.contains(p) {
                     self.scroll_drag = Some(ScrollDrag::Rows {
                         grab: p.y - sb.thumb.y0,
@@ -3332,10 +3320,9 @@ impl MonitorApp {
                 }
                 return true;
             }
-        }
         // Horizontal column bar.
-        if let Some(sb) = self.hit.h_scrollbar {
-            if sb.track.contains(p) {
+        if let Some(sb) = self.hit.h_scrollbar
+            && sb.track.contains(p) {
                 if sb.thumb.contains(p) {
                     self.scroll_drag = Some(ScrollDrag::Cols {
                         grab: p.x - sb.thumb.x0,
@@ -3348,7 +3335,6 @@ impl MonitorApp {
                 }
                 return true;
             }
-        }
         false
     }
 
@@ -3634,14 +3620,12 @@ impl MonitorApp {
         // build a bespoke search here — just refuse to swallow the chord so
         // it bubbles up unhandled. (Bare "/" still focuses the local process
         // filter below; only the Ctrl-modified chord is reserved.)
-        if ctrl {
-            if let Key::Character(s) = key {
-                if matches!(s.as_str(), "k" | "K" | "/") {
+        if ctrl
+            && let Key::Character(s) = key
+                && matches!(s.as_str(), "k" | "K" | "/") {
                     // `handled` stays false → event propagates to the host.
                     return;
                 }
-            }
-        }
 
         // Interval popover open: full keyboard nav (↑/↓/Home/End move, Enter
         // selects, Esc closes). Every key is swallowed so none leaks to the
@@ -3678,7 +3662,7 @@ impl MonitorApp {
         // Search editing.
         if self.search_focused {
             match key {
-                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                Key::Named(NamedKey::Escape | NamedKey::Enter) => {
                     self.search_focused = false;
                     *handled = true;
                 }
@@ -3776,11 +3760,10 @@ impl MonitorApp {
                     // "s" sends SIGTERM (Stop) to the selection; "g" toggles
                     // the subtree-sum mode; "t" toggles tree/flat.
                     "s" | "S" => {
-                        if self.tab == Tab::Processes {
-                            if let Some(pid) = self.selected_pid {
+                        if self.tab == Tab::Processes
+                            && let Some(pid) = self.selected_pid {
                                 self.request_stop(pid, doc);
                             }
-                        }
                     }
                     "g" | "G" => {
                         if self.tree_mode {
@@ -3822,17 +3805,17 @@ impl Widget for MonitorApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -3881,15 +3864,14 @@ impl Widget for MonitorApp {
         // still held (the pill's hit rect is now known from `draw_header`). The
         // redraw loop keeps pumping — `needs_animation_frame` is always true —
         // so this check fires mid-hold without waiting for another event.
-        if let Some(started) = self.interval_press {
-            if !self.interval_hold_opened
+        if let Some(started) = self.interval_press
+            && !self.interval_hold_opened
                 && !self.interval_popover.is_open()
                 && started.elapsed().as_millis() >= LONG_PRESS_MS
             {
                 self.open_interval_popover();
                 self.interval_hold_opened = true;
             }
-        }
         // Headless `--shots` seed: open the popover deterministically once the
         // pill is positioned.
         if std::mem::take(&mut self.interval_popover_seed) {
@@ -3911,7 +3893,7 @@ impl Widget for MonitorApp {
         self.content_h = content_natural_h.max(viewport_h);
         self.viewport_h = viewport_h;
         self.view_scroll_y = self.view_scroll_y.clamp(0.0, page_overflow as f32);
-        let dy = self.view_scroll_y as f64;
+        let dy = f64::from(self.view_scroll_y);
 
         // Body content is laid out from `body.y0 − dy` and clipped to the
         // body viewport. Shifting the *rects* (rather than the transform)
@@ -4121,7 +4103,7 @@ impl Widget for MonitorApp {
                 }
             }
             WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
-                let text = ke.text.as_ref().map(|s| s.as_str());
+                let text = ke.text.as_ref().map(winit::keyboard::SmolStr::as_str);
                 let ctrl = modifiers.state().control_key();
                 let prev_tab = self.tab;
                 self.on_key(&ke.logical_key, text, ctrl, doc, path, handled);
@@ -4135,7 +4117,7 @@ impl Widget for MonitorApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MonitorApp"
     }
 

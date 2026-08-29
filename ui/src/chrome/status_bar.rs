@@ -51,7 +51,7 @@ pub fn draw(
         right,
         13.0,
         muted,
-        transform * Affine::translate((rect.x1 - 18.0 - rw as f64, ty)),
+        transform * Affine::translate((rect.x1 - 18.0 - f64::from(rw), ty)),
         None,
     );
 }

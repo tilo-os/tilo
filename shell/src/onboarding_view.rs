@@ -168,7 +168,7 @@ impl OnboardingView {
             );
         }
         let minted = self.flow.minted();
-        let fingerprint = minted.map(|m| m.grouped_fingerprint()).unwrap_or_default();
+        let fingerprint = minted.map(super::onboarding::MintedIdentity::grouped_fingerprint).unwrap_or_default();
         let path = minted
             .map(|m| m.path.display().to_string())
             .unwrap_or_default();
@@ -331,25 +331,23 @@ impl Widget for OnboardingView {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+                && let Some(&cn) = children.first() {
                     c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
                 }
-            }
-        }
     }
 
     fn draw(
@@ -378,9 +376,9 @@ impl Widget for OnboardingView {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+                && let Some(&cn) = children.first() {
                     c.handle_event(
                         event,
                         scale_factor,
@@ -393,14 +391,12 @@ impl Widget for OnboardingView {
                         taffy,
                     );
                 }
-            }
-        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
             .as_ref()
-            .map(|c| c.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .into_iter()
             .collect()
     }
@@ -413,7 +409,7 @@ impl Widget for OnboardingView {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "OnboardingView"
     }
 
@@ -430,8 +426,7 @@ impl Widget for OnboardingView {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }

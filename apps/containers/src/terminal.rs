@@ -47,14 +47,13 @@ fn shell_single_quote(s: &str) -> String {
 /// directory as the current executable (the fleet `target/debug/terminal`),
 /// then fall back to `terminal` on `PATH`.
 pub fn terminal_binary() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent() {
             let sibling = dir.join("terminal");
             if sibling.is_file() {
                 return sibling;
             }
         }
-    }
     PathBuf::from("terminal")
 }
 
@@ -90,11 +89,10 @@ fn set_executable(_path: &Path) -> std::io::Result<()> {
 /// Per-user runtime dir for launcher scripts: `$XDG_RUNTIME_DIR/qos-containers`
 /// or a temp fallback.
 pub fn runtime_dir() -> PathBuf {
-    if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
-        if !rt.is_empty() {
+    if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR")
+        && !rt.is_empty() {
             return PathBuf::from(rt).join("qos-containers");
         }
-    }
     std::env::temp_dir().join("qos-containers")
 }
 

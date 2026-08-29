@@ -307,10 +307,10 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx) -> Result<f64, String> {
     }
     let n = vals.len();
     let one = |f: fn(f64) -> f64| -> Result<f64, String> {
-        if n != 1 {
-            Err(format!("{name}() takes 1 argument"))
-        } else {
+        if n == 1 {
             Ok(f(vals[0]))
+        } else {
+            Err(format!("{name}() takes 1 argument"))
         }
     };
     // Degree-aware trig: argument is degrees when `ctx.deg`.
@@ -342,8 +342,8 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx) -> Result<f64, String> {
         "round" => return one(f64::round),
         "trunc" => return one(f64::trunc),
         "fract" => return one(f64::fract),
-        "rad" => return one(|x| x.to_radians()),
-        "deg" => return one(|x| x.to_degrees()),
+        "rad" => return one(f64::to_radians),
+        "deg" => return one(f64::to_degrees),
         "gamma" => return one(gamma),
         "fact" => return one(factorial),
         "log" => match n {
@@ -385,13 +385,13 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx) -> Result<f64, String> {
             if n == 0 {
                 return Err("max() needs arguments".into());
             }
-            vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+            vals.iter().copied().fold(f64::NEG_INFINITY, f64::max)
         }
         "min" => {
             if n == 0 {
                 return Err("min() needs arguments".into());
             }
-            vals.iter().cloned().fold(f64::INFINITY, f64::min)
+            vals.iter().copied().fold(f64::INFINITY, f64::min)
         }
         _ => return Err(format!("unknown function `{name}`")),
     })
@@ -482,11 +482,11 @@ fn validate(e: &Expr, two_var: bool) -> Result<(), String> {
 pub fn gamma(x: f64) -> f64 {
     const G: f64 = 7.0;
     const C: [f64; 9] = [
-        0.999_999_999_999_809_93,
+        0.999_999_999_999_809_9,
         676.520_368_121_885_1,
         -1259.139_216_722_402_8,
-        771.323_428_777_653_13,
-        -176.615_029_162_140_59,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
         12.507_343_278_686_905,
         -0.138_571_095_265_720_12,
         9.984_369_578_019_572e-6,
@@ -535,12 +535,12 @@ pub fn format_number(v: f64) -> String {
         return "0".to_string();
     }
     let a = v.abs();
-    if a < 1e-6 || a >= 1e12 {
+    if !(1e-6..1e12).contains(&a) {
         // Scientific, ~10 significant digits, tidy mantissa.
-        let s = format!("{:.6e}", v);
+        let s = format!("{v:.6e}");
         return tidy_sci(&s);
     }
-    let s = format!("{:.10}", v);
+    let s = format!("{v:.10}");
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
     if trimmed.is_empty() || trimmed == "-" {
         "0".to_string()

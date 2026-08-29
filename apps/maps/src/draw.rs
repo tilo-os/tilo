@@ -15,7 +15,7 @@ pub fn mix(a: Color, b: Color, t: f32) -> Color {
     let a = a.to_rgba8();
     let b = b.to_rgba8();
     let l = |x: u8, y: u8| {
-        (x as f32 * (1.0 - t) + y as f32 * t)
+        (f32::from(x) * (1.0 - t) + f32::from(y) * t)
             .round()
             .clamp(0.0, 255.0) as u8
     };
@@ -219,7 +219,7 @@ pub fn text_right(
         s,
         size,
         color,
-        t * Affine::translate((x_right - w as f64, y)),
+        t * Affine::translate((x_right - f64::from(w), y)),
         None,
     );
 }
@@ -237,13 +237,13 @@ pub fn text_center(
     color: Color,
 ) {
     let (w, _) = tr.measure(s, size, None);
-    let x = x0 + ((x1 - x0) - w as f64) / 2.0;
+    let x = x0 + ((x1 - x0) - f64::from(w)) / 2.0;
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
 }
 
 /// Measure text width.
 pub fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
-    tr.measure(s, size, None).0 as f64
+    f64::from(tr.measure(s, size, None).0)
 }
 
 /// Hard-truncate `s` with an ellipsis so it fits within `max_w` at `size`.

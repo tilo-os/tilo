@@ -193,17 +193,17 @@ impl Widget for Container {
         } else {
             taffy.new_leaf(style).unwrap()
         };
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
 
         if let Some(child) = &mut self.child {
@@ -294,7 +294,7 @@ impl Widget for Container {
         self.rect
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Container"
     }
 
@@ -313,8 +313,7 @@ impl Widget for Container {
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false)
+            .is_some_and(|c| c.take_structure_dirty())
     }
 
     fn presence_key(&self) -> Option<PresenceKey> {

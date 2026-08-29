@@ -81,8 +81,8 @@ impl ChromeRole {
         let radii = &theme.tokens.radii;
         match self {
             ChromeRole::Bar => 0.0,
-            ChromeRole::Panel | ChromeRole::Object => radii.xl as f64,
-            ChromeRole::Control => radii.lg as f64,
+            ChromeRole::Panel | ChromeRole::Object => f64::from(radii.xl),
+            ChromeRole::Control => f64::from(radii.lg),
             ChromeRole::Selector => (height / 2.0).max(0.0),
         }
     }
@@ -287,7 +287,7 @@ fn light_ends(theme: &Theme) -> (f64, f64) {
 /// matters: in a premultiplying renderer, an alpha pushed past 1.0 doesn't
 /// no-op, it silently brightens the colour components too.
 fn scaled(base: Color, gain: f32) -> Color {
-    let a = (base.a() as f32 * gain).clamp(0.0, 255.0).round() as u8;
+    let a = (f32::from(base.a()) * gain).clamp(0.0, 255.0).round() as u8;
     Color::from_rgba8(base.r(), base.g(), base.b(), a)
 }
 
@@ -368,7 +368,7 @@ pub fn paint_glass_body(
                 edge,
                 [
                     (0.0, 1.0),
-                    (0.5, (1.0 + GLASS_EDGE_SEAT_SCALE) / 2.0),
+                    (0.5, f32::midpoint(1.0, GLASS_EDGE_SEAT_SCALE)),
                     (1.0, GLASS_EDGE_SEAT_SCALE),
                 ],
             ),
@@ -484,7 +484,7 @@ pub fn panel_shadow(
     let e = &theme.tokens.elevation.e4;
     // The visible falloff ends about 2.5 standard deviations out; the ring
     // is given a little more than that so nothing is clipped mid-ramp.
-    let reach = crate::surface::std_dev_for(e.blur) * 3.0 + e.offset_y as f64;
+    let reach = crate::surface::std_dev_for(e.blur) * 3.0 + f64::from(e.offset_y);
     let outer = Rect::new(
         rect.x0 - reach,
         rect.y0 - reach,
@@ -579,18 +579,18 @@ pub fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f3
 /// compositing) composited `lerp(Cb, Cb², αs)`, then an ordinary
 /// source-over of the theme's scrim hue for the level stage.
 pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
-    let strength = strength.clamp(0.0, 1.0) as f64;
-    let v = value as f64 / 255.0;
+    let strength = f64::from(strength.clamp(0.0, 1.0));
+    let v = f64::from(value) / 255.0;
     let tone = (strength * 255.0).round().clamp(0.0, 255.0) / 255.0;
     let toned = v * (1.0 - tone) + v * v * tone;
-    let level = (strength * SCRIM_LEVEL_SHARE as f64 * 255.0)
+    let level = (strength * f64::from(SCRIM_LEVEL_SHARE) * 255.0)
         .round()
         .clamp(0.0, 255.0)
         / 255.0;
     let hue = theme.tokens.colors.surfaces.scrim.to_rgba8();
     // The scrim hue is a near-neutral by construction, so its own relative
     // luminance is the honest stand-in for "the grey it adds".
-    let hue_grey = (0.2126 * hue.r as f64 + 0.7152 * hue.g as f64 + 0.0722 * hue.b as f64) / 255.0;
+    let hue_grey = (0.2126 * f64::from(hue.r) + 0.7152 * f64::from(hue.g) + 0.0722 * f64::from(hue.b)) / 255.0;
     let out = toned * (1.0 - level) + hue_grey * level;
     (out.clamp(0.0, 1.0) * 255.0).round() as u8
 }
@@ -1186,7 +1186,7 @@ impl StripRibbon {
         if self.count == 0 {
             return 0.0;
         }
-        let focused = if self.focused < self.count { 1 } else { 0 };
+        let focused = usize::from(self.focused < self.count);
         let plain = self.count - focused;
         plain as f64 * RIBBON_SEG_H
             + focused as f64 * RIBBON_SEG_H_FOCUSED
@@ -1337,7 +1337,7 @@ impl StripRail {
         if self.count == 0 {
             return 0.0;
         }
-        let focused = if self.focused < self.count { 1 } else { 0 };
+        let focused = usize::from(self.focused < self.count);
         let plain = self.count - focused;
         plain as f64 * RAIL_SEG_W
             + focused as f64 * RAIL_SEG_W_FOCUSED

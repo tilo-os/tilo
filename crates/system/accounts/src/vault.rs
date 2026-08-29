@@ -2,7 +2,7 @@
 //! [`crate::AccountStore`] JSON.
 //!
 //! Every credential an [`crate::Account`] needs is a long-lived bearer secret, sealed with
-//! **XChaCha20-Poly1305** (192-bit-nonce AEAD, audited RustCrypto stack) under a 256-bit key,
+//! **XChaCha20-Poly1305** (192-bit-nonce AEAD, audited `RustCrypto` stack) under a 256-bit key,
 //! stored as `vault.enc` under `$XDG_CONFIG_HOME/qos/accounts/vault/`. A fresh random nonce
 //! is drawn per write, so re-saving an unchanged vault still produces distinct ciphertext and
 //! no nonce is ever reused — the same pattern the authenticator (totp) vault uses.
@@ -38,7 +38,7 @@ pub struct Secret {
     /// The password / app-password for password-auth accounts.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub password: String,
-    /// An OAuth2 token bundle (serialised by the owning type) for accounts that sign in instead
+    /// An `OAuth2` token bundle (serialised by the owning type) for accounts that sign in instead
     /// of using a password. Unused by current consumers but reserved so the vault shape doesn't churn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
@@ -156,15 +156,12 @@ fn load_entries(dir: &Path) -> BTreeMap<String, Secret> {
         return BTreeMap::new();
     }
     match (load_or_create_key(dir), std::fs::read(&enc)) {
-        (Some(key), Ok(blob)) => match open(&key, &blob) {
-            Some(plaintext) => serde_json::from_slice(&plaintext).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "accounts: decrypted vault parse failed; starting empty");
-                BTreeMap::new()
-            }),
-            None => {
-                tracing::warn!("accounts: vault decrypt failed; starting empty");
-                BTreeMap::new()
-            }
+        (Some(key), Ok(blob)) => if let Some(plaintext) = open(&key, &blob) { serde_json::from_slice(&plaintext).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "accounts: decrypted vault parse failed; starting empty");
+            BTreeMap::new()
+        }) } else {
+            tracing::warn!("accounts: vault decrypt failed; starting empty");
+            BTreeMap::new()
         },
         _ => BTreeMap::new(),
     }

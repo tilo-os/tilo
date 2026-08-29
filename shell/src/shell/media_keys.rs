@@ -119,8 +119,8 @@ fn toggle_mute(actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option
     // `wpctl set-mute toggle` reports nothing, so assume the inverse of
     // what we last knew rather than pay a second subprocess.
     let now = current_volume(status);
-    let level = now.map(|v| v.level).unwrap_or(0.0);
-    let muted = !now.map(|v| v.muted).unwrap_or(false);
+    let level = now.map_or(0.0, |v| v.level);
+    let muted = !now.is_some_and(|v| v.muted);
     if let Some(s) = status {
         s.set_volume(os_actions::VolumeState { level, muted });
     }

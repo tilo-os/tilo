@@ -271,10 +271,10 @@ impl SearchResultsView {
         // Selection = a filled row (per the command palette convention);
         // hover = a barely-there veneer, distinct from selection.
         if selected {
-            let hl = RoundedRect::from_rect(row.rect, theme.tokens.radii.sm as f64);
+            let hl = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &hl);
         } else if hovered {
-            let hl = RoundedRect::from_rect(row.rect, theme.tokens.radii.sm as f64);
+            let hl = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
             scene.fill(Fill::NonZero, transform, colors.surface_white_5, None, &hl);
         }
 
@@ -303,7 +303,7 @@ impl SearchResultsView {
         let title_y = if has_sub {
             row.rect.y0 + 8.0
         } else {
-            row.rect.y0 + (row.rect.height() - title_size as f64) / 2.0
+            row.rect.y0 + (row.rect.height() - f64::from(title_size)) / 2.0
         };
         tr.draw_text_weighted(
             scene,
@@ -317,7 +317,7 @@ impl SearchResultsView {
 
         // Subtitle (dim; on a selected row it stays readable on the fill).
         if let Some(sub) = &result.subtitle {
-            let sy = row.rect.y1 - sub_size as f64 - 9.0;
+            let sy = row.rect.y1 - f64::from(sub_size) - 9.0;
             let sub_col = if selected {
                 colors.text_primary
             } else {
@@ -344,8 +344,8 @@ impl SearchResultsView {
         let _ = scene;
         let size = theme.tokens.typography.scale.sm;
         let (tw, th) = tr.measure(&self.empty_text, size, None);
-        let cx = self.rect.center().x - tw as f64 / 2.0;
-        let cy = self.rect.center().y - th as f64 / 2.0;
+        let cx = self.rect.center().x - f64::from(tw) / 2.0;
+        let cy = self.rect.center().y - f64::from(th) / 2.0;
         tr.draw_text(
             scene,
             &self.empty_text,
@@ -382,17 +382,17 @@ impl Widget for SearchResultsView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -407,7 +407,7 @@ impl Widget for SearchResultsView {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let card = RoundedRect::from_rect(self.rect, theme.tokens.radii.lg as f64);
+        let card = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.lg));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -433,7 +433,7 @@ impl Widget for SearchResultsView {
         let header_size = (theme.tokens.typography.scale.xs).max(10.0);
         for (hrect, kind, count) in &plan.headers {
             let label = kind.to_uppercase();
-            let hy = hrect.y1 - header_size as f64 - 6.0;
+            let hy = hrect.y1 - f64::from(header_size) - 6.0;
             text_renderer.draw_text_weighted(
                 scene,
                 &label,
@@ -450,7 +450,7 @@ impl Widget for SearchResultsView {
                 &count_str,
                 header_size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((hrect.x1 - cw as f64 - 4.0, hy)),
+                transform * Affine::translate((hrect.x1 - f64::from(cw) - 4.0, hy)),
                 None,
             );
         }
@@ -519,7 +519,7 @@ impl Widget for SearchResultsView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SearchResultsView"
     }
 

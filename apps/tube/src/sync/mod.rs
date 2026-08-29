@@ -27,7 +27,7 @@
 //!
 //! ## Licensing
 //!
-//! Grayjay's app code is FUTO Source-First (non-commercial) and the YouTube
+//! Grayjay's app code is FUTO Source-First (non-commercial) and the `YouTube`
 //! plugin is AGPL-3.0. This is our own Rust, reimplementing the *interoperable
 //! wire facts* (opcode ints, pattern strings, framing) — not a port of their
 //! source. See [`protocol`] for the per-fact citations.
@@ -125,7 +125,7 @@ pub trait SyncTransport: Send {
 pub struct StubTransport;
 
 impl SyncTransport for StubTransport {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "stub (Grayjay sync not implemented)"
     }
 

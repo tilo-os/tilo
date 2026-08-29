@@ -16,7 +16,7 @@
 //!     the headless CI box and screenshots use.
 //!   * **Real decode (`--features decode`)** — [`PreviewDecoder`] resolves the
 //!     clip's bytes through the [`crate::media`] FUSE seam and, when they're
-//!     hydrated, seeks a shared [`media::MediaEngine`] (a real GStreamer
+//!     hydrated, seeks a shared [`media::MediaEngine`] (a real `GStreamer`
 //!     `playbin` pipeline under the feature) to the clip's *source time* and
 //!     pulls the true decoded RGBA frame. If the bytes aren't hydrated yet (a
 //!     projected reference on a fresh collaborator) it falls back to the
@@ -209,7 +209,7 @@ pub type DecodedFrame = ::media::VideoFrame;
 /// clip under the playhead, seeks to the clip's source time and pulls the real
 /// decoded frame. The engine's synthesized fallback needs no gstreamer, so this
 /// type compiles on every build; with `--features decode` (which turns on
-/// `media/decode`) the engine is a real GStreamer `playbin` pipeline and the
+/// `media/decode`) the engine is a real `GStreamer` `playbin` pipeline and the
 /// frame is the clip's true picture.
 ///
 /// The extraction seam ([`Self::update`]) — top-clip selection, FUSE resolution,
@@ -231,7 +231,7 @@ pub struct PreviewDecoder {
 
 impl PreviewDecoder {
     /// Build a decoder. Under `--features decode` this stands up a real
-    /// GStreamer pipeline; otherwise the engine's synthesized fallback (which
+    /// `GStreamer` pipeline; otherwise the engine's synthesized fallback (which
     /// this preview never blits — the widget shows the representative frame when
     /// decode is off).
     pub fn new() -> Self {
@@ -256,7 +256,7 @@ impl PreviewDecoder {
         }
     }
 
-    /// Whether the engine is decoding through a real GStreamer pipeline.
+    /// Whether the engine is decoding through a real `GStreamer` pipeline.
     pub fn is_real_decode(&self) -> bool {
         self.engine.is_real_decode()
     }
@@ -296,7 +296,7 @@ impl PreviewDecoder {
             self.frame_media = None;
             return false;
         }
-        let abs = source.abs_path.clone();
+        let abs = source.abs_path;
         if self.open_path.as_deref() != Some(abs.as_path()) {
             self.engine.open(crate::media::engine_source(&abs));
             self.open_path = Some(abs);

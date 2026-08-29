@@ -1,4 +1,4 @@
-//! ProgressBar — determinate / indeterminate horizontal progress indicator.
+//! `ProgressBar` — determinate / indeterminate horizontal progress indicator.
 //!
 //! Determinate mode paints a rounded track with a fill that scales from
 //! 0 to `track_width` proportional to `progress` (clamped to `[0, 1]`).
@@ -158,17 +158,17 @@ impl Widget for ProgressBar {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -183,7 +183,7 @@ impl Widget for ProgressBar {
         // The track is always painted: it provides the visual anchor
         // even at `progress == 0.0`. The fill is conditional — see
         // `progress_bar_at_zero_paints_no_fill` for the contract.
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
         let track_shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -208,7 +208,7 @@ impl Widget for ProgressBar {
             let phase = if theme.reduce_motion {
                 (segment_width / 2.0) / travel
             } else {
-                self.indeterminate_phase() as f64
+                f64::from(self.indeterminate_phase())
             };
             let segment_x0 = self.rect.x0 - segment_width + phase * travel;
             let segment_x1 = segment_x0 + segment_width;
@@ -232,7 +232,7 @@ impl Widget for ProgressBar {
             // entirely at `progress == 0.0` (rather than a zero-width
             // rect) so the COLOR-draw-tag count can distinguish empty
             // from non-empty bars at the encoding level in tests.
-            let fill_width = self.progress as f64 * track_width;
+            let fill_width = f64::from(self.progress) * track_width;
             let fill_rect = Rect::new(
                 self.rect.x0,
                 self.rect.y0,
@@ -264,7 +264,7 @@ impl Widget for ProgressBar {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ProgressBar"
     }
 

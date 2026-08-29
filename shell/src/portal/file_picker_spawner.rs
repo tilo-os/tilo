@@ -93,7 +93,7 @@ fn extension_of_glob(pattern: &str) -> Option<String> {
 /// for files it was never granted, by reading which directories the
 /// dialog opens. Where the dialog starts is the compositor's decision (`PickerScope`).
 pub struct FilePickerRequest {
-    /// Identity of the requesting app — host can show "{app_id} wants to open a file" in the dialog header.
+    /// Identity of the requesting app — host can show "{`app_id`} wants to open a file" in the dialog header.
     pub caller: PortalCaller,
     /// User-facing dialog title, provided by the calling app.
     pub title: String,
@@ -171,7 +171,7 @@ impl FilePickerSpawnerHandle {
     }
 }
 
-/// Everything the FileChooser backend decoded out of one portal call,
+/// Everything the `FileChooser` backend decoded out of one portal call,
 /// minus the reply channel [`FilePickerSpawnerHandle::request_with`] adds.
 #[derive(Debug)]
 pub struct FilePickerOptions {

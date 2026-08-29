@@ -3,11 +3,11 @@
 //! Voice, camera and screen-share frames travel as a MoQ-style publish/subscribe
 //! of timestamped media objects, carried by **iroh QUIC** for direct P2P (a
 //! host relay is selected above the mesh threshold — see [`crate::model::CallSession`]).
-//! Microphone capture/playback and the Opus audio codec go through **GStreamer**
+//! Microphone capture/playback and the Opus audio codec go through **`GStreamer`**
 //! elements ([`crate::audio`]); camera + screen video use the in-tree **openh264**
 //! codec ([`crate::video`]); screen capture is requested from the
-//! **xdg-desktop-portal ScreenCast** API via ashpd. None of ALSA / PulseAudio /
-//! ffmpeg / the `opus` crate are used — only GStreamer, the portal, and openh264,
+//! **xdg-desktop-portal `ScreenCast`** API via ashpd. None of ALSA / `PulseAudio` /
+//! ffmpeg / the `opus` crate are used — only `GStreamer`, the portal, and openh264,
 //! matching the qOS build env.
 //!
 //! ## Real vs. gated
@@ -38,7 +38,7 @@ pub enum TrackKind {
     Audio,
     /// Camera video.
     Video,
-    /// Screen-share video (portal ScreenCast / PipeWire).
+    /// Screen-share video (portal `ScreenCast` / `PipeWire`).
     Screen,
 }
 
@@ -133,7 +133,7 @@ pub struct Subscription {
 
 /// The transport contract the call layer programs against. An implementation
 /// connects peers, publishes the local tracks, and delivers remote objects.
-/// The call UI never names iroh or GStreamer directly — it speaks only this
+/// The call UI never names iroh or `GStreamer` directly — it speaks only this
 /// trait, so the simulated and live backends are interchangeable.
 pub trait MediaTransport {
     /// Whether this transport actually moves bytes over a network/devices
@@ -223,13 +223,12 @@ impl MediaEngine {
     pub fn new() -> Self {
         #[cfg(feature = "live-media")]
         {
-            if live::environment_supports_media() {
-                if let Some(t) = live::IrohTransport::try_new() {
+            if live::environment_supports_media()
+                && let Some(t) = live::IrohTransport::try_new() {
                     return Self {
                         transport: Box::new(t),
                     };
                 }
-            }
         }
         Self {
             transport: Box::new(SimulatedTransport::default()),
@@ -276,8 +275,8 @@ impl Default for MediaEngine {
     }
 }
 
-/// Request a screen-share source via the xdg-desktop-portal ScreenCast API.
-/// Returns the PipeWire node id to consume, or `None` when the portal is
+/// Request a screen-share source via the xdg-desktop-portal `ScreenCast` API.
+/// Returns the `PipeWire` node id to consume, or `None` when the portal is
 /// unavailable (always, headless). Gated: the real ashpd call only compiles
 /// under `live-media`.
 pub fn request_screencast() -> Option<u32> {
@@ -305,7 +304,7 @@ mod live {
     /// clean break rather than a silent mis-parse.
     const MEDIA_ALPN: &[u8] = b"qos-chat-media/0";
 
-    /// Hard cap on a single wire frame (DoS guard). One audio/video access unit
+    /// Hard cap on a single wire frame (`DoS` guard). One audio/video access unit
     /// is far smaller than this.
     const MAX_FRAME: usize = 8 * 1024 * 1024;
 
@@ -520,10 +519,10 @@ mod live {
         }
     }
 
-    /// Real ScreenCast request via the xdg-desktop-portal, using ashpd. Opens a
-    /// ScreenCast session, asks the portal to let the user pick a monitor or
+    /// Real `ScreenCast` request via the xdg-desktop-portal, using ashpd. Opens a
+    /// `ScreenCast` session, asks the portal to let the user pick a monitor or
     /// window (embedded cursor), starts the cast and returns the first stream's
-    /// PipeWire node id — which [`crate::video::ScreenCapture`] then consumes
+    /// `PipeWire` node id — which [`crate::video::ScreenCapture`] then consumes
     /// via `pipewiresrc`. Runs on a short-lived current-thread runtime so it can
     /// be called from the synchronous app loop. Returns `None` when there is no
     /// portal (headless), when the user cancels, or on any portal error — never
@@ -562,9 +561,9 @@ mod live {
                     .ok()?
                     .response()
                     .ok()?;
-                response.streams().first().map(|s| s.pipe_wire_node_id())
+                response.streams().first().map(ashpd::desktop::screencast::Stream::pipe_wire_node_id)
             };
-            tokio::time::timeout(std::time::Duration::from_secs(120), flow)
+            tokio::time::timeout(std::time::Duration::from_mins(2), flow)
                 .await
                 .ok()
                 .flatten()

@@ -77,8 +77,7 @@ fn type_one(doc: &mut AutoCommit, block: &str, ch: &str) -> Vec<u8> {
         let at = blocks(doc)
             .into_iter()
             .find(|b| b.id == block)
-            .map(|b| b.text.chars().count())
-            .unwrap_or(0);
+            .map_or(0, |b| b.text.chars().count());
         let mut ids = qdoc::model::seeded_id_gen(doc, &c);
         let mut dm = qdoc::DocMut {
             doc,
@@ -145,7 +144,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     std::thread::sleep(Duration::from_millis(100));
 
     let cfg = Config {
-        socket: Some(sock.clone()),
+        socket: Some(sock),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),

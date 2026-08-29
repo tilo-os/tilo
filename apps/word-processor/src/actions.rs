@@ -217,7 +217,7 @@ fn add_mark_region(dm: &mut DocMut, region: Region, span: &Span, name: &str, val
             MarkVal::Bool(v) => dm.add_mark_in(r, &span.block, span.start, span.end, name, *v),
             MarkVal::Int(n) => dm.add_mark_in(r, &span.block, span.start, span.end, name, *n),
             MarkVal::Str(s) => {
-                dm.add_mark_in(r, &span.block, span.start, span.end, name, s.as_str())
+                dm.add_mark_in(r, &span.block, span.start, span.end, name, s.as_str());
             }
         },
     }
@@ -594,7 +594,7 @@ pub fn apply_named_style_action(
     WordProcessorAction::ApplyNamedStyle {
         blocks,
         style: style.to_string(),
-        kind: kind.map(|k| k.to_string()),
+        kind: kind.map(std::string::ToString::to_string),
         level,
         ordered,
     }

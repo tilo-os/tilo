@@ -24,7 +24,7 @@ use crate::widget::Widget;
 
 /// Approximate per-character width used by `build_layout` to size button
 /// labels without invoking `TextRenderer`. Matches `tabs.rs::apply_layout`'s
-/// heuristic so a Toolbar reads at the same density as a TabBar beside it.
+/// heuristic so a Toolbar reads at the same density as a `TabBar` beside it.
 const APPROX_CHAR_W: f64 = 7.0;
 
 /// Width (Horizontal) or height (Vertical) of a Separator line. Always
@@ -143,14 +143,14 @@ impl Toolbar {
     fn measure_item_axis(&self, item: &ToolbarItem, theme: &Theme) -> f64 {
         match item {
             ToolbarItem::Spacer => 0.0,
-            ToolbarItem::Separator => SEPARATOR_LINE_PX + 2.0 * theme.tokens.spacing.s2 as f64,
+            ToolbarItem::Separator => SEPARATOR_LINE_PX + 2.0 * f64::from(theme.tokens.spacing.s2),
             ToolbarItem::Button { label, .. } => {
-                let pad = 2.0 * theme.tokens.spacing.s3 as f64;
+                let pad = 2.0 * f64::from(theme.tokens.spacing.s3);
                 let text_axis = match self.orientation {
                     Orientation::Horizontal => label.chars().count() as f64 * APPROX_CHAR_W,
-                    Orientation::Vertical => theme.tokens.typography.scale.sm as f64,
+                    Orientation::Vertical => f64::from(theme.tokens.typography.scale.sm),
                 };
-                (text_axis + pad).max(theme.tokens.spacing.s8 as f64)
+                (text_axis + pad).max(f64::from(theme.tokens.spacing.s8))
             }
         }
     }
@@ -229,7 +229,7 @@ impl Widget for Toolbar {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         // Measure against whatever axis extent the last layout gave us.
         // On the very first pass `self.rect` is empty, so fall back to
         // "everything fits" rather than collapsing the whole strip into
@@ -249,10 +249,10 @@ impl Widget for Toolbar {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
 
         self.item_rects.clear();
@@ -406,7 +406,7 @@ impl Widget for Toolbar {
         _presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        let radius = tokens.radii.sm as f64;
+        let radius = f64::from(tokens.radii.sm);
         let font_size = tokens.typography.scale.sm;
         let n_visible = self.visible_count.min(self.items.len());
 
@@ -426,8 +426,8 @@ impl Widget for Toolbar {
                     let shape = RoundedRect::from_rect(r, radius);
                     scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
                     let (tw, th) = text_renderer.measure(label, font_size, None);
-                    let tx = r.center().x - tw as f64 / 2.0;
-                    let ty = r.center().y - th as f64 / 2.0;
+                    let tx = r.center().x - f64::from(tw) / 2.0;
+                    let ty = r.center().y - f64::from(th) / 2.0;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -441,7 +441,7 @@ impl Widget for Toolbar {
                     // Hairline divider perpendicular to the orientation
                     // axis. Margin `s2` from each end along the cross
                     // axis (so the line doesn't kiss the toolbar edge).
-                    let margin = tokens.spacing.s2 as f64;
+                    let margin = f64::from(tokens.spacing.s2);
                     let line_rect = match self.orientation {
                         Orientation::Horizontal => {
                             let cx = r.center().x;
@@ -488,8 +488,8 @@ impl Widget for Toolbar {
             scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             let label = "…";
             let (tw, th) = text_renderer.measure(label, font_size, None);
-            let tx = self.overflow_rect.center().x - tw as f64 / 2.0;
-            let ty = self.overflow_rect.center().y - th as f64 / 2.0;
+            let tx = self.overflow_rect.center().x - f64::from(tw) / 2.0;
+            let ty = self.overflow_rect.center().y - f64::from(th) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -558,7 +558,7 @@ impl Widget for Toolbar {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Toolbar"
     }
 

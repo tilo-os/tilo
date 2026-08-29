@@ -1,8 +1,8 @@
 //! H.264 software encoder.
 //!
 //! Wraps the [`openh264`] crate: takes RGBA frames (the format vello/wgpu
-//! reads back into, and what GStreamer's `videoconvert` hands a
-//! `pipewiresrc` ScreenCast capture) and returns a tagged-Annex-B NALU byte
+//! reads back into, and what `GStreamer`'s `videoconvert` hands a
+//! `pipewiresrc` `ScreenCast` capture) and returns a tagged-Annex-B NALU byte
 //! blob ready to ship as a [`crate::stream::SurfaceFrame`] payload. The
 //! wrapper is thin — bitrate/GOP/threading are fixed at construction.
 //!
@@ -119,7 +119,7 @@ impl H264Encoder {
     /// `frame_idx` field for why it must be monotonic.
     #[tracing::instrument(level = "trace", skip(self, rgba), fields(width = self.width, height = self.height))]
     pub fn encode(&mut self, rgba: &[u8]) -> Result<Vec<u8>, EncodeError> {
-        let ts_ms = self.frame_idx.saturating_mul(1000) / self.fps as u64;
+        let ts_ms = self.frame_idx.saturating_mul(1000) / u64::from(self.fps);
         self.frame_idx = self.frame_idx.saturating_add(1);
         self.encode_at_ms(rgba, ts_ms)
     }

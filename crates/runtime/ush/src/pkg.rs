@@ -157,8 +157,7 @@ pub fn is_installed(name: &str) -> bool {
     Command::new("rpm")
         .args(["-q", name])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// `name-version-release.arch` for an installed package, or the bare name.

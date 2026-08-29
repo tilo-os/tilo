@@ -1,4 +1,4 @@
-//! Page header / footer ⇄ OOXML header/footer parts. WordprocessingML keeps each page
+//! Page header / footer ⇄ OOXML header/footer parts. `WordprocessingML` keeps each page
 //! region in its own part (`word/header1.xml`/`word/footer1.xml`, `w:hdr`/`w:ftr`),
 //! referenced from the body's `w:sectPr` by relationship id. A page-number field is a
 //! `PAGE` field, emitted as `w:fldSimple w:instr=" PAGE "` and parsed from both that
@@ -152,7 +152,7 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                       cur_len: &mut usize| {
         let id = doc.insert_block_in(region, prev.as_deref(), "paragraph");
         *prev = Some(id.clone());
-        *cur = Some(id.clone());
+        *cur = Some(id);
         *cur_len = 0;
     };
 
@@ -170,8 +170,8 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     // Emit the field once at its start, then skip its cached result-run text until it closes.
                     fldsimple_depth += 1;
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
-                    if is_page_instr(&instr) {
-                        if let Some(b) = cur.clone() {
+                    if is_page_instr(&instr)
+                        && let Some(b) = cur.clone() {
                             let start = cur_len;
                             doc.splice_text_in(
                                 region,
@@ -183,7 +183,6 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                             cur_len += 1;
                             field_marks.push((b, start));
                         }
-                    }
                 }
                 _ => {}
             },
@@ -202,8 +201,8 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                 }
                 b"w:fldSimple" => {
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
-                    if is_page_instr(&instr) {
-                        if let Some(b) = cur.clone() {
+                    if is_page_instr(&instr)
+                        && let Some(b) = cur.clone() {
                             let start = cur_len;
                             doc.splice_text_in(
                                 region,
@@ -215,7 +214,6 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                             cur_len += 1;
                             field_marks.push((b, start));
                         }
-                    }
                 }
                 b"w:fldChar" => {
                     match attr_w_val(&e, b"w:fldCharType").as_deref() {
@@ -259,14 +257,12 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     if field_in_progress && is_page_instr(&txt) {
                         field_pending = true;
                     }
-                } else if in_t && !field_skip_text && fldsimple_depth == 0 {
-                    if let Some(b) = cur.clone() {
-                        if !txt.is_empty() {
+                } else if in_t && !field_skip_text && fldsimple_depth == 0
+                    && let Some(b) = cur.clone()
+                        && !txt.is_empty() {
                             doc.splice_text_in(region, &b, cur_len, 0, &txt);
                             cur_len += txt.chars().count();
                         }
-                    }
-                }
             }
             Event::End(e) => match e.name().as_ref() {
                 b"w:t" => in_t = false,
@@ -290,15 +286,14 @@ fn is_page_instr(instr: &str) -> bool {
     instr
         .split_whitespace()
         .next()
-        .map(|w| w.eq_ignore_ascii_case("PAGE"))
-        .unwrap_or(false)
+        .is_some_and(|w| w.eq_ignore_ascii_case("PAGE"))
 }
 
 fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
 }
 
 fn push_escaped(out: &mut String, c: char) {

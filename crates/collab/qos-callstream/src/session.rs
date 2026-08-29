@@ -8,7 +8,7 @@
 //!
 //! This is the exact composition the compositor's
 //! `collab::flatpak_share::SharedFlatpakSession` uses for a shared Wayland
-//! surface, and what the chat call app drives directly for ScreenCast
+//! surface, and what the chat call app drives directly for `ScreenCast`
 //! capture — reusing the same encode/transport/decode code instead of a
 //! second codec.
 
@@ -65,7 +65,7 @@ pub struct VideoStreamSender {
 impl VideoStreamSender {
     /// Builds a sender encoding `width × height` at up to `fps` frames per second (the throttle enforces the real cadence).
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
-        let interval = std::time::Duration::from_micros((1_000_000 / fps.max(1) as u64).max(1));
+        let interval = std::time::Duration::from_micros((1_000_000 / u64::from(fps.max(1))).max(1));
         Ok(Self {
             encoder: H264Encoder::new(width, height, fps)?,
             throttle: StreamingThrottle::with_interval(interval),
@@ -143,11 +143,10 @@ impl VideoStreamReceiver {
         };
         let mut out = Vec::new();
         for ev in events {
-            if let ReceiverEvent::Frame(frame) = ev {
-                if let Some(decoded) = self.decoder.decode(&frame.payload) {
+            if let ReceiverEvent::Frame(frame) = ev
+                && let Some(decoded) = self.decoder.decode(&frame.payload) {
                     out.push(decoded);
                 }
-            }
         }
         out
     }

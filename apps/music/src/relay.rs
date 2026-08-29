@@ -34,13 +34,10 @@ impl Relay {
     /// up to it.
     pub fn new() -> Self {
         let path = storage::doc_path();
-        let mut doc = match storage::load_from(&path) {
-            Some(d) => d,
-            None => {
-                let mut d = AutoCommit::new();
-                doc::seed(&mut d, &Library::default(), &Playback::default());
-                d
-            }
+        let mut doc = if let Some(d) = storage::load_from(&path) { d } else {
+            let mut d = AutoCommit::new();
+            doc::seed(&mut d, &Library::default(), &Playback::default());
+            d
         };
         let transport = sync::default_sync(&mut doc);
         Self {

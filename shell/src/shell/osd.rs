@@ -123,7 +123,7 @@ impl Osd {
         if elapsed >= OSD_HOLD {
             return 0.0;
         }
-        let remaining = OSD_HOLD - elapsed;
+        let remaining = OSD_HOLD.checked_sub(elapsed).unwrap();
         if remaining >= OSD_FADE {
             return 1.0;
         }

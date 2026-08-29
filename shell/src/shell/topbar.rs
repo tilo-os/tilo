@@ -1,9 +1,9 @@
 //! `TopBar` — the shell's top-edge chrome row: `Row([LeftNav, CenterWidgets,
-//! RightTray])`. CenterWidgets cycles clock/sparkline/calendar on the
-//! wheel with a cooldown; RightTray reads collaborators straight off
+//! RightTray])`. `CenterWidgets` cycles clock/sparkline/calendar on the
+//! wheel with a cooldown; `RightTray` reads collaborators straight off
 //! the borrowed `WorkspaceTree`.
 //!
-//! The shell root owns the TopBar and forwards its `TopBarOutput` to
+//! The shell root owns the `TopBar` and forwards its `TopBarOutput` to
 //! decide when to open popovers/modals, keeping the topbar free of
 //! references to other chrome widgets and the ownership graph acyclic.
 
@@ -26,7 +26,7 @@ pub enum TopBarEvent {
 }
 
 /// One-shot outputs back to the shell root, which decides how to open
-/// the corresponding popover/modal; the TopBar itself holds no handles
+/// the corresponding popover/modal; the `TopBar` itself holds no handles
 /// to them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TopBarOutput {
@@ -34,7 +34,7 @@ pub enum TopBarOutput {
     OpenQuickSettings,
 }
 
-/// Which cycling widget occupies the center of the TopBar.
+/// Which cycling widget occupies the center of the `TopBar`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CenterWidget {
     Clock,

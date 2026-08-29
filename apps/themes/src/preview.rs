@@ -37,6 +37,12 @@ pub struct PreviewPane {
     rect: Rect,
 }
 
+impl Default for PreviewPane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PreviewPane {
     pub fn new() -> Self {
         Self {
@@ -95,17 +101,17 @@ impl Widget for PreviewPane {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -175,9 +181,7 @@ impl Widget for PreviewPane {
         }
         let title = self
             .spec
-            .as_ref()
-            .map(|s| s.name.clone())
-            .unwrap_or_else(|| th.name.clone());
+            .as_ref().map_or_else(|| th.name.clone(), |s| s.name.clone());
         draw::text_center(
             tr,
             scene,
@@ -193,11 +197,11 @@ impl Widget for PreviewPane {
         );
 
         // Content region.
-        let pad = (th.padding_standard as f64).clamp(14.0, 22.0);
+        let pad = f64::from(th.padding_standard).clamp(14.0, 22.0);
         let cx = card.x0 + pad;
         let cw = card.width() - pad * 2.0;
         let mut y = card.y0 + tb_h + pad;
-        let gap = (th.gap_standard as f64).clamp(10.0, 18.0);
+        let gap = f64::from(th.gap_standard).clamp(10.0, 18.0);
 
         let section =
             |tr: &mut TextRenderer, scene: &mut Scene, y: f64, label: &str, th: &Theme| {
@@ -517,7 +521,7 @@ impl Widget for PreviewPane {
         let mut bx = cx;
         for (lab, col) in badges {
             let (w, _) = tr.measure(lab, 11.0, None);
-            let pw = w as f64 + 22.0;
+            let pw = f64::from(w) + 22.0;
             let br = Rect::new(bx, y, bx + pw, y + 22.0);
             draw::fill_rrect(scene, t, br, 11.0, Self::alpha(col, 0.18));
             draw::stroke_rrect(scene, t, br, 11.0, Self::alpha(col, 0.5), 1.0);
@@ -555,7 +559,7 @@ impl Widget for PreviewPane {
         self.draw_sparkline(scene, t, spark_rect, th);
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PreviewPane"
     }
     fn get_rect(&self) -> Rect {

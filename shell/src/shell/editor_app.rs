@@ -134,7 +134,7 @@ enum TokClass {
 
 /// A tiny JS/TSX-leaning tokenizer: line comments, string literals (no
 /// interpolation), numeric literals, keyword/identifier, punctuation.
-/// Output is a flat list of (start_byte, end_byte, class) triples;
+/// Output is a flat list of (`start_byte`, `end_byte`, class) triples;
 /// whitespace is `Plain` so the caller advances the pen in one pass.
 fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
     const KEYWORDS: &[&str] = &[
@@ -284,7 +284,7 @@ impl Widget for EditorApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        full_bleed_leaf(taffy, node_map, self as *mut dyn Widget)
+        full_bleed_leaf(taffy, node_map, std::ptr::from_mut::<dyn Widget>(self))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -338,8 +338,8 @@ impl Widget for EditorApp {
             gutter_color,
             transform
                 * Affine::translate((
-                    self.rect.x1 - PADDING_X - hw as f64,
-                    self.rect.y0 + 18.0 + (title_size - hint_size) as f64 / 2.0,
+                    self.rect.x1 - PADDING_X - f64::from(hw),
+                    self.rect.y0 + 18.0 + f64::from(title_size - hint_size) / 2.0,
                 )),
             None,
         );
@@ -388,7 +388,7 @@ impl Widget for EditorApp {
         };
 
         for (row, line) in self.body.text.split('\n').enumerate() {
-            let y = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
+            let y = body_top + (row as f64) * f64::from(LINE_HEIGHT) + 2.0;
             if y > self.rect.y1 {
                 break;
             }
@@ -403,7 +403,7 @@ impl Widget for EditorApp {
                 gutter_color,
                 transform
                     * Affine::translate((
-                        self.rect.x0 + PADDING_X + GUTTER_WIDTH - num_w as f64 - 6.0,
+                        self.rect.x0 + PADDING_X + GUTTER_WIDTH - f64::from(num_w) - 6.0,
                         y,
                     )),
                 None,
@@ -432,18 +432,18 @@ impl Widget for EditorApp {
                         None,
                     );
                     let (w, _) = tr.measure(slice, TEXT_SIZE, None);
-                    pen_x += w as f64;
+                    pen_x += f64::from(w);
                 }
             }
 
             if self.focused && row == cursor_line {
                 let (prefix_w, _) = tr.measure(cursor_col_prefix, TEXT_SIZE, None);
-                let caret_x = content_x + prefix_w as f64;
+                let caret_x = content_x + f64::from(prefix_w);
                 let caret = Rect::new(
                     caret_x,
                     y - 2.0,
                     caret_x + 1.5,
-                    y + LINE_HEIGHT as f64 - 2.0,
+                    y + f64::from(LINE_HEIGHT) - 2.0,
                 );
                 scene.fill(Fill::NonZero, transform, caret_color, None, &caret);
             }
@@ -467,23 +467,23 @@ impl Widget for EditorApp {
         // boundary simply lands at end-of-buffer.
         let key = self.body.presence_key();
         if let Some(carets) = presence.carets.get(&key) {
-            for (user, caret_char) in carets.iter() {
+            for (user, caret_char) in carets {
                 let byte_idx = self.body.char_index_to_byte(*caret_char);
                 let row = self.body.text[..byte_idx].matches('\n').count();
                 let line_start_byte = self.line_start(byte_idx);
                 let prefix = &self.body.text[line_start_byte..byte_idx];
                 let (prefix_w, _) = tr.measure(prefix, TEXT_SIZE, None);
-                let x = content_x + prefix_w as f64;
-                let y = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
+                let x = content_x + f64::from(prefix_w);
+                let y = body_top + (row as f64) * f64::from(LINE_HEIGHT) + 2.0;
                 // 2px wide, full line height — matches the local caret in
                 // `TextInput` / `RichTextLine`.
-                let caret_rect = Rect::new(x, y, x + 2.0, y + LINE_HEIGHT as f64);
+                let caret_rect = Rect::new(x, y, x + 2.0, y + f64::from(LINE_HEIGHT));
                 presence.draw_peer_caret(scene, theme, transform, user, caret_rect);
             }
         }
 
         if let Some(selections) = presence.selections.get(&key) {
-            for (user, range) in selections.iter() {
+            for (user, range) in selections {
                 if range.is_empty() {
                     continue;
                 }
@@ -501,10 +501,10 @@ impl Widget for EditorApp {
                     let span = &self.body.text[byte_cursor..line_end_byte];
                     let (pre_w, _) = tr.measure(pre, TEXT_SIZE, None);
                     let (span_w, _) = tr.measure(span, TEXT_SIZE, None);
-                    let x0 = content_x + pre_w as f64;
-                    let x1 = x0 + span_w as f64;
-                    let y0 = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
-                    let y1 = y0 + LINE_HEIGHT as f64;
+                    let x0 = content_x + f64::from(pre_w);
+                    let x1 = x0 + f64::from(span_w);
+                    let y0 = body_top + (row as f64) * f64::from(LINE_HEIGHT) + 2.0;
+                    let y1 = y0 + f64::from(LINE_HEIGHT);
                     line_rects.push(Rect::new(x0, y0, x1, y1));
                     byte_cursor = line_end_byte;
                     if byte_cursor < self.body.text.len()
@@ -655,7 +655,7 @@ impl Widget for EditorApp {
                     _ => {
                         if let Some(t) = text {
                             let s = t.as_str();
-                            if !s.is_empty() && !s.chars().all(|c| c.is_control()) {
+                            if !s.is_empty() && !s.chars().all(char::is_control) {
                                 self.insert_text(state, root, s);
                                 *handled = true;
                             }
@@ -667,7 +667,7 @@ impl Widget for EditorApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "EditorApp"
     }
 
@@ -721,7 +721,7 @@ impl AppWidget for EditorApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "Editor"
     }
     fn app_icon(&self) -> IconDescriptor {

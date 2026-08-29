@@ -262,7 +262,7 @@ pub struct MusicApp {
     /// Which data source the worker bound to ("offline (bundled library)" or
     /// "youtube-music (live)"), for the now-playing status line.
     backend_name: String,
-    /// Whether the bound backend can actually stream from YouTube.
+    /// Whether the bound backend can actually stream from `YouTube`.
     backend_live: bool,
     /// Real search results merged in-memory (rendered by the Search view and
     /// re-injected into the library snapshot each frame so they stay visible
@@ -456,7 +456,7 @@ pub struct MusicApp {
     /// covers). False for the hermetic `--shots`/test path so a headless render
     /// never opens a socket; the live-shots pre-warm flips it on.
     allow_network: bool,
-    /// Test override for the metered-connection check (bypasses NetworkManager
+    /// Test override for the metered-connection check (bypasses `NetworkManager`
     /// so prefetch gating is deterministic in tests). `None` ⇒ query the real
     /// connection via [`crate::net`].
     force_metered: Option<bool>,
@@ -705,8 +705,7 @@ impl MusicApp {
     pub fn shot_has_results(&self) -> bool {
         self.live_results
             .as_ref()
-            .map(|(_, ids)| !ids.is_empty())
-            .unwrap_or(false)
+            .is_some_and(|(_, ids)| !ids.is_empty())
     }
 
     /// Whether lyrics for the current track have settled (loaded or confirmed
@@ -961,8 +960,7 @@ impl MusicApp {
             .current
             .as_ref()
             .and_then(|id| self.lib.track(id))
-            .map(|t| t.duration_ms())
-            .unwrap_or(0)
+            .map_or(0, super::model::Track::duration_ms)
     }
 
     /// The next few queued track ids (after the current one), for the queue
@@ -1020,7 +1018,7 @@ impl MusicApp {
         };
         let mut snap = PlayerSnapshot {
             status,
-            volume: (self.pb.volume as f64 / 100.0).clamp(0.0, 1.0),
+            volume: (f64::from(self.pb.volume) / 100.0).clamp(0.0, 1.0),
             position_us: (self.playhead_ms.max(0.0) * 1000.0) as i64,
             can_next: self.pb.queue_index + 1 < self.pb.queue.len(),
             // "Previous" restarts the track past a few seconds in, else steps back.
@@ -1206,7 +1204,7 @@ impl MusicApp {
 
     /// Auto-advance to the next track *and* start streaming it. Used by the
     /// transport tick when the current stream ends — either at its real duration
-    /// or early, because a free (no-PoToken) YouTube URL is SABR-gated to its
+    /// or early, because a free (no-PoToken) `YouTube` URL is SABR-gated to its
     /// first ~1-minute segment. Advancing without also resolving the next track
     /// would silently change the "now playing" track but leave it soundless, so
     /// this pairs the two. Carries no document handle (tick has none); the new
@@ -1682,7 +1680,7 @@ impl MusicApp {
                 if self.pb.volume > 0 {
                     self.premute_volume = None;
                 }
-                self.audio.set_volume(self.pb.volume as f32 / 100.0);
+                self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
                 self.persist_playback(state);
             }
             Action::ToggleVolumePopover => {
@@ -1697,7 +1695,7 @@ impl MusicApp {
                     // we were already at zero with nothing captured).
                     self.pb.volume = self.premute_volume.take().filter(|&v| v > 0).unwrap_or(80);
                 }
-                self.audio.set_volume(self.pb.volume as f32 / 100.0);
+                self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
                 self.persist_playback(state);
             }
             Action::ToggleDownload(id) => {
@@ -1954,7 +1952,7 @@ impl MusicApp {
                 self.perform_action(state, crate::actions::delete_playlist_action(&id));
                 self.reload_library(state);
                 // Leave the now-deleted detail page.
-                if self.view == View::Playlist(id.clone()) {
+                if self.view == View::Playlist(id) {
                     self.view = View::Playlists;
                     self.scroll = 0.0;
                 }
@@ -2335,8 +2333,7 @@ impl MusicApp {
         let same_query = self
             .live_bundle
             .as_ref()
-            .map(|(q, _)| q == &query)
-            .unwrap_or(false);
+            .is_some_and(|(q, _)| q == &query);
         if !same_query {
             self.search_tab = SearchTab::All;
         }
@@ -2638,7 +2635,7 @@ impl MusicApp {
         for (i, frac) in [0.25_f64, 0.55, 0.85].iter().enumerate() {
             if let Some(id) = ids.get(i) {
                 let start =
-                    Instant::now() - std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac);
+                    Instant::now().checked_sub(std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac)).unwrap();
                 self.downloads.insert(id.clone(), start);
                 self.lib
                     .cache
@@ -3021,7 +3018,7 @@ impl MusicApp {
         let idx = self.menu_actions.len() as i64;
         let pending = self.pending.clone();
         self.context.push(MenuItem::action(label, move || {
-            pending.store(idx, Ordering::SeqCst)
+            pending.store(idx, Ordering::SeqCst);
         }));
         self.menu_actions.push(action);
     }
@@ -3080,7 +3077,7 @@ impl MusicApp {
         }
         self.push_menu(
             if liked { "Unlike" } else { "Like" },
-            Action::ToggleLike(track.clone()),
+            Action::ToggleLike(track),
         );
 
         let p = self.clamp_menu_origin(self.mouse);
@@ -3262,9 +3259,7 @@ impl MusicApp {
     /// networking disabled for a headless render). Returns whether it ran.
     fn maybe_prefetch(&mut self) -> bool {
         let stable = self
-            .force_metered
-            .map(|m| !m)
-            .unwrap_or_else(crate::net::connection_is_stable);
+            .force_metered.map_or_else(crate::net::connection_is_stable, |m| !m);
         if !self.allow_network || !stable {
             return false;
         }
@@ -3300,7 +3295,7 @@ impl MusicApp {
                     .request(meta);
             }
             // Warm the next track's album metadata + cover.
-            let album_id = track.album_id.clone();
+            let album_id = track.album_id;
             self.ensure_album(&album_id);
         }
         true
@@ -3318,8 +3313,7 @@ impl MusicApp {
         static NOCACHE: OnceLock<bool> = OnceLock::new();
         let nocache = *NOCACHE.get_or_init(|| {
             std::env::var("QOS_MUSIC_NOCACHE")
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
+                .is_ok_and(|v| !v.is_empty())
         });
         if !nocache
             && let Some((cached_q, res)) = &self.search_cache
@@ -3403,13 +3397,13 @@ fn draw_text(
 /// preceding text conveys nothing and, in a too-narrow column, would spill past
 /// its bounds into the neighbouring UI.
 fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w: f64) -> String {
-    if tr.measure_weighted(text, size, None, weight).0 as f64 <= max_w {
+    if f64::from(tr.measure_weighted(text, size, None, weight).0) <= max_w {
         return text.to_string();
     }
     let mut s = String::new();
     for ch in text.chars() {
         let cand = format!("{s}{ch}\u{2026}");
-        if tr.measure_weighted(&cand, size, None, weight).0 as f64 > max_w {
+        if f64::from(tr.measure_weighted(&cand, size, None, weight).0) > max_w {
             break;
         }
         s.push(ch);
@@ -3433,7 +3427,7 @@ fn is_live_track(track_id: &str) -> bool {
     track_id.starts_with(LIVE_TRACK_PREFIX)
 }
 
-/// Whether an id looks like a real YouTube channel id (artist page fetchable).
+/// Whether an id looks like a real `YouTube` channel id (artist page fetchable).
 fn is_live_id(id: &str) -> bool {
     id.starts_with("UC")
 }
@@ -3514,8 +3508,7 @@ fn seed_rng() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x1234_5678);
+        .map_or(0x1234_5678, |d| d.as_nanos() as u64);
     nanos ^ 0x9E37_79B9_7F4A_7C15
 }
 
@@ -3533,7 +3526,7 @@ fn slug(s: &str) -> String {
 }
 
 /// Convert a real search hit into a library-mergeable [`LiveTrack`], minting
-/// stable ids where YouTube didn't supply them.
+/// stable ids where `YouTube` didn't supply them.
 fn hit_to_live(hit: &TrackHit) -> LiveTrack {
     let artist_id = hit
         .artist_id

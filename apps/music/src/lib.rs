@@ -8,11 +8,11 @@
 //!   user's devices, with the mutation helpers apps/actions dispatch through.
 //! - [`backend`] — the swappable YouTube-Music data source
 //!   ([`backend::MusicBackend`]): an offline sample impl (default) and a real
-//!   rustypipe impl (`live` feature). PoToken is a seam ([`backend::potoken`]).
+//!   rustypipe impl (`live` feature). `PoToken` is a seam ([`backend::potoken`]).
 //! - [`stream`] — the non-blocking worker driving [`backend`] off the UI thread.
 //! - [`source`] — legacy Piped/Invidious endpoint (`streaming` feature),
 //!   superseded by [`backend`]/`live`.
-//! - [`audio`] — GStreamer `playbin` output + live position query (`audio`
+//! - [`audio`] — `GStreamer` `playbin` output + live position query (`audio`
 //!   feature).
 //! - [`lyrics`] — LRC parsing + a bundled sample library, plus a feature-gated
 //!   async lrclib fetch worker (`lyrics` feature).

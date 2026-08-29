@@ -98,11 +98,10 @@ pub fn app_root() -> Box<dyn ui::widget::Widget> {
     let mut store = app::SoftwareStore::with_worker(probe, worker);
 
     // `.flatpakref` handler: opening one drives the install flow for it.
-    if let Some(path) = flatpakref::ref_path_from_args(&args) {
-        if let Some(r) = flatpakref::FlatpakRef::from_path(&path) {
+    if let Some(path) = flatpakref::ref_path_from_args(&args)
+        && let Some(r) = flatpakref::FlatpakRef::from_path(&path) {
             store.open_flatpakref(r);
         }
-    }
 
     if is_shots {
         store.apply_shot_view_env();

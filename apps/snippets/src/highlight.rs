@@ -68,14 +68,13 @@ pub struct Span {
 /// expand-variables affordance reads the same everywhere.
 pub fn highlight_line(line: &str, lang: Language) -> Vec<Span> {
     // Comment lines short-circuit: the whole line is one comment span.
-    if let Some(prefix) = comment_prefix(lang) {
-        if line.trim_start().starts_with(prefix) {
+    if let Some(prefix) = comment_prefix(lang)
+        && line.trim_start().starts_with(prefix) {
             return vec![Span {
                 text: line.to_string(),
                 kind: TokenKind::Comment,
             }];
         }
-    }
 
     let mut spans = lex(line, lang);
     // Merge adjacent same-kind spans so the draw loop emits fewer runs.
@@ -269,8 +268,8 @@ fn lex(line: &str, lang: Language) -> Vec<Span> {
         let c = chars[i];
 
         // ${placeholder}
-        if c == '$' && i + 1 < chars.len() && chars[i + 1] == '{' {
-            if let Some(end) = find_char(&chars, i + 2, '}') {
+        if c == '$' && i + 1 < chars.len() && chars[i + 1] == '{'
+            && let Some(end) = find_char(&chars, i + 2, '}') {
                 let text: String = chars[i..=end].iter().collect();
                 spans.push(Span {
                     text,
@@ -279,7 +278,6 @@ fn lex(line: &str, lang: Language) -> Vec<Span> {
                 i = end + 1;
                 continue;
             }
-        }
 
         // string literal
         if c == '"' || c == '\'' || c == '`' {
@@ -363,12 +361,11 @@ fn find_char(chars: &[char], from: usize, target: char) -> Option<usize> {
 fn coalesce(spans: &mut Vec<Span>) {
     let mut out: Vec<Span> = Vec::with_capacity(spans.len());
     for s in spans.drain(..) {
-        if let Some(last) = out.last_mut() {
-            if last.kind == s.kind {
+        if let Some(last) = out.last_mut()
+            && last.kind == s.kind {
                 last.text.push_str(&s.text);
                 continue;
             }
-        }
         out.push(s);
     }
     *spans = out;

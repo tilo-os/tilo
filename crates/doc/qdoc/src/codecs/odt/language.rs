@@ -32,7 +32,7 @@ fn parse_default_language(styles_xml: &[u8]) -> Option<String> {
             Ok(Event::End(e)) if e.name().as_ref() == b"style:default-style" => {
                 in_para_default = false;
             }
-            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+            Ok(Event::Start(e) | Event::Empty(e))
                 if in_para_default && e.name().as_ref() == b"style:text-properties" =>
             {
                 let lang = attr(&e, b"fo:language");
@@ -53,7 +53,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
 }
 
 /// Splice the document default language into `styles_xml`'s paragraph `style:default-style`,
@@ -136,19 +136,16 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
         .find("<office:automatic-styles")
         .or_else(|| s.find("<office:master-styles"))
         .or_else(|| s.rfind("</office:document-styles>"));
-    match at {
-        Some(pos) => {
-            let mut out = String::with_capacity(s.len() + section.len());
-            out.push_str(&s[..pos]);
-            out.push_str(&section);
-            out.push_str(&s[pos..]);
-            out.into_bytes()
-        }
-        None => {
-            let mut out = s;
-            out.push_str(&section);
-            out.into_bytes()
-        }
+    if let Some(pos) = at {
+        let mut out = String::with_capacity(s.len() + section.len());
+        out.push_str(&s[..pos]);
+        out.push_str(&section);
+        out.push_str(&s[pos..]);
+        out.into_bytes()
+    } else {
+        let mut out = s;
+        out.push_str(&section);
+        out.into_bytes()
     }
 }
 
@@ -164,9 +161,9 @@ fn find_para_default_style(s: &str) -> Option<(usize, usize)> {
             s.as_bytes().get(after_name),
             Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
         );
-        let gt = match s[start..].find('>') {
-            Some(g) => start + g,
-            None => return None,
+        let gt = {
+            let g = s[start..].find('>')?;
+            start + g
         };
         let open_tag = &s[start..=gt];
         if is_delim && open_tag.contains(r#"style:family="paragraph""#) {

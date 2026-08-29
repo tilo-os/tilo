@@ -28,10 +28,10 @@ impl Default for EditorProvider {
 }
 
 impl SearchProvider for EditorProvider {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "editor"
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Editor"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {

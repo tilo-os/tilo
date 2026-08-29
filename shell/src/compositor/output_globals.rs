@@ -71,7 +71,7 @@ pub fn plan(advertised: &[(OutputId, AdvertisedState)], desired: &[Output]) -> V
         match advertised.iter().find(|(id, _)| *id == want.id) {
             None => changes.push(GlobalChange::Create(want.id)),
             Some((_, have)) if *have != AdvertisedState::from(want) => {
-                changes.push(GlobalChange::Update(want.id))
+                changes.push(GlobalChange::Update(want.id));
             }
             Some(_) => {}
         }
@@ -172,7 +172,7 @@ impl OutputGlobals {
                     handle.change_current_state(
                         Some(mode),
                         Some(Transform::Normal),
-                        Some(Scale::Fractional(out.scale as f64)),
+                        Some(Scale::Fractional(f64::from(out.scale))),
                         Some(out.position.into()),
                     );
                     handle.set_preferred(mode);
@@ -204,7 +204,7 @@ impl OutputGlobals {
                     live.handle.change_current_state(
                         Some(mode),
                         Some(Transform::Normal),
-                        Some(Scale::Fractional(out.scale as f64)),
+                        Some(Scale::Fractional(f64::from(out.scale))),
                         Some(out.position.into()),
                     );
                     live.handle.set_preferred(mode);

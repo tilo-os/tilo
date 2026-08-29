@@ -25,7 +25,7 @@
 //!
 //! ## Why not [`crate::widget::CommandPalette`]?
 //!
-//! CommandPalette is a full-screen search affordance with a filter
+//! `CommandPalette` is a full-screen search affordance with a filter
 //! strip, kbd-chip footer, and a docked input row. The slash menu is
 //! a tiny anchored popover with seven rows and no chrome. Wrapping
 //! the palette would mean working around its layout primitives and
@@ -298,7 +298,7 @@ impl SlashMenu {
     /// Handle a winit `WindowEvent`. Returns `true` if the event was
     /// consumed (so the parent can stop propagating it).
     ///
-    /// This is the SlashMenu's "active" event handler — wired into
+    /// This is the `SlashMenu`'s "active" event handler — wired into
     /// [`BlockEditor::handle_event`] which redirects keystrokes here
     /// whenever the menu is visible. The widget does NOT register
     /// itself in the `Widget` trait's `handle_event` chain because it
@@ -427,7 +427,7 @@ impl SlashMenu {
                     &hl,
                 );
             }
-            let text_y = row_rect.y0 + (row_rect.height() - font_size as f64) / 2.0;
+            let text_y = row_rect.y0 + (row_rect.height() - f64::from(font_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 row.label,
@@ -439,7 +439,7 @@ impl SlashMenu {
         }
         // Empty-state hint when the filter matches nothing.
         if self.visible.is_empty() {
-            let y = rect.y0 + PADDING_Y + (ROW_HEIGHT - font_size as f64) / 2.0;
+            let y = rect.y0 + PADDING_Y + (ROW_HEIGHT - f64::from(font_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -466,7 +466,7 @@ impl Widget for SlashMenu {
     ) -> NodeId {
         // Leaf with zero size — the popover lives in overlay space.
         let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -494,7 +494,7 @@ impl Widget for SlashMenu {
     ) {
         // Routing is owned by the parent — see `handle_key`.
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SlashMenu"
     }
     fn test_id(&self) -> Option<&str> {

@@ -1,4 +1,4 @@
-//! Sandboxing for **untrusted HTML email** rendered in the reader's WebView.
+//! Sandboxing for **untrusted HTML email** rendered in the reader's `WebView`.
 //!
 //! An email's `text/html` part is hostile input: it can carry tracking pixels,
 //! remote images that phone home the instant the mail is opened, web fonts that
@@ -23,7 +23,7 @@
 //! (via [`data_url`]) so it has an opaque, unique origin with no ambient
 //! cookies/storage — a second layer of isolation on top of the CSP.
 //!
-//! [`content_filter_json`] additionally emits a WebKit content-blocker rule set
+//! [`content_filter_json`] additionally emits a `WebKit` content-blocker rule set
 //! that blocks remote sub-resource loads at the network layer, for engines that
 //! honour it (`SetContentFilter`); it mirrors the CSP so the two agree.
 
@@ -47,8 +47,6 @@ word-break:break-word;overflow-wrap:anywhere}}\
 img{{max-width:100%;height:auto}}a{{color:#7aa2ff}}\
 blockquote{{border-left:3px solid #3a3f4b;margin:0;padding-left:12px;color:#a9afbd}}\
 </style></head><body>{html}</body></html>",
-        csp = csp,
-        html = html,
     )
 }
 
@@ -93,7 +91,7 @@ pub fn data_url(html: &str, block_remote: bool) -> String {
     )
 }
 
-/// A WebKit content-blocker rule set (JSON) that blocks remote sub-resource
+/// A `WebKit` content-blocker rule set (JSON) that blocks remote sub-resource
 /// loads at the network layer, mirroring the CSP. Handed to engines via
 /// `SetContentFilter`; engines without native filtering ignore it and rely on
 /// the CSP alone. When `block_remote` is false, remote *images* are allowed
@@ -114,9 +112,9 @@ fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
+        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[((n >> 18) & 63) as usize] as char);
         out.push(TABLE[((n >> 12) & 63) as usize] as char);

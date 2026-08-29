@@ -83,7 +83,7 @@ impl WeatherService {
         loop {
             match self.rx.try_recv() {
                 Ok(r) => out.push(r),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         out
@@ -185,6 +185,5 @@ async fn fetch(client: Option<&reqwest::Client>, url: &str) -> Result<String, St
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }

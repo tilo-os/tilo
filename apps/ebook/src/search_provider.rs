@@ -80,7 +80,7 @@ impl BookSearchProvider {
 }
 
 impl SearchProvider for BookSearchProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Books"
     }
 

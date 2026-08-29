@@ -115,7 +115,7 @@ pub struct PowerService {
 }
 
 impl PowerService {
-    /// Connect to logind + UPower on a shared system-bus connection and take the delegate lock.
+    /// Connect to logind + `UPower` on a shared system-bus connection and take the delegate lock.
     /// Errors if the system bus / daemons are unreachable — the caller (the compositor)
     /// downgrades that to a warning and keeps running with the pure policy only.
     pub async fn connect(
@@ -178,7 +178,7 @@ impl PowerService {
                     self.mirror_inhibit_registry().await;
                     self.poll_lid().await;
                     ticks = ticks.wrapping_add(1);
-                    if ticks % BATTERY_POLL_EVERY == 0 {
+                    if ticks.is_multiple_of(BATTERY_POLL_EVERY) {
                         self.poll_battery().await;
                     }
                 }

@@ -870,7 +870,7 @@ mod tests {
     fn a_plan_longer_than_a_sentence_is_refused_rather_than_truncated() {
         let mut revealed = Revealed::new();
         revealed.reveal("a#b");
-        let steps: Vec<Value> = (0..STEPS + 1)
+        let steps: Vec<Value> = (0..=STEPS)
             .map(|_| json!({"operation": "a#b", "argument": null}))
             .collect();
         let err = read_plan(

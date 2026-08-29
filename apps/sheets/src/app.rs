@@ -1,5 +1,5 @@
 //! Root widget for the Sheets app. Owns the [`Grid`] and the surrounding
-//! chrome — a compact menu bar (File / Format menus + AutoSum), a
+//! chrome — a compact menu bar (File / Format menus + `AutoSum`), a
 //! prominent type/format indicator, a name-box + formula bar, and a bottom
 //! sheet-tab strip + status line — all hand-drawn into the scene.
 //!
@@ -301,6 +301,12 @@ struct ReloadCache {
     values: HashMap<Addr, CellValue>,
 }
 
+impl Default for SheetsApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SheetsApp {
     pub fn new() -> Self {
         Self {
@@ -553,15 +559,12 @@ impl SheetsApp {
     /// otherwise open a blank sheet (a real launch never fabricates sample
     /// data; only the headless shots/test path seeds the sample budget).
     fn initialize(&mut self, doc: &mut AutoCommit) {
-        if self.persist {
-            if let Some(path) = workbook_path() {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    if let Ok(mut saved) = AutoCommit::load(&bytes) {
+        if self.persist
+            && let Some(path) = workbook_path()
+                && let Ok(bytes) = std::fs::read(&path)
+                    && let Ok(mut saved) = AutoCommit::load(&bytes) {
                         let _ = doc.merge(&mut saved);
                     }
-                }
-            }
-        }
         if SheetsDoc::is_empty(doc) {
             if self.seed_sample_data {
                 seed_workbook(doc);
@@ -623,12 +626,11 @@ impl SheetsApp {
     fn reload(&mut self, doc: &mut AutoCommit) {
         let heads = doc.get_heads();
         let sheet = SheetsDoc::active_index(doc);
-        if let Some(c) = &self.cache {
-            if c.sheet == sheet && c.heads == heads {
+        if let Some(c) = &self.cache
+            && c.sheet == sheet && c.heads == heads {
                 self.active_sheet = sheet;
                 return;
             }
-        }
 
         self.active_sheet = sheet;
         self.sheet_names = SheetsDoc::sheet_names(doc);
@@ -645,11 +647,10 @@ impl SheetsApp {
             if snap.fmt.contains_key(addr) {
                 continue; // user set it explicitly
             }
-            if let Some(body) = raw.strip_prefix('=') {
-                if let Some(inferred) = formula::infer_result_format(body, &snap.fmt) {
+            if let Some(body) = raw.strip_prefix('=')
+                && let Some(inferred) = formula::infer_result_format(body, &snap.fmt) {
                     fmt.insert(*addr, inferred);
                 }
-            }
         }
 
         self.cache = Some(ReloadCache {
@@ -800,13 +801,13 @@ impl SheetsApp {
             // `take` so a cut is one-shot; a plain copy is re-stored below.
             let cb = self.clipboard.take().unwrap();
             let rows = cb.cells.len() as u32;
-            let cols = cb.cells.first().map(Vec::len).unwrap_or(0) as u32;
+            let cols = cb.cells.first().map_or(0, Vec::len) as u32;
             if rows == 0 || cols == 0 {
                 self.clipboard = Some(cb);
                 return;
             }
-            let dc = target.0 as i64 - cb.src.0 as i64;
-            let dr = target.1 as i64 - cb.src.1 as i64;
+            let dc = i64::from(target.0) - i64::from(cb.src.0);
+            let dr = i64::from(target.1) - i64::from(cb.src.1);
             // Tile the block to fill the target selection when it is a whole
             // multiple of the block in both axes (Excel's "paste into a range").
             // A cut never tiles — a move places its block exactly once.
@@ -854,8 +855,8 @@ impl SheetsApp {
                             } else {
                                 formula::offset_refs(
                                     raw,
-                                    dc + (tc * cols) as i64,
-                                    dr + (tr * rows) as i64,
+                                    dc + i64::from(tc * cols),
+                                    dr + i64::from(tr * rows),
                                 )
                             };
                             writes.push((addr, out_raw, Some(*fmt)));
@@ -914,7 +915,7 @@ impl SheetsApp {
         true
     }
 
-    /// AutoSum: scan upward from the active cell for a run of numeric cells
+    /// `AutoSum`: scan upward from the active cell for a run of numeric cells
     /// and write `=SUM(top:above)` into the active cell.
     fn auto_sum(&mut self, doc: &mut AutoCommit) {
         let (c, r) = self.grid.active();
@@ -923,7 +924,7 @@ impl SheetsApp {
             return;
         }
         let mut top = r;
-        let mut rr = r as i64 - 1;
+        let mut rr = i64::from(r) - 1;
         while rr >= 0 {
             let raw = SheetsDoc::cell_raw(doc, self.active_sheet, (c, rr as u32));
             let is_num = raw.trim().parse::<f64>().is_ok() || raw.starts_with('=');
@@ -968,7 +969,7 @@ impl SheetsApp {
             let src_raw = self.grid.cell_raw_at((c, r0));
             let src_fmt = self.grid.cell_fmt_at((c, r0));
             for r in (r0 + 1)..=r1 {
-                let out_raw = formula::offset_refs(&src_raw, 0, (r - r0) as i64);
+                let out_raw = formula::offset_refs(&src_raw, 0, i64::from(r - r0));
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
@@ -993,7 +994,7 @@ impl SheetsApp {
             let src_raw = self.grid.cell_raw_at((c0, r));
             let src_fmt = self.grid.cell_fmt_at((c0, r));
             for c in (c0 + 1)..=c1 {
-                let out_raw = formula::offset_refs(&src_raw, (c - c0) as i64, 0);
+                let out_raw = formula::offset_refs(&src_raw, i64::from(c - c0), 0);
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
@@ -1106,13 +1107,11 @@ impl SheetsApp {
         // Re-apply format propagation so exported computed cells carry units.
         let mut fmt = snap.fmt.clone();
         for (addr, raw) in &snap.raw {
-            if !snap.fmt.contains_key(addr) {
-                if let Some(body) = raw.strip_prefix('=') {
-                    if let Some(inferred) = formula::infer_result_format(body, &snap.fmt) {
+            if !snap.fmt.contains_key(addr)
+                && let Some(body) = raw.strip_prefix('=')
+                    && let Some(inferred) = formula::infer_result_format(body, &snap.fmt) {
                         fmt.insert(*addr, inferred);
                     }
-                }
-            }
         }
         crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values)
     }
@@ -1143,7 +1142,7 @@ impl SheetsApp {
         }
         let csv = crate::csv::to_csv(&rows);
         match std::fs::write(path, csv) {
-            Ok(_) => self.status = format!("Exported {}", file_label(path)),
+            Ok(()) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("CSV export failed: {e}"),
         }
     }
@@ -1156,7 +1155,7 @@ impl SheetsApp {
     fn export_xlsx_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let table = self.active_table(doc);
         match crate::xlsx::write_xlsx(path, std::slice::from_ref(&table)) {
-            Ok(_) => self.status = format!("Exported {}", file_label(path)),
+            Ok(()) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("Excel export failed: {e}"),
         }
     }
@@ -1169,7 +1168,7 @@ impl SheetsApp {
     fn export_ods_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let table = self.active_table(doc);
         match crate::ods::write_ods(path, std::slice::from_ref(&table)) {
-            Ok(_) => self.status = format!("Exported {}", file_label(path)),
+            Ok(()) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("Calc export failed: {e}"),
         }
     }
@@ -1506,7 +1505,6 @@ impl SheetsApp {
             "Inserted column {}",
             crate::model::addr_to_a1(c0, 0)
                 .trim_end_matches(|ch: char| ch.is_ascii_digit())
-                .to_string()
         );
     }
 
@@ -1518,7 +1516,6 @@ impl SheetsApp {
             "Deleted column {}",
             crate::model::addr_to_a1(c0, 0)
                 .trim_end_matches(|ch: char| ch.is_ascii_digit())
-                .to_string()
         );
     }
 
@@ -1687,8 +1684,7 @@ impl SheetsApp {
             .tab_rects
             .iter()
             .find(|(_, i)| *i == idx)
-            .map(|(r, _)| *r)
-            .unwrap_or(self.add_tab_rect);
+            .map_or(self.add_tab_rect, |(r, _)| *r);
 
         let actions = [
             TabAction::Rename,
@@ -1864,7 +1860,7 @@ impl SheetsApp {
         accent: bool,
     ) {
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
         let bg = if active {
             colors.accent[5]
         } else if accent {
@@ -1886,8 +1882,8 @@ impl SheetsApp {
         );
         let size = theme.tokens.typography.scale.sm;
         let (tw, _) = tr.measure(label, size, None);
-        let tx = rect.center().x - tw as f64 / 2.0;
-        let tyy = rect.y0 + (rect.height() - size as f64) / 2.0;
+        let tx = rect.center().x - f64::from(tw) / 2.0;
+        let tyy = rect.y0 + (rect.height() - f64::from(size)) / 2.0;
         let color = if active {
             Color::WHITE
         } else {
@@ -1962,7 +1958,7 @@ impl SheetsApp {
         );
         let name_box = self.name_box_rect;
         let nb_editing = self.name_box_edit.is_some();
-        let nb_shape = RoundedRect::from_rect(name_box, theme.tokens.radii.sm as f64);
+        let nb_shape = RoundedRect::from_rect(name_box, f64::from(theme.tokens.radii.sm));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1983,7 +1979,7 @@ impl SheetsApp {
         );
         let sm = theme.tokens.typography.scale.sm;
         let nb_text_x = name_box.x0 + 8.0;
-        let nb_text_y = name_box.y0 + (name_box.height() - sm as f64) / 2.0;
+        let nb_text_y = name_box.y0 + (name_box.height() - f64::from(sm)) / 2.0;
         if let Some(nb) = &self.name_box_edit {
             let text: String = nb.chars.iter().collect();
             // The pre-filled reference draws fully selected until the first edit.
@@ -1997,7 +1993,7 @@ impl SheetsApp {
                     &Rect::new(
                         nb_text_x,
                         name_box.y0 + 4.0,
-                        nb_text_x + tw as f64,
+                        nb_text_x + f64::from(tw),
                         name_box.y1 - 4.0,
                     ),
                 );
@@ -2013,7 +2009,7 @@ impl SheetsApp {
             );
             let prefix: String = nb.chars[..nb.caret.min(nb.chars.len())].iter().collect();
             let (cw, _) = tr.measure(&prefix, sm, None);
-            let cx = nb_text_x + cw as f64;
+            let cx = nb_text_x + f64::from(cw);
             scene.stroke(
                 &Stroke::new(1.5),
                 transform,
@@ -2049,7 +2045,7 @@ impl SheetsApp {
             false,
         );
         let ff_shape =
-            RoundedRect::from_rect(self.formula_field_rect, theme.tokens.radii.sm as f64);
+            RoundedRect::from_rect(self.formula_field_rect, f64::from(theme.tokens.radii.sm));
         let editing = self.grid.is_editing();
         scene.fill(
             Fill::NonZero,
@@ -2079,7 +2075,7 @@ impl SheetsApp {
         self.formula_char_x = char_boundaries(tr, &content, base, text_x0);
         let origin = Point::new(
             text_x0,
-            self.formula_field_rect.y0 + (self.formula_field_rect.height() - base as f64) / 2.0,
+            self.formula_field_rect.y0 + (self.formula_field_rect.height() - f64::from(base)) / 2.0,
         );
         scene.push_layer(
             Fill::NonZero,
@@ -2089,8 +2085,8 @@ impl SheetsApp {
             &ff_shape,
         );
         // Selection highlight behind the text (drawn whenever editing).
-        if editing {
-            if let Some((s, e)) = self.grid.edit_selection() {
+        if editing
+            && let Some((s, e)) = self.grid.edit_selection() {
                 let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
                 let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
                 let sel_rect = Rect::new(
@@ -2107,7 +2103,6 @@ impl SheetsApp {
                     &sel_rect,
                 );
             }
-        }
         // Formulas (whether being edited OR merely selected) tint each cell
         // reference to match the coloured outlines on the grid; plain values
         // draw in the body colour.
@@ -2133,8 +2128,8 @@ impl SheetsApp {
             );
         }
         // Caret in the formula bar while editing.
-        if editing {
-            if let Some(caret) = self.grid.edit_caret() {
+        if editing
+            && let Some(caret) = self.grid.edit_caret() {
                 let cx = self.formula_char_x.get(caret).copied().unwrap_or(text_x0);
                 scene.stroke(
                     &Stroke::new(1.5),
@@ -2147,7 +2142,6 @@ impl SheetsApp {
                     ),
                 );
             }
-        }
         scene.pop_layer();
 
         // Bottom strip: sheet tabs + status.
@@ -2170,7 +2164,7 @@ impl SheetsApp {
         );
         for (rect, idx) in &self.tab_rects {
             let active = *idx == self.active_sheet;
-            let shape = RoundedRect::from_rect(*rect, theme.tokens.radii.sm as f64);
+            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
             let bg = if active {
                 colors.surfaces.base
             } else {
@@ -2197,7 +2191,7 @@ impl SheetsApp {
             }
             let name = self.sheet_names.get(*idx).cloned().unwrap_or_default();
             let (tw, _) = tr.measure(&name, sm, None);
-            let tx = rect.center().x - tw as f64 / 2.0;
+            let tx = rect.center().x - f64::from(tw) / 2.0;
             let color = if active {
                 colors.text_primary
             } else {
@@ -2208,7 +2202,7 @@ impl SheetsApp {
                 &name,
                 sm,
                 color,
-                transform * Affine::translate((tx, rect.y0 + (rect.height() - sm as f64) / 2.0)),
+                transform * Affine::translate((tx, rect.y0 + (rect.height() - f64::from(sm)) / 2.0)),
                 None,
                 if active {
                     TextWeight::Semibold
@@ -2217,7 +2211,7 @@ impl SheetsApp {
                 },
             );
         }
-        let add_shape = RoundedRect::from_rect(self.add_tab_rect, theme.tokens.radii.sm as f64);
+        let add_shape = RoundedRect::from_rect(self.add_tab_rect, f64::from(theme.tokens.radii.sm));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2311,7 +2305,7 @@ impl SheetsApp {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(self.dropdown_rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.dropdown_rect, f64::from(theme.tokens.radii.md));
         // Subtle shadow then panel.
         scene.fill(
             Fill::NonZero,
@@ -2320,7 +2314,7 @@ impl SheetsApp {
             None,
             &RoundedRect::from_rect(
                 self.dropdown_rect + vello::kurbo::Vec2::new(0.0, 3.0),
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
             ),
         );
         // Solid raised base first, then the overlay tint — keeps the panel
@@ -2356,7 +2350,7 @@ impl SheetsApp {
                 _ => false,
             };
             if hovered || matches_active {
-                let rs = RoundedRect::from_rect(row.rect, theme.tokens.radii.sm as f64);
+                let rs = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
                 let bg = if hovered {
                     colors.accent[5].with_alpha_factor(0.22)
                 } else {
@@ -2373,7 +2367,7 @@ impl SheetsApp {
                 transform
                     * Affine::translate((
                         row.rect.x0 + 10.0,
-                        row.rect.y0 + (row.rect.height() - sm as f64) / 2.0,
+                        row.rect.y0 + (row.rect.height() - f64::from(sm)) / 2.0,
                     )),
                 None,
             );
@@ -2399,7 +2393,7 @@ impl SheetsApp {
             None,
             &self.rect,
         );
-        let shape = RoundedRect::from_rect(self.panel_rect, theme.tokens.radii.lg as f64);
+        let shape = RoundedRect::from_rect(self.panel_rect, f64::from(theme.tokens.radii.lg));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2455,7 +2449,7 @@ impl SheetsApp {
         // Chips.
         for chip in &self.setting_chips {
             let (label, selected) = self.chip_label_and_state(chip.kind);
-            let shape = RoundedRect::from_rect(chip.rect, theme.tokens.radii.sm as f64);
+            let shape = RoundedRect::from_rect(chip.rect, f64::from(theme.tokens.radii.sm));
             let bg = if selected {
                 colors.accent[5].with_alpha_factor(0.85)
             } else {
@@ -2474,8 +2468,8 @@ impl SheetsApp {
                 &shape,
             );
             let (tw, _) = tr.measure(&label, sm, None);
-            let tx = chip.rect.center().x - tw as f64 / 2.0;
-            let ty = chip.rect.y0 + (chip.rect.height() - sm as f64) / 2.0;
+            let tx = chip.rect.center().x - f64::from(tw) / 2.0;
+            let ty = chip.rect.y0 + (chip.rect.height() - f64::from(sm)) / 2.0;
             let color = if selected {
                 Color::WHITE
             } else {
@@ -2546,7 +2540,7 @@ impl SheetsApp {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(self.tab_menu_rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(self.tab_menu_rect, f64::from(theme.tokens.radii.md));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2554,7 +2548,7 @@ impl SheetsApp {
             None,
             &RoundedRect::from_rect(
                 self.tab_menu_rect + vello::kurbo::Vec2::new(0.0, 3.0),
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
             ),
         );
         scene.fill(
@@ -2582,7 +2576,7 @@ impl SheetsApp {
         let sm = theme.tokens.typography.scale.sm;
         for (rect, act) in &self.tab_menu_rows {
             if rect.contains(self.last_mouse) {
-                let rs = RoundedRect::from_rect(*rect, theme.tokens.radii.sm as f64);
+                let rs = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -2604,7 +2598,7 @@ impl SheetsApp {
                 transform
                     * Affine::translate((
                         rect.x0 + 10.0,
-                        rect.y0 + (rect.height() - sm as f64) / 2.0,
+                        rect.y0 + (rect.height() - f64::from(sm)) / 2.0,
                     )),
                 None,
             );
@@ -2625,7 +2619,7 @@ impl SheetsApp {
             .tab_menu_target
             .and_then(|t| self.sheet_colors.get(t).copied().flatten());
         for (rect, color_opt) in &self.tab_menu_swatches {
-            let shape = RoundedRect::from_rect(*rect, theme.tokens.radii.sm as f64);
+            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
             match color_opt {
                 None => {
                     scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
@@ -2685,13 +2679,13 @@ impl SheetsApp {
             return;
         };
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rn.rect, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(rn.rect, f64::from(theme.tokens.radii.sm));
         scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
         scene.stroke(&Stroke::new(2.0), transform, colors.accent[5], None, &shape);
         let sm = theme.tokens.typography.scale.sm;
         let text: String = rn.chars.iter().collect();
         let tx = rn.rect.x0 + 8.0;
-        let ty = rn.rect.y0 + (rn.rect.height() - sm as f64) / 2.0;
+        let ty = rn.rect.y0 + (rn.rect.height() - f64::from(sm)) / 2.0;
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
         tr.draw_text(
             scene,
@@ -2703,7 +2697,7 @@ impl SheetsApp {
         );
         let prefix: String = rn.chars[..rn.caret.min(rn.chars.len())].iter().collect();
         let (pw, _) = tr.measure(&prefix, sm, None);
-        let cx = tx + pw as f64;
+        let cx = tx + f64::from(pw);
         scene.stroke(
             &Stroke::new(1.5),
             transform,
@@ -2902,7 +2896,7 @@ fn workbook_path() -> Option<PathBuf> {
 fn sheet_name_from_path(path: &std::path::Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Imported".to_string())
 }
@@ -2919,7 +2913,7 @@ fn char_boundaries(tr: &mut TextRenderer, text: &str, size: f32, x0: f64) -> Vec
     for ch in &chars {
         prefix.push(*ch);
         let (w, _) = tr.measure(&prefix, size, None);
-        xs.push(x0 + w as f64);
+        xs.push(x0 + f64::from(w));
     }
     xs
 }
@@ -2943,9 +2937,7 @@ fn parse_ref_target(s: &str) -> Option<(Addr, Addr)> {
 /// A short, user-facing label for a path (its file name) for status messages.
 fn file_label(path: &std::path::Path) -> String {
     path.file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| path.display().to_string())
+        .and_then(|s| s.to_str()).map_or_else(|| path.display().to_string(), std::string::ToString::to_string)
 }
 
 impl Widget for SheetsApp {
@@ -2991,17 +2983,17 @@ impl Widget for SheetsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.relayout();
     }
@@ -3101,11 +3093,10 @@ impl Widget for SheetsApp {
 
     /// Switch to the sheet a chosen palette row identifies.
     fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(idx) = crate::search_provider::SheetSearchProvider::parse_action_id(action_id) {
-            if idx < self.sheet_names.len() {
+        if let Some(idx) = crate::search_provider::SheetSearchProvider::parse_action_id(action_id)
+            && idx < self.sheet_names.len() {
                 self.switch_sheet(doc, idx);
             }
-        }
     }
 
     fn handle_event(
@@ -3151,8 +3142,7 @@ impl Widget for SheetsApp {
                     let inside = self
                         .tab_rename
                         .as_ref()
-                        .map(|r| r.rect.contains(p))
-                        .unwrap_or(false);
+                        .is_some_and(|r| r.rect.contains(p));
                     if !inside {
                         self.commit_tab_rename(state);
                     }
@@ -3345,8 +3335,8 @@ impl Widget for SheetsApp {
             } => {
                 let p = self.last_mouse;
                 // Right-click on a sheet tab opens its context menu.
-                if self.tabs_rect.contains(p) {
-                    if let Some(idx) = self
+                if self.tabs_rect.contains(p)
+                    && let Some(idx) = self
                         .tab_rects
                         .iter()
                         .find(|(r, _)| r.contains(p))
@@ -3356,7 +3346,6 @@ impl Widget for SheetsApp {
                         self.dirty = true;
                         *handled = true;
                     }
-                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -3379,7 +3368,7 @@ impl Widget for SheetsApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (-(*x as f64) * 48.0, -(*y as f64) * 48.0),
+                    MouseScrollDelta::LineDelta(x, y) => (-f64::from(*x) * 48.0, -f64::from(*y) * 48.0),
                     MouseScrollDelta::PixelDelta(pos) => {
                         (-pos.x / scale_factor, -pos.y / scale_factor)
                     }
@@ -3414,24 +3403,21 @@ impl Widget for SheetsApp {
                 // Ctrl+K opens the command palette.
                 if let WindowEvent::KeyboardInput { event: ke, .. } = event {
                     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    if ke.state.is_pressed() && ctrl && !self.grid.is_editing() {
-                        if let winit::keyboard::Key::Character(c) = &ke.logical_key {
-                            if c.as_str().eq_ignore_ascii_case("k") {
+                    if ke.state.is_pressed() && ctrl && !self.grid.is_editing()
+                        && let winit::keyboard::Key::Character(c) = &ke.logical_key
+                            && c.as_str().eq_ignore_ascii_case("k") {
                                 self.open_command_palette();
                                 *handled = true;
                                 return;
                             }
-                        }
-                    }
                 }
 
                 // The Name box owns the keyboard while a Go-To entry is open.
                 if self.name_box_edit.is_some() {
-                    if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-                        if ke.state.is_pressed() {
+                    if let WindowEvent::KeyboardInput { event: ke, .. } = event
+                        && ke.state.is_pressed() {
                             self.name_box_key(ke, modifiers);
                         }
-                    }
                     self.dirty = true;
                     *handled = true;
                     return;
@@ -3439,19 +3425,18 @@ impl Widget for SheetsApp {
 
                 // An inline rename owns the keyboard while it is open.
                 if self.tab_rename.is_some() {
-                    if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-                        if ke.state.is_pressed() {
+                    if let WindowEvent::KeyboardInput { event: ke, .. } = event
+                        && ke.state.is_pressed() {
                             self.tab_rename_key(state, ke, modifiers);
                         }
-                    }
                     self.dirty = true;
                     *handled = true;
                     return;
                 }
 
                 // Escape closes any open overlay.
-                if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-                    if ke.state.is_pressed()
+                if let WindowEvent::KeyboardInput { event: ke, .. } = event
+                    && ke.state.is_pressed()
                         && matches!(
                             ke.logical_key,
                             winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
@@ -3467,14 +3452,13 @@ impl Widget for SheetsApp {
                         *handled = true;
                         return;
                     }
-                }
 
                 // Clipboard chords + select-all operate on the grid selection,
                 // so they are skipped while an in-cell edit owns the keyboard.
                 if let WindowEvent::KeyboardInput { event: ke, .. } = event {
                     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    if ke.state.is_pressed() && ctrl && !self.grid.is_editing() {
-                        if let winit::keyboard::Key::Character(c) = &ke.logical_key {
+                    if ke.state.is_pressed() && ctrl && !self.grid.is_editing()
+                        && let winit::keyboard::Key::Character(c) = &ke.logical_key {
                             match c.as_str() {
                                 "c" | "C" => {
                                     self.copy_selection(false);
@@ -3513,7 +3497,6 @@ impl Widget for SheetsApp {
                                 _ => {}
                             }
                         }
-                    }
                 }
 
                 // Clipboard + select-all chords while a cell/formula-bar edit
@@ -3521,8 +3504,8 @@ impl Widget for SheetsApp {
                 // (so Ctrl+V pastes text instead of inserting the letter 'v').
                 if let WindowEvent::KeyboardInput { event: ke, .. } = event {
                     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    if ke.state.is_pressed() && ctrl && self.grid.is_editing() {
-                        if let winit::keyboard::Key::Character(c) = &ke.logical_key {
+                    if ke.state.is_pressed() && ctrl && self.grid.is_editing()
+                        && let winit::keyboard::Key::Character(c) = &ke.logical_key {
                             match c.as_str() {
                                 "a" | "A" => {
                                     self.grid.select_all_edit();
@@ -3556,7 +3539,6 @@ impl Widget for SheetsApp {
                                 _ => {}
                             }
                         }
-                    }
                 }
 
                 let mut out = Vec::new();
@@ -3570,7 +3552,7 @@ impl Widget for SheetsApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SheetsApp"
     }
 
@@ -3675,8 +3657,7 @@ impl SheetsApp {
             .tab_rects
             .iter()
             .find(|(_, i)| *i == idx)
-            .map(|(r, _)| *r)
-            .unwrap_or(self.add_tab_rect);
+            .map_or(self.add_tab_rect, |(r, _)| *r);
         // Give the editor a little more room than the tab so a longer name fits.
         let right = (tab.x0 + 150.0).min(self.rect.x1 - 8.0).max(tab.x1);
         let rect = Rect::new(tab.x0, tab.y0, right, tab.y1);
@@ -3718,19 +3699,17 @@ impl SheetsApp {
                 self.tab_rename = None;
             }
             Key::Named(NamedKey::Backspace) => {
-                if let Some(r) = &mut self.tab_rename {
-                    if r.caret > 0 {
+                if let Some(r) = &mut self.tab_rename
+                    && r.caret > 0 {
                         r.chars.remove(r.caret - 1);
                         r.caret -= 1;
                     }
-                }
             }
             Key::Named(NamedKey::Delete) => {
-                if let Some(r) = &mut self.tab_rename {
-                    if r.caret < r.chars.len() {
+                if let Some(r) = &mut self.tab_rename
+                    && r.caret < r.chars.len() {
                         r.chars.remove(r.caret);
                     }
-                }
             }
             Key::Named(NamedKey::ArrowLeft) => {
                 if let Some(r) = &mut self.tab_rename {
@@ -3738,11 +3717,10 @@ impl SheetsApp {
                 }
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if let Some(r) = &mut self.tab_rename {
-                    if r.caret < r.chars.len() {
+                if let Some(r) = &mut self.tab_rename
+                    && r.caret < r.chars.len() {
                         r.caret += 1;
                     }
-                }
             }
             Key::Named(NamedKey::Home) => {
                 if let Some(r) = &mut self.tab_rename {
@@ -4415,7 +4393,7 @@ mod tests {
     fn copy_paste_preserves_value_and_format() {
         // Copy a currency cell into an empty one; the raw and the currency
         // format both come across, and it recomputes to the same number.
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((1, 1)); // B2 = 1200, currency
         app.copy_selection(false);
@@ -4434,7 +4412,7 @@ mod tests {
         // Copy E2 (`=SUM(B2:D2)`) and paste it over F3: the relative refs
         // shift by (+1 col, +1 row) to `=SUM(C3:E3)`, overwriting F3's seeded
         // AVERAGE, and the pasted formula recomputes against the new operands.
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2
         app.copy_selection(false);
@@ -4447,7 +4425,7 @@ mod tests {
 
     #[test]
     fn cut_moves_cell_and_clears_source() {
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((0, 0)); // A1 = "Category"
         app.copy_selection(true); // cut
@@ -4461,7 +4439,7 @@ mod tests {
     /// are *not* re-relativised (unlike a copy). The real cut→paste path.
     #[test]
     fn cut_paste_formula_does_not_relativize() {
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
         app.copy_selection(true); // cut
@@ -4481,7 +4459,7 @@ mod tests {
     /// real range-paste path.
     #[test]
     fn paste_tiles_a_formula_across_a_range() {
-        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
         app.copy_selection(false);
@@ -4736,9 +4714,9 @@ mod tests {
         eprintln!(
             "reload x{n}: memoised={:?} ({:.3}us/call)  forced={:?} ({:.3}us/call)",
             memo,
-            memo.as_secs_f64() * 1e6 / n as f64,
+            memo.as_secs_f64() * 1e6 / f64::from(n),
             forced,
-            forced.as_secs_f64() * 1e6 / n as f64,
+            forced.as_secs_f64() * 1e6 / f64::from(n),
         );
         assert!(
             memo < forced,
@@ -4983,7 +4961,7 @@ mod tests {
         assert!(!app.paste_tsv(&mut doc, target, ""));
     }
 
-    /// AutoSum on row 1 has nothing above it: it reports so and writes no formula.
+    /// `AutoSum` on row 1 has nothing above it: it reports so and writes no formula.
     #[test]
     fn auto_sum_guard_nothing_above() {
         let (mut app, mut doc) = seeded_app();
@@ -4993,7 +4971,7 @@ mod tests {
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "Category"); // unchanged
     }
 
-    /// AutoSum directly under a non-numeric cell finds no run and writes nothing.
+    /// `AutoSum` directly under a non-numeric cell finds no run and writes nothing.
     #[test]
     fn auto_sum_guard_no_numeric_run() {
         let (mut app, mut doc) = seeded_app();
@@ -5103,7 +5081,7 @@ mod tests {
         let before = SheetsDoc::sheet_count(&mut doc);
         app.io = Some((
             PendingIo::Import(Interchange::Csv),
-            crate::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
+            crate::portal::inject_for_test(PortalOutcome::Opened(path)),
         ));
         app.drain_io(&mut doc);
         assert_eq!(

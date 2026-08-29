@@ -85,7 +85,7 @@ impl IdentityPaths {
 #[derive(Debug, Error)]
 pub enum PersistError {
     /// I/O failure. Preserves the underlying `io::Error` so the
-    /// caller can inspect the ErrorKind.
+    /// caller can inspect the `ErrorKind`.
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     /// A secret file was reachable by users not entitled to it.

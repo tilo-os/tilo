@@ -37,7 +37,7 @@ impl LogindManager {
     }
 
     /// Build the proxy on an existing connection (lets the compositor share one system-bus
-    /// connection across logind + UPower).
+    /// connection across logind + `UPower`).
     pub async fn with_connection(conn: &Connection) -> zbus::Result<Self> {
         let proxy = zbus::Proxy::new(conn, DEST, PATH, IFACE).await?;
         Ok(Self { proxy })

@@ -17,7 +17,7 @@ use crate::fs::{BuildError, QosAppFs};
 use crate::store::BlobStore;
 
 /// Options for building a [`Mount`]. Defaults are conservative:
-/// read-only, no allow_other, auto-unmount on drop, no uid/gid remap.
+/// read-only, no `allow_other`, auto-unmount on drop, no uid/gid remap.
 #[derive(Clone, Debug, Default)]
 pub struct MountOptions {
     /// Allow other users to access the mount; requires

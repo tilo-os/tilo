@@ -1,4 +1,4 @@
-//! `.ods` (OpenDocument Spreadsheet) codec. Parses the ODF package's `content.xml`
+//! `.ods` (`OpenDocument` Spreadsheet) codec. Parses the ODF package's `content.xml`
 //! spreadsheet body into the CRDT [`Workbook`] model — sheets, positional cells,
 //! cell types, and **formulas** (`table:formula`, preserved verbatim) — and
 //! serializes a complete valid package back. Untrusted bytes enter only through
@@ -42,11 +42,10 @@ impl SheetProvider for OdsCodec {
         }
         // Preserve styles + other unmodeled parts so `table:style-name` refs resolve; content.xml is regenerated on export.
         for name in pkg.names() {
-            if is_preserved_part(name) {
-                if let Some(b) = pkg.get(name) {
+            if is_preserved_part(name)
+                && let Some(b) = pkg.get(name) {
                     wb.set_preserved(&format!("ods/part/{name}"), b);
                 }
-            }
         }
         Ok(())
     }
@@ -276,18 +275,16 @@ fn import_meta(xml: &[u8], wb: &mut Workbook) {
                 buf.clear();
             }
             Event::Text(t) => {
-                if cur.is_some() {
-                    if let Ok(txt) = t.xml10_content() {
+                if cur.is_some()
+                    && let Ok(txt) = t.xml10_content() {
                         buf.push_str(&txt);
                     }
-                }
             }
             Event::End(_) => {
-                if let Some(key) = cur.take() {
-                    if !buf.is_empty() {
+                if let Some(key) = cur.take()
+                    && !buf.is_empty() {
                         wb.set_prop(key, &buf);
                     }
-                }
             }
             Event::Eof => break,
             _ => {}
@@ -388,7 +385,7 @@ fn cell_xml(cell: &CellView) -> String {
         ),
         CellType::Empty => (String::new(), String::new()),
     };
-    format!(r#"<table:table-cell{value_attrs}{formula_attr}{style_attr}>{body}</table:table-cell>"#)
+    format!(r"<table:table-cell{value_attrs}{formula_attr}{style_attr}>{body}</table:table-cell>")
 }
 
 fn meta_xml(props: &BTreeMap<String, String>) -> String {

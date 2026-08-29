@@ -60,6 +60,12 @@ pub struct Gallery {
     structure_dirty: bool,
 }
 
+impl Default for Gallery {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Gallery {
     pub fn new() -> Self {
         Self {
@@ -179,7 +185,7 @@ impl Gallery {
         self.rows
             .iter()
             .find(|r| r.id() == self.selected)
-            .map(|r| r.name_rect())
+            .map(super::widgets::ThemeRow::name_rect)
     }
 }
 
@@ -228,7 +234,7 @@ impl Widget for Gallery {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
                     gap: Size {
-                        width: length(0.0),
+                        width: length(0.0_f32),
                         height: length(GAP),
                     },
                     padding: taffy::Rect {
@@ -246,7 +252,7 @@ impl Widget for Gallery {
                 &child_nodes,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -254,10 +260,10 @@ impl Widget for Gallery {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node) {
@@ -298,7 +304,7 @@ impl Widget for Gallery {
             &format!("{} themes", self.count),
             12.0,
             theme.text_dim,
-            self.rect.x0 + PAD as f64,
+            self.rect.x0 + f64::from(PAD),
             self.rect.y0 + 12.0,
             TextWeight::Semibold,
         );
@@ -393,8 +399,8 @@ impl Widget for Gallery {
 
         // Inline name editor gets first crack at pointer/keys so clicking the
         // name focuses it (rather than re-selecting the already-selected row).
-        if self.editor_present() {
-            if let Some(n) = self.name_input_node {
+        if self.editor_present()
+            && let Some(n) = self.name_input_node {
                 self.name_input.handle_event(
                     event,
                     scale,
@@ -414,7 +420,6 @@ impl Widget for Gallery {
                     return;
                 }
             }
-        }
 
         // Rows (selection + hover) last.
         if let Ok(children) = taffy.children(node) {
@@ -437,7 +442,7 @@ impl Widget for Gallery {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Gallery"
     }
     fn get_rect(&self) -> Rect {

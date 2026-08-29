@@ -86,15 +86,15 @@ impl<S: BlobStore> PageCache<S> {
         if offset >= blob_size || len == 0 {
             return Ok(Vec::new());
         }
-        let end = offset.saturating_add(len as u64).min(blob_size);
+        let end = offset.saturating_add(u64::from(len)).min(blob_size);
         let want = (end - offset) as usize;
         let mut out = Vec::with_capacity(want);
 
-        let first_page = offset / PAGE_SIZE as u64;
-        let last_page = (end - 1) / PAGE_SIZE as u64;
+        let first_page = offset / u64::from(PAGE_SIZE);
+        let last_page = (end - 1) / u64::from(PAGE_SIZE);
         for page in first_page..=last_page {
-            let page_start = page * PAGE_SIZE as u64;
-            let page_end = (page_start + PAGE_SIZE as u64).min(blob_size);
+            let page_start = page * u64::from(PAGE_SIZE);
+            let page_end = (page_start + u64::from(PAGE_SIZE)).min(blob_size);
             let page_bytes = self.fetch_page(hash, page, page_start, page_end)?;
             // Slice this page down to the requested window.
             let slice_start = offset.saturating_sub(page_start) as usize;

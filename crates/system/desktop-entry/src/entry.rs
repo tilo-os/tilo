@@ -152,7 +152,7 @@ impl DesktopEntry {
         Path::new(program)
             .file_name()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 }
 
@@ -246,9 +246,7 @@ fn parse_actions(groups: &BTreeMap<String, Group>, locales: &[String]) -> Vec<De
         if id.is_empty() {
             continue;
         }
-        let name = localised(group, "Name", locales)
-            .map(|s| unescape(&s))
-            .unwrap_or_else(|| id.to_string());
+        let name = localised(group, "Name", locales).map_or_else(|| id.to_string(), |s| unescape(&s));
         out.push(DesktopAction {
             id: id.to_string(),
             name,
@@ -297,24 +295,21 @@ fn parse_groups(contents: &str) -> BTreeMap<String, Group> {
         let key_part = key_part.trim();
         let value = value.trim().to_string();
         let group = groups.entry(group_name.clone()).or_default();
-        match key_part.split_once('[') {
-            Some((key, locale)) => {
-                let Some(locale) = locale.strip_suffix(']') else {
-                    continue;
-                };
-                group
-                    .entry(key.trim().to_string())
-                    .or_default()
-                    .localised
-                    .insert(locale.trim().to_string(), value);
-            }
-            None => {
-                let slot = group.entry(key_part.to_string()).or_default();
-                // First value wins, matching the spec's "duplicate keys are an error" by taking the one a
-                // reader would have seen first.
-                if slot.default.is_empty() {
-                    slot.default = value;
-                }
+        if let Some((key, locale)) = key_part.split_once('[') {
+            let Some(locale) = locale.strip_suffix(']') else {
+                continue;
+            };
+            group
+                .entry(key.trim().to_string())
+                .or_default()
+                .localised
+                .insert(locale.trim().to_string(), value);
+        } else {
+            let slot = group.entry(key_part.to_string()).or_default();
+            // First value wins, matching the spec's "duplicate keys are an error" by taking the one a
+            // reader would have seen first.
+            if slot.default.is_empty() {
+                slot.default = value;
             }
         }
     }
