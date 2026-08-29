@@ -171,7 +171,8 @@ fn interpolated_at(uid: &str, state: &PeerState, now: Instant) -> Option<Interpo
         if age <= FADE_AFTER {
             1.0
         } else {
-            let fade_progress = age.checked_sub(FADE_AFTER).unwrap().as_secs_f32() / FADE_DURATION.as_secs_f32();
+            let fade_progress =
+                age.checked_sub(FADE_AFTER).unwrap().as_secs_f32() / FADE_DURATION.as_secs_f32();
             if fade_progress >= 1.0 {
                 return None;
             }

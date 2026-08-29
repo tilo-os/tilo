@@ -127,7 +127,11 @@ fn podman_connection_label() -> String {
         .args(["version", "--format", "{{.Client.Version}}"])
         .output()
         .ok()
-        .filter(|o| o.status.success()).map_or_else(|| "unknown".into(), |o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        .filter(|o| o.status.success())
+        .map_or_else(
+            || "unknown".into(),
+            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        );
     format!("podman {version} · rootless")
 }
 
@@ -331,9 +335,10 @@ fn list_images() -> Option<Vec<Image>> {
     let mut images: Vec<Image> = entries
         .into_iter()
         .map(|e| {
-            let (repository, tag) = e
-                .names
-                .first().map_or_else(|| ("<none>".into(), "<none>".into()), |n| split_reference(n));
+            let (repository, tag) = e.names.first().map_or_else(
+                || ("<none>".into(), "<none>".into()),
+                |n| split_reference(n),
+            );
             Image {
                 id: e.id,
                 repository,
@@ -542,7 +547,10 @@ pub fn inspect_into(container: &mut Container) {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
-                read_only: !m.get("RW").and_then(serde_json::Value::as_bool).unwrap_or(true),
+                read_only: !m
+                    .get("RW")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true),
             })
             .collect();
     }

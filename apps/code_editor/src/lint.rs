@@ -152,10 +152,11 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
         while let Some((bi, ch)) = chars.next() {
             if in_block_comment {
                 if ch == '*'
-                    && let Some(&(_, '/')) = chars.peek() {
-                        in_block_comment = false;
-                        chars.next();
-                    }
+                    && let Some(&(_, '/')) = chars.peek()
+                {
+                    in_block_comment = false;
+                    chars.next();
+                }
                 continue;
             }
             if in_string {

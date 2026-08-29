@@ -63,9 +63,10 @@ pub(super) fn import_notes_part(
                 // A content note has no `w:type` (separators do); capture it verbatim and parse on close.
                 let ntype = attr_w_val(&e, b"w:type");
                 if ntype.is_none()
-                    && let Some(id) = attr_w_val(&e, b"w:id") {
-                        capture = Some((id, pos_before, 1));
-                    }
+                    && let Some(id) = attr_w_val(&e, b"w:id")
+                {
+                    capture = Some((id, pos_before, 1));
+                }
             }
             Event::Eof => break,
             _ => {}
@@ -96,10 +97,11 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String
     };
     let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
         if let Some(b) = cur
-            && !txt.is_empty() {
-                doc.splice_note_text(&note_id, b, *cur_len, 0, txt);
-                *cur_len += txt.chars().count();
-            }
+            && !txt.is_empty()
+        {
+            doc.splice_note_text(&note_id, b, *cur_len, 0, txt);
+            *cur_len += txt.chars().count();
+        }
     };
 
     loop {
@@ -120,9 +122,10 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String
             },
             Event::Text(t) if in_t => {
                 if let Ok(txt) = t.xml10_content()
-                    && !txt.is_empty() {
-                        append(doc, &cur, &mut cur_len, &txt);
-                    }
+                    && !txt.is_empty()
+                {
+                    append(doc, &cur, &mut cur_len, &txt);
+                }
             }
             Event::End(e) => match e.name().as_ref() {
                 b"w:t" => in_t = false,

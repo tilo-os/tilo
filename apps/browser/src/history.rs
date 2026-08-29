@@ -258,7 +258,10 @@ impl History {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let last_visit = item.get("last_visit").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                let last_visit = item
+                    .get("last_visit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
                 let visit_count = item
                     .get("visit_count")
                     .and_then(serde_json::Value::as_u64)

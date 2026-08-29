@@ -146,7 +146,9 @@ impl Hydrator {
             if cstart >= end {
                 break; // entirely after the range
             }
-            let chunk = self.read_blob(Hash::from(c.hash), 0, u64::from(c.len)).await?;
+            let chunk = self
+                .read_blob(Hash::from(c.hash), 0, u64::from(c.len))
+                .await?;
             let from = offset.saturating_sub(cstart).min(chunk.len() as u64) as usize;
             let to = (end - cstart).min(chunk.len() as u64) as usize;
             if from < to {

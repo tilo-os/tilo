@@ -99,7 +99,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// `git_client::repo::commit` — the same functions the UI's Stage-all and
 /// Commit buttons invoke.
 fn stage_and_commit(message: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::var("GIT_CLIENT_REPO").map_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()), std::path::PathBuf::from);
+    let path = std::env::var("GIT_CLIENT_REPO").map_or_else(
+        |_| std::env::current_dir().unwrap_or_else(|_| ".".into()),
+        std::path::PathBuf::from,
+    );
     git_client::repo::stage_all(&path)?;
     let id = git_client::repo::commit(&path, message)?;
     println!("git_client: committed {id} to {}", path.display());

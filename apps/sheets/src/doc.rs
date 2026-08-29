@@ -243,9 +243,10 @@ impl SheetsDoc {
         for i in 0..n {
             let name = match doc.get(&sheets, i) {
                 Ok(Some((Value::Object(ObjType::Map), sheet))) => match doc.get(&sheet, "name") {
-                    Ok(Some((Value::Scalar(v), _))) => {
-                        v.to_str().map(std::string::ToString::to_string).unwrap_or_default()
-                    }
+                    Ok(Some((Value::Scalar(v), _))) => v
+                        .to_str()
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_default(),
                     _ => String::new(),
                 },
                 _ => String::new(),
@@ -369,9 +370,10 @@ impl SheetsDoc {
         let key = Self::cell_key(addr);
         match doc.get(&cells, key.as_str()) {
             Ok(Some((Value::Object(ObjType::Map), cell))) => match doc.get(&cell, "raw") {
-                Ok(Some((Value::Scalar(v), _))) => {
-                    v.to_str().map(std::string::ToString::to_string).unwrap_or_default()
-                }
+                Ok(Some((Value::Scalar(v), _))) => v
+                    .to_str()
+                    .map(std::string::ToString::to_string)
+                    .unwrap_or_default(),
                 _ => String::new(),
             },
             _ => String::new(),
@@ -391,9 +393,10 @@ impl SheetsDoc {
             return snap;
         };
         snap.name = match doc.get(&sheet, "name") {
-            Ok(Some((Value::Scalar(v), _))) => {
-                v.to_str().map(std::string::ToString::to_string).unwrap_or_default()
-            }
+            Ok(Some((Value::Scalar(v), _))) => v
+                .to_str()
+                .map(std::string::ToString::to_string)
+                .unwrap_or_default(),
             _ => String::new(),
         };
         let cells = match doc.get(&sheet, "cells") {
@@ -410,16 +413,18 @@ impl SheetsDoc {
             };
             if let Ok(Some((Value::Scalar(v), _))) = doc.get(&cell, "raw")
                 && let Some(s) = v.to_str()
-                    && !s.is_empty() {
-                        snap.raw.insert(addr, s.to_string());
-                    }
+                && !s.is_empty()
+            {
+                snap.raw.insert(addr, s.to_string());
+            }
             if let Ok(Some((Value::Scalar(v), _))) = doc.get(&cell, "fmt")
-                && let Some(s) = v.to_str() {
-                    let f = CellFormat::from_str_with(s, default_currency);
-                    if f != CellFormat::General {
-                        snap.fmt.insert(addr, f);
-                    }
+                && let Some(s) = v.to_str()
+            {
+                let f = CellFormat::from_str_with(s, default_currency);
+                if f != CellFormat::General {
+                    snap.fmt.insert(addr, f);
                 }
+            }
         }
         snap
     }
@@ -535,9 +540,7 @@ mod tests {
         assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "C"]);
         // The last remaining sheet cannot be deleted away.
         SheetsDoc::delete_sheet(&mut doc, 0);
-        assert!(
-            !SheetsDoc::delete_sheet(&mut doc, 0) || SheetsDoc::sheet_count(&mut doc) >= 1
-        );
+        assert!(!SheetsDoc::delete_sheet(&mut doc, 0) || SheetsDoc::sheet_count(&mut doc) >= 1);
         assert!(
             SheetsDoc::sheet_count(&mut doc) >= 1,
             "a workbook keeps one sheet"

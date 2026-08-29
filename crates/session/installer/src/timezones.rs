@@ -44,14 +44,21 @@ const CURATED_FALLBACK: &[&str] = &[
 /// Discover the system's IANA time-zone list. Never returns empty.
 pub fn list_timezones() -> Vec<String> {
     if let Some(tz) = from_timedatectl()
-        && !tz.is_empty() {
-            return finalize(tz);
-        }
+        && !tz.is_empty()
+    {
+        return finalize(tz);
+    }
     if let Some(tz) = from_zoneinfo(Path::new("/usr/share/zoneinfo"))
-        && !tz.is_empty() {
-            return finalize(tz);
-        }
-    finalize(CURATED_FALLBACK.iter().map(std::string::ToString::to_string).collect())
+        && !tz.is_empty()
+    {
+        return finalize(tz);
+    }
+    finalize(
+        CURATED_FALLBACK
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
+    )
 }
 
 /// Sort, de-dup, and guarantee `UTC` is present.
@@ -97,12 +104,13 @@ fn from_zoneinfo(root: &Path) -> Option<Vec<String>> {
             if ft.is_dir() {
                 stack.push(path);
             } else if ft.is_file()
-                && let Ok(rel) = path.strip_prefix(root) {
-                    let name = rel.to_string_lossy().replace('\\', "/");
-                    if is_zone_path(&name) {
-                        zones.push(name);
-                    }
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                let name = rel.to_string_lossy().replace('\\', "/");
+                if is_zone_path(&name) {
+                    zones.push(name);
                 }
+            }
         }
     }
     Some(zones)

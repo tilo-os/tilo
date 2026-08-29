@@ -795,9 +795,10 @@ impl ChatDoc {
         let list = list_at(doc, &root_map, channel)?;
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-                && get_str(doc, &m, "id") == msg_id {
-                    return Some(m);
-                }
+                && get_str(doc, &m, "id") == msg_id
+            {
+                return Some(m);
+            }
         }
         None
     }
@@ -820,10 +821,12 @@ impl ChatDoc {
         let mut found: Option<usize> = None;
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i)
-                && get_str(doc, &e, "emoji") == emoji && get_str(doc, &e, "user") == user {
-                    found = Some(i);
-                    break;
-                }
+                && get_str(doc, &e, "emoji") == emoji
+                && get_str(doc, &e, "user") == user
+            {
+                found = Some(i);
+                break;
+            }
         }
         if let Some(i) = found {
             let _ = doc.delete(&list, i);
@@ -841,9 +844,11 @@ impl ChatDoc {
     fn reaction_index(doc: &AutoCommit, list: &ObjId, emoji: &str, user: &str) -> Option<usize> {
         for i in 0..doc.length(list) {
             if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(list, i)
-                && get_str(doc, &e, "emoji") == emoji && get_str(doc, &e, "user") == user {
-                    return Some(i);
-                }
+                && get_str(doc, &e, "emoji") == emoji
+                && get_str(doc, &e, "user") == user
+            {
+                return Some(i);
+            }
         }
         None
     }
@@ -904,10 +909,11 @@ impl ChatDoc {
         };
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-                && get_str(doc, &m, "id") == msg_id {
-                    let _ = doc.delete(&list, i);
-                    return;
-                }
+                && get_str(doc, &m, "id") == msg_id
+            {
+                let _ = doc.delete(&list, i);
+                return;
+            }
         }
     }
 
@@ -1165,9 +1171,10 @@ impl ChatDoc {
     /// churn the document.
     pub fn set_channel_archived(doc: &mut AutoCommit, id: &str, archived: bool) {
         if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id)
-            && get_bool(doc, &c, "archived") != archived {
-                let _ = doc.put(&c, "archived", archived);
-            }
+            && get_bool(doc, &c, "archived") != archived
+        {
+            let _ = doc.put(&c, "archived", archived);
+        }
     }
 
     pub fn rename_channel(doc: &mut AutoCommit, id: &str, name: &str) {
@@ -1307,9 +1314,10 @@ impl ChatDoc {
 
     pub fn voice_leave(doc: &mut AutoCommit, channel: &str, user: &str) {
         if let Some(voice) = map_at(doc, &ROOT, "voice")
-            && let Some(ch) = map_at(doc, &voice, channel) {
-                let _ = doc.delete(&ch, user);
-            }
+            && let Some(ch) = map_at(doc, &voice, channel)
+        {
+            let _ = doc.delete(&ch, user);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

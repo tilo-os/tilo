@@ -270,7 +270,8 @@ impl ImagerApp {
         }
         Some(
             self.source
-                .as_ref().map_or_else(|| "qOS image".into(), |s| s.name.clone()),
+                .as_ref()
+                .map_or_else(|| "qOS image".into(), |s| s.name.clone()),
         )
     }
 
@@ -853,7 +854,10 @@ impl ImagerApp {
             ),
             Step::Customize => ("Continue  ›".to_string(), true, false),
             Step::Confirm => {
-                let dev = self.target().map(super::model::TargetDrive::dev_path).unwrap_or_default();
+                let dev = self
+                    .target()
+                    .map(super::model::TargetDrive::dev_path)
+                    .unwrap_or_default();
                 // "Erase & write /dev/sdb" for a stick; "Erase & install
                 // /dev/nvme0n1" for a disk install — the verb reads plainly.
                 (
@@ -1155,13 +1159,9 @@ impl ImagerApp {
         }
         for rel in self.releases() {
             let r = Rect::new(content.x0, y, content.x1, y + 54.0);
-            let selected = self
-                .source
-                .as_ref()
-                .is_some_and(|s| {
-                    s.kind == SourceKind::QosImage
-                        && s.name == format!("{} {}", rel.name, rel.version)
-                });
+            let selected = self.source.as_ref().is_some_and(|s| {
+                s.kind == SourceKind::QosImage && s.name == format!("{} {}", rel.name, rel.version)
+            });
             let hov = r.contains(self.last_mouse);
             Self::fill_rr(
                 scene,
@@ -1466,7 +1466,10 @@ impl ImagerApp {
             Self::check_disc(
                 scene,
                 t,
-                Point::new(f64::midpoint(box_r.x0, box_r.x1), f64::midpoint(box_r.y0, box_r.y1)),
+                Point::new(
+                    f64::midpoint(box_r.x0, box_r.x1),
+                    f64::midpoint(box_r.y0, box_r.y1),
+                ),
                 8.0,
                 accent,
                 Color::WHITE,
@@ -1823,9 +1826,10 @@ impl ImagerApp {
                 TextWeight::Semibold,
             );
         };
-        let src_v = self
-            .source
-            .as_ref().map_or_else(|| "—".into(), |s| format!("{}   ({})", s.name, fmt_size(s.size)));
+        let src_v = self.source.as_ref().map_or_else(
+            || "—".into(),
+            |s| format!("{}   ({})", s.name, fmt_size(s.size)),
+        );
         row(
             self,
             scene,
@@ -1835,8 +1839,10 @@ impl ImagerApp {
             src_v,
             self.source.is_some(),
         );
-        let tgt_v = self
-            .target().map_or_else(|| "—".into(), |d| format!("{} · {} · {}", d.model, d.dev_path(), fmt_size(d.size)));
+        let tgt_v = self.target().map_or_else(
+            || "—".into(),
+            |d| format!("{} · {} · {}", d.model, d.dev_path(), fmt_size(d.size)),
+        );
         row(
             self,
             scene,
@@ -2683,7 +2689,11 @@ impl ImagerApp {
         match hit {
             Hit::PickFile => self.open_file_picker(state),
             Hit::Release(i) => {
-                if let Some(src) = self.releases.get(i).map(super::model::QosRelease::to_source) {
+                if let Some(src) = self
+                    .releases
+                    .get(i)
+                    .map(super::model::QosRelease::to_source)
+                {
                     self.select_source(state, src);
                 }
             }

@@ -461,7 +461,8 @@ fn draw_avatar(
     );
     let initial: String = label
         .chars()
-        .next().map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
+        .next()
+        .map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
     let size = theme.tokens.typography.scale.sm;
     let (tw, th) = text_renderer.measure(&initial, size, None);
     text_renderer.draw_text(
@@ -482,7 +483,10 @@ fn draw_avatar(
 /// two subjects rarely share a colour and none is hard-coded.
 fn subject_tint(label: &str, theme: &Theme) -> Color {
     let colors = &theme.tokens.colors;
-    let bucket = label.bytes().fold(0u32, |a, b| a.wrapping_add(u32::from(b))) as usize % 4;
+    let bucket = label
+        .bytes()
+        .fold(0u32, |a, b| a.wrapping_add(u32::from(b))) as usize
+        % 4;
     match bucket {
         0 => colors.accent[5],
         1 => colors.accent[4],

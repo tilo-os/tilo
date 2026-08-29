@@ -595,8 +595,7 @@ mod tests {
     #[test]
     fn seed_writes_initial_brightness_into_crdt() {
         let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane =
-            DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.42);
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.42);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);

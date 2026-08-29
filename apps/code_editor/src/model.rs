@@ -482,10 +482,13 @@ impl Project {
         // Surface an unreadable path up front (permission / not-found) rather
         // than silently opening an empty tab.
         let _ = std::fs::metadata(path)?;
-        let file_name = path
-            .file_name().map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().to_string());
+        let file_name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |s| s.to_string_lossy().to_string(),
+        );
         let parent_name = path
-            .parent().map_or_else(|| "/".to_string(), dir_display_name);
+            .parent()
+            .map_or_else(|| "/".to_string(), dir_display_name);
         let mut p = Project::new(&parent_name);
         let root = p.root;
         let node = p.add_disk_file(root, &file_name, path);
@@ -591,11 +594,12 @@ impl Project {
     /// and inferred language to match. No-op on folders / missing nodes.
     pub fn set_file_path(&mut self, id: NodeId, path: &Path, name: &str) {
         if let Some(node) = self.nodes.get_mut(&id)
-            && let NodeKind::File { language, .. } = &mut node.kind {
-                *language = Language::from_path(name);
-                node.name = name.to_string();
-                node.disk_path = Some(path.to_path_buf());
-            }
+            && let NodeKind::File { language, .. } = &mut node.kind
+        {
+            *language = Language::from_path(name);
+            node.name = name.to_string();
+            node.disk_path = Some(path.to_path_buf());
+        }
     }
 
     /// The real filesystem path a node projects, if any.
@@ -645,9 +649,10 @@ impl Project {
                         },
                     ..
                 }) = self.nodes.get(&kid)
-                    && *child_expanded {
-                        self.push_children(kid, out);
-                    }
+                && *child_expanded
+            {
+                self.push_children(kid, out);
+            }
         }
     }
 
@@ -671,7 +676,10 @@ impl Project {
 /// A human-friendly name for a directory path — its last component, or the
 /// whole path for a root like `/`. Used to label a project opened from disk.
 fn dir_display_name(path: &Path) -> String {
-    path.file_name().map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().to_string())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |s| s.to_string_lossy().to_string(),
+    )
 }
 
 /// An open editor buffer: a file the user has opened into a tab. The actual

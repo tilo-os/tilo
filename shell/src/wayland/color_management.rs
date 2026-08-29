@@ -237,8 +237,9 @@ impl ParametricBuilder {
 
         // Optional HDR10 metadata from mastering primaries + luminances.
         let hdr = if transfer.is_hdr() {
-            let mastering = inner
-                .mastering_primaries.map_or_else(MasteringDisplayColorVolume::hdr10_reference, |m| MasteringDisplayColorVolume {
+            let mastering = inner.mastering_primaries.map_or_else(
+                MasteringDisplayColorVolume::hdr10_reference,
+                |m| MasteringDisplayColorVolume {
                     display_primaries: [
                         (chrom_micro_to_st2086(m.r.0), chrom_micro_to_st2086(m.r.1)),
                         (chrom_micro_to_st2086(m.g.0), chrom_micro_to_st2086(m.g.1)),
@@ -251,7 +252,8 @@ impl ParametricBuilder {
                     min_display_mastering_luminance: inner
                         .mastering_luminance
                         .map_or(500, |(min, _)| min),
-                });
+                },
+            );
             let light = ContentLightLevel {
                 max_content_light_level: inner
                     .max_cll
@@ -733,7 +735,9 @@ where
                 }
             }
             wp_image_description_creator_params_v1::Request::SetTfNamed { tf } => {
-                let tf = if let Ok(v) = tf.into_result() { v } else {
+                let tf = if let Ok(v) = tf.into_result() {
+                    v
+                } else {
                     creator.post_error(
                         wp_image_description_creator_params_v1::Error::InvalidTf,
                         "unknown transfer_function enum value",
@@ -746,7 +750,9 @@ where
                 set_once!(tf_power_eexp = eexp, "transfer function already set");
             }
             wp_image_description_creator_params_v1::Request::SetPrimariesNamed { primaries } => {
-                let primaries = if let Ok(v) = primaries.into_result() { v } else {
+                let primaries = if let Ok(v) = primaries.into_result() {
+                    v
+                } else {
                     creator.post_error(
                         wp_image_description_creator_params_v1::Error::InvalidPrimariesNamed,
                         "unknown primaries enum value",
@@ -879,7 +885,9 @@ where
     ) {
         // If the wl_surface was destroyed the object is inert.
         if !data.surface.is_alive() {
-            if let wp_color_management_surface_v1::Request::Destroy = request { return }
+            if let wp_color_management_surface_v1::Request::Destroy = request {
+                return;
+            }
             obj.post_error(
                 wp_color_management_surface_v1::Error::Inert,
                 "surface has been destroyed",
@@ -940,9 +948,10 @@ where
         if data.surface.is_alive() {
             wl_compositor::with_states(&data.surface, |states| {
                 if let Some(d) = states.data_map.get::<ColorManagementSurfaceData>()
-                    && let Ok(mut inner) = d.inner.lock() {
-                        inner.manager_attached = false;
-                    }
+                    && let Ok(mut inner) = d.inner.lock()
+                {
+                    inner.manager_attached = false;
+                }
             });
         }
     }

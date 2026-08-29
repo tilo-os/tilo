@@ -438,11 +438,8 @@ mod tests {
     fn bt_list_renders_each_paired_device() {
         let rec = Arc::new(RecordingDispatcher::default());
         let devs = sample_devices();
-        let pane = BluetoothPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            devs,
-        );
+        let pane =
+            BluetoothPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, true, devs);
         assert_eq!(pane.devices().len(), 2);
         let names: Vec<&str> = pane.devices().iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec!["AirPods Pro", "Magic Mouse"]);

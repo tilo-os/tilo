@@ -179,9 +179,10 @@ impl Action for CalculatorAction {
             }
             CalculatorAction::DeleteHistoryEntry { index } => {
                 if let Some(list) = list_at(doc, "history")
-                    && *index < doc.length(&list) {
-                        doc.delete(&list, *index)?;
-                    }
+                    && *index < doc.length(&list)
+                {
+                    doc.delete(&list, *index)?;
+                }
             }
             CalculatorAction::ClearHistory => {
                 if let Some(list) = list_at(doc, "history") {
@@ -201,22 +202,25 @@ impl Action for CalculatorAction {
             }
             CalculatorAction::SetGraphExpr { kind, index, expr } => {
                 if let Some(list) = list_at(doc, kind.doc_key())
-                    && let Some(row) = row_at(doc, &list, *index) {
-                        put_text_diffed(doc, &row, "expr", expr);
-                    }
+                    && let Some(row) = row_at(doc, &list, *index)
+                {
+                    put_text_diffed(doc, &row, "expr", expr);
+                }
             }
             CalculatorAction::ToggleGraphVisible { kind, index } => {
                 if let Some(list) = list_at(doc, kind.doc_key())
-                    && let Some(row) = row_at(doc, &list, *index) {
-                        let now = !row_visible(doc, &row);
-                        doc.put(&row, "visible", now)?;
-                    }
+                    && let Some(row) = row_at(doc, &list, *index)
+                {
+                    let now = !row_visible(doc, &row);
+                    doc.put(&row, "visible", now)?;
+                }
             }
             CalculatorAction::DeleteGraph { kind, index } => {
                 if let Some(list) = list_at(doc, kind.doc_key())
-                    && *index < doc.length(&list) {
-                        doc.delete(&list, *index)?;
-                    }
+                    && *index < doc.length(&list)
+                {
+                    doc.delete(&list, *index)?;
+                }
             }
         }
         Ok(())

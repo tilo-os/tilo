@@ -400,26 +400,27 @@ impl Widget for Gallery {
         // Inline name editor gets first crack at pointer/keys so clicking the
         // name focuses it (rather than re-selecting the already-selected row).
         if self.editor_present()
-            && let Some(n) = self.name_input_node {
-                self.name_input.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                // Mirror any edit into the scratch key the app reconciles.
-                if let Some(name) = self.name_input.take_dirty() {
-                    doc::put_str(state, path, doc::KEY_ED_NAME, &name);
-                }
-                if *handled {
-                    return;
-                }
+            && let Some(n) = self.name_input_node
+        {
+            self.name_input.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            // Mirror any edit into the scratch key the app reconciles.
+            if let Some(name) = self.name_input.take_dirty() {
+                doc::put_str(state, path, doc::KEY_ED_NAME, &name);
             }
+            if *handled {
+                return;
+            }
+        }
 
         // Rows (selection + hover) last.
         if let Ok(children) = taffy.children(node) {

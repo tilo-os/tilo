@@ -213,7 +213,10 @@ fn video_from_json(v: &Value, category: &str) -> Video {
         dearrow_thumb: false,
         sponsor: Vec::new(),
         comments: Vec::new(),
-        live: v.get("is_live").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        live: v
+            .get("is_live")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -253,8 +256,12 @@ fn pick_channel_images(v: &Value) -> (String, String) {
     let url_of = |t: &Value| str_field(t, "url");
     let dims = |t: &Value| {
         (
-            t.get("width").and_then(serde_json::Value::as_u64).unwrap_or(0),
-            t.get("height").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            t.get("width")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            t.get("height")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
         )
     };
 
@@ -306,10 +313,19 @@ fn best_thumbnail(v: &Value, id: &str) -> String {
             arr.iter()
                 .filter(|t| !str_field(t, "url").is_empty())
                 .max_by_key(|t| {
-                    let w = t.get("width").and_then(serde_json::Value::as_u64).unwrap_or(0);
-                    let h = t.get("height").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                    let w = t
+                        .get("width")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    let h = t
+                        .get("height")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
                     // Prefer a real preference index when present, else area.
-                    w * h + t.get("preference").and_then(serde_json::Value::as_u64).unwrap_or(0)
+                    w * h
+                        + t.get("preference")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0)
                 })
                 .map(|t| str_field(t, "url"))
         })
@@ -373,7 +389,9 @@ fn u64_field(v: &Value, key: &str) -> u64 {
 }
 
 fn f64_field(v: &Value, key: &str) -> f64 {
-    v.get(key).and_then(serde_json::Value::as_f64).unwrap_or(0.0)
+    v.get(key)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0)
 }
 
 /// Days since the civil epoch (1970-01-01) for a proleptic-Gregorian date.

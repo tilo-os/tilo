@@ -12,8 +12,7 @@ use quick_xml::reader::Reader;
 /// into blocks; returns the new note id. Citation text is recomputed by renderers,
 /// not modeled here.
 pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
-    let kind = note_class(raw)
-        .map_or(NoteKind::Footnote, |c| NoteKind::from_str(&c));
+    let kind = note_class(raw).map_or(NoteKind::Footnote, |c| NoteKind::from_str(&c));
     let note_id = doc.insert_note(kind);
 
     // Each `text:p`/`text:h` in `text:note-body` becomes a paragraph block; text/tabs/breaks/spaces map on.
@@ -35,10 +34,11 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
     };
     let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
         if let Some(b) = cur
-            && !txt.is_empty() {
-                doc.splice_note_text(&note_id, b, *cur_len, 0, txt);
-                *cur_len += txt.chars().count();
-            }
+            && !txt.is_empty()
+        {
+            doc.splice_note_text(&note_id, b, *cur_len, 0, txt);
+            *cur_len += txt.chars().count();
+        }
     };
 
     loop {

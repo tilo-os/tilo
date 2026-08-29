@@ -181,9 +181,7 @@ impl Session {
                 self.connected = true;
                 self.set_schema(schema);
                 self.mark_connected(true);
-                let sample = self
-                    .active_connection()
-                    .is_some_and(|c| c.is_sample);
+                let sample = self.active_connection().is_some_and(|c| c.is_sample);
                 self.status = if sample {
                     RunStatus::Idle
                 } else {
@@ -303,7 +301,10 @@ impl Session {
         let active_id = self.connections.get(self.active).map(|c| c.id);
         self.connections = incoming;
         // Keep the same connection active if it still exists.
-        if let Some(pos) = active_id.and_then(|id| self.connections.iter().position(|c| c.id == id)) { self.active = pos } else {
+        if let Some(pos) = active_id.and_then(|id| self.connections.iter().position(|c| c.id == id))
+        {
+            self.active = pos
+        } else {
             self.active = 0;
             // The active connection vanished: drop its stale view state.
             self.connected = false;

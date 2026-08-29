@@ -268,13 +268,17 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let _portal_runtime: Option<tokio::runtime::Runtime>;
     let _portal_handle: Option<crate::portal::ServerHandle>;
     if enable_portals {
-        let (rt_handle, runtime_owned) = if let Ok(h) = tokio::runtime::Handle::try_current() { (h, None) } else {
+        let (rt_handle, runtime_owned) = if let Ok(h) = tokio::runtime::Handle::try_current() {
+            (h, None)
+        } else {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .thread_name("nirios-portal")
                 .build()
                 .ok();
-            if let Some(rt) = rt { (rt.handle().clone(), Some(rt)) } else {
+            if let Some(rt) = rt {
+                (rt.handle().clone(), Some(rt))
+            } else {
                 tracing::warn!("portal: tokio runtime build failed; portal stays off");
                 _portal_runtime = None;
                 _portal_handle = None;
@@ -293,9 +297,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
             prompts,
             caller_map: crate::portal::CallerMap::new(),
             // The real dialog, not the null spawner: hosted mode has a chrome to render it in, so there's no reason to cancel every request.
-            file_picker: crate::portal::FilePickerSpawnerHandle::new(std::sync::Arc::new(
-                pickers,
-            )),
+            file_picker: crate::portal::FilePickerSpawnerHandle::new(std::sync::Arc::new(pickers)),
             screencast_provisioner: crate::portal::ScreenCastStreamProvisionerHandle::new(
                 std::sync::Arc::new(crate::portal::MockScreenCastProvisioner::new_with_node(
                     1, "default",
@@ -352,7 +354,8 @@ pub fn run_with_full_options(opts: HostedOptions) {
                         "collab_broker: bound {} (json) + {} (capnp) — peer_sync={}",
                         socket_path.display(),
                         capnp_socket_path
-                            .as_ref().map_or_else(|| "<none>".to_string(), |p| p.display().to_string()),
+                            .as_ref()
+                            .map_or_else(|| "<none>".to_string(), |p| p.display().to_string()),
                         peer_sync.is_some()
                     );
                     Some(handle)

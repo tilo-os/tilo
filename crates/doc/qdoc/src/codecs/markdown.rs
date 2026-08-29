@@ -209,9 +209,11 @@ fn marks_from_span_style(style: &str) -> Vec<(&'static str, String)> {
 fn normalize_css_color(v: &str) -> String {
     let t = v.trim();
     if let Some(hex) = t.strip_prefix('#')
-        && hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return format!("#{}", hex.to_ascii_lowercase());
-        }
+        && hex.len() == 6
+        && hex.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return format!("#{}", hex.to_ascii_lowercase());
+    }
     match t.to_ascii_lowercase().as_str() {
         "red" => "#ff0000".into(),
         "green" => "#008000".into(),
@@ -399,9 +401,10 @@ fn import_md(src: &str, doc: &mut DocMut) {
                 let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
                 doc.set_attr(&id, "code", true);
                 if let CodeBlockKind::Fenced(lang) = kind
-                    && !lang.is_empty() {
-                        doc.set_attr(&id, "lang", lang.as_ref());
-                    }
+                    && !lang.is_empty()
+                {
+                    doc.set_attr(&id, "lang", lang.as_ref());
+                }
             }
             Event::End(TagEnd::CodeBlock) => cur = None,
             Event::Start(Tag::Strong) => mark_stack.push(("strong", cur_len)),
@@ -922,15 +925,17 @@ fn render_inline_notes(
             }
         }
         if cur_span.is_none()
-            && let Some(style) = &span {
-                out.push_str(&format!(r#"<span style="{style}">"#));
-                cur_span = Some(style.clone());
-            }
+            && let Some(style) = &span
+        {
+            out.push_str(&format!(r#"<span style="{style}">"#));
+            cur_span = Some(style.clone());
+        }
         if cur_wrap.is_none()
-            && let Some(w) = wrap {
-                out.push_str(&format!("<{w}>"));
-                cur_wrap = Some(w);
-            }
+            && let Some(w) = wrap
+        {
+            out.push_str(&format!("<{w}>"));
+            cur_wrap = Some(w);
+        }
         for d in &open_at[i] {
             out.push_str(d);
         }

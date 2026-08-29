@@ -210,17 +210,20 @@ pub fn expand(body: &str, values: &std::collections::HashMap<String, String>) ->
     let mut out = String::with_capacity(body.len());
     let mut i = 0;
     while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{'
-            && let Some(rel) = body[i + 2..].find('}') {
-                let name = body[i + 2..i + 2 + rel].trim();
-                match values.get(name) {
-                    Some(v) if !v.is_empty() => out.push_str(v),
-                    // Absent or empty: keep the placeholder visible.
-                    _ => out.push_str(&body[i..=(i + 2 + rel)]),
-                }
-                i = i + 2 + rel + 1;
-                continue;
+        if i + 1 < bytes.len()
+            && bytes[i] == b'$'
+            && bytes[i + 1] == b'{'
+            && let Some(rel) = body[i + 2..].find('}')
+        {
+            let name = body[i + 2..i + 2 + rel].trim();
+            match values.get(name) {
+                Some(v) if !v.is_empty() => out.push_str(v),
+                // Absent or empty: keep the placeholder visible.
+                _ => out.push_str(&body[i..=(i + 2 + rel)]),
             }
+            i = i + 2 + rel + 1;
+            continue;
+        }
         out.push(bytes[i] as char);
         i += 1;
     }
@@ -388,13 +391,15 @@ impl SearchQuery {
     /// the searchable text (title, description, body, tags, folder).
     pub fn matches(&self, snippet: &Snippet) -> bool {
         if let Some(lang) = self.language
-            && snippet.language != lang {
-                return false;
-            }
+            && snippet.language != lang
+        {
+            return false;
+        }
         if let Some(tag) = &self.tag
-            && !snippet.tags.iter().any(|t| t.to_lowercase() == *tag) {
-                return false;
-            }
+            && !snippet.tags.iter().any(|t| t.to_lowercase() == *tag)
+        {
+            return false;
+        }
         if self.terms.is_empty() {
             return true;
         }

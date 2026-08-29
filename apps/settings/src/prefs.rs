@@ -615,7 +615,9 @@ pub(crate) mod test_env {
     impl ConfigGuard {
         /// Redirect `XDG_CONFIG_HOME` to a fresh, unique temp dir for this test.
         pub(crate) fn new(name: &str) -> Self {
-            let lock = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let lock = LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let dir = std::env::temp_dir().join(format!(
                 "qos-settings-libtest-{}-{}",
                 std::process::id(),

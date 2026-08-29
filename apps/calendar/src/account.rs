@@ -31,8 +31,7 @@ pub const TYPE_ID: &str = "caldav";
 
 /// `CalDAV` connection + identity settings — exactly what the setup form
 /// collects and the sync layer consumes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CalDavConfig {
     /// Friendly account name shown in the sidebar header ("Work", "Fastmail").
     pub display_name: String,
@@ -48,7 +47,6 @@ pub struct CalDavConfig {
     #[serde(skip)]
     pub password: String,
 }
-
 
 impl CalDavConfig {
     /// Heuristic autofill: given a username/email, guess a well-known `CalDAV`

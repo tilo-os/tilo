@@ -156,13 +156,17 @@ fn load_entries(dir: &Path) -> BTreeMap<String, Secret> {
         return BTreeMap::new();
     }
     match (load_or_create_key(dir), std::fs::read(&enc)) {
-        (Some(key), Ok(blob)) => if let Some(plaintext) = open(&key, &blob) { serde_json::from_slice(&plaintext).unwrap_or_else(|e| {
+        (Some(key), Ok(blob)) => {
+            if let Some(plaintext) = open(&key, &blob) {
+                serde_json::from_slice(&plaintext).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "accounts: decrypted vault parse failed; starting empty");
             BTreeMap::new()
-        }) } else {
-            tracing::warn!("accounts: vault decrypt failed; starting empty");
-            BTreeMap::new()
-        },
+        })
+            } else {
+                tracing::warn!("accounts: vault decrypt failed; starting empty");
+                BTreeMap::new()
+            }
+        }
         _ => BTreeMap::new(),
     }
 }

@@ -83,10 +83,11 @@ fn outline_level(e: &BytesStart) -> Option<i64> {
 
 fn append(doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str) {
     if let Some(b) = cur
-        && !txt.is_empty() {
-            doc.splice_text(b, *cur_len, 0, txt);
-            *cur_len += txt.chars().count();
-        }
+        && !txt.is_empty()
+    {
+        doc.splice_text(b, *cur_len, 0, txt);
+        *cur_len += txt.chars().count();
+    }
 }
 
 /// Open a paragraph or heading depending on the referenced paragraph style, set
@@ -123,13 +124,14 @@ fn open_para(
     // carrying alignment/formatting as direct attrs — keeping the round-trip idempotent.
     if level.is_none()
         && let Some(s) = style
-            && reg.is_named_para(s)
-                && let Some(props) = reg.style_props(s) {
-                    let key = super::styles::decode_style_name(s);
-                    doc.set_style(&key, &props);
-                    doc.set_attr(&id, "style", key.as_str());
-                    return Vec::new();
-                }
+        && reg.is_named_para(s)
+        && let Some(props) = reg.style_props(s)
+    {
+        let key = super::styles::decode_style_name(s);
+        doc.set_style(&key, &props);
+        doc.set_attr(&id, "style", key.as_str());
+        return Vec::new();
+    }
     if let Some(a) = style.and_then(|s| reg.para_align(s)) {
         doc.set_attr(&id, "align", a.as_str());
     }
@@ -304,9 +306,10 @@ pub(crate) fn parse_body(
                             }
                             // An image-only paragraph (the common LibreOffice/pandoc "figure" layout) leaves an empty wrapper paragraph — drop it so the image isn't preceded by a blank line.
                             if let Some(pid) = fr.enclosing_para.as_deref()
-                                && !fr.para_had_text {
-                                    doc.remove_block(pid);
-                                }
+                                && !fr.para_had_text
+                            {
+                                doc.remove_block(pid);
+                            }
                         } else {
                             // Picture missing from the container → preserve verbatim.
                             let raw = s[fr.raw_start..end].to_string();
@@ -474,20 +477,21 @@ pub(crate) fn parse_body(
                     }
                     // Numbering fidelity preservation (ordered lists only): carry format + start + restart so
                     // the list re-exports with its numbering intact, keeping a plain decimal-from-1 list's attr set minimal.
-                    if ordered
-                        && let Some((fmt, start, restart)) = list_num_stack.last().copied() {
-                            if let Some(f) = fmt
-                                && f != "decimal" {
-                                    doc.set_attr(&id, "num_format", f);
-                                }
-                            if let Some(s) = start
-                                && s != 1 {
-                                    doc.set_attr(&id, "num_start", s);
-                                    if restart {
-                                        doc.set_attr(&id, "num_restart", true);
-                                    }
-                                }
+                    if ordered && let Some((fmt, start, restart)) = list_num_stack.last().copied() {
+                        if let Some(f) = fmt
+                            && f != "decimal"
+                        {
+                            doc.set_attr(&id, "num_format", f);
                         }
+                        if let Some(s) = start
+                            && s != 1
+                        {
+                            doc.set_attr(&id, "num_start", s);
+                            if restart {
+                                doc.set_attr(&id, "num_restart", true);
+                            }
+                        }
+                    }
                     in_item = true;
                 }
                 b"text:p" if in_text && in_item => {
@@ -495,9 +499,9 @@ pub(crate) fn parse_body(
                         && let Some(a) = attr_val(&e, b"text:style-name")
                             .as_deref()
                             .and_then(|s| reg.para_align(s))
-                        {
-                            doc.set_attr(&id, "align", a.as_str());
-                        }
+                    {
+                        doc.set_attr(&id, "align", a.as_str());
+                    }
                 }
                 b"text:p" if in_text && table_id.is_some() => {
                     // The paragraph inside a table cell: lift its alignment onto the cell block so centred/right-aligned cells round-trip.
@@ -505,9 +509,9 @@ pub(crate) fn parse_body(
                         && let Some(a) = attr_val(&e, b"text:style-name")
                             .as_deref()
                             .and_then(|s| reg.para_align(s))
-                        {
-                            doc.set_attr(&id, "align", a.as_str());
-                        }
+                    {
+                        doc.set_attr(&id, "align", a.as_str());
+                    }
                 }
                 b"table:table" if in_text => {
                     table_id = Some(attr_val(&e, b"table:name").unwrap_or_else(|| {
@@ -601,9 +605,10 @@ pub(crate) fn parse_body(
                 b"office:annotation-end" if in_text => {
                     // Closes a comment's range: match by `office:name` to the open annotation and anchor a `comment` mark over `[start, cur_len)`.
                     if let Some(name) = attr_val(&e, b"office:name")
-                        && let Some((cid, b, start)) = open_comments.remove(&name) {
-                            comment_ranges.push((b, start, cur_len, cid));
-                        }
+                        && let Some((cid, b, start)) = open_comments.remove(&name)
+                    {
+                        comment_ranges.push((b, start, cur_len, cid));
+                    }
                 }
                 b"text:bookmark-start" if in_text && cur.is_some() => {
                     // Opens a bookmark's range: remember the current char index; the matching `text:bookmark-end` (by `text:name`) records the end.
@@ -614,9 +619,10 @@ pub(crate) fn parse_body(
                 b"text:bookmark-end" if in_text => {
                     // Closes a bookmark's range: anchor a `bookmark` mark valued with the name over `[start, cur_len)`.
                     if let Some(name) = attr_val(&e, b"text:name")
-                        && let Some((b, start)) = open_bookmarks.remove(&name) {
-                            bookmark_ranges.push((b, start, cur_len, name));
-                        }
+                        && let Some((b, start)) = open_bookmarks.remove(&name)
+                    {
+                        bookmark_ranges.push((b, start, cur_len, name));
+                    }
                 }
                 b"text:bookmark" if in_text && cur.is_some() => {
                     // A point bookmark (no range): anchor a zero-width range at the current char index — widened to one character on apply below.
@@ -629,25 +635,26 @@ pub(crate) fn parse_body(
                     if let Some(id) = super::changes::marker_change_id(&e)
                         && let (Some((cid, kind)), Some(b)) =
                             (change_decls.get(&id).cloned(), cur.clone())
-                        {
-                            open_changes.insert(id, (cid, kind, b, cur_len));
-                        }
+                    {
+                        open_changes.insert(id, (cid, kind, b, cur_len));
+                    }
                 }
                 b"text:change-end" if in_text => {
                     // Closes a tracked-change range: anchor an `ins`/`del` mark over `[start, cur_len)` for the matching change id.
                     if let Some(id) = super::changes::marker_change_id(&e)
-                        && let Some((cid, kind, b, start)) = open_changes.remove(&id) {
-                            change_ranges.push((b, start, cur_len, kind, cid));
-                        }
+                        && let Some((cid, kind, b, start)) = open_changes.remove(&id)
+                    {
+                        change_ranges.push((b, start, cur_len, kind, cid));
+                    }
                 }
                 b"text:change" if in_text && cur.is_some() => {
                     // A point change marker (a deletion with no retained body text, or a collapsed insertion). Anchor a 1-char range if there's a character after it (widened on apply), else a zero-width range that drops.
                     if let Some(id) = super::changes::marker_change_id(&e)
                         && let (Some((cid, kind)), Some(b)) =
                             (change_decls.get(&id).cloned(), cur.clone())
-                        {
-                            change_ranges.push((b, cur_len, cur_len, kind, cid));
-                        }
+                    {
+                        change_ranges.push((b, cur_len, cur_len, kind, cid));
+                    }
                 }
                 b"text:tab" if in_text => append(doc, &cur, &mut cur_len, "\t"),
                 b"text:line-break" if in_text => append(doc, &cur, &mut cur_len, "\n"),
@@ -705,28 +712,30 @@ pub(crate) fn parse_body(
                 }
                 b"text:span" if in_text => {
                     if let Some((marks, start)) = span_stack.pop()
-                        && let Some(b) = cur.as_ref() {
-                            for (name, value) in marks {
-                                pending_marks.push((b.clone(), start, cur_len, name, value));
-                            }
+                        && let Some(b) = cur.as_ref()
+                    {
+                        for (name, value) in marks {
+                            pending_marks.push((b.clone(), start, cur_len, name, value));
                         }
+                    }
                 }
                 b"text:a" if in_text => {
                     if let Some((href, marks, start)) = link_stack.pop()
-                        && let Some(b) = cur.as_ref() {
-                            if let Some(h) = href {
-                                pending_marks.push((
-                                    b.clone(),
-                                    start,
-                                    cur_len,
-                                    "link".to_string(),
-                                    MarkValue::Str(h),
-                                ));
-                            }
-                            for (name, value) in marks {
-                                pending_marks.push((b.clone(), start, cur_len, name, value));
-                            }
+                        && let Some(b) = cur.as_ref()
+                    {
+                        if let Some(h) = href {
+                            pending_marks.push((
+                                b.clone(),
+                                start,
+                                cur_len,
+                                "link".to_string(),
+                                MarkValue::Str(h),
+                            ));
                         }
+                        for (name, value) in marks {
+                            pending_marks.push((b.clone(), start, cur_len, name, value));
+                        }
+                    }
                 }
                 _ => {}
             },
@@ -808,8 +817,7 @@ pub(crate) fn parse_body(
 
 /// The character length of a body block's text (0 if absent).
 fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
-    crate::model::block_text(doc.doc, doc.c, block_id)
-        .map_or(0, |t| t.chars().count())
+    crate::model::block_text(doc.doc, doc.c, block_id).map_or(0, |t| t.chars().count())
 }
 
 #[cfg(test)]

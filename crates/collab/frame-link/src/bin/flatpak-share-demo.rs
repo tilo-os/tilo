@@ -471,9 +471,8 @@ impl CompositeRenderer {
             .ok_or_else(|| "no font found for composite text".to_string())?;
         let font = FontVec::try_from_vec(bytes).map_err(|e| format!("font parse failed: {e:?}"))?;
         let header_left = "SOURCE".to_string();
-        let header_right = format!(
-            "STREAMED · {latency_ms}ms latency · {throughput_kbps} kbps throttle"
-        );
+        let header_right =
+            format!("STREAMED · {latency_ms}ms latency · {throughput_kbps} kbps throttle");
         Ok(Self {
             src_w,
             src_h,
@@ -987,9 +986,7 @@ fn main() -> Result<(), String> {
     );
 
     // Snapshot the profile-layer accumulator + write the report.
-    let layer_ref = ProfileLayer {
-        inner,
-    };
+    let layer_ref = ProfileLayer { inner };
     write_profile_report(&args.profile, &layer_ref, total_wall)?;
 
     Ok(())

@@ -34,10 +34,11 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
     };
     let append = |doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str| {
         if let Some(b) = cur
-            && !txt.is_empty() {
-                doc.splice_comment_text(&comment_id, b, *cur_len, 0, txt);
-                *cur_len += txt.chars().count();
-            }
+            && !txt.is_empty()
+        {
+            doc.splice_comment_text(&comment_id, b, *cur_len, 0, txt);
+            *cur_len += txt.chars().count();
+        }
     };
 
     loop {

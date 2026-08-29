@@ -30,9 +30,10 @@ use crate::model::Contact;
 /// in-memory for the session rather than crashing.
 pub fn default_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("QOS_CONTACTS_DATA")
-        && !p.is_empty() {
-            return Some(PathBuf::from(p));
-        }
+        && !p.is_empty()
+    {
+        return Some(PathBuf::from(p));
+    }
     Some(
         data_dir()?
             .join("qos-contacts")
@@ -43,9 +44,10 @@ pub fn default_path() -> Option<PathBuf> {
 /// Best-effort XDG data dir without pulling the `dirs` crate.
 fn data_dir() -> Option<PathBuf> {
     if let Ok(x) = std::env::var("XDG_DATA_HOME")
-        && !x.is_empty() {
-            return Some(PathBuf::from(x));
-        }
+        && !x.is_empty()
+    {
+        return Some(PathBuf::from(x));
+    }
     let home = std::env::var_os("HOME")?;
     if home.is_empty() {
         return None;

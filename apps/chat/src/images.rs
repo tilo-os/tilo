@@ -323,7 +323,8 @@ impl Canvas {
         let y1 = (cy + rad).ceil() as i32;
         for y in y0..y1 {
             for x in x0..x1 {
-                let d = ((f64::from(x) + 0.5 - cx).powi(2) + (f64::from(y) + 0.5 - cy).powi(2)).sqrt();
+                let d =
+                    ((f64::from(x) + 0.5 - cx).powi(2) + (f64::from(y) + 0.5 - cy).powi(2)).sqrt();
                 self.blend(x, y, rgb, (rad + 0.5 - d).clamp(0.0, 1.0));
             }
         }

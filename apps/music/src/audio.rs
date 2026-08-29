@@ -414,8 +414,7 @@ impl AudioEngine {
                         .then(|| (p.path.clone(), p.want_play))
                 });
                 if let Some((path, want)) = staged {
-                    let has_bytes = std::fs::metadata(&path)
-                        .is_ok_and(|m| m.len() > 0);
+                    let has_bytes = std::fs::metadata(&path).is_ok_and(|m| m.len() > 0);
                     if has_bytes {
                         let uri = format!("file://{}", path.display());
                         let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());

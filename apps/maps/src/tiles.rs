@@ -502,13 +502,15 @@ impl TileLayer {
         // hammer the tile server. The entry is kept until a later fetch
         // succeeds, so repeated failures keep doubling the delay.
         if let Some(f) = self.failed.get(&id)
-            && Instant::now() < f.retry_at {
-                return;
-            }
+            && Instant::now() < f.retry_at
+        {
+            return;
+        }
         if let Some(tx) = &self.job_tx
-            && tx.send(Job::Fetch(id)).is_ok() {
-                self.inflight.insert(id);
-            }
+            && tx.send(Job::Fetch(id)).is_ok()
+        {
+            self.inflight.insert(id);
+        }
     }
 
     /// Record a failed fetch, extending this tile's backoff. The first failure
@@ -830,9 +832,10 @@ fn load_tile(
 ) -> Option<(Vec<u8>, u32, u32)> {
     let path = cache_dir.join(id.cache_rel());
     if let Ok(bytes) = std::fs::read(&path)
-        && let Ok(t) = decode_png(&bytes) {
-            return Some(t);
-        }
+        && let Ok(t) = decode_png(&bytes)
+    {
+        return Some(t);
+    }
     let client = client.as_ref()?;
     let resp = client.get(id.url(base_url)).send().ok()?;
     if !resp.status().is_success() {
@@ -855,7 +858,11 @@ fn fetch_to_disk(
         return false;
     };
     let path = cache_dir.join(id.cache_rel());
-    match client.get(id.url(base_url)).send().and_then(reqwest::blocking::Response::bytes) {
+    match client
+        .get(id.url(base_url))
+        .send()
+        .and_then(reqwest::blocking::Response::bytes)
+    {
         Ok(bytes) if decode_png(&bytes).is_ok() => {
             write_cache(&path, &bytes);
             true
@@ -937,13 +944,15 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
 /// bootc-friendly `/var/cache/qos-maps` location and finally a temp dir.
 fn default_cache_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
-        && !xdg.is_empty() {
-            return PathBuf::from(xdg).join("qos-maps/tiles");
-        }
+        && !xdg.is_empty()
+    {
+        return PathBuf::from(xdg).join("qos-maps/tiles");
+    }
     if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty() {
-            return PathBuf::from(home).join(".cache/qos-maps/tiles");
-        }
+        && !home.is_empty()
+    {
+        return PathBuf::from(home).join(".cache/qos-maps/tiles");
+    }
     std::env::temp_dir().join("qos-maps/tiles")
 }
 

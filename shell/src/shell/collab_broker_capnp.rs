@@ -649,9 +649,10 @@ fn handle_signed_op_send(
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == OpClass::Compaction
-                    && let Ok(cp) = collab_types::parse_compaction_payload(&envelope) {
-                        let _ = ch_state.apply_compaction(&cp);
-                    }
+                    && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
+                {
+                    let _ = ch_state.apply_compaction(&cp);
+                }
             }
             if envelope.op_class == OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);

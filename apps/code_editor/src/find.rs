@@ -194,9 +194,11 @@ impl FindBar {
         self.visible = true;
         self.replace_open = replace;
         if let Some(s) = seed
-            && !s.is_empty() && !s.contains('\n') {
-                self.find.set_query(s);
-            }
+            && !s.is_empty()
+            && !s.contains('\n')
+        {
+            self.find.set_query(s);
+        }
         self.find.set_focused(true);
         self.replace.set_focused(false);
         self.needs_redraw = true;
@@ -507,23 +509,30 @@ impl Widget for FindBar {
         let base = Point::new(self.rect.x0, self.rect.y0);
         if let Some(&find_row) = rows.first() {
             let rl = taffy.layout(find_row).unwrap();
-            let row_origin =
-                Point::new(base.x + f64::from(rl.location.x), base.y + f64::from(rl.location.y));
+            let row_origin = Point::new(
+                base.x + f64::from(rl.location.x),
+                base.y + f64::from(rl.location.y),
+            );
             if let (Ok(kids), Some(_)) = (taffy.children(find_row), self.find_node)
-                && let Some(&k) = kids.first() {
-                    self.find.apply_layout(taffy, k, row_origin);
-                }
+                && let Some(&k) = kids.first()
+            {
+                self.find.apply_layout(taffy, k, row_origin);
+            }
         }
         if self.replace_open
-            && let Some(&replace_row) = rows.get(1) {
-                let rl = taffy.layout(replace_row).unwrap();
-                let row_origin =
-                    Point::new(base.x + f64::from(rl.location.x), base.y + f64::from(rl.location.y));
-                if let Ok(kids) = taffy.children(replace_row)
-                    && let Some(&k) = kids.first() {
-                        self.replace.apply_layout(taffy, k, row_origin);
-                    }
+            && let Some(&replace_row) = rows.get(1)
+        {
+            let rl = taffy.layout(replace_row).unwrap();
+            let row_origin = Point::new(
+                base.x + f64::from(rl.location.x),
+                base.y + f64::from(rl.location.y),
+            );
+            if let Ok(kids) = taffy.children(replace_row)
+                && let Some(&k) = kids.first()
+            {
+                self.replace.apply_layout(taffy, k, row_origin);
             }
+        }
     }
 
     fn draw(
@@ -582,7 +591,8 @@ impl Widget for FindBar {
                 &status,
                 12.0,
                 color,
-                transform * Affine::translate((cluster_x0 - GAP - f64::from(w), find_row_mid - 7.0)),
+                transform
+                    * Affine::translate((cluster_x0 - GAP - f64::from(w), find_row_mid - 7.0)),
                 None,
             );
         }
@@ -717,16 +727,15 @@ impl Widget for FindBar {
                 .iter()
                 .find(|(_, r)| r.contains(self.hover))
                 .copied()
-            {
-                let enabled =
-                    !matches!(b, Btn::Prev | Btn::Next | Btn::ReplaceOne | Btn::ReplaceAll)
-                        || self.total > 0;
-                if enabled {
-                    self.press(b);
-                }
-                *handled = true;
-                return;
+        {
+            let enabled = !matches!(b, Btn::Prev | Btn::Next | Btn::ReplaceOne | Btn::ReplaceAll)
+                || self.total > 0;
+            if enabled {
+                self.press(b);
             }
+            *handled = true;
+            return;
+        }
 
         // Otherwise the fields own it.
         let Ok(rows) = taffy.children(node_id) else {
@@ -734,35 +743,37 @@ impl Widget for FindBar {
         };
         if let Some(&find_row) = rows.first()
             && let Ok(kids) = taffy.children(find_row)
-                && let Some(&k) = kids.first() {
-                    self.find.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        k,
-                        taffy,
-                    );
-                }
+            && let Some(&k) = kids.first()
+        {
+            self.find.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                k,
+                taffy,
+            );
+        }
         if self.replace_open
             && let Some(&replace_row) = rows.get(1)
-                && let Ok(kids) = taffy.children(replace_row)
-                    && let Some(&k) = kids.first() {
-                        self.replace.handle_event(
-                            event,
-                            scale_factor,
-                            modifiers,
-                            state,
-                            path,
-                            handled,
-                            focus_target,
-                            k,
-                            taffy,
-                        );
-                    }
+            && let Ok(kids) = taffy.children(replace_row)
+            && let Some(&k) = kids.first()
+        {
+            self.replace.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                k,
+                taffy,
+            );
+        }
     }
 
     fn name(&self) -> &'static str {

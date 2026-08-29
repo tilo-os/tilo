@@ -246,7 +246,8 @@ fn parse_actions(groups: &BTreeMap<String, Group>, locales: &[String]) -> Vec<De
         if id.is_empty() {
             continue;
         }
-        let name = localised(group, "Name", locales).map_or_else(|| id.to_string(), |s| unescape(&s));
+        let name =
+            localised(group, "Name", locales).map_or_else(|| id.to_string(), |s| unescape(&s));
         out.push(DesktopAction {
             id: id.to_string(),
             name,

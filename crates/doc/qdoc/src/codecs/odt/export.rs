@@ -73,7 +73,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     // page-layout properties, preserving the rest. No-op for a single-column document.
     {
         let base = c
-            .get("styles.xml").map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
+            .get("styles.xml")
+            .map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
         if let Some(styles_xml) = super::columns::export_page_layout_columns(&doc, &base) {
             let is_new = !had_styles;
             c.set("styles.xml", styles_xml);
@@ -86,7 +87,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     // (split into `fo:language`/`fo:country`). No-op when the document declares no default language.
     {
         let base = c
-            .get("styles.xml").map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
+            .get("styles.xml")
+            .map_or_else(|| MINIMAL_STYLES.to_vec(), <[u8]>::to_vec);
         if let Some(styles_xml) = super::language::export_default_language(&doc, &base) {
             let is_new = !had_styles;
             c.set("styles.xml", styles_xml);
@@ -125,18 +127,20 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             continue;
         }
         if let Some(AttrVal::Str(hash)) = b.attrs.get("blob")
-            && let Some(bytes) = snap.blobs.get(hash) {
-                let (ext, media) = image_ext_and_media(bytes);
-                let path = format!("Pictures/{hash}.{ext}");
-                c.set(&path, bytes.clone());
-                if !pic_entries.iter().any(|(p, _)| p == &path) {
-                    pic_entries.push((path, media));
-                }
+            && let Some(bytes) = snap.blobs.get(hash)
+        {
+            let (ext, media) = image_ext_and_media(bytes);
+            let path = format!("Pictures/{hash}.{ext}");
+            c.set(&path, bytes.clone());
+            if !pic_entries.iter().any(|(p, _)| p == &path) {
+                pic_entries.push((path, media));
             }
+        }
     }
     if !pic_entries.is_empty() {
         let manifest = c
-            .get("META-INF/manifest.xml").map_or_else(|| MANIFEST.to_vec(), <[u8]>::to_vec);
+            .get("META-INF/manifest.xml")
+            .map_or_else(|| MANIFEST.to_vec(), <[u8]>::to_vec);
         c.set(
             "META-INF/manifest.xml",
             inject_manifest_entries(&manifest, &pic_entries),
@@ -530,13 +534,14 @@ fn render_inline(
             }
         }
         if chars[i] == crate::schema::FIELD_PLACEHOLDER
-            && let Some(note_id) = note_ref_at(marks, i) {
-                if let Some(note) = notes.get(&note_id) {
-                    *note_ctr += 1;
-                    out.push_str(&super::notes::render_inline_note(note, *note_ctr));
-                }
-                continue;
+            && let Some(note_id) = note_ref_at(marks, i)
+        {
+            if let Some(note) = notes.get(&note_id) {
+                *note_ctr += 1;
+                out.push_str(&super::notes::render_inline_note(note, *note_ctr));
             }
+            continue;
+        }
         push_escaped(&mut out, chars[i]);
     }
     close_spans(&mut out, &mut open);
@@ -584,9 +589,10 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
     }
     // Line spacing → `fo:line-height` percent (1.5 → "150%").
     if let Some(AttrVal::Float(ls)) = b.attrs.get("line_spacing")
-        && *ls > 0.0 {
-            pp.push_str(&format!(r#" fo:line-height="{}%""#, fmt_num(ls * 100.0)));
-        }
+        && *ls > 0.0
+    {
+        pp.push_str(&format!(r#" fo:line-height="{}%""#, fmt_num(ls * 100.0)));
+    }
     if pp.is_empty() {
         None
     } else {
@@ -641,22 +647,25 @@ fn image_frame_xml(
         frame.push_str(&format!(r#" draw:style-name="{gname}""#));
     }
     if let Some(AttrVal::Int(w)) = b.attrs.get("width")
-        && *w > 0 {
-            frame.push_str(&format!(r#" svg:width="{w}px""#));
-        }
+        && *w > 0
+    {
+        frame.push_str(&format!(r#" svg:width="{w}px""#));
+    }
     if let Some(AttrVal::Int(h)) = b.attrs.get("height")
-        && *h > 0 {
-            frame.push_str(&format!(r#" svg:height="{h}px""#));
-        }
+        && *h > 0
+    {
+        frame.push_str(&format!(r#" svg:height="{h}px""#));
+    }
     frame.push('>');
     frame.push_str(&format!(
         r#"<draw:image xlink:href="{}"/>"#,
         escape_attr(&href)
     ));
     if let Some(AttrVal::Str(alt)) = b.attrs.get("alt")
-        && !alt.is_empty() {
-            frame.push_str(&format!("<svg:title>{}</svg:title>", escape_text(alt)));
-        }
+        && !alt.is_empty()
+    {
+        frame.push_str(&format!("<svg:title>{}</svg:title>", escape_text(alt)));
+    }
     frame.push_str("</draw:frame>");
     Some(frame)
 }
@@ -736,7 +745,9 @@ fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
         return "<text:list>".to_string();
     }
     let key = (fmt.to_string(), start);
-    let name = if let Some(s) = list_styles.iter().find(|s| s.key == key) { s.name.clone() } else {
+    let name = if let Some(s) = list_styles.iter().find(|s| s.key == key) {
+        s.name.clone()
+    } else {
         let name = format!("Lqdoc{}", list_styles.len() + 1);
         let xml = list_style_def_xml(&name, fmt, start);
         list_styles.push(ListStyle {
@@ -886,17 +897,20 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
         }
     }
     if let Some(v) = getf(STYLE_SPACE_BEFORE)
-        && v != 0.0 {
-            pp.push_str(&format!(r#" fo:margin-top="{}px""#, fmt_num(v)));
-        }
+        && v != 0.0
+    {
+        pp.push_str(&format!(r#" fo:margin-top="{}px""#, fmt_num(v)));
+    }
     if let Some(v) = getf(STYLE_SPACE_AFTER)
-        && v != 0.0 {
-            pp.push_str(&format!(r#" fo:margin-bottom="{}px""#, fmt_num(v)));
-        }
+        && v != 0.0
+    {
+        pp.push_str(&format!(r#" fo:margin-bottom="{}px""#, fmt_num(v)));
+    }
     if let Some(v) = getf(STYLE_INDENT)
-        && v != 0.0 {
-            pp.push_str(&format!(r#" fo:margin-left="{}px""#, fmt_num(v)));
-        }
+        && v != 0.0
+    {
+        pp.push_str(&format!(r#" fo:margin-left="{}px""#, fmt_num(v)));
+    }
     let display = gets(STYLE_NAME)
         .map(|n| format!(r#" style:display-name="{}""#, escape_attr(n)))
         .unwrap_or_default();

@@ -63,7 +63,8 @@ impl AboutInfo {
             .unwrap_or_else(|| "unknown".to_string());
         let uptime = fs::read_to_string(uptime_path)
             .ok()
-            .and_then(|s| parse_uptime_seconds(&s)).map_or_else(|| "unknown".to_string(), format_uptime);
+            .and_then(|s| parse_uptime_seconds(&s))
+            .map_or_else(|| "unknown".to_string(), format_uptime);
         let hostname = fs::read_to_string(hostname_path)
             .ok()
             .map(|s| s.trim().to_string())
@@ -75,7 +76,8 @@ impl AboutInfo {
             .unwrap_or_else(|| "unknown".to_string());
         let memory = fs::read_to_string(meminfo_path)
             .ok()
-            .and_then(|s| parse_mem_total_kb(&s)).map_or_else(|| "unknown".to_string(), format_memory);
+            .and_then(|s| parse_mem_total_kb(&s))
+            .map_or_else(|| "unknown".to_string(), format_memory);
         // Compile-time target arch equals the running machine's arch — an
         // honest fact that needs no syscall.
         let arch = std::env::consts::ARCH.to_string();

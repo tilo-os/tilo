@@ -81,21 +81,25 @@ pub fn probe_bytes(data: &[u8], path: &Path) -> ProbedMedia {
         return image_probe(w, h, "jpeg");
     }
     if is_wav(data)
-        && let Some(p) = parse_wav(data) {
-            return p;
-        }
+        && let Some(p) = parse_wav(data)
+    {
+        return p;
+    }
     if is_isobmff(data)
-        && let Some(p) = parse_isobmff(data) {
-            return p;
-        }
+        && let Some(p) = parse_isobmff(data)
+    {
+        return p;
+    }
     if is_ebml(data)
-        && let Some(p) = parse_ebml(data) {
-            return p;
-        }
+        && let Some(p) = parse_ebml(data)
+    {
+        return p;
+    }
     if looks_like_mp3(data, path)
-        && let Some(p) = parse_mp3(data) {
-            return p;
-        }
+        && let Some(p) = parse_mp3(data)
+    {
+        return p;
+    }
     // Unknown container: honest fallback from the extension, no invented metadata.
     fallback_from_extension(path)
 }
@@ -402,10 +406,13 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
             if let (Some(n), true) = (samples, duration > 0.0) {
                 fps = f64::from(n) / duration;
             }
-        } else if is_audio && codec == "unknown" && !saw_video
-            && let Some(c) = track_codec {
-                codec = c;
-            }
+        } else if is_audio
+            && codec == "unknown"
+            && !saw_video
+            && let Some(c) = track_codec
+        {
+            codec = c;
+        }
     }
 
     kind = if saw_video {
@@ -614,12 +621,11 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
                 Some(1) => {
                     saw_video = true;
                     if width == 0
-                        && let Some(video) = ebml_find(entry, EBML_VIDEO) {
-                            width = ebml_find(video, EBML_PIXEL_WIDTH)
-                                .map_or(0, ebml_uint) as u32;
-                            height = ebml_find(video, EBML_PIXEL_HEIGHT)
-                                .map_or(0, ebml_uint) as u32;
-                        }
+                        && let Some(video) = ebml_find(entry, EBML_VIDEO)
+                    {
+                        width = ebml_find(video, EBML_PIXEL_WIDTH).map_or(0, ebml_uint) as u32;
+                        height = ebml_find(video, EBML_PIXEL_HEIGHT).map_or(0, ebml_uint) as u32;
+                    }
                 }
                 Some(2) => saw_audio = true,
                 _ => {}
@@ -721,11 +727,13 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     let mut scan = off;
     let limit = d.len().saturating_sub(4);
     while scan <= limit {
-        if d[scan] == 0xFF && (d[scan + 1] & 0xE0) == 0xE0
-            && let Some(h) = parse_mp3_frame_header(&d[scan..]) {
-                header = Some((scan, h));
-                break;
-            }
+        if d[scan] == 0xFF
+            && (d[scan + 1] & 0xE0) == 0xE0
+            && let Some(h) = parse_mp3_frame_header(&d[scan..])
+        {
+            header = Some((scan, h));
+            break;
+        }
         scan += 1;
         if scan - off > 200_000 {
             break; // no frame in a sane window

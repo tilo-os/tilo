@@ -62,13 +62,17 @@ impl DrmBackend {
         // Pace to the *fastest* connected mode: the compositor paints one scene across the combined
         // geometry, so there's one cadence to pick — showing every Nth frame on a slower output beats throttling the fast panel down.
         let refresh = Self::refresh_from(&inner);
-        if let Some(d) = refresh { tracing::info!(
-            hz = 1.0 / d.as_secs_f64(),
-            "DRM backend: pacing to the connector's mode timing"
-        ); } else { tracing::warn!(
-            "DRM backend: no connector reported a usable mode refresh; \
+        if let Some(d) = refresh {
+            tracing::info!(
+                hz = 1.0 / d.as_secs_f64(),
+                "DRM backend: pacing to the connector's mode timing"
+            );
+        } else {
+            tracing::warn!(
+                "DRM backend: no connector reported a usable mode refresh; \
              the compositor will fall back to its default cadence"
-        ); }
+            );
+        }
         Ok(Self {
             inner,
             outputs,
@@ -146,10 +150,11 @@ impl DrmPresenter {
         {
             let bridge = self.paint.as_mut().expect("paint just initialised");
             if bridge.size() != target_size
-                && let Err(e) = bridge.resize(target_size.0, target_size.1) {
-                    tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-                    return;
-                }
+                && let Err(e) = bridge.resize(target_size.0, target_size.1)
+            {
+                tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
+                return;
+            }
         }
 
         if self.scanouts.len() == 1 {
@@ -333,10 +338,11 @@ impl Backend for DrmBackend {
         {
             let bridge = self.paint.as_mut().expect("paint just initialised");
             if bridge.size() != target_size
-                && let Err(e) = bridge.resize(target_size.0, target_size.1) {
-                    tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-                    return;
-                }
+                && let Err(e) = bridge.resize(target_size.0, target_size.1)
+            {
+                tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
+                return;
+            }
         }
 
         // Single-output fast path: render the scene and swizzle it straight into the one scanout's

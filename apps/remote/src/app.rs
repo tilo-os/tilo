@@ -674,9 +674,7 @@ impl RemoteApp {
     /// Whether a live transport is currently connecting or connected — used
     /// to keep the host pumping animation frames so incoming data renders.
     fn live_active(&self) -> bool {
-        self.live
-            .as_ref()
-            .is_some_and(|l| l.status().is_live())
+        self.live.as_ref().is_some_and(|l| l.status().is_live())
     }
 
     /// The connected VNC session, if that's the current live transport.
@@ -699,8 +697,10 @@ impl RemoteApp {
         if w == 0 || h == 0 {
             return None;
         }
-        let fx = ((p.x - canvas.x0) / canvas.width() * f64::from(w)).clamp(0.0, f64::from(w - 1)) as u16;
-        let fy = ((p.y - canvas.y0) / canvas.height() * f64::from(h)).clamp(0.0, f64::from(h - 1)) as u16;
+        let fx =
+            ((p.x - canvas.x0) / canvas.width() * f64::from(w)).clamp(0.0, f64::from(w - 1)) as u16;
+        let fy = ((p.y - canvas.y0) / canvas.height() * f64::from(h)).clamp(0.0, f64::from(h - 1))
+            as u16;
         Some((fx, fy))
     }
 
@@ -2712,7 +2712,10 @@ impl RemoteApp {
                 13.0,
                 tokens.colors.semantic.danger,
                 transform
-                    * Affine::translate((del.center().x - f64::from(tw) / 2.0, del.center().y - 8.0)),
+                    * Affine::translate((
+                        del.center().x - f64::from(tw) / 2.0,
+                        del.center().y - 8.0,
+                    )),
                 None,
                 TextWeight::Semibold,
             );

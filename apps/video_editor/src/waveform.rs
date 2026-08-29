@@ -203,10 +203,7 @@ impl WaveformCache {
 
     /// Compute `id`'s peaks synchronously (deterministic `--shots`/tests).
     pub fn warm_blocking(&mut self, id: MediaId, source: &MediaSource) {
-        if matches!(
-            self.map.get(&id),
-            Some(Slot::Ready(_) | Slot::Missing)
-        ) {
+        if matches!(self.map.get(&id), Some(Slot::Ready(_) | Slot::Missing)) {
             return;
         }
         let peaks = if source.is_decodable() {

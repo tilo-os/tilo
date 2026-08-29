@@ -118,8 +118,7 @@ impl DatePicker {
     pub fn first_visible_col(&self) -> usize {
         let (y, m) = self.month_view;
         // Falls back to column 0 on an invalid year range.
-        NaiveDate::from_ymd_opt(y, m, 1)
-            .map_or(0, |d| d.weekday().num_days_from_monday() as usize)
+        NaiveDate::from_ymd_opt(y, m, 1).map_or(0, |d| d.weekday().num_days_from_monday() as usize)
     }
 
     /// Shared by the taffy [`Widget::apply_layout`] path and the
@@ -288,7 +287,8 @@ impl Widget for DatePicker {
         );
 
         let cell_w = self.rect.width() / GRID_COLS as f64;
-        let weekday_y = self.rect.y0 + HEADER_HEIGHT + (WEEKDAY_HEIGHT - f64::from(text_size)) / 2.0;
+        let weekday_y =
+            self.rect.y0 + HEADER_HEIGHT + (WEEKDAY_HEIGHT - f64::from(text_size)) / 2.0;
         for (col, label) in WEEKDAY_LABELS.iter().enumerate() {
             let (lw, _) = text_renderer.measure(label, text_size, None);
             let cx = self.rect.x0 + col as f64 * cell_w + cell_w / 2.0;

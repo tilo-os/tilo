@@ -329,17 +329,18 @@ impl ContainersApp {
             // detail tabs don't flicker empty between probes.
             if let Some(sel) = ViewDoc::selected(doc)
                 && let Some(old) = self.engine.find(&sel).cloned()
-                    && let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel) {
-                        if newc.logs.is_empty() {
-                            newc.logs = old.logs;
-                        }
-                        if newc.env.is_empty() {
-                            newc.env = old.env;
-                        }
-                        if newc.mounts.is_empty() {
-                            newc.mounts = old.mounts;
-                        }
-                    }
+                && let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel)
+            {
+                if newc.logs.is_empty() {
+                    newc.logs = old.logs;
+                }
+                if newc.env.is_empty() {
+                    newc.env = old.env;
+                }
+                if newc.mounts.is_empty() {
+                    newc.mounts = old.mounts;
+                }
+            }
             self.engine = fresh;
         }
     }
@@ -372,7 +373,8 @@ impl ContainersApp {
     pub(crate) fn apply_action(&mut self, action: Action, id: &str) {
         let name = self
             .engine
-            .find(id).map_or_else(|| id.to_string(), |c| c.name.clone());
+            .find(id)
+            .map_or_else(|| id.to_string(), |c| c.name.clone());
         if self.live {
             match podman::run_action(action, id) {
                 Ok(()) => self.show_toast(format!("{} {}", action.label(), name), false),
@@ -877,10 +879,10 @@ impl ContainersApp {
     pub fn seed_shot(&mut self, scenario: &str) {
         match scenario {
             "confirm" => {
-                let (name, id) = self
-                    .engine
-                    .containers
-                    .first().map_or_else(|| ("web".to_string(), "web".to_string()), |c| (c.name.clone(), c.id.clone()));
+                let (name, id) = self.engine.containers.first().map_or_else(
+                    || ("web".to_string(), "web".to_string()),
+                    |c| (c.name.clone(), c.id.clone()),
+                );
                 self.confirm = Some(Confirm {
                     name,
                     verb: "Remove container".into(),
@@ -1056,17 +1058,18 @@ impl Widget for ContainersApp {
                 _ => DetailTab::Logs,
             };
             let list_scene = matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
-            if !list_scene && ViewDoc::selected(doc).is_none()
+            if !list_scene
+                && ViewDoc::selected(doc).is_none()
                 && let Some(first) = self
                     .engine
                     .containers
                     .iter()
                     .find(|c| c.status.is_running())
                     .or_else(|| self.engine.containers.first())
-                {
-                    ViewDoc::set_selected(doc, Some(&first.id));
-                    ViewDoc::set_tab(doc, tab);
-                }
+            {
+                ViewDoc::set_selected(doc, Some(&first.id));
+                ViewDoc::set_tab(doc, tab);
+            }
         }
         // Periodically re-probe the engine for fresh stats / state.
         if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL {
@@ -1149,9 +1152,10 @@ impl Widget for ContainersApp {
         self.tick_sidebar();
         // Expire the toast.
         if let Some(t) = &self.toast
-            && t.born.elapsed().as_millis() > TOAST_MS {
-                self.toast = None;
-            }
+            && t.born.elapsed().as_millis() > TOAST_MS
+        {
+            self.toast = None;
+        }
         self.hits.clear();
         let r = self.rect;
         let c = &theme.tokens.colors;
@@ -1271,14 +1275,14 @@ impl Widget for ContainersApp {
             event: key_event, ..
         } = event
             && key_event.state == ElementState::Pressed
-                && modifiers.state().control_key()
-                && matches!(&key_event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k"))
-            {
-                self.open_container_palette();
-                *handled = true;
-                self.refresh_view(doc);
-                return;
-            }
+            && modifiers.state().control_key()
+            && matches!(&key_event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k"))
+        {
+            self.open_container_palette();
+            *handled = true;
+            self.refresh_view(doc);
+            return;
+        }
 
         // A destructive-confirm or text-prompt dialog is modal: while it's up
         // the shared ModalDialog captures every event (typing, clicks, Esc)

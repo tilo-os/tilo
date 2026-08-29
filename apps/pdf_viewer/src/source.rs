@@ -201,7 +201,10 @@ impl Rasterizer {
         let pages = doc.pages();
         for i in 0..pages.len() {
             if let Ok(rect) = pages.page_size(i) {
-                page_sizes.push((f64::from(rect.width().value), f64::from(rect.height().value)));
+                page_sizes.push((
+                    f64::from(rect.width().value),
+                    f64::from(rect.height().value),
+                ));
             } else {
                 page_sizes.push((612.0, 792.0));
             }
@@ -320,7 +323,10 @@ impl Rasterizer {
     /// sized to its own aspect ratio.
     pub fn import_image(&mut self, bytes: &[u8], at: usize) -> anyhow::Result<()> {
         let img = image::load_from_memory(bytes).map_err(|e| anyhow!("decoding the image: {e}"))?;
-        let (iw, ih) = (f64::from(img.width().max(1)), f64::from(img.height().max(1)));
+        let (iw, ih) = (
+            f64::from(img.width().max(1)),
+            f64::from(img.height().max(1)),
+        );
         // A page 612pt wide (US-Letter width) with the image's aspect ratio.
         let pw = 612.0f64;
         let ph = (pw * ih / iw).clamp(72.0, 3000.0);
@@ -810,9 +816,10 @@ fn pt_tl_to_pdf(x: f64, y: f64, page_h: f64) -> (PdfPoints, PdfPoints) {
 fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
     if let Ok(path) = std::env::var("QOS_PDFIUM_LIB")
         && !path.is_empty()
-            && let Ok(b) = Pdfium::bind_to_library(&path) {
-                return Some(b);
-            }
+        && let Ok(b) = Pdfium::bind_to_library(&path)
+    {
+        return Some(b);
+    }
     let mut candidates: Vec<String> = vec![
         "/usr/lib64/libpdfium.so".into(),
         "/usr/lib/libpdfium.so".into(),
@@ -825,9 +832,10 @@ fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
     }
     for cand in candidates {
         if Path::new(&cand).exists()
-            && let Ok(b) = Pdfium::bind_to_library(&cand) {
-                return Some(b);
-            }
+            && let Ok(b) = Pdfium::bind_to_library(&cand)
+        {
+            return Some(b);
+        }
     }
     Pdfium::bind_to_system_library().ok()
 }

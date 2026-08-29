@@ -652,7 +652,8 @@ impl MonitorApp {
             .model
             .processes
             .iter()
-            .find(|p| p.pid == pid).map_or_else(|| "process".into(), |p| p.name.clone());
+            .find(|p| p.pid == pid)
+            .map_or_else(|| "process".into(), |p| p.name.clone());
 
         let mut menu = ContextMenu::new();
         let sink = &self.pending_action;
@@ -2278,7 +2279,10 @@ impl MonitorApp {
             kt_label,
             fs,
             if on { c.text_primary } else { c.text_dim },
-            t * Affine::translate((knob_track.x1 + 6.0, kt_r.center().y - f64::from(fs) / 2.0 - 1.0)),
+            t * Affine::translate((
+                knob_track.x1 + 6.0,
+                kt_r.center().y - f64::from(fs) / 2.0 - 1.0,
+            )),
             None,
         );
         self.hit.kernel_toggle = kt_r;
@@ -3102,7 +3106,8 @@ impl MonitorApp {
             .model
             .processes
             .iter()
-            .find(|p| p.pid == pid).map_or_else(|| "process".into(), |p| p.name.clone());
+            .find(|p| p.pid == pid)
+            .map_or_else(|| "process".into(), |p| p.name.clone());
         let (title, signal_name, confirm_label) = match kind {
             StopKind::Term => ("Stop process?", "SIGTERM", "Stop"),
             StopKind::Kill => ("Kill process?", "SIGKILL", "Kill"),
@@ -3202,12 +3207,12 @@ impl MonitorApp {
         };
         if let WindowEvent::KeyboardInput { event: ke, .. } = event
             && ke.state == ElementState::Pressed
-                && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
-            {
-                self.do_stop(pid, kind, doc);
-                *handled = true;
-                return;
-            }
+            && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+        {
+            self.do_stop(pid, kind, doc);
+            *handled = true;
+            return;
+        }
         self.ensure_confirm_dialog(pid, kind);
         self.layout_confirm_dialog();
         let (confirm, cancel) = {
@@ -3293,48 +3298,51 @@ impl MonitorApp {
     fn begin_scroll_interaction(&mut self, p: Point) -> bool {
         // Page bar (Resources whole-view). Present only on the Resources tab.
         if let Some(sb) = self.hit.page_scrollbar
-            && sb.track.contains(p) {
-                if sb.thumb.contains(p) {
-                    self.scroll_drag = Some(ScrollDrag::Page {
-                        grab: p.y - sb.thumb.y0,
-                    });
-                } else {
-                    let dir = if p.y < sb.thumb.y0 { -1.0 } else { 1.0 };
-                    let page = (self.viewport_h * 0.9) as f32;
-                    let max_y = sb.max_value as f32;
-                    self.view_scroll_y = (self.view_scroll_y + dir * page).clamp(0.0, max_y);
-                }
-                return true;
+            && sb.track.contains(p)
+        {
+            if sb.thumb.contains(p) {
+                self.scroll_drag = Some(ScrollDrag::Page {
+                    grab: p.y - sb.thumb.y0,
+                });
+            } else {
+                let dir = if p.y < sb.thumb.y0 { -1.0 } else { 1.0 };
+                let page = (self.viewport_h * 0.9) as f32;
+                let max_y = sb.max_value as f32;
+                self.view_scroll_y = (self.view_scroll_y + dir * page).clamp(0.0, max_y);
             }
+            return true;
+        }
         // Vertical row bar. Present only on the Processes tab.
         if let Some(sb) = self.hit.v_scrollbar
-            && sb.track.contains(p) {
-                if sb.thumb.contains(p) {
-                    self.scroll_drag = Some(ScrollDrag::Rows {
-                        grab: p.y - sb.thumb.y0,
-                    });
-                } else {
-                    let dir = if p.y < sb.thumb.y0 { -1.0 } else { 1.0 };
-                    self.scroll_off = (self.scroll_off + dir * self.rows_per_page as f32).max(0.0);
-                    self.clamp_scroll();
-                }
-                return true;
+            && sb.track.contains(p)
+        {
+            if sb.thumb.contains(p) {
+                self.scroll_drag = Some(ScrollDrag::Rows {
+                    grab: p.y - sb.thumb.y0,
+                });
+            } else {
+                let dir = if p.y < sb.thumb.y0 { -1.0 } else { 1.0 };
+                self.scroll_off = (self.scroll_off + dir * self.rows_per_page as f32).max(0.0);
+                self.clamp_scroll();
             }
+            return true;
+        }
         // Horizontal column bar.
         if let Some(sb) = self.hit.h_scrollbar
-            && sb.track.contains(p) {
-                if sb.thumb.contains(p) {
-                    self.scroll_drag = Some(ScrollDrag::Cols {
-                        grab: p.x - sb.thumb.x0,
-                    });
-                } else {
-                    let dir = if p.x < sb.thumb.x0 { -1.0 } else { 1.0 };
-                    let max_x = sb.max_value as f32;
-                    self.table_scroll_x =
-                        (self.table_scroll_x + dir * self.table_cols_w as f32).clamp(0.0, max_x);
-                }
-                return true;
+            && sb.track.contains(p)
+        {
+            if sb.thumb.contains(p) {
+                self.scroll_drag = Some(ScrollDrag::Cols {
+                    grab: p.x - sb.thumb.x0,
+                });
+            } else {
+                let dir = if p.x < sb.thumb.x0 { -1.0 } else { 1.0 };
+                let max_x = sb.max_value as f32;
+                self.table_scroll_x =
+                    (self.table_scroll_x + dir * self.table_cols_w as f32).clamp(0.0, max_x);
             }
+            return true;
+        }
         false
     }
 
@@ -3622,10 +3630,11 @@ impl MonitorApp {
         // filter below; only the Ctrl-modified chord is reserved.)
         if ctrl
             && let Key::Character(s) = key
-                && matches!(s.as_str(), "k" | "K" | "/") {
-                    // `handled` stays false → event propagates to the host.
-                    return;
-                }
+            && matches!(s.as_str(), "k" | "K" | "/")
+        {
+            // `handled` stays false → event propagates to the host.
+            return;
+        }
 
         // Interval popover open: full keyboard nav (↑/↓/Home/End move, Enter
         // selects, Esc closes). Every key is swallowed so none leaks to the
@@ -3761,9 +3770,10 @@ impl MonitorApp {
                     // the subtree-sum mode; "t" toggles tree/flat.
                     "s" | "S" => {
                         if self.tab == Tab::Processes
-                            && let Some(pid) = self.selected_pid {
-                                self.request_stop(pid, doc);
-                            }
+                            && let Some(pid) = self.selected_pid
+                        {
+                            self.request_stop(pid, doc);
+                        }
                     }
                     "g" | "G" => {
                         if self.tree_mode {
@@ -3866,12 +3876,12 @@ impl Widget for MonitorApp {
         // so this check fires mid-hold without waiting for another event.
         if let Some(started) = self.interval_press
             && !self.interval_hold_opened
-                && !self.interval_popover.is_open()
-                && started.elapsed().as_millis() >= LONG_PRESS_MS
-            {
-                self.open_interval_popover();
-                self.interval_hold_opened = true;
-            }
+            && !self.interval_popover.is_open()
+            && started.elapsed().as_millis() >= LONG_PRESS_MS
+        {
+            self.open_interval_popover();
+            self.interval_hold_opened = true;
+        }
         // Headless `--shots` seed: open the popover deterministically once the
         // pill is positioned.
         if std::mem::take(&mut self.interval_popover_seed) {

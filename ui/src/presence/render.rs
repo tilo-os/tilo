@@ -272,7 +272,10 @@ pub(crate) fn peer_pill_size(
 ) -> (f64, f64) {
     let size = pill_label_size(theme);
     let (tw, _th) = text_renderer.measure(label, size, None);
-    (f64::from(tw) + PILL_PAD_X * 2.0, f64::from(size) + PILL_PAD_Y * 2.0)
+    (
+        f64::from(tw) + PILL_PAD_X * 2.0,
+        f64::from(size) + PILL_PAD_Y * 2.0,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -361,7 +364,9 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
             }
         }
 
-        let (rect, tethered) = if let Some((r, moved)) = chosen { (r, moved) } else {
+        let (rect, tethered) = if let Some((r, moved)) = chosen {
+            (r, moved)
+        } else {
             // Every corner taken or off-window: keep to whichever side
             // fits and walk down the vertical until clear.
             let x = if right + w <= vp.x1 {

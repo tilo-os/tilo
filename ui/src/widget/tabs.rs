@@ -834,7 +834,11 @@ impl TabBar {
         let t = &self.tabs[i];
         self.title_advance
             .get(&t.id)
-            .filter(|(title, _, _)| title == &t.title).map_or_else(|| t.title.chars().count() as f64 * APPROX_CHAR_W, |(_, _, w)| *w)
+            .filter(|(title, _, _)| title == &t.title)
+            .map_or_else(
+                || t.title.chars().count() as f64 * APPROX_CHAR_W,
+                |(_, _, w)| *w,
+            )
     }
 
     fn leading_zone(&self, i: usize) -> f64 {
@@ -1832,7 +1836,8 @@ impl Widget for TabBar {
                 if elapsed >= close_window {
                     continue;
                 }
-                let raw = (elapsed.as_secs_f64() / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
+                let raw =
+                    (elapsed.as_secs_f64() / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
                 let eased = crate::ease_out(raw);
                 let alpha = (1.0 - eased) as f32;
                 let scale = 1.0 + (CLOSE_SCALE_END - 1.0) * eased;
@@ -1872,7 +1877,9 @@ impl Widget for TabBar {
             let now = Instant::now();
             let elapsed_ms = self
                 .hover_drop_animated_at
-                .map_or(HOVER_DROP_FADE_MS as f64, |t| now.duration_since(t).as_millis() as f64);
+                .map_or(HOVER_DROP_FADE_MS as f64, |t| {
+                    now.duration_since(t).as_millis() as f64
+                });
             let raw_t = (elapsed_ms / HOVER_DROP_FADE_MS as f64).clamp(0.0, 1.0);
             let eased_t = crate::ease_out(raw_t);
             // 4px above/below the pill's extent for bleed past the rounded caps.

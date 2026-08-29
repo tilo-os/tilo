@@ -104,16 +104,15 @@ fn parse_openvpn(name: &str, text: &str) -> Connection {
             }
             "dhcp-option" => {
                 // dhcp-option DNS <ip>
-                if rest
-                    .first()
-                    .is_some_and(|s| s.eq_ignore_ascii_case("DNS"))
-                    && let Some(ip) = rest.get(1) {
-                        if conn.dns.is_empty() {
-                            conn.dns = ip.to_string();
-                        } else {
-                            conn.dns = format!("{}, {}", conn.dns, ip);
-                        }
+                if rest.first().is_some_and(|s| s.eq_ignore_ascii_case("DNS"))
+                    && let Some(ip) = rest.get(1)
+                {
+                    if conn.dns.is_empty() {
+                        conn.dns = ip.to_string();
+                    } else {
+                        conn.dns = format!("{}, {}", conn.dns, ip);
                     }
+                }
             }
             "ifconfig" => {
                 if let Some(addr) = rest.first() {
@@ -196,7 +195,8 @@ pub fn connect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
     match backend {
         Backend::WgQuick => {
             let target = conn
-                .config_path().map_or_else(|| iface_name(conn), std::string::ToString::to_string);
+                .config_path()
+                .map_or_else(|| iface_name(conn), std::string::ToString::to_string);
             CommandPlan {
                 program: "wg-quick".into(),
                 args: vec!["up".into(), target],
@@ -204,8 +204,10 @@ pub fn connect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
             }
         }
         Backend::OpenVpnCli => {
-            let cfg = conn
-                .config_path().map_or_else(|| format!("/etc/openvpn/{}.ovpn", conn.name), std::string::ToString::to_string);
+            let cfg = conn.config_path().map_or_else(
+                || format!("/etc/openvpn/{}.ovpn", conn.name),
+                std::string::ToString::to_string,
+            );
             CommandPlan {
                 program: "openvpn".into(),
                 args: vec!["--config".into(), cfg, "--daemon".into()],
@@ -225,7 +227,8 @@ pub fn disconnect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
     match backend {
         Backend::WgQuick => {
             let target = conn
-                .config_path().map_or_else(|| iface_name(conn), std::string::ToString::to_string);
+                .config_path()
+                .map_or_else(|| iface_name(conn), std::string::ToString::to_string);
             CommandPlan {
                 program: "wg-quick".into(),
                 args: vec!["down".into(), target],
@@ -235,8 +238,10 @@ pub fn disconnect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
         Backend::OpenVpnCli => {
             // Match the specific config path (or the tunnel name) so we only
             // kill *this* tunnel's daemon, never every openvpn on the box.
-            let needle = conn
-                .config_path().map_or_else(|| format!("{}.ovpn", conn.name), std::string::ToString::to_string);
+            let needle = conn.config_path().map_or_else(
+                || format!("{}.ovpn", conn.name),
+                std::string::ToString::to_string,
+            );
             CommandPlan {
                 program: "pkill".into(),
                 args: vec!["-f".into(), needle],
@@ -257,12 +262,13 @@ pub fn disconnect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
 /// `IFNAMSIZ`-bounded name.
 pub fn iface_name(conn: &Connection) -> String {
     if let Some(p) = conn.config_path()
-        && let Some(stem) = std::path::Path::new(p).file_stem().and_then(|s| s.to_str()) {
-            let s = sanitize_iface(stem);
-            if !s.is_empty() {
-                return s;
-            }
+        && let Some(stem) = std::path::Path::new(p).file_stem().and_then(|s| s.to_str())
+    {
+        let s = sanitize_iface(stem);
+        if !s.is_empty() {
+            return s;
         }
+    }
     let s = sanitize_iface(&conn.name);
     if s.is_empty() {
         format!("qvpn{}", &conn.id.simple().to_string()[..4])

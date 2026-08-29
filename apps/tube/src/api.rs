@@ -162,9 +162,18 @@ pub fn parse_skip_segments(resp: &serde_json::Value) -> Vec<Segment> {
             let cat = s.get("category").and_then(|c| c.as_str()).unwrap_or("");
             let times = s.get("segment").and_then(|t| t.as_array());
             if let (Some(cat), Some(times)) = (Category::from_api_key(cat), times) {
-                let start = times.first().and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-                let end = times.get(1).and_then(serde_json::Value::as_f64).unwrap_or(start);
-                let votes = s.get("votes").and_then(serde_json::Value::as_i64).unwrap_or(0);
+                let start = times
+                    .first()
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0);
+                let end = times
+                    .get(1)
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(start);
+                let votes = s
+                    .get("votes")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0);
                 out.push(Segment {
                     category: cat,
                     start,
@@ -211,12 +220,21 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
     // Score an entry: locked entries win outright; otherwise by vote count.
     // Downvoted-into-removal entries (votes < 0 and not locked) are dropped.
     let score = |e: &serde_json::Value| -> Option<i64> {
-        let original = e.get("original").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let original = e
+            .get("original")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         if original {
             return None;
         }
-        let votes = e.get("votes").and_then(serde_json::Value::as_i64).unwrap_or(0);
-        let locked = e.get("locked").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let votes = e
+            .get("votes")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let locked = e
+            .get("locked")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         if votes < 0 && !locked {
             return None;
         }
@@ -313,7 +331,10 @@ pub fn search(
                 .get("authorId")
                 .and_then(|v| v.as_str())
                 .unwrap_or(author);
-            let views = item.get("viewCount").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let views = item
+                .get("viewCount")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
             let duration = item
                 .get("lengthSeconds")
                 .and_then(serde_json::Value::as_u64)

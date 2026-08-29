@@ -93,8 +93,10 @@ pub fn mono(
 
 /// Measure the advance width of a monospace string at `size`.
 pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
-    f64::from(tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
-        .0)
+    f64::from(
+        tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
+            .0,
+    )
 }
 
 /// Draw a small filled pill (rounded capsule) with a centred label.

@@ -526,7 +526,8 @@ impl NotesApp {
         let title = self
             .workspace
             .selected()
-            .and_then(|id| self.workspace.get(id)).map_or_else(|| "notes".to_string(), |m| m.title.clone());
+            .and_then(|id| self.workspace.get(id))
+            .map_or_else(|| "notes".to_string(), |m| m.title.clone());
         let size = tokens.typography.scale.base;
         let text_x = self.menu_btn_rect.x1 + 4.0;
         let text_y = self.topbar_rect.y0 + (self.topbar_rect.height() - f64::from(size)) / 2.0;
@@ -623,9 +624,10 @@ impl NotesApp {
                         .retain(|p| !to_drop.contains(&p.id));
                     changed = true;
                     if let Some(s) = self.workspace.selected()
-                        && self.workspace.get(s).is_none() {
-                            self.workspace.set_selected(None);
-                        }
+                        && self.workspace.get(s).is_none()
+                    {
+                        self.workspace.set_selected(None);
+                    }
                 }
                 // Push any local page the document has never held yet (seed
                 // carry-over or a test-created page), recording it as known.
@@ -649,9 +651,10 @@ impl NotesApp {
                 self.workspace.data.pages = doc_pages;
                 self.known_in_doc.extend(ids);
                 if let Some(s) = self.workspace.selected()
-                    && self.workspace.get(s).is_none() {
-                        self.workspace.set_selected(None);
-                    }
+                    && self.workspace.get(s).is_none()
+                {
+                    self.workspace.set_selected(None);
+                }
                 self.bound_page = None;
                 self.main.clear();
                 self.adopted = true;
@@ -688,9 +691,10 @@ impl NotesApp {
             return;
         }
         if self.workspace.selected().is_none()
-            && let Some(first) = self.workspace.children_of(None).first().map(|p| p.id) {
-                self.workspace.set_selected(Some(first));
-            }
+            && let Some(first) = self.workspace.children_of(None).first().map(|p| p.id)
+        {
+            self.workspace.set_selected(Some(first));
+        }
         let Some(sel) = self.workspace.selected() else {
             if self.bound_page.is_some() {
                 self.main.clear();
@@ -1368,9 +1372,10 @@ impl Widget for NotesApp {
     /// args are unused — this mirrors the click-on-link / Cmd-K page jump.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::NoteSearchProvider::parse_action_id(action_id)
-            && self.workspace.get(id).is_some() {
-                self.navigate_to(id);
-            }
+            && self.workspace.get(id).is_some()
+        {
+            self.navigate_to(id);
+        }
     }
 
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
@@ -1747,7 +1752,8 @@ impl Widget for NotesApp {
         // and types a literal `?`; when the page tree / nothing is
         // focused, `?` opens help. This is the standard "help key only
         // outside inputs" behaviour.
-        if !self.palette.is_visible() && !self.main.editor().is_focused()
+        if !self.palette.is_visible()
+            && !self.main.editor().is_focused()
             && let WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -1757,12 +1763,13 @@ impl Widget for NotesApp {
                     },
                 ..
             } = event
-                && c.as_str() == "?" {
-                    self.shortcuts.set_visible(true);
-                    *handled = true;
-                    self.refresh_status();
-                    return;
-                }
+            && c.as_str() == "?"
+        {
+            self.shortcuts.set_visible(true);
+            *handled = true;
+            self.refresh_status();
+            return;
+        }
 
         // Cmd-K / Ctrl-K opens the page jump palette.
         // Intercepted BEFORE child widgets so a focused input
@@ -1777,18 +1784,19 @@ impl Widget for NotesApp {
                     },
                 ..
             } = event
-            {
-                let mods = modifiers.state();
-                if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "k" {
-                    let anchor_x = f64::midpoint(self.rect.x0, self.rect.x1) - self.palette.width() / 2.0;
-                    let anchor_y = self.rect.y0 + 80.0;
-                    self.palette
-                        .set_anchor(vello::kurbo::Point::new(anchor_x, anchor_y));
-                    self.palette.set_visible(true);
-                    *handled = true;
-                    return;
-                }
+        {
+            let mods = modifiers.state();
+            if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "k" {
+                let anchor_x =
+                    f64::midpoint(self.rect.x0, self.rect.x1) - self.palette.width() / 2.0;
+                let anchor_y = self.rect.y0 + 80.0;
+                self.palette
+                    .set_anchor(vello::kurbo::Point::new(anchor_x, anchor_y));
+                self.palette.set_visible(true);
+                *handled = true;
+                return;
             }
+        }
 
         // Cmd-N / Ctrl-N creates a child of the selected page. Handled
         // at the app level — not just in the sidebar — so it works no
@@ -1807,29 +1815,30 @@ impl Widget for NotesApp {
                     },
                 ..
             } = event
-            {
-                let mods = modifiers.state();
-                if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "n" {
-                    let parent = self.workspace.selected();
-                    self.apply_and_dispatch(state, OutEvent::CreateChild { parent });
-                    self.sidebar.sync_from_workspace(&self.workspace);
-                    *handled = true;
-                    return;
-                }
+        {
+            let mods = modifiers.state();
+            if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "n" {
+                let parent = self.workspace.selected();
+                self.apply_and_dispatch(state, OutEvent::CreateChild { parent });
+                self.sidebar.sync_from_workspace(&self.workspace);
+                *handled = true;
+                return;
             }
+        }
 
         // While the palette is visible it owns ALL keystrokes.
         if self.palette.is_visible()
-            && let WindowEvent::KeyboardInput { .. } = event {
-                let consumed = self.palette.handle_key(event);
-                if let Some(entry) = self.palette.take_selection() {
-                    self.navigate_to(entry.id);
-                }
-                if consumed {
-                    *handled = true;
-                    return;
-                }
+            && let WindowEvent::KeyboardInput { .. } = event
+        {
+            let consumed = self.palette.handle_key(event);
+            if let Some(entry) = self.palette.take_selection() {
+                self.navigate_to(entry.id);
             }
+            if consumed {
+                *handled = true;
+                return;
+            }
+        }
 
         // Narrow-mode overlay drawer. The top-bar button toggles it;
         // while open it captures pointer/keys so the page tree behaves
@@ -1841,11 +1850,12 @@ impl Widget for NotesApp {
                 button: MouseButton::Left,
                 ..
             } = event
-                && self.menu_btn_rect.contains(self.last_mouse) {
-                    self.set_drawer_open(!self.drawer.is_open());
-                    *handled = true;
-                    return;
-                }
+                && self.menu_btn_rect.contains(self.last_mouse)
+            {
+                self.set_drawer_open(!self.drawer.is_open());
+                *handled = true;
+                return;
+            }
             if self.drawer.is_open() {
                 // Escape closes the drawer.
                 if let WindowEvent::KeyboardInput {
@@ -1868,11 +1878,12 @@ impl Widget for NotesApp {
                     button: MouseButton::Left,
                     ..
                 } = event
-                    && !self.sidebar.get_rect().contains(self.last_mouse) {
-                        self.set_drawer_open(false);
-                        *handled = true;
-                        return;
-                    }
+                    && !self.sidebar.get_rect().contains(self.last_mouse)
+                {
+                    self.set_drawer_open(false);
+                    *handled = true;
+                    return;
+                }
                 // Route to the page tree; auto-close once a page is picked.
                 let sel_before = self.workspace.selected();
                 if let Some(n) = self.sidebar_node {
@@ -1907,11 +1918,12 @@ impl Widget for NotesApp {
             button: MouseButton::Left,
             ..
         } = event
-            && let Some(id) = self.link_under_last_mouse() {
-                self.navigate_to(id);
-                *handled = true;
-                return;
-            }
+            && let Some(id) = self.link_under_last_mouse()
+        {
+            self.navigate_to(id);
+            *handled = true;
+            return;
+        }
 
         // Modal focus capture: while the editor's `/` block menu (or the
         // `[[` link popover) is open, keyboard nav belongs to it — not the
@@ -1948,40 +1960,39 @@ impl Widget for NotesApp {
         // keystroke doesn't also type into the note behind the field.
         let sidebar_capturing_kbd = sidebar_menu_open || self.sidebar.is_renaming();
         if !(sidebar_capturing_kbd && is_keyboard)
-            && let Some(n) = self.main_node {
-                self.main.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-            }
+            && let Some(n) = self.main_node
+        {
+            self.main.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
         if let Some(new_title) = self.main.take_title_rename()
-            && let Some(id) = self.workspace.selected() {
-                let trimmed = new_title.trim();
-                let changed = self
-                    .workspace
-                    .get(id)
-                    .is_some_and(|m| m.title != trimmed);
-                if !trimmed.is_empty() && changed {
-                    self.apply_and_dispatch(
-                        state,
-                        OutEvent::Rename {
-                            id,
-                            new_title: trimmed.to_string(),
-                        },
-                    );
-                    self.sidebar.sync_from_workspace(&self.workspace);
-                }
+            && let Some(id) = self.workspace.selected()
+        {
+            let trimmed = new_title.trim();
+            let changed = self.workspace.get(id).is_some_and(|m| m.title != trimmed);
+            if !trimmed.is_empty() && changed {
+                self.apply_and_dispatch(
+                    state,
+                    OutEvent::Rename {
+                        id,
+                        new_title: trimmed.to_string(),
+                    },
+                );
+                self.sidebar.sync_from_workspace(&self.workspace);
             }
+        }
         // After every event, observe the editor's dirty flag and
         // request a debounced save if the user just edited.
         self.drain_editor_edits();

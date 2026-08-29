@@ -855,9 +855,10 @@ impl CalendarApp {
                 .events
                 .iter()
                 .find(|e| e.title.starts_with(needle))
-                && let Some(list) = CalDoc::event_notes(doc, e.id) {
-                    CalDoc::seed_notes_if_empty(doc, &list, lines);
-                }
+                && let Some(list) = CalDoc::event_notes(doc, e.id)
+            {
+                CalDoc::seed_notes_if_empty(doc, &list, lines);
+            }
         }
     }
 
@@ -1158,7 +1159,10 @@ impl CalendarApp {
             doc,
             crate::actions::delete_task_action(
                 id.to_string(),
-                subtasks.iter().map(std::string::ToString::to_string).collect(),
+                subtasks
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
             ),
         );
         if matches!(self.selection, Some(Sel::Task(sel)) if victims.contains(&sel)) {
@@ -1650,7 +1654,11 @@ impl CalendarApp {
                 .accounts
                 .iter()
                 .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
-                .find(|(_, c)| &c.id == id).map_or_else(|| id.clone(), |(a, c)| format!("{} · {}", a.label(), c.name)),
+                .find(|(_, c)| &c.id == id)
+                .map_or_else(
+                    || id.clone(),
+                    |(a, c)| format!("{} · {}", a.label(), c.name),
+                ),
         }
     }
 
@@ -1834,11 +1842,13 @@ impl CalendarApp {
         let is_enter = matches!(
             event,
             WindowEvent::KeyboardInput {
-event: KeyEvent {
-    logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
-    state: ElementState::Pressed,
-    ..
-    }, .. }
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
         );
         let is_click = matches!(
             event,
@@ -3842,8 +3852,8 @@ event: KeyEvent {
                     continue;
                 }
                 let s_min = i64::from(start.hour()) * 60 + i64::from(start.minute());
-                let e_min =
-                    (i64::from(end.hour()) * 60 + i64::from(end.minute())).max(s_min + TIMELINE_SNAP_MIN);
+                let e_min = (i64::from(end.hour()) * 60 + i64::from(end.minute()))
+                    .max(s_min + TIMELINE_SNAP_MIN);
                 let block = self.timeline_block_rect(area, days.len(), &g, i, s_min, e_min);
                 let col = color.color(theme);
                 fill_round(scene, t, col.with_alpha(0.22), block, 6.0);
@@ -4908,10 +4918,11 @@ impl Widget for CalendarApp {
     /// unused.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::EventSearchProvider::parse_action_id(action_id)
-            && let Some(ev) = self.model.event(id) {
-                self.anchor = ev.start.date();
-                self.select_event(id);
-            }
+            && let Some(ev) = self.model.event(id)
+        {
+            self.anchor = ev.start.date();
+            self.select_event(id);
+        }
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -4919,9 +4930,10 @@ impl Widget for CalendarApp {
             // Live app: adopt the user's persisted calendar (empty on a fresh
             // machine). Demo/test builds pass no path and stay in-memory.
             if let Some(p) = &self.data_path
-                && let Some(mut loaded) = crate::store::load(p) {
-                    let _ = state.merge(&mut loaded);
-                }
+                && let Some(mut loaded) = crate::store::load(p)
+            {
+                let _ = state.merge(&mut loaded);
+            }
             // Seed sample content ONLY in the demo build, and only when the
             // document is still empty.
             if self.demo && CalDoc::is_empty(state) {
@@ -5078,9 +5090,10 @@ impl Widget for CalendarApp {
             // with no events, show a friendly prompt instead of an empty grid.
             // Agenda carries its own inline empty-state.
             if !matches!(self.view, View::Agenda)
-                && let Some((title, hint)) = self.empty_onboarding_prompt() {
-                    self.draw_empty_onboarding(scene, t, text_renderer, theme, area, title, hint);
-                }
+                && let Some((title, hint)) = self.empty_onboarding_prompt()
+            {
+                self.draw_empty_onboarding(scene, t, text_renderer, theme, area, title, hint);
+            }
             self.draw_status(scene, t, text_renderer, theme, self.content_rect.x0);
         }
 
@@ -5180,10 +5193,11 @@ impl Widget for CalendarApp {
                 button: MouseButton::Left,
                 ..
             } = event
-                && let Some(a) = self.hit_action_at(self.last_mouse) {
-                    self.apply_action(a, state);
-                    *handled = true;
-                }
+                && let Some(a) = self.hit_action_at(self.last_mouse)
+            {
+                self.apply_action(a, state);
+                *handled = true;
+            }
             self.dirty = true;
             return;
         }
@@ -5450,20 +5464,19 @@ impl Widget for CalendarApp {
 
         // Forward remaining events (key typing, mouse move) to the editor
         // when the notes panel is active so editing works.
-        if editor_active
-            && let Some(n) = self.editor_node {
-                self.notes_editor.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-            }
+        if editor_active && let Some(n) = self.editor_node {
+            self.notes_editor.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
         self.dirty = true;
     }
 

@@ -478,18 +478,26 @@ impl PrintBackend {
         // is refused outright, not downgraded to "no token", since falling back to the default destination would let a replayed token still print.
         let prepared = match opt_u32(&options, "token") {
             None | Some(0) => None,
-            Some(token) => if let Some(job) = self.redeem_token(token, &caller) { Some(job) } else {
-                tracing::warn!(
-                    app = %caller.app_id,
-                    "Print: refused an unknown, replayed or expired token"
-                );
-                return (2, HashMap::new());
-            },
+            Some(token) => {
+                if let Some(job) = self.redeem_token(token, &caller) {
+                    Some(job)
+                } else {
+                    tracing::warn!(
+                        app = %caller.app_id,
+                        "Print: refused an unknown, replayed or expired token"
+                    );
+                    return (2, HashMap::new());
+                }
+            }
         };
 
-        let destination = if let Some(job) = prepared.as_ref() { job.destination.clone() } else {
+        let destination = if let Some(job) = prepared.as_ref() {
+            job.destination.clone()
+        } else {
             let available = self.ctx.print_spooler.destinations();
-            if let Some(d) = available.first() { d.clone() } else {
+            if let Some(d) = available.first() {
+                d.clone()
+            } else {
                 tracing::debug!("Print.Print: no destinations available");
                 return (2, HashMap::new());
             }

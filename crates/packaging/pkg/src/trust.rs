@@ -50,8 +50,7 @@ pub fn attestation_preimage(payload_root_hash: &BlobHash, publisher_pubkey: &[u8
 
 /// The scope an attestor is trusted for, parsed from the `scope`
 /// string: `"all"`, `"mime:<mime>[,...]"`, or `"prefix:<pref>[,...]"`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum AttestorScope {
     /// Trusts every package the attestor signs.
     #[default]
@@ -61,7 +60,6 @@ pub enum AttestorScope {
     /// Only trusts packages whose [package].id starts with one of these prefixes.
     Prefix(Vec<String>),
 }
-
 
 impl AttestorScope {
     /// Parse the scope string in the TOML config.
@@ -279,9 +277,10 @@ impl RevocationList {
     pub fn find(&self, pubkey: &[u8; 32]) -> Option<&RevokedKey> {
         for entry in &self.revoked {
             if let Ok(bytes) = entry.pubkey_bytes()
-                && &bytes == pubkey {
-                    return Some(entry);
-                }
+                && &bytes == pubkey
+            {
+                return Some(entry);
+            }
         }
         None
     }
@@ -300,13 +299,15 @@ pub fn default_revoked_keys_path() -> Option<PathBuf> {
 
 fn config_dir() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
-        && !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("qos"));
-        }
+        && !xdg.is_empty()
+    {
+        return Some(PathBuf::from(xdg).join("qos"));
+    }
     if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty() {
-            return Some(PathBuf::from(home).join(".config").join("qos"));
-        }
+        && !home.is_empty()
+    {
+        return Some(PathBuf::from(home).join(".config").join("qos"));
+    }
     None
 }
 

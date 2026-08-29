@@ -1109,7 +1109,10 @@ impl Widget for Table {
         // ---- forward to cell editors ----
         if let Some(cells_obj) = self.cells_obj.clone() {
             // Pointer-capture short-circuit (a cell dragging a selection).
-            if let Some(idx) = self.cells.iter().position(super::Widget::wants_pointer_capture)
+            if let Some(idx) = self
+                .cells
+                .iter()
+                .position(super::Widget::wants_pointer_capture)
                 && let Some(&cn) = child_nodes.get(idx)
             {
                 self.cells[idx].handle_event(
@@ -1183,7 +1186,10 @@ impl Widget for Table {
     fn take_structure_dirty(&mut self) -> bool {
         let mut d = self.structure_dirty;
         self.structure_dirty = false;
-        d |= self.cells.iter_mut().any(super::Widget::take_structure_dirty);
+        d |= self
+            .cells
+            .iter_mut()
+            .any(super::Widget::take_structure_dirty);
         d
     }
 

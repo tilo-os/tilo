@@ -47,7 +47,7 @@ impl Verb {
     /// `Comment`/`Read`, `Invite` confers only `Read` besides itself. Lets a
     /// `Grant`/`Restrict` phrased in a coarse verb answer a finer required verb.
     pub fn implies(self, other: Verb) -> bool {
-        use Verb::{Admin, Write, Comment, Read, Invite};
+        use Verb::{Admin, Comment, Invite, Read, Write};
         match self {
             Admin => true,
             Write => matches!(other, Write | Comment | Read),

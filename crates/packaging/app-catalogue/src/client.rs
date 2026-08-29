@@ -34,7 +34,11 @@ const DEFAULT_TIMEOUT_SECS: u64 = 10;
 fn http_timeout() -> Duration {
     std::env::var("QOS_STORE_HTTP_TIMEOUT")
         .ok()
-        .and_then(|s| s.parse::<u64>().ok()).map_or_else(|| Duration::from_secs(DEFAULT_TIMEOUT_SECS), Duration::from_secs)
+        .and_then(|s| s.parse::<u64>().ok())
+        .map_or_else(
+            || Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            Duration::from_secs,
+        )
 }
 
 #[derive(Debug, Error)]

@@ -188,7 +188,9 @@ impl Relay {
     /// admin CLI. Same reconnect-with-backoff loop as the config-time
     /// path.
     pub fn add_peer_relay(&self, peer: PeerRelayConfig) {
-        let node_id = if let Some(id) = parse_iroh_node_id(&peer.iroh_node_id) { id } else {
+        let node_id = if let Some(id) = parse_iroh_node_id(&peer.iroh_node_id) {
+            id
+        } else {
             tracing::warn!(?peer.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
             return;
         };
@@ -402,7 +404,9 @@ fn spawn_peer_relay_dial(
     let label = peer_cfg.label.clone();
     let priority = peer_cfg.priority;
     tokio::spawn(async move {
-        let node_id = if let Some(id) = node_id { id } else {
+        let node_id = if let Some(id) = node_id {
+            id
+        } else {
             tracing::warn!(?peer_cfg.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
             return;
         };

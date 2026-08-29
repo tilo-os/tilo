@@ -226,9 +226,9 @@ impl SidebarDrawer {
     /// clamped to [`MAX_FRAME_DT`]. Returns whether it is still animating.
     pub fn tick(&mut self, reduce_motion: bool) -> bool {
         let now = Instant::now();
-        let dt = self
-            .last_tick
-            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT));
+        let dt = self.last_tick.map_or(0.0, |t| {
+            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
+        });
         self.last_tick = Some(now);
 
         if reduce_motion {

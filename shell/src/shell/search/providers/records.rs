@@ -214,9 +214,10 @@ fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, Stri
 /// `~`-shortened path for the subtitle.
 fn display_path(path: &std::path::Path) -> String {
     if let Some(home) = dirs::home_dir()
-        && let Ok(rest) = path.strip_prefix(&home) {
-            return format!("~/{}", rest.display());
-        }
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", rest.display());
+    }
     path.display().to_string()
 }
 

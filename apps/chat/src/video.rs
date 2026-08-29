@@ -76,9 +76,10 @@ impl CameraCapture {
         let mut latest = None;
         while let Some(sample) = self.sink.try_pull_sample(gst::ClockTime::ZERO) {
             if let Some(buffer) = sample.buffer()
-                && let Ok(map) = buffer.map_readable() {
-                    latest = Some(map.as_slice().to_vec());
-                }
+                && let Ok(map) = buffer.map_readable()
+            {
+                latest = Some(map.as_slice().to_vec());
+            }
         }
         latest
     }
@@ -125,9 +126,10 @@ impl ScreenCapture {
         let mut latest = None;
         while let Some(sample) = self.sink.try_pull_sample(gst::ClockTime::ZERO) {
             if let Some(buffer) = sample.buffer()
-                && let Ok(map) = buffer.map_readable() {
-                    latest = Some(map.as_slice().to_vec());
-                }
+                && let Ok(map) = buffer.map_readable()
+            {
+                latest = Some(map.as_slice().to_vec());
+            }
         }
         latest
     }

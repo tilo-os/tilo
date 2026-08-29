@@ -517,9 +517,10 @@ fn put_bool_if_absent(state: &mut AutoCommit, root: &ObjId, path: &str, value: b
 /// Seed an Automerge `Text` object at `path` with `value` when absent.
 fn put_text_if_absent(state: &mut AutoCommit, root: &ObjId, path: &str, value: &str) {
     if state.get(root, path).ok().flatten().is_none()
-        && let Ok(obj_id) = state.put_object(root, path, ObjType::Text) {
-            let _ = state.splice_text(&obj_id, 0, 0, value);
-        }
+        && let Ok(obj_id) = state.put_object(root, path, ObjType::Text)
+    {
+        let _ = state.splice_text(&obj_id, 0, 0, value);
+    }
 }
 
 impl Widget for SettingsPane {
@@ -567,9 +568,10 @@ impl Widget for SettingsPane {
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
-                && let Some(&child_node) = children.first() {
-                    c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-                }
+            && let Some(&child_node) = children.first()
+        {
+            c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+        }
     }
 
     fn draw(
@@ -599,19 +601,20 @@ impl Widget for SettingsPane {
     ) {
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
-                && let Some(&child_node) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        child_node,
-                        taffy,
-                    );
-                }
+            && let Some(&child_node) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

@@ -408,10 +408,8 @@ impl Widget for RecoveryVerifyScreen {
         // 24-word grid mirroring `recovery_share`. Three positions are
         // blanked for the user to fill; the other 21 stay read-only so the
         // user can scan the full list against their written-down copy.
-        let challenge_positions: [usize; 3] = self
-            .challenge
-            .as_ref()
-            .map_or([0, 0, 0], |c| c.positions);
+        let challenge_positions: [usize; 3] =
+            self.challenge.as_ref().map_or([0, 0, 0], |c| c.positions);
         let words: Vec<&str> = self.mnemonic.split_whitespace().collect();
         let grid_x = card.x0 + pad;
         let grid_y = card.y0 + 110.0;

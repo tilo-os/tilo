@@ -61,11 +61,13 @@ impl Opts {
                 "--size" => {
                     if let Some(v) = it.next()
                         && let Some((w, h)) = v.split_once(['x', 'X'])
-                            && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
-                                && w > 0 && h > 0 {
-                                    o.width = w;
-                                    o.height = h;
-                                }
+                        && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
+                        && w > 0
+                        && h > 0
+                    {
+                        o.width = w;
+                        o.height = h;
+                    }
                 }
                 "--app-id" => {
                     if let Some(v) = it.next() {
@@ -75,9 +77,10 @@ impl Opts {
                 "--seconds" => {
                     if let Some(v) = it.next()
                         && let Ok(s) = v.trim().parse::<f64>()
-                            && s > 0.0 {
-                                o.seconds = s;
-                            }
+                        && s > 0.0
+                    {
+                        o.seconds = s;
+                    }
                 }
                 _ => {}
             }

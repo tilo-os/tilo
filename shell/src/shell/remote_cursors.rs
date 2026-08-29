@@ -134,8 +134,12 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         if bw <= 0.0 || bh <= 0.0 {
             return;
         }
-        let clip_rect =
-            vello::kurbo::Rect::new(f64::from(bx), f64::from(by), f64::from(bx + bw), f64::from(by + bh));
+        let clip_rect = vello::kurbo::Rect::new(
+            f64::from(bx),
+            f64::from(by),
+            f64::from(bx + bw),
+            f64::from(by + bh),
+        );
 
         scene.push_layer(
             vello::peniko::Fill::NonZero,

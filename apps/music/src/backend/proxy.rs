@@ -175,7 +175,11 @@ fn instances() -> Vec<String> {
             }
         }
     }
-    out.extend(INVIDIOUS_INSTANCES.iter().map(std::string::ToString::to_string));
+    out.extend(
+        INVIDIOUS_INSTANCES
+            .iter()
+            .map(std::string::ToString::to_string),
+    );
     out
 }
 

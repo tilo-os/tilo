@@ -317,25 +317,28 @@ impl SqlEditor {
                     }
                     Key::Character(_) => {
                         if let Some(t) = text
-                            && !ctrl {
-                                self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
-                                self.buffer = EditorDoc::read_sql(doc);
-                                self.mutated = true;
-                                self.ensure_caret_visible();
-                                *handled = true;
-                            }
+                            && !ctrl
+                        {
+                            self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
+                            self.buffer = EditorDoc::read_sql(doc);
+                            self.mutated = true;
+                            self.ensure_caret_visible();
+                            *handled = true;
+                        }
                     }
                     _ => {
                         // Some layouts deliver printable text without a
                         // Character key; honour `text` as a fallback.
                         if let Some(t) = text
-                            && !ctrl && !t.is_empty() {
-                                self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
-                                self.buffer = EditorDoc::read_sql(doc);
-                                self.mutated = true;
-                                self.ensure_caret_visible();
-                                *handled = true;
-                            }
+                            && !ctrl
+                            && !t.is_empty()
+                        {
+                            self.caret = EditorDoc::insert(doc, self.caret, t.as_str());
+                            self.buffer = EditorDoc::read_sql(doc);
+                            self.mutated = true;
+                            self.ensure_caret_visible();
+                            *handled = true;
+                        }
                     }
                 }
             }

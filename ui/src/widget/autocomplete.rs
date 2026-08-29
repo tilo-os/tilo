@@ -619,7 +619,8 @@ impl Widget for Autocomplete {
                 }
                 Key::Named(NamedKey::Enter) => {
                     let value = self
-                        .highlighted().map_or_else(|| self.input.value().to_string(), |s| s.value.clone());
+                        .highlighted()
+                        .map_or_else(|| self.input.value().to_string(), |s| s.value.clone());
                     self.accept(value);
                     *handled = true;
                 }

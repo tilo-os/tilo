@@ -334,10 +334,7 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
     let registry = Registry::start(String::new(), corrupted.clone());
     let url = format!("http://127.0.0.1:{}/sheets.qpkg", registry.port);
     let entry = signed_entry("dev.qos.catalogue-corrupt", &url, &good);
-    let registry = Registry::start(
-        serde_json::to_string(&vec![entry]).unwrap(),
-        corrupted,
-    );
+    let registry = Registry::start(serde_json::to_string(&vec![entry]).unwrap(), corrupted);
 
     let config_dir = tempfile::tempdir().unwrap();
     let cache_dir = tempfile::tempdir().unwrap();

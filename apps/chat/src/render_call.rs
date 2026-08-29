@@ -19,7 +19,9 @@ use ui::theme::Theme;
 use crate::app::{ChatApp, Hit};
 use crate::emoji;
 use crate::model::{self, Presence, VoiceMember};
-use crate::paint::{fill_round, label, stroke_round, fill_circle, stroke_circle, fill_rect, text, hline};
+use crate::paint::{
+    fill_circle, fill_rect, fill_round, hline, label, stroke_circle, stroke_round, text,
+};
 use crate::render_chat::draw_avatar;
 
 /// One person to render in the call, derived from the shared CRDT voice
@@ -103,7 +105,8 @@ impl ChatApp {
         let radius = if self.call.expanded { 14.0 } else { 10.0 };
         fill_round(scene, tf, rect, radius, c.neutral[2]);
         let (initials, cidx) = self
-            .user(&self.me.id).map_or_else(|| ("Y".into(), 0), |u| (u.initials.clone(), u.color_idx));
+            .user(&self.me.id)
+            .map_or_else(|| ("Y".into(), 0), |u| (u.initials.clone(), u.color_idx));
         let r = (rect.height() * 0.20).clamp(22.0, 52.0);
         let cx = rect.center().x;
         let cy = rect.center().y - r * 0.35;
@@ -169,7 +172,8 @@ impl ChatApp {
         // Title bar doubles as the DRAG HANDLE — grab it to move the overlay.
         let title_bar = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 30.0);
         let name = self
-            .channel(&self.call.channel).map_or_else(|| "Call".into(), |c| c.name.clone());
+            .channel(&self.call.channel)
+            .map_or_else(|| "Call".into(), |c| c.name.clone());
         label(
             scene,
             tr,
@@ -376,7 +380,8 @@ impl ChatApp {
 
         // title + participant count
         let title = self
-            .channel(&self.call.channel).map_or_else(|| "Call".into(), |c| c.name.clone());
+            .channel(&self.call.channel)
+            .map_or_else(|| "Call".into(), |c| c.name.clone());
         let (tw, _) = tr.measure(&title, 20.0, None);
         text(
             scene,
@@ -471,7 +476,8 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let name = self
-            .user(sharer).map_or_else(|| sharer.to_string(), |u| u.name.clone());
+            .user(sharer)
+            .map_or_else(|| sharer.to_string(), |u| u.name.clone());
         let is_me = sharer == self.me.id;
         let radius = 16.0;
 

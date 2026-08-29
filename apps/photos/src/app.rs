@@ -471,7 +471,8 @@ impl PhotosApp {
     pub fn visible_rect(&self) -> Rect01 {
         match (self.viewer.as_ref(), self.original.as_ref()) {
             (Some(v), Some((_, original))) => {
-                visible_image_rect(v, f64::from(original.w), f64::from(original.h)).unwrap_or(Rect01::FULL)
+                visible_image_rect(v, f64::from(original.w), f64::from(original.h))
+                    .unwrap_or(Rect01::FULL)
             }
             _ => Rect01::FULL,
         }
@@ -519,7 +520,10 @@ impl PhotosApp {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let parent = p.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let parent = p
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
         parent
             .join(format!("{stem}-edited.png"))
             .to_string_lossy()
@@ -547,7 +551,10 @@ impl PhotosApp {
         if self.original.as_ref().map(|(p, _)| p.as_str()) != Some(open.path.as_str()) {
             if let Some(img) = crate::doc::bytes_of(&open)
                 .as_deref()
-                .and_then(pixels::decode) { self.original = Some((open.path.clone(), img)) } else {
+                .and_then(pixels::decode)
+            {
+                self.original = Some((open.path.clone(), img))
+            } else {
                 self.original = None;
                 self.rendered = None;
                 self.viewer = None;
@@ -938,7 +945,8 @@ impl Widget for PhotosApp {
                 }
                 Slot::Separator => {
                     let sl = taffy.layout(bn).unwrap();
-                    let sx = bar_origin.x + f64::from(sl.location.x) + f64::from(sl.size.width) / 2.0;
+                    let sx =
+                        bar_origin.x + f64::from(sl.location.x) + f64::from(sl.size.width) / 2.0;
                     let sy = bar_origin.y + f64::from(sl.location.y);
                     self.separator_rects.push(Rect::new(
                         sx,

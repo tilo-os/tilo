@@ -142,7 +142,8 @@ impl Session {
         // Resolved, not as `$HOME` spells it: on an ostree system `/home` is a
         // symlink to `var/home`, and `bwrap` refuses to mount through a symlink.
         // `/var/home/you` is real, and the base's link still resolves to it too.
-        let home_mountpoint = dirs::home_dir().map_or_else(|| PathBuf::from("/root"), |h| h.canonicalize().unwrap_or(h));
+        let home_mountpoint = dirs::home_dir()
+            .map_or_else(|| PathBuf::from("/root"), |h| h.canonicalize().unwrap_or(h));
 
         Ok(GuestPlan {
             profile: self.opts.profile,

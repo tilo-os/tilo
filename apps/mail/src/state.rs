@@ -499,8 +499,14 @@ impl MailState {
             .and_then(|sel| {
                 rows.iter().position(|(id, _)| {
                     *id == sel
-                        || self.mailbox.get(sel).map(super::model::Message::thread_subject)
-                            == self.mailbox.get(*id).map(super::model::Message::thread_subject)
+                        || self
+                            .mailbox
+                            .get(sel)
+                            .map(super::model::Message::thread_subject)
+                            == self
+                                .mailbox
+                                .get(*id)
+                                .map(super::model::Message::thread_subject)
                 })
             })
             .unwrap_or(0) as i32;

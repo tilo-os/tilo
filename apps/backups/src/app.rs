@@ -1053,7 +1053,8 @@ impl BackupsApp {
             .ui
             .sel_source
             .as_ref()
-            .and_then(|id| self.catalog.source(id)).map_or_else(|| "In 38 min".to_string(), |s| s.next_run.clone());
+            .and_then(|id| self.catalog.source(id))
+            .map_or_else(|| "In 38 min".to_string(), |s| s.next_run.clone());
         let failed = self
             .catalog
             .snapshots

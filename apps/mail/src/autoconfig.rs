@@ -46,9 +46,10 @@ impl Autoconfig {
             cfg.auth = AuthMethod::OAuth;
         }
         if cfg.display_name.trim().is_empty()
-            && let Some(name) = &self.display_name {
-                cfg.display_name = name.clone();
-            }
+            && let Some(name) = &self.display_name
+        {
+            cfg.display_name = name.clone();
+        }
     }
 }
 

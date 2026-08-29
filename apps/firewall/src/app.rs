@@ -127,7 +127,8 @@ impl FormState {
 
     fn current_service(&self) -> String {
         ServiceCatalog::ALL
-            .get(self.service_idx).map_or_else(|| "ssh".to_string(), |s| s.id.to_string())
+            .get(self.service_idx)
+            .map_or_else(|| "ssh".to_string(), |s| s.id.to_string())
     }
 
     fn matcher(&self) -> Matcher {
@@ -818,13 +819,14 @@ impl Widget for FirewallApp {
         // Adopt genuine remote edits (collab).
         if let Some(json) = FirewallDoc::load_json(state)
             && self.last_json.as_deref() != Some(json.as_str())
-                && let Some(cfg) = FirewallConfig::from_json(&json) {
-                    self.config = cfg;
-                    if self.config.zone(self.selected_zone).is_none() {
-                        self.selected_zone = self.config.default_zone;
-                    }
-                    self.last_json = Some(json);
-                }
+            && let Some(cfg) = FirewallConfig::from_json(&json)
+        {
+            self.config = cfg;
+            if self.config.zone(self.selected_zone).is_none() {
+                self.selected_zone = self.config.default_zone;
+            }
+            self.last_json = Some(json);
+        }
     }
 
     fn build_layout(

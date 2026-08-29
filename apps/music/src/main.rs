@@ -87,8 +87,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--live` captures the real screen: fetch live Home/album/artist content
         // + real cover art off-thread, wait for it to settle, then render.
         let live = args.iter().any(|a| a == "--live")
-            || std::env::var("QOS_MUSIC_LIVE")
-                .is_ok_and(|v| !v.is_empty());
+            || std::env::var("QOS_MUSIC_LIVE").is_ok_and(|v| !v.is_empty());
         if live {
             let play = parse_value_arg(&args, "--play")
                 .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())

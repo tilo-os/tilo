@@ -105,9 +105,10 @@ fn parse_bluetoothctl_info(stdout: &str) -> (bool, u8) {
             if let Some(open) = rest.find('(') {
                 let after = &rest[open + 1..];
                 if let Some(close) = after.find(')')
-                    && let Ok(n) = after[..close].trim().parse::<u8>() {
-                        battery = n;
-                    }
+                    && let Ok(n) = after[..close].trim().parse::<u8>()
+                {
+                    battery = n;
+                }
             }
         }
     }

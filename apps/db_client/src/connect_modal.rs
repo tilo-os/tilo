@@ -230,9 +230,10 @@ impl ConnectModal {
                     }
                     _ => {
                         if let (Some(f), Some(t)) = (self.focus, text)
-                            && !ctrl {
-                                self.field_mut(f).push_str(t.as_str());
-                            }
+                            && !ctrl
+                        {
+                            self.field_mut(f).push_str(t.as_str());
+                        }
                     }
                 }
             }

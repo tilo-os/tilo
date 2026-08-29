@@ -687,8 +687,7 @@ impl Widget for WindowGroup {
         }
     }
     fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
-        self.active_host_mut()
-            .is_some_and(|h| h.update(s, p))
+        self.active_host_mut().is_some_and(|h| h.update(s, p))
     }
     fn build_layout(
         &mut self,

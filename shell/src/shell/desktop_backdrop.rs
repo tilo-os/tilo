@@ -129,7 +129,11 @@ fn settle_toward_neutral(color: Color, amount: f32) -> Color {
     let [r, g, b, a] = color.to_rgba8().to_u8_array();
     let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
     let k = amount.clamp(0.0, 1.0);
-    let mix = |v: u8| (f32::from(v) + (luma - f32::from(v)) * k).round().clamp(0.0, 255.0) as u8;
+    let mix = |v: u8| {
+        (f32::from(v) + (luma - f32::from(v)) * k)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     Color::from_rgba8(mix(r), mix(g), mix(b), a)
 }
 
@@ -434,11 +438,7 @@ impl Widget for DesktopBackdrop {
     /// after the first draw; the child subtree is asked independently.
     /// `cache_rect == ZERO` covers the pre-first-draw boot path.
     fn needs_redraw(&self) -> bool {
-        self.cache_rect == Rect::ZERO
-            || self
-                .child
-                .as_ref()
-                .is_some_and(|c| c.needs_redraw())
+        self.cache_rect == Rect::ZERO || self.child.as_ref().is_some_and(|c| c.needs_redraw())
     }
 
     /// Forward layout-dirty queries to the child — the backdrop has no
@@ -446,9 +446,7 @@ impl Widget for DesktopBackdrop {
     /// Without this the default (`true`) would re-trigger taffy every
     /// frame.
     fn is_layout_dirty(&self) -> bool {
-        self.child
-            .as_ref()
-            .is_some_and(|c| c.is_layout_dirty())
+        self.child.as_ref().is_some_and(|c| c.is_layout_dirty())
     }
 
     fn mark_drawn(&mut self) {

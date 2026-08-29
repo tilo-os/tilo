@@ -61,9 +61,11 @@ pub(super) fn generic_font(name: &str) -> String {
 pub(super) fn normalize_color(v: &str) -> String {
     let t = v.trim();
     if let Some(hex) = t.strip_prefix('#')
-        && hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return format!("#{}", hex.to_ascii_lowercase());
-        }
+        && hex.len() == 6
+        && hex.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return format!("#{}", hex.to_ascii_lowercase());
+    }
     t.to_string()
 }
 
@@ -482,23 +484,24 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
             Event::Empty(e) if e.name().as_ref() == b"style:style" => {
                 if let (Some(nm), Some(fam)) =
                     (attr_val(&e, b"style:name"), attr_val(&e, b"style:family"))
-                    && fam == "paragraph" {
-                        let disp = attr_val(&e, b"style:display-name");
-                        let (h, l) = heading_from_name(&nm, disp.as_deref());
-                        reg.para.insert(
-                            nm,
-                            ParaStyle {
-                                parent: attr_val(&e, b"style:parent-style-name"),
-                                outline_level: attr_val(&e, b"style:default-outline-level")
-                                    .and_then(|v| v.parse().ok()),
-                                heading_name: h,
-                                name_level: l,
-                                named: from_named_section || disp.is_some(),
-                                display_name: disp,
-                                ..Default::default()
-                            },
-                        );
-                    }
+                    && fam == "paragraph"
+                {
+                    let disp = attr_val(&e, b"style:display-name");
+                    let (h, l) = heading_from_name(&nm, disp.as_deref());
+                    reg.para.insert(
+                        nm,
+                        ParaStyle {
+                            parent: attr_val(&e, b"style:parent-style-name"),
+                            outline_level: attr_val(&e, b"style:default-outline-level")
+                                .and_then(|v| v.parse().ok()),
+                            heading_name: h,
+                            name_level: l,
+                            named: from_named_section || disp.is_some(),
+                            display_name: disp,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
                 b"style:style" => {
@@ -573,8 +576,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                 b"text:list-level-style-number" => {
                     list_numbered = true;
                     // Capture level-1 (0-based level 0) format + start; ODF numbers levels from 1, `text:level="1"` is the model's level 0.
-                    let is_lvl0 = attr_val(&e, b"text:level")
-                        .is_none_or(|l| l == "1");
+                    let is_lvl0 = attr_val(&e, b"text:level").is_none_or(|l| l == "1");
                     if is_lvl0 {
                         if let Some(f) = attr_val(&e, b"style:num-format") {
                             list_num_format = Some(map_num_format(&f));

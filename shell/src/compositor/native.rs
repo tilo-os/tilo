@@ -190,10 +190,11 @@ pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> O
 fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop> {
     let path = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
     if let Some(dir) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!("nirios compositor: publishing {}: {e}", path.display());
-            return None;
-        }
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        eprintln!("nirios compositor: publishing {}: {e}", path.display());
+        return None;
+    }
     // 0600: not a secret, but nothing else should write it; applied before
     // the rename so it's never briefly visible wider than intended.
     match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
@@ -1343,14 +1344,15 @@ fn apply_session_transition(
 /// both the logical [`NamedKey::Power`] and physical key code, keymap-independent.
 fn is_power_key(event: &WindowEvent) -> bool {
     if let WindowEvent::KeyboardInput { event, .. } = event
-        && event.state == ElementState::Pressed {
-            if matches!(event.logical_key, Key::Named(NamedKey::Power)) {
-                return true;
-            }
-            if let PhysicalKey::Code(code) = event.physical_key {
-                return code == winit::keyboard::KeyCode::Power;
-            }
+        && event.state == ElementState::Pressed
+    {
+        if matches!(event.logical_key, Key::Named(NamedKey::Power)) {
+            return true;
         }
+        if let PhysicalKey::Code(code) = event.physical_key {
+            return code == winit::keyboard::KeyCode::Power;
+        }
+    }
     false
 }
 
@@ -1426,10 +1428,12 @@ fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: &Modifiers) -> bo
 
 fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
     if let WindowEvent::KeyboardInput { event, .. } = event
-        && event.state == ElementState::Pressed && modifiers.state().super_key()
-            && let Key::Character(s) = &event.logical_key {
-                return s.eq_ignore_ascii_case("l");
-            }
+        && event.state == ElementState::Pressed
+        && modifiers.state().super_key()
+        && let Key::Character(s) = &event.logical_key
+    {
+        return s.eq_ignore_ascii_case("l");
+    }
     false
 }
 
@@ -1590,7 +1594,10 @@ fn spawn_session_collab_broker(
     // in a real session dials it (apps use the capnp descriptor), so it goes
     // beside the service socket rather than at `QUICK_COLLAB_SOCK` — honoured
     // when set so in-tree tools and legacy tests keep working.
-    let json_path = std::env::var_os("QUICK_COLLAB_SOCK").map_or_else(|| launcher::services::services_root().join("collab-json.sock"), std::path::PathBuf::from);
+    let json_path = std::env::var_os("QUICK_COLLAB_SOCK").map_or_else(
+        || launcher::services::services_root().join("collab-json.sock"),
+        std::path::PathBuf::from,
+    );
 
     match crate::shell::collab_broker::spawn_full(
         json_path.clone(),
@@ -2106,20 +2113,21 @@ pub fn run() -> ! {
     // comes from the backend's display; a fixed post-tick sleep instead
     // measures 21.9ms/45.6Hz regardless of actual rate. `QOS_REFRESH_HZ` overrides for testing.
     let refresh_override = pacing::refresh_override_from_env();
-    let mut frame_clock = if let Some(interval) = refresh_override.or_else(|| backend.refresh_interval()) {
-        eprintln!(
-            "nirios compositor: pacing to {:.3} Hz",
-            1.0 / interval.as_secs_f64()
-        );
-        pacing::FrameClock::new(interval, Instant::now())
-    } else {
-        // No display to follow (headless, or a host that won't say) — fall back rather than invent a rate.
-        eprintln!(
-            "nirios compositor: backend reports no refresh rate; pacing to {:.3} Hz",
-            1.0 / pacing::FALLBACK_INTERVAL.as_secs_f64()
-        );
-        pacing::FrameClock::fallback(Instant::now())
-    };
+    let mut frame_clock =
+        if let Some(interval) = refresh_override.or_else(|| backend.refresh_interval()) {
+            eprintln!(
+                "nirios compositor: pacing to {:.3} Hz",
+                1.0 / interval.as_secs_f64()
+            );
+            pacing::FrameClock::new(interval, Instant::now())
+        } else {
+            // No display to follow (headless, or a host that won't say) — fall back rather than invent a rate.
+            eprintln!(
+                "nirios compositor: backend reports no refresh rate; pacing to {:.3} Hz",
+                1.0 / pacing::FALLBACK_INTERVAL.as_secs_f64()
+            );
+            pacing::FrameClock::fallback(Instant::now())
+        };
     let frame_period = frame_clock.interval();
 
     // Move presentation onto its own thread where the backend supports it.
@@ -2224,13 +2232,14 @@ pub fn run() -> ! {
                         // retarget the clock so "pace to the display" stays true. The env override still wins.
                         if refresh_override.is_none()
                             && let Some(interval) = backend.refresh_interval()
-                                && frame_clock.set_interval(interval) {
-                                    eprintln!(
-                                        "nirios compositor: display changed; now pacing to {:.3} Hz",
-                                        1.0 / interval.as_secs_f64()
-                                    );
-                                    metrics.set_target_period(interval);
-                                }
+                            && frame_clock.set_interval(interval)
+                        {
+                            eprintln!(
+                                "nirios compositor: display changed; now pacing to {:.3} Hz",
+                                1.0 / interval.as_secs_f64()
+                            );
+                            metrics.set_target_period(interval);
+                        }
                     }
                 }
                 BackendEvent::Input(wev) => {
@@ -2405,13 +2414,14 @@ pub fn run() -> ! {
             );
             if refresh_override.is_none()
                 && let Some(interval) = backend.refresh_interval()
-                    && frame_clock.set_interval(interval) {
-                        eprintln!(
-                            "nirios compositor: display configuration changed; now pacing to {:.3} Hz",
-                            1.0 / interval.as_secs_f64()
-                        );
-                        metrics.set_target_period(interval);
-                    }
+                && frame_clock.set_interval(interval)
+            {
+                eprintln!(
+                    "nirios compositor: display configuration changed; now pacing to {:.3} Hz",
+                    1.0 / interval.as_secs_f64()
+                );
+                metrics.set_target_period(interval);
+            }
         }
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
@@ -2631,11 +2641,16 @@ pub fn run() -> ! {
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
         // Is there room in the pipe? Building another scene while the render
         // thread is behind would only grow the queue (and input-to-photon latency); capped at `QUEUE_DEPTH + 1`, the tick still services input/clients without rendering.
-        let pipe_ready = present_pipe.as_ref().is_none_or(super::present::PresentPipe::has_capacity);
-        if content_changed && cadence_due && !pipe_ready
-            && let Some(p) = present_pipe.as_mut() {
-                p.note_backpressure();
-            }
+        let pipe_ready = present_pipe
+            .as_ref()
+            .is_none_or(super::present::PresentPipe::has_capacity);
+        if content_changed
+            && cadence_due
+            && !pipe_ready
+            && let Some(p) = present_pipe.as_mut()
+        {
+            p.note_backpressure();
+        }
         let should_paint = content_changed && cadence_due && pipe_ready;
 
         // Diagnostic: `QOS_PAINT_STATS=1` logs every ~2s how many frames painted
@@ -2670,7 +2685,8 @@ pub fn run() -> ! {
                      {:.3} Hz target | present={} backpressure={}",
                     1.0 / frame_clock.interval().as_secs_f64(),
                     present_pipe
-                        .as_ref().map_or_else(|| "inline".to_string(), |p| p.presented().to_string()),
+                        .as_ref()
+                        .map_or_else(|| "inline".to_string(), |p| p.presented().to_string()),
                     present_pipe
                         .as_ref()
                         .map_or(0, super::present::PresentPipe::backpressured),
@@ -2801,9 +2817,10 @@ pub fn run() -> ! {
         // Confirm an `ext_session_lock_v1` client's lock only after the overlay is
         // presented and locked, so `locked` never fires while app content could still show; a failed lock notifies the client automatically.
         if session.is_locked()
-            && let Some(locker) = state.session_lock.take_pending_locker() {
-                locker.lock();
-            }
+            && let Some(locker) = state.session_lock.take_pending_locker()
+        {
+            locker.lock();
+        }
 
         // Accept new test-control connections, drain pending bytes from each open
         // one (parses commands, writes JSON responses); closed ones are collected below. Non-blocking so the frame-pacing loop never stalls.
@@ -2881,20 +2898,20 @@ pub fn run() -> ! {
         metrics.mark_sleep(t_sleep_start.elapsed());
         metrics.end_tick();
         if let Some(deadline) = run_deadline
-            && Instant::now() >= deadline {
-                close_requested = true;
-            }
+            && Instant::now() >= deadline
+        {
+            close_requested = true;
+        }
         let _ = &state.display_handle;
 
         // Serialize the live `WorkspaceTree` to the requested path, via a
         // tempfile-in-the-same-dir + rename so a concurrently-polling test always sees a consistent snapshot.
         if let Some(path) = test_dump_path.as_ref()
             && let Ok(json) = serde_json::to_vec(&state.workspace_tree)
-                && let Err(e) =
-                    atomic_file::write_creating_parent(std::path::Path::new(path), &json)
-                {
-                    tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
-                }
+            && let Err(e) = atomic_file::write_creating_parent(std::path::Path::new(path), &json)
+        {
+            tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
+        }
     }
 
     // Stop the render thread and wait for the frame in flight, so a

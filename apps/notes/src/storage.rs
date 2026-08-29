@@ -31,8 +31,7 @@ use crate::model::{PageId, Workspace, WorkspaceData};
 /// "Saved / Saving… / Save failed" indicator. The numeric repr is an
 /// `AtomicU8` storage detail (encoded by [`SaveStatus::as_u8`]) so the
 /// background thread can publish state to the UI thread without locks.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum SaveStatus {
     /// No pending writes, nothing in flight — disk reflects RAM.
     #[default]
@@ -44,7 +43,6 @@ pub enum SaveStatus {
     /// write succeeds.
     Failed,
 }
-
 
 impl SaveStatus {
     fn as_u8(self) -> u8 {
@@ -532,10 +530,11 @@ fn saver_loop(
                 let to_write = pending.lock().unwrap().take();
                 let mut ok = true;
                 if let Some(w) = to_write
-                    && let Err(e) = save_workspace(&root, &w) {
-                        tracing::error!(error = %e, "notes: workspace save failed");
-                        ok = false;
-                    }
+                    && let Err(e) = save_workspace(&root, &w)
+                {
+                    tracing::error!(error = %e, "notes: workspace save failed");
+                    ok = false;
+                }
                 last_request = None;
                 let new_status = if ok {
                     SaveStatus::Saved
@@ -550,10 +549,11 @@ fn saver_loop(
                 let to_write = pending.lock().unwrap().take();
                 let mut ok = true;
                 if let Some(w) = to_write
-                    && let Err(e) = save_workspace(&root, &w) {
-                        tracing::error!(error = %e, "notes: workspace save failed");
-                        ok = false;
-                    }
+                    && let Err(e) = save_workspace(&root, &w)
+                {
+                    tracing::error!(error = %e, "notes: workspace save failed");
+                    ok = false;
+                }
                 last_request = None;
                 let new_status = if ok {
                     SaveStatus::Saved

@@ -179,17 +179,19 @@ fn write_row(row: &Row, out: &mut String) {
                 write_row(den, out);
                 out.push(')');
             }
-            Node::Sqrt { index, radicand } => if let Some(idx) = index {
-                out.push_str("root(");
-                write_row(idx, out);
-                out.push(',');
-                write_row(radicand, out);
-                out.push(')');
-            } else {
-                out.push_str("sqrt(");
-                write_row(radicand, out);
-                out.push(')');
-            },
+            Node::Sqrt { index, radicand } => {
+                if let Some(idx) = index {
+                    out.push_str("root(");
+                    write_row(idx, out);
+                    out.push(',');
+                    write_row(radicand, out);
+                    out.push(')');
+                } else {
+                    out.push_str("sqrt(");
+                    write_row(radicand, out);
+                    out.push(')');
+                }
+            }
             Node::Paren { body } => {
                 out.push('(');
                 write_row(body, out);

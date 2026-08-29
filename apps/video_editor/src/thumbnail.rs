@@ -128,7 +128,9 @@ impl ThumbnailCache {
     /// kick off a real-frame extraction to replace it. `at` is the source time
     /// (seconds) to sample a real frame from.
     pub fn ensure(&mut self, id: MediaId, palette: u8, source: &MediaSource, at: f64) {
-        self.map.entry(id).or_insert_with(|| Arc::new(representative(palette, THUMB_W, THUMB_H)));
+        self.map
+            .entry(id)
+            .or_insert_with(|| Arc::new(representative(palette, THUMB_W, THUMB_H)));
         #[cfg(feature = "decode")]
         {
             let already_real = self.map.get(&id).is_some_and(|t| t.real);

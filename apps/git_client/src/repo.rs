@@ -42,7 +42,8 @@ pub fn load(path: &Path) -> Option<(RepoModel, DiffMap)> {
     if let Some(wd) = repo.workdir() {
         model.workdir = wd.to_string_lossy().to_string();
         model.name = wd
-            .file_name().map_or_else(|| "repository".into(), |s| s.to_string_lossy().to_string());
+            .file_name()
+            .map_or_else(|| "repository".into(), |s| s.to_string_lossy().to_string());
     }
 
     read_identity(&repo, &mut model);
@@ -74,7 +75,8 @@ fn read_head(repo: &Repository, model: &mut RepoModel) {
                 model.head = head.shorthand().unwrap_or("HEAD").to_string();
             } else {
                 let short = head
-                    .target().map_or_else(|| "HEAD".into(), |o| short_id(&o.to_string()));
+                    .target()
+                    .map_or_else(|| "HEAD".into(), |o| short_id(&o.to_string()));
                 model.head = format!("detached @ {short}");
             }
         }
@@ -306,7 +308,9 @@ fn read_history(repo: &Repository, model: &mut RepoModel, _diffs: &mut DiffMap) 
         let author = commit.author();
         let summary = commit.summary().unwrap_or("").to_string();
         let full = commit.message().unwrap_or("");
-        let body = full.split_once('\n').map(|x| x.1)
+        let body = full
+            .split_once('\n')
+            .map(|x| x.1)
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         let parents: Vec<String> = commit.parent_ids().map(|p| p.to_string()).collect();
@@ -333,12 +337,13 @@ fn ref_decorations(repo: &Repository) -> HashMap<String, Vec<RefLabel>> {
 
     // HEAD pointer.
     if let Ok(head) = repo.head()
-        && let Some(oid) = head.target() {
-            map.entry(oid.to_string()).or_default().push(RefLabel {
-                name: "HEAD".into(),
-                kind: RefKind::Head,
-            });
-        }
+        && let Some(oid) = head.target()
+    {
+        map.entry(oid.to_string()).or_default().push(RefLabel {
+            name: "HEAD".into(),
+            kind: RefKind::Head,
+        });
+    }
 
     if let Ok(refs) = repo.references() {
         for r in refs.flatten() {
@@ -377,10 +382,12 @@ fn read_branches(repo: &Repository, model: &mut RepoModel) {
             .target()
             .map(|o| short_id(&o.to_string()))
             .unwrap_or_default();
-        let upstream = branch
-            .upstream()
-            .ok()
-            .and_then(|u| u.name().ok().flatten().map(std::string::ToString::to_string));
+        let upstream = branch.upstream().ok().and_then(|u| {
+            u.name()
+                .ok()
+                .flatten()
+                .map(std::string::ToString::to_string)
+        });
         let (ahead, behind) = upstream_delta(repo, &branch);
         model.branches.push(Branch {
             name: name.to_string(),
@@ -398,9 +405,10 @@ fn upstream_delta(repo: &Repository, branch: &git2::Branch) -> (u32, u32) {
     let local = branch.get().target();
     let upstream = branch.upstream().ok().and_then(|u| u.get().target());
     if let (Some(l), Some(u)) = (local, upstream)
-        && let Ok((ahead, behind)) = repo.graph_ahead_behind(l, u) {
-            return (ahead as u32, behind as u32);
-        }
+        && let Ok((ahead, behind)) = repo.graph_ahead_behind(l, u)
+    {
+        return (ahead as u32, behind as u32);
+    }
     (0, 0)
 }
 
@@ -533,9 +541,7 @@ pub fn stage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let mut index = repo.index()?;
     let rel = Path::new(file);
-    let wt_exists = repo
-        .workdir()
-        .is_some_and(|w| w.join(rel).exists());
+    let wt_exists = repo.workdir().is_some_and(|w| w.join(rel).exists());
     if wt_exists {
         index
             .add_path(rel)
@@ -664,8 +670,7 @@ pub fn apply_hunk(path: &Path, file: &str, hunk_index: usize, unstage: bool) -> 
     });
     // Restrict to our file so hunk ordering matches the single-file diff.
     apply_opts.delta_callback(move |delta| {
-        delta
-            .is_some_and(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
+        delta.is_some_and(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
     });
 
     repo.apply(&diff, location, Some(&mut apply_opts))
@@ -743,8 +748,7 @@ pub fn discard_hunk(path: &Path, file: &str, hunk_index: usize) -> anyhow::Resul
         is_target
     });
     apply_opts.delta_callback(move |delta| {
-        delta
-            .is_some_and(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
+        delta.is_some_and(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
     });
 
     repo.apply(&diff, ApplyLocation::WorkDir, Some(&mut apply_opts))
@@ -846,9 +850,10 @@ pub fn create_branch(
 pub fn delete_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     if let Ok(head) = repo.head()
-        && head.shorthand() == Some(name) {
-            bail!("cannot delete the checked-out branch {name}");
-        }
+        && head.shorthand() == Some(name)
+    {
+        bail!("cannot delete the checked-out branch {name}");
+    }
     let mut branch = repo
         .find_branch(name, BranchType::Local)
         .with_context(|| format!("no such local branch {name}"))?;
@@ -972,7 +977,11 @@ pub fn stash_save(path: &Path, message: &str) -> anyhow::Result<String> {
 /// first configured remote, else an error.
 fn resolve_remote(repo: &Repository, want: Option<&str>) -> anyhow::Result<String> {
     let names = repo.remotes()?;
-    let all: Vec<String> = names.iter().flatten().map(std::string::ToString::to_string).collect();
+    let all: Vec<String> = names
+        .iter()
+        .flatten()
+        .map(std::string::ToString::to_string)
+        .collect();
     if let Some(w) = want {
         if all.iter().any(|n| n == w) {
             return Ok(w.to_string());
@@ -998,9 +1007,10 @@ fn default_credentials(
 ) -> Result<git2::Cred, git2::Error> {
     if allowed.contains(git2::CredentialType::SSH_KEY)
         && let Some(user) = username
-            && let Ok(cred) = git2::Cred::ssh_key_from_agent(user) {
-                return Ok(cred);
-            }
+        && let Ok(cred) = git2::Cred::ssh_key_from_agent(user)
+    {
+        return Ok(cred);
+    }
     if allowed.contains(git2::CredentialType::DEFAULT) {
         return git2::Cred::default();
     }
@@ -1023,9 +1033,8 @@ pub fn tree_has_path(path: &Path, rev: &str, file: &str) -> anyhow::Result<bool>
     let tree = obj.peel_to_tree()?;
     let found = tree.get_path(Path::new(file)).is_ok();
     // Ensure we only report committed blobs, not directories.
-    if found
-        && let Ok(entry) = tree.get_path(Path::new(file)) {
-            return Ok(entry.kind() == Some(ObjectType::Blob));
-        }
+    if found && let Ok(entry) = tree.get_path(Path::new(file)) {
+        return Ok(entry.kind() == Some(ObjectType::Blob));
+    }
     Ok(false)
 }

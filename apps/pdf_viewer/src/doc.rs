@@ -215,9 +215,10 @@ impl PdfDoc {
     fn index_of(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
         for i in 0..doc.length(list) {
             if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(list, i)
-                && Self::get_str(doc, &m, "id").as_deref() == Some(id) {
-                    return Some(i);
-                }
+                && Self::get_str(doc, &m, "id").as_deref() == Some(id)
+            {
+                return Some(i);
+            }
         }
         None
     }
@@ -225,9 +226,10 @@ impl PdfDoc {
     pub fn set_annotation_color(doc: &mut AutoCommit, id: &str, color: Swatch) {
         let list = Self::list(doc, "annotations");
         if let Some(i) = Self::index_of(doc, &list, id)
-            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                let _ = doc.put(&m, "color", color.key());
-            }
+            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+        {
+            let _ = doc.put(&m, "color", color.key());
+        }
     }
 
     /// Move an annotation's anchor to `(x, y)` in page-point space. Used by the
@@ -238,10 +240,11 @@ impl PdfDoc {
         let list = Self::list(doc, "annotations");
         if let Some(i) = Self::index_of(doc, &list, id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-                && Self::get_str(doc, &m, "kind").as_deref() != Some("ink") {
-                    let _ = doc.put(&m, "x", x);
-                    let _ = doc.put(&m, "y", y);
-                }
+            && Self::get_str(doc, &m, "kind").as_deref() != Some("ink")
+        {
+            let _ = doc.put(&m, "x", x);
+            let _ = doc.put(&m, "y", y);
+        }
     }
 
     pub fn delete_annotation(doc: &mut AutoCommit, id: &str) {
@@ -341,9 +344,10 @@ impl PdfDoc {
     pub fn set_comment_resolved(doc: &mut AutoCommit, id: &str, resolved: bool) {
         let list = Self::list(doc, "comments");
         if let Some(i) = Self::index_of(doc, &list, id)
-            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                let _ = doc.put(&m, "resolved", resolved);
-            }
+            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+        {
+            let _ = doc.put(&m, "resolved", resolved);
+        }
     }
 
     /// Replace a comment's body text. Used by the inline editor when the user
@@ -351,9 +355,10 @@ impl PdfDoc {
     pub fn set_comment_body(doc: &mut AutoCommit, id: &str, body: &str) {
         let list = Self::list(doc, "comments");
         if let Some(i) = Self::index_of(doc, &list, id)
-            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                let _ = doc.put(&m, "body", body);
-            }
+            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+        {
+            let _ = doc.put(&m, "body", body);
+        }
     }
 
     pub fn delete_comment(doc: &mut AutoCommit, id: &str) {
@@ -366,20 +371,21 @@ impl PdfDoc {
     pub fn add_reply(doc: &mut AutoCommit, comment_id: &str, reply: &Reply) {
         let list = Self::list(doc, "comments");
         if let Some(i) = Self::index_of(doc, &list, comment_id)
-            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
-                let replies = match doc.get(&m, "replies") {
-                    Ok(Some((Value::Object(ObjType::List), rl))) => rl,
-                    _ => doc
-                        .put_object(&m, "replies", ObjType::List)
-                        .expect("put replies list never fails"),
-                };
-                let idx = doc.length(&replies);
-                let rm = doc
-                    .insert_object(&replies, idx, ObjType::Map)
-                    .expect("insert reply map never fails");
-                let _ = doc.put(&rm, "author", reply.author.as_str());
-                let _ = doc.put(&rm, "body", reply.body.as_str());
-            }
+            && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
+        {
+            let replies = match doc.get(&m, "replies") {
+                Ok(Some((Value::Object(ObjType::List), rl))) => rl,
+                _ => doc
+                    .put_object(&m, "replies", ObjType::List)
+                    .expect("put replies list never fails"),
+            };
+            let idx = doc.length(&replies);
+            let rm = doc
+                .insert_object(&replies, idx, ObjType::Map)
+                .expect("insert reply map never fails");
+            let _ = doc.put(&rm, "author", reply.author.as_str());
+            let _ = doc.put(&rm, "body", reply.body.as_str());
+        }
     }
 
     // ---- signatures -------------------------------------------------
@@ -680,9 +686,7 @@ mod tests {
             rect: PtRect::new(100.0, 100.0, 200.0, 70.0),
             signer: "Grace".into(),
             date: "2026-08-17".into(),
-            ink: crate::model::SignatureInk::Drawn {
-                strokes: strokes,
-            },
+            ink: crate::model::SignatureInk::Drawn { strokes: strokes },
         };
         PdfDoc::add_signature(&mut doc, &s);
         let got = PdfDoc::list_signatures(&doc);

@@ -88,16 +88,18 @@ impl IdentityStore for DiskIdentityStore {
 
 fn resolve_identity_dir() -> Result<PathBuf, io::Error> {
     if let Some(x) = std::env::var_os("XDG_CONFIG_HOME")
-        && !x.is_empty() {
-            return Ok(PathBuf::from(x).join("qos").join("identity"));
-        }
+        && !x.is_empty()
+    {
+        return Ok(PathBuf::from(x).join("qos").join("identity"));
+    }
     if let Some(h) = std::env::var_os("HOME")
-        && !h.is_empty() {
-            return Ok(PathBuf::from(h)
-                .join(".config")
-                .join("qos")
-                .join("identity"));
-        }
+        && !h.is_empty()
+    {
+        return Ok(PathBuf::from(h)
+            .join(".config")
+            .join("qos")
+            .join("identity"));
+    }
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         "neither XDG_CONFIG_HOME nor HOME set",
