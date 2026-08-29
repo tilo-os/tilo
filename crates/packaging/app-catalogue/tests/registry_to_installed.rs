@@ -3,13 +3,9 @@
 //! `qos-install`, and present in the registry the desktop enumerates
 //! installed apps from.
 //!
-//! Nothing here is mocked. The registry is a real socket serving real
-//! HTTP; the package is really packed and really signed; the install
-//! is really `qos-install` in a child process, doing its own
-//! fail-closed verification. What the test asserts at the end is the
-//! only thing that matters to the desktop: `launcher::registry` — the
-//! exact reader the compositor's applications list uses — now returns
-//! the app.
+//! Nothing here is mocked: real socket, real signed package, real
+//! `qos-install` child process. The assertion that matters:
+//! `launcher::registry` (the compositor's own reader) returns the app.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -22,9 +18,8 @@ use pkg::pack::{SigningIdentity, pack};
 use pkg::{Manifest, MemoryBlobStore};
 use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
 
-/// The `.qpkg`-authoring the local test registry does, shared verbatim
-/// so the tests below hold the *served* package to its contract rather
-/// than a re-implementation of it.
+/// The .qpkg-authoring the local test registry does, shared verbatim
+/// so tests hold the served package to its real contract.
 #[path = "../examples/support/authoring.rs"]
 mod authoring;
 
@@ -37,11 +32,9 @@ fn env_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-/// Locate the `qos-install` binary this workspace builds.
-///
-/// A missing binary **fails** the test rather than skipping it: a
-/// check that cannot reach its subject has proved nothing, and a
-/// silent skip here would read as a pass.
+/// Locate the `qos-install` binary this workspace builds. A missing
+/// binary **fails** the test rather than skipping it — a check that
+/// can't reach its subject proves nothing, and a silent skip would read as a pass.
 fn qos_install_bin() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir
@@ -62,8 +55,7 @@ fn qos_install_bin() -> PathBuf {
     );
 }
 
-/// Author a signed `.qpkg` for `package_id`, declaring a GUI
-/// entrypoint so the desktop would treat it as launchable.
+/// Author a signed .qpkg for `package_id`, declaring a GUI entrypoint so the desktop would treat it as launchable.
 fn author_qpkg(package_id: &str, identity: &SigningIdentity) -> Vec<u8> {
     let pubhex = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
@@ -128,8 +120,7 @@ fn signed_entry(package_id: &str, qpkg_url: &str, qpkg: &[u8]) -> RegistryEntry 
     entry
 }
 
-/// A minimal real HTTP server: `GET /entries` returns the catalogue
-/// JSON, `GET /<name>.qpkg` returns the package bytes.
+/// A minimal real HTTP server: GET /entries returns the catalogue JSON, GET /<name>.qpkg returns the package bytes.
 struct Registry {
     port: u16,
     _thread: std::thread::JoinHandle<()>,
@@ -193,8 +184,7 @@ fn serve_one(mut stream: TcpStream, entries: &str, qpkg: &[u8]) {
     let _ = stream.flush();
 }
 
-/// Point every relevant environment variable at scratch directories,
-/// restoring them on drop.
+/// Point every relevant environment variable at scratch directories, restoring them on drop.
 struct Env {
     _lock: MutexGuard<'static, ()>,
     saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
@@ -238,8 +228,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     let url = format!("http://127.0.0.1:{planned_port}/sheets.qpkg");
     let entry = signed_entry(PACKAGE_ID, &url, &qpkg);
     let entries_json = serde_json::to_string(&vec![entry]).unwrap();
-    // Bind for real; if the planned port was taken, fall back to
-    // whatever we get and rewrite the URL.
+    // Bind for real; if the planned port was taken, fall back to whatever we get and rewrite the URL.
     let registry = Registry::start(entries_json.clone(), qpkg.clone());
     let registry = if registry.port == planned_port {
         registry
@@ -294,8 +283,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
         "the row names the registry it came from"
     );
 
-    // 2. Nothing is installed yet — this is what makes step 3 mean
-    //    something.
+    // 2. Nothing is installed yet — this is what makes step 3 mean something.
     assert!(
         launcher::registry::list_installed().unwrap().is_empty(),
         "the scratch install root must start empty"
@@ -306,9 +294,8 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
         .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
     assert_eq!(installed.package_id, PACKAGE_ID);
 
-    // 4. The desktop's own reader now returns it. This is the
-    //    assertion the feature stands on: the compositor enumerates
-    //    installed apps through exactly this call.
+    // 4. The desktop's own reader now returns it — the compositor
+    //    enumerates installed apps through exactly this call.
     let now_installed = launcher::registry::list_installed().unwrap();
     let found = now_installed
         .iter()
@@ -334,10 +321,9 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     );
 }
 
-/// Bytes that do not match the package they claim to be must not
-/// become an installed app. The registry is the one serving them, so
-/// this is the case where a compromised or buggy registry hands over
-/// something other than what its signed entry described.
+/// Bytes that don't match the package they claim must not become an
+/// installed app — the case of a compromised or buggy registry
+/// handing over something other than what its signed entry described.
 #[test]
 fn a_corrupted_download_never_becomes_an_installed_app() {
     let publisher = SigningIdentity::generate();
@@ -373,8 +359,7 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
         ("QOS_INSTALL_BIN", &installer),
     ]);
 
-    // The entry has to actually be on offer, or the refusal below
-    // would be "no such app" and would prove nothing about the bytes.
+    // The entry has to actually be on offer, or the refusal below would prove nothing about the bytes.
     let listing = app_catalogue::available();
     assert!(
         listing
@@ -401,13 +386,11 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
     );
 }
 
-// ---------------------------------------------------------------------
 // Installing an app and opening it is the ordinary path.
-// ---------------------------------------------------------------------
 
-/// A payload root shaped exactly like one `qos-install` leaves behind:
-/// a `manifest.toml` beside a `bin/` holding the app. This is what
-/// every harness points a local registry's `--payload` at.
+/// A payload root shaped exactly like what `qos-install` leaves
+/// behind: manifest.toml beside a bin/ — what every harness points a
+/// local registry's --payload at.
 fn packaged_payload_root(dir: &Path, package_id: &str) -> PathBuf {
     let root = dir.join("payload-root");
     std::fs::create_dir_all(root.join("bin")).unwrap();
@@ -450,8 +433,7 @@ type = "gui"
     root
 }
 
-/// Serve `qpkg` under `package_id` and install it with the real
-/// installer, returning what the desktop's own reader then sees.
+/// Serve `qpkg` under `package_id` and install it with the real installer, returning what the desktop's own reader then sees.
 fn publish_and_install(
     package_id: &str,
     qpkg: Vec<u8>,
@@ -497,32 +479,16 @@ fn publish_and_install(
         .unwrap_or_else(|| panic!("the desktop must see {package_id} after installing it"))
 }
 
-/// Installing an app and then opening it is what a person does the
-/// first time they use anything, and it has to reach the launcher with
-/// the services its publisher declared.
-///
-/// It once did not. The registry published a manifest it made up
-/// instead of the one the payload was built with, so `[sandbox.services]`
-/// arrived empty: the launcher opened no collab socket, the app was
-/// handed no `QOS_SVC_COLLAB_FD`, and it started with collaboration
-/// switched off. Nothing said so. Every declared service is optional,
-/// an *absent* declaration is not even a warning, and presence rides a
-/// different path — so the room looked alive while nothing was shared.
-/// The same app opened from the palette, already installed with its
-/// real manifest, collaborated fine, which is what made this read as a
-/// document-sync problem instead of a connection one.
-///
-/// The assertion is therefore on the difference between the two launch
-/// paths: what a *newly installed* app reaches the launcher with must
-/// equal what the package declared, service for service.
+/// Installing an app and then opening it must reach the launcher with
+/// the services its publisher declared: what a *newly installed* app
+/// gets must equal what the package declared, service for service.
 #[test]
 fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
     const PKG: &str = "dev.qos.catalogue-collab";
     let scratch = tempfile::tempdir().unwrap();
     let root = packaged_payload_root(scratch.path(), PKG);
 
-    // What the publisher declared — read with the launcher's own
-    // reader, so "declared" means what the launcher would act on.
+    // What the publisher declared, read with the launcher's own reader, so "declared" means what the launcher would act on.
     let declared = launcher::manifest::read_manifest(&root.join("manifest.toml"))
         .expect("the fixture manifest parses");
     assert!(
@@ -563,10 +529,9 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
         reached.sandbox.services, declared.sandbox.services
     );
 
-    // And that declaration is what actually produces the descriptor.
-    // Assert on the launcher's own resolution against a live socket,
-    // not on the map: a manifest that parses but resolves to nothing
-    // is the same silent failure wearing a different hat.
+    // Assert on the launcher's own resolution against a live socket, not
+    // the map — a manifest that parses but resolves to nothing is the
+    // same silent failure wearing a different hat.
     let _env = Env::set(&[("XDG_RUNTIME_DIR", runtime_dir.path())]);
     let services_root =
         launcher::services::ensure_services_root().expect("create the services dir");
@@ -582,10 +547,9 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
     );
 }
 
-/// A payload that is not part of a package still installs — the local
-/// registry has always accepted `--payload /bin/true` — but it is
-/// published as declaring no services, and it says so rather than
-/// passing for a real package that happens not to collaborate.
+/// A payload that is not part of a package still installs (the local
+/// registry accepts --payload /bin/true), but is published as
+/// declaring no services rather than silently passing for a real package.
 #[test]
 fn a_payload_with_no_manifest_is_published_as_declaring_no_services() {
     let bare = tempfile::tempdir().unwrap();

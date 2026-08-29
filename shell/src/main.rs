@@ -1,19 +1,14 @@
 //! Compositor binary entry point.
 //!
 //! Picks a [`Mode`] from `--mode`, then delegates to the matching
-//! `compositor::*::run` function. [`Mode::Native`] is the default — no
-//! flag spins up the real smithay server with the vello+wgpu winit
-//! backend. [`Mode::Hosted`] remains an explicit dev opt-in
-//! (`--mode hosted`) for the legacy iced-on-winit path when DRM or a spare
-//! Wayland session is unavailable.
+//! `compositor::*::run` function. [`Mode::Native`] is the default (real
+//! smithay server, vello+wgpu winit backend); [`Mode::Hosted`] is an
+//! explicit dev opt-in (`--mode hosted`) for the legacy iced-on-winit path.
 //!
-//! Two side-channel modes short-circuit the normal dispatch before
-//! `parse_mode` runs, and are mutually exclusive:
-//!
-//! - `--portal-server-only` runs only the `xdg-desktop-portal` D-Bus
-//!   backend (so the portal doesn't race the compositor for `wayland-N`).
-//! - `--firstboot` runs first-boot setup, then continues with the normal
-//!   compositor boot.
+//! Two side-channel modes short-circuit dispatch before `parse_mode`
+//! runs, mutually exclusive: `--portal-server-only` runs only the
+//! `xdg-desktop-portal` D-Bus backend (so it doesn't race the compositor
+//! for `wayland-N`); `--firstboot` runs first-boot setup, then continues into the normal compositor boot.
 
 use shell::compositor::hosted::HostedOptions;
 use shell::compositor::{self, Mode};
@@ -22,12 +17,10 @@ use shell::{firstboot, portal};
 
 /// Install a panic hook that writes a crash report to
 /// `~/.cache/qos/crashes/<timestamp>.log` and echoes the panic message +
-/// log path to stderr. Without this, a session launched outside a
-/// terminal (greetd, .desktop double-click) discards stderr, making "the
-/// shell just disappeared" reports unactionable.
+/// log path to stderr — without this, a session launched outside a
+/// terminal (greetd, .desktop double-click) discards stderr, making "the shell just disappeared" unactionable.
 ///
-/// Chains to the default hook AFTER writing the file so a developer
-/// running from a terminal still sees the colored panic + backtrace.
+/// Chains to the default hook AFTER writing the file so a developer running from a terminal still sees the colored panic + backtrace.
 fn install_crash_log_hook() {
     let dir = dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
@@ -68,36 +61,30 @@ fn install_crash_log_hook() {
 }
 
 fn main() {
-    // `init()` is a no-op unless the env var is set, so production boots
-    // pay zero cost. The scope guard dumps recorded events to disk when
-    // `main` returns.
+    // `init()` is a no-op unless the env var is set, so production boots pay
+    // zero cost; the scope guard dumps recorded events to disk when `main` returns.
     qos_startup_metrics::init();
     let _startup_dump = qos_startup_metrics::ScopedDumper;
     qos_startup_metrics::mark("main-start");
 
-    // Decide which GPU this session runs on before anything opens one —
-    // the warmup thread below builds a wgpu context, and on a multi-GPU
-    // box the adapter it picks may disagree with what the compositor
-    // advertises to clients. Pinning here, while `main` is still
-    // single-threaded, makes the compositor and every app it launches
-    // agree on one device. Logged after `tracing_subscriber::init` below,
-    // which doesn't exist yet at this point.
+    // Decide which GPU this session runs on before anything opens one — the
+    // warmup thread below builds a wgpu context, and on a multi-GPU box its
+    // adapter may disagree with what the compositor advertises to clients.
+    // Pinning here, while `main` is still single-threaded, makes the
+    // compositor and every launched app agree on one device.
     let gpu_pin = compositor::render_node::pin_process();
 
     // Cold-start warmup on a background thread, as early as possible.
     // cosmic-text's `FontSystem::new` (mmaps every face, up to ~1s) and
     // vello's `Renderer::new` (compiles ~30 WGSL pipelines) dominate
-    // time-to-first-paint on a cold process; warming them here gets the OS
-    // page cache, fontconfig cache, and process-wide wgpu context hot
-    // before the compositor thread's real builds. The handle is kept
-    // alive on the main-fn stack so the thread survives regardless of
-    // what `main` is blocked on.
+    // time-to-first-paint; warming them here gets the OS page cache,
+    // fontconfig cache, and process-wide wgpu context hot before the
+    // compositor thread's real builds. Kept alive on the main-fn stack so the thread survives whatever `main` blocks on.
     //
-    // FontSystem warmup is on by default (~90ms / 22% of first-paint).
-    // Vello scratch-render warmup is off by default — it contends for the
-    // process-wide render-context mutex and measured slower than no
-    // warmup. QOS_STARTUP_WARM=off disables FontSystem warmup;
-    // QOS_STARTUP_WARM_VELLO=1 opts back into Vello warmup.
+    // FontSystem warmup is on by default (~90ms / 22% of first-paint). Vello
+    // scratch-render warmup is off by default — it contends for the
+    // process-wide render-context mutex and measured slower than no warmup.
+    // QOS_STARTUP_WARM=off disables FontSystem warmup; QOS_STARTUP_WARM_VELLO=1 opts back in.
     let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
         .ok()
         .is_some_and(|v| {
@@ -110,8 +97,7 @@ fn main() {
 
     // Landlock launcher shim: bwrap execs us as `shell __sandbox-exec --ro
     // <p>… --rw <p>… [--net-restricted] -- <app argv>` from inside the
-    // sandbox; we apply an in-kernel Landlock ruleset to ourselves and
-    // `execvp` the real app. Must short-circuit before any compositor setup.
+    // sandbox; we apply an in-kernel Landlock ruleset and `execvp` the real app. Must short-circuit before any compositor setup.
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args
         .get(1)
@@ -165,23 +151,19 @@ fn main() {
 
     if firstboot_requested {
         if let Err(e) = firstboot::run() {
-            // Don't fail the boot — log and continue. A non-zero exit
-            // still poisons the wider boot transaction even though the
-            // systemd unit marks first-boot done regardless, so we
-            // swallow the error here.
+            // Don't fail the boot — log and continue. A non-zero exit still poisons
+            // the wider boot transaction even though the systemd unit marks first-boot done regardless, so we swallow the error here.
             tracing::warn!("firstboot: setup hit an error ({e}); continuing with compositor boot");
         }
-        // Fall through to the normal compositor entry point — the
-        // systemd unit runs us as `Type=oneshot`, so the compositor
-        // process exits at the bottom of `app.run()` as usual.
+        // Fall through to the normal compositor entry point — the systemd unit
+        // runs us as `Type=oneshot`, so the process exits at the bottom of `app.run()` as usual.
     }
 
     // A signing identity belongs to the person, so it's created here — in
-    // their session, never by the system unit running as root before
-    // anyone has logged in. `--provision-identity` is
-    // `qos-identity.service`'s **user**-unit entry point: it runs the
-    // ceremony and exits. Reaching this point without an identity and
-    // without that flag means something started the desktop directly.
+    // their session, never by the system unit running as root before anyone
+    // has logged in. `--provision-identity` is `qos-identity.service`'s
+    // **user**-unit entry point: it runs the ceremony and exits. Reaching
+    // this point without an identity and without that flag means something started the desktop directly.
     match identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
             if provision_identity_requested {
@@ -196,8 +178,7 @@ fn main() {
             );
         }
         Ok(_) if provision_identity_requested => {
-            // Idempotent by design: the user unit runs on every login,
-            // and an identity that already exists is the success case.
+            // Idempotent by design: the user unit runs on every login, and an identity that already exists is the success case.
             tracing::info!("qOS identity already present; nothing to provision");
             return;
         }
@@ -216,10 +197,9 @@ fn main() {
             enable_peer_sync,
             enable_portals,
         }),
-        // Native mode serves portals unconditionally — the shipped session
-        // runs `shell --backend drm` with no flags, so gating file
-        // open/save behind an opt-in flag meant no working file dialog.
-        // `--enable-portals` is still accepted for existing units/scripts.
+        // Native mode serves portals unconditionally — the shipped session runs
+        // `shell --backend drm` with no flags, so gating file open/save behind
+        // an opt-in flag meant no working file dialog. `--enable-portals` is still accepted for existing units/scripts.
         Mode::Native => {
             let _ = enable_portals;
             qos_startup_metrics::mark("compositor-native-run-start");
@@ -228,14 +208,11 @@ fn main() {
     }
 }
 
-/// Host the first-login identity ceremony and block until the user has
-/// finished it. Runs as its own `ui::App` rather than inside the
-/// compositor — this happens *before* a desktop exists, so nothing could
-/// be running while the key is created.
+/// Host the first-login identity ceremony and block until finished. Runs
+/// as its own `ui::App` rather than inside the compositor, since this happens *before* a desktop exists.
 fn run_identity_onboarding(identity_dir: Option<std::path::PathBuf>) {
     let Some(dir) = identity_dir else {
-        // No resolvable home means no right place for a signing key, and
-        // guessing one is how the key ended up in root's tree to begin with.
+        // No resolvable home means no right place for a signing key, and guessing one is how the key ended up in root's tree to begin with.
         tracing::error!(
             "cannot provision an identity: no user config directory resolved from \
              $XDG_CONFIG_HOME or $HOME"
@@ -253,8 +230,7 @@ fn run_identity_onboarding(identity_dir: Option<std::path::PathBuf>) {
 /// rendering. Bootstraps a minimal tokio runtime, owns the session-bus
 /// connection the `org.freedesktop.impl.portal.desktop.nirios` name
 /// resolves to, and blocks until torn down (SIGTERM from systemd). Used
-/// by `quick-desktop-portal.service` so the portal backend doesn't
-/// compete with the compositor for `wayland-N`.
+/// by `quick-desktop-portal.service` so the portal backend doesn't compete with the compositor for `wayland-N`.
 fn run_portal_server_only() {
     tracing::info!("nirios portal server starting (--portal-server-only)");
 
@@ -271,10 +247,9 @@ fn run_portal_server_only() {
     };
 
     runtime.block_on(async move {
-        // Fresh GrantStoreHandle on an empty WorkspaceTree + a
-        // Channel-mode PromptQueueHandle — every prompt buffers (no
-        // compositor to drain it); until per-workspace state is wired for
-        // this mode, the unit's job is just to own the bus name.
+        // Fresh GrantStoreHandle on an empty WorkspaceTree + a Channel-mode
+        // PromptQueueHandle — every prompt buffers (no compositor to drain it);
+        // until per-workspace state is wired for this mode, the unit's job is just to own the bus name.
         let tree_handle = shell::shell::state::WorkspaceTree::default().shared();
         let grants = portal::GrantStoreHandle::new(tree_handle);
         let prompts = portal::PromptQueueHandle::new(portal::PromptResolver::Channel);
@@ -311,8 +286,7 @@ fn run_portal_server_only() {
             portal::BUS_NAME
         );
 
-        // Block forever — systemd sends SIGTERM to tear us down; the
-        // ServerHandle keeps the connection alive in the meantime.
+        // Block forever — systemd sends SIGTERM to tear us down; the ServerHandle keeps the connection alive in the meantime.
         std::future::pending::<()>().await;
     });
 }

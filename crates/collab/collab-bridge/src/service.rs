@@ -1,10 +1,8 @@
 //! Cap'n Proto server implementations for the SDK-facing collab
-//! interfaces. Each capnp method translates one or more requests
-//! onto the upstream broker via [`UpstreamHandle`] and returns a
-//! Promise the RPC runtime drives.
-//!
-//! The server structs hold `Rc`-wrapped state so they can live under
-//! the LocalSet without any Send bounds.
+//! interfaces. Each capnp method translates requests onto the upstream
+//! broker via [`UpstreamHandle`] and returns a Promise the RPC runtime
+//! drives. Server structs hold `Rc`-wrapped state so they can live under
+//! the LocalSet without Send bounds.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -22,18 +20,14 @@ use crate::upstream::{PresenceEnvelope, ScrollbackReply, UpstreamHandle, connect
 use crate::wire::{CollabRequest, PresencePayload};
 use collab_types::ArtifactId;
 
-/// Factory closure that opens the upstream connection. Kept as a
-/// closure so tests can substitute a fake broker without touching
-/// the real Unix filesystem.
+/// Factory closure that opens the upstream connection; kept as a closure so tests can substitute a fake broker without touching the real filesystem.
 pub type UpstreamOpener = Rc<
     dyn Fn() -> std::pin::Pin<
         Box<dyn std::future::Future<Output = std::io::Result<UpstreamHandle>>>,
     >,
 >;
 
-/// Root capnp service. Owned by the RPC system for the lifetime of
-/// one client connection; a `joinChannel` call is what actually
-/// dials the upstream broker.
+/// Root capnp service, owned by the RPC system for one client connection; `joinChannel` is what dials the upstream broker.
 pub struct BridgeCollabService {
     opener: UpstreamOpener,
 }
@@ -81,18 +75,13 @@ impl collab_service::Server for BridgeCollabService {
     }
 }
 
-/// Per-channel handle server. Holds one upstream connection; every
-/// method translates its capnp params to a `CollabRequest` and
-/// pushes it upstream.
-///
-/// Scrollback replies from the upstream broker are pulled off the
-/// `scrollback_rx` channel in the order requests were placed —
-/// simple FIFO matching per artifact (see `pending_scrollback`).
+/// Per-channel handle server, holding one upstream connection; every
+/// method translates its capnp params to a `CollabRequest` and pushes it
+/// upstream. Scrollback replies are matched FIFO per artifact (see
+/// `pending_scrollback`).
 pub struct BridgeChannel {
     upstream: UpstreamHandle,
-    /// FIFO of artifact ids for outstanding `fetch_scrollback`
-    /// calls. Each incoming `ScrollbackReply` matches the head that
-    /// carries the same artifact id.
+    /// FIFO of artifact ids for outstanding `fetch_scrollback` calls, matched against each incoming `ScrollbackReply` by artifact id.
     pending_scrollback: Rc<RefCell<Vec<ArtifactId>>>,
 }
 
@@ -213,13 +202,10 @@ impl channel_handle::Server for BridgeChannel {
             let max = p.get_max();
             tracing::trace!(before_seq, max, "SDK fetch scrollback");
 
-            // The SDK's fetch_scrollback interface does not carry an
-            // artifact id. The legacy shell broker keys scrollback
-            // by artifact, so we use `ArtifactId::default()` (nil
-            // UUID) as the routing key: this is a documented lossy
-            // translation. Apps that need per-artifact scrollback
-            // must migrate off the bridge onto a native
-            // Cap'n Proto broker.
+            // The SDK's fetch_scrollback has no artifact id; the legacy shell broker
+            // keys by artifact, so we route on `ArtifactId::default()` (nil UUID) — a
+            // documented lossy translation. Per-artifact scrollback needs a native
+            // Cap'n Proto broker instead.
             let artifact = ArtifactId::default();
             pending.borrow_mut().push(artifact);
 
@@ -232,11 +218,8 @@ impl channel_handle::Server for BridgeChannel {
                 capnp::Error::failed(format!("upstream fetch send failed: {e}"))
             })?;
 
-            // Await the matching reply. FIFO by artifact id; the
-            // upstream broker's reply carries the artifact so we can
-            // discard non-matching entries (which should never
-            // happen with the nil-artifact placeholder, but is
-            // future-proofing).
+            // Await the matching reply, FIFO by artifact id; non-matching entries are
+            // discarded (shouldn't happen with the nil-artifact placeholder, but future-proofs it).
             let reply = pop_matching_reply(&upstream, artifact).await?;
             fill_scrollback_batch(results.get().init_batch(), reply);
             pending.borrow_mut().retain(|a| *a != artifact);
@@ -279,10 +262,9 @@ async fn pop_matching_reply(
         match rx.recv().await {
             Some(reply) if reply.artifact == artifact => return Ok(reply),
             Some(other) => {
-                // Not for us — put it back at the tail? We don't
-                // have a re-inject primitive on mpsc. In practice
-                // the placeholder artifact means every reply
-                // matches; this branch is a defensive log.
+                // No re-inject primitive on mpsc, so a mismatch can't be put back; in
+                // practice the placeholder artifact means every reply matches, so this
+                // arm is defensive.
                 tracing::debug!(
                     got = ?other.artifact,
                     want = ?artifact,
@@ -299,7 +281,6 @@ async fn pop_matching_reply(
     }
 }
 
-// --- op stream -----------------------------------------------------------
 
 pub struct BridgeOpStream {
     rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::upstream::OpEnvelope>>>,
@@ -319,9 +300,7 @@ impl stream::Server for BridgeOpStream {
             let mut r = results.get();
             r.set_op(&ev.op_bytes);
             r.set_from_user_id(&ev.from_user_id);
-            // Say which of the three frame kinds these bytes are; a
-            // reader cannot tell from the bytes, and guessing costs
-            // it every unsigned frame.
+            // Tag which of the three frame kinds these bytes are — a reader can't tell from the bytes alone.
             r.set_kind(match ev.kind {
                 crate::upstream::OpKind::Signed => OpKind::Signed,
                 crate::upstream::OpKind::UnsignedIncremental => OpKind::UnsignedIncremental,
@@ -332,7 +311,6 @@ impl stream::Server for BridgeOpStream {
     }
 }
 
-// --- context stream ------------------------------------------------------
 
 pub struct BridgeContextStream {
     rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::upstream::ContextSnapshot>>>,
@@ -359,10 +337,6 @@ impl context_stream::Server for BridgeContextStream {
                     slot.set_user_id(&c.id);
                     slot.set_display_name(&c.name);
                     slot.set_color(pack_color(c.color));
-                    // Both were dropped here, so a client on this
-                    // transport received every member as an unmarked
-                    // stranger and had to infer the two facts the row
-                    // exists to carry.
                     slot.set_is_agent(c.is_agent);
                     slot.set_is_self(c.is_self);
                 }
@@ -378,8 +352,7 @@ impl context_stream::Server for BridgeContextStream {
     }
 }
 
-/// Convert an `[f32;3]` RGB triple in 0.0..=1.0 to a packed
-/// `0x00RRGGBB` u32 per the schema.
+/// Converts `[f32;3]` RGB (0.0..=1.0) into a packed `0x00RRGGBB` u32 per the schema.
 fn pack_color(rgb: [f32; 3]) -> u32 {
     let clamp = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u32;
     let r = clamp(rgb[0]);
@@ -388,7 +361,6 @@ fn pack_color(rgb: [f32; 3]) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
-// --- presence handle -----------------------------------------------------
 
 pub struct BridgePresenceHandle {
     upstream: UpstreamHandle,
@@ -404,11 +376,10 @@ impl presence_handle::Server for BridgePresenceHandle {
         Promise::from_future(async move {
             let r = params.get()?;
             let (x, y) = (r.get_x(), r.get_y());
-            // A pointer publish carries no explicit key on the SDK
-            // side — the shell broker's `Presence` variant requires
-            // one, so we synthesize a stable placeholder Tab key.
-            // Apps that need per-object cursor routing must publish
-            // via publish_selection with start==end instead.
+            // SDK-side pointer publish carries no key, but the shell broker's
+            // `Presence` variant requires one — synthesize a stable placeholder Tab
+            // key; apps needing per-object cursor routing should use
+            // publish_selection with start==end instead.
             let key = default_presence_key();
             let req = CollabRequest::Presence {
                 key,
@@ -426,11 +397,9 @@ impl presence_handle::Server for BridgePresenceHandle {
         params: presence_handle::PublishPointerParams,
         _results: presence_handle::PublishPointerResults,
     ) -> Promise<(), capnp::Error> {
-        // Through the same keyed door as caret / selection / arrived /
-        // left. `publish_cursor` above has to invent a key because its
-        // caller gave it none; this one must not, because the key is the
-        // coordinate space the position was measured in and only the
-        // publisher knows it.
+        // Keyed door like caret/selection/arrived/left: unlike `publish_cursor`
+        // above, this key must be the caller's own, since it names the coordinate
+        // space the position was measured in.
         publish_keyed(
             self.upstream.clone(),
             params.get().and_then(|r| {
@@ -450,13 +419,10 @@ impl presence_handle::Server for BridgePresenceHandle {
         _params: presence_handle::SubscribeRemoteCursorsParams,
         mut results: presence_handle::SubscribeRemoteCursorsResults,
     ) -> Promise<(), capnp::Error> {
-        // Legacy schema-v1 stream: yields only cursor-payload
-        // events. The underlying presence queue receives every
-        // variant; this stream skips non-cursor entries. Because
-        // the queue is shared with `subscribe_all`, an event is
-        // consumed by whichever stream reads it first — apps that
-        // need both should call `subscribe_all` instead and
-        // discriminate on the payload variant.
+        // Legacy schema-v1 stream: yields cursor-payload events only, skipping
+        // others from the shared presence queue. Because the queue is shared with
+        // `subscribe_all`, whichever stream reads first consumes the event — apps
+        // needing both should call `subscribe_all` and discriminate on the payload.
         let handle = BridgeCursorStream {
             presence: self.upstream.presence.clone(),
         };
@@ -537,17 +503,14 @@ impl presence_handle::Server for BridgePresenceHandle {
     }
 }
 
-/// Synthesize a stable placeholder `PresenceKey` for the SDK
-/// `publish_cursor` API (which carries no key). The shell broker
-/// treats it as an opaque routing tag.
+/// Synthesizes a stable placeholder `PresenceKey` for `publish_cursor` (which carries none); the shell broker treats it as an opaque routing tag.
 fn default_presence_key() -> crate::wire::PresenceKey {
     crate::wire::PresenceKey::Tab {
         id: "qos-collab-bridge:cursor".into(),
     }
 }
 
-/// Shared body for the keyed publishers. Decodes the postcard
-/// key, drops the event on decode failure, otherwise forwards.
+/// Shared body for keyed publishers: decodes the postcard key, dropping the event on decode failure.
 fn publish_keyed(
     upstream: UpstreamHandle,
     decoded: Result<(Vec<u8>, PresencePayload), capnp::Error>,
@@ -565,7 +528,6 @@ fn publish_keyed(
     }.boxed_local())
 }
 
-// --- presence streams ----------------------------------------------------
 
 pub struct BridgeCursorStream {
     presence: std::sync::Arc<crate::upstream::DropOldest<PresenceEnvelope>>,
@@ -613,9 +575,8 @@ impl presence_stream::Server for BridgePresenceStream {
             match env {
                 PresenceEnvelope::Cursor { user_id, x, y } => {
                     ev.set_user_id(&user_id);
-                    // Legacy cursor path carries no key — hand up an
-                    // empty byte-string so decoders that look at
-                    // `keyBytes` see a well-formed empty blob.
+                    // Legacy cursor path carries no key; emit an empty byte-string so
+                    // decoders reading `keyBytes` see a well-formed empty blob.
                     ev.set_key_bytes(&[]);
                     let p: presence_payload::Builder = ev.init_payload();
                     let mut c = p.init_cursor();
@@ -632,11 +593,8 @@ impl presence_stream::Server for BridgePresenceStream {
                     let mut p: presence_payload::Builder = ev.init_payload();
                     match payload {
                         PresencePayload::Pointer { x, y } => {
-                            // Keyed, so the `pointer` case: this arm's
-                            // `key_bytes` are the publisher's own and
-                            // name the coordinate space. The keyless
-                            // `Cursor` envelope above keeps the `cursor`
-                            // case, where they do not.
+                            // Keyed `pointer` case: these `key_bytes` are the publisher's own, naming
+                            // the coordinate space (unlike the keyless `Cursor` envelope above).
                             let mut c = p.init_pointer();
                             c.set_x(x);
                             c.set_y(y);
@@ -659,10 +617,8 @@ impl presence_stream::Server for BridgePresenceStream {
     }
 }
 
-// --- convenience: build the bridge service backed by a Unix path ---------
 
-/// Convenience: build a [`BridgeCollabService`] whose upstream
-/// opener dials `path` every time a client calls `joinChannel`.
+/// Builds a [`BridgeCollabService`] whose upstream opener dials `path` on every `joinChannel` call.
 pub fn service_for_path(path: std::path::PathBuf) -> BridgeCollabService {
     let opener: UpstreamOpener = Rc::new(move || {
         let p = path.clone();

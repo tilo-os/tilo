@@ -1,10 +1,9 @@
 //! Signature-verification helpers. No I/O; pure functions over
 //! decoded `RegistryEntry` / `EntryChangeRequest` values.
 //!
-//! Both helpers verify against the publisher's Ed25519 pubkey.
-//! The registry server (or a federation client walking a snapshot)
-//! separately checks that the pubkey appears in the owner's
-//! allowlist via [`verify_change_request`].
+//! Both verify against the publisher's Ed25519 pubkey; the registry
+//! server (or a federation client) separately checks the pubkey is in
+//! the owner's allowlist via [`verify_change_request`].
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use thiserror::Error;
@@ -15,12 +14,10 @@ use crate::entry::RegistryEntry;
 /// Structured failure modes for [`verify_change_request`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VerifyError {
-    /// The publisher's pubkey (as declared in the entry) is not in
-    /// the owner's allowlist.
+    /// The publisher's pubkey (as declared in the entry) is not in the owner's allowlist.
     #[error("publisher pubkey not in allowlist")]
     PublisherNotAllowed,
-    /// The pubkey field decoded fine but is not a valid Ed25519
-    /// key point.
+    /// The pubkey field decoded fine but is not a valid Ed25519 key point.
     #[error("publisher pubkey is not a valid Ed25519 key: {0}")]
     InvalidPubkey(String),
     /// Hex parse failed on pubkey or signature.
@@ -29,25 +26,21 @@ pub enum VerifyError {
     /// Pubkey or signature was the wrong length after hex decode.
     #[error("bad length {got}, expected {expected}")]
     BadLength { expected: usize, got: usize },
-    /// Ed25519 verify rejected the signature — the bytes don't
-    /// match what the publisher signed.
+    /// Ed25519 verify rejected the signature — the bytes don't match what the publisher signed.
     #[error("signature does not match signed payload")]
     BadSignature,
     /// The entry's declared publisher pubkey and the pubkey the
-    /// change-request signature verifies against disagree. Blocks
-    /// a subtle attack where a valid publisher signs a change over
-    /// someone else's entry.
+    /// change-request signature verifies against disagree — blocks a
+    /// valid publisher signing a change over someone else's entry.
     #[error("entry signature is not valid for the declared publisher pubkey")]
     EntrySignatureMismatch,
 }
 
 /// Verify a [`RegistryEntry`]'s `signature_hex` against its own
-/// declared `publisher_pubkey_hex`.
-///
-/// Returns `false` on any parse or verify failure. Structured
-/// errors are the domain of [`verify_change_request`]; entry
-/// verification is a boolean because callers walking a big index
-/// only need to know "keep or drop".
+/// declared `publisher_pubkey_hex`. Returns `false` on any
+/// parse/verify failure — structured errors are
+/// [`verify_change_request`]'s domain; a caller walking a big index
+/// only needs "keep or drop".
 pub fn verify_entry_signature(entry: &RegistryEntry) -> bool {
     let Some(pk) = parse_verifying_key_opt(&entry.publisher_pubkey_hex) else {
         return false;
@@ -63,12 +56,11 @@ pub fn verify_entry_signature(entry: &RegistryEntry) -> bool {
 /// signature and the entry-level signature are checked, and the
 /// entry's declared pubkey must appear in `allowlist`.
 ///
-/// Signature verification uses the pubkey declared inside the
-/// entry — the allowlist decides *whether that pubkey is welcome*,
-/// not *whose key we verify against*. This means the same
-/// signature is portable: a federation client can verify the
-/// same bytes against a different owner's allowlist without
-/// re-encoding.
+/// Verification uses the pubkey declared inside the entry — the
+/// allowlist decides *whether that pubkey is welcome*, not *whose key
+/// we verify against*. So the same signature is portable: a
+/// federation client can verify the same bytes against a different
+/// owner's allowlist without re-encoding.
 pub fn verify_change_request(
     req: &EntryChangeRequest,
     publisher_pubkey_allowlist: &[[u8; 32]],
@@ -80,9 +72,8 @@ pub fn verify_change_request(
     let pk = VerifyingKey::from_bytes(&declared)
         .map_err(|e| VerifyError::InvalidPubkey(e.to_string()))?;
 
-    // Verify the entry-level sig too — otherwise a valid publisher
-    // could authenticate a change over a stolen-and-tweaked
-    // entry.
+    // Verify the entry-level sig too — otherwise a valid publisher could
+    // authenticate a change over a stolen-and-tweaked entry.
     if !verify_entry_signature(&req.entry) {
         return Err(VerifyError::EntrySignatureMismatch);
     }
@@ -93,24 +84,21 @@ pub fn verify_change_request(
     pk.verify(&msg, &sig)
         .map_err(|_| VerifyError::BadSignature)?;
 
-    // Cheap invariant: Add/Update carry a version list; Delete
-    // may too but is not required to.
+    // Cheap invariant: Add/Update carry a version list; Delete may too but isn't required to.
     match req.action {
         EntryAction::Add | EntryAction::Update | EntryAction::Delete => {}
     }
     Ok(())
 }
 
-// ---- helpers ---------------------------------------------------
+// helpers
 
-/// Public/change-request path — surfaces structured errors so the
-/// server can log which failure mode fired.
+/// Public/change-request path — surfaces structured errors so the server can log which failure mode fired.
 fn decode_pubkey_hex(hex_str: &str) -> Result<[u8; 32], VerifyError> {
     decode_fixed_hex::<32>(hex_str)
 }
 
-/// Same shape for signatures; kept separate for symmetry with the
-/// pubkey path even though the code is identical.
+/// Same shape for signatures; kept separate for symmetry with the pubkey path even though the code is identical.
 fn decode_signature_result(hex_str: &str) -> Result<Signature, VerifyError> {
     let bytes = decode_fixed_hex::<64>(hex_str)?;
     Ok(Signature::from_bytes(&bytes))
@@ -129,9 +117,8 @@ fn decode_fixed_hex<const N: usize>(hex_str: &str) -> Result<[u8; N], VerifyErro
     Ok(out)
 }
 
-/// Best-effort pubkey decode used inside the boolean
-/// `verify_entry_signature` path. Any parse failure surfaces as
-/// `None` so the outer function can return `false`.
+/// Best-effort pubkey decode for the boolean `verify_entry_signature`
+/// path — any parse failure surfaces as `None` so the outer function returns `false`.
 fn parse_verifying_key_opt(hex_str: &str) -> Option<VerifyingKey> {
     let bytes = decode_fixed_hex::<32>(hex_str).ok()?;
     VerifyingKey::from_bytes(&bytes).ok()

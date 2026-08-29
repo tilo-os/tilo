@@ -1,49 +1,34 @@
 //! `qos-collab-probe` — a packaged app that collaborates, and says out
 //! loud whether it could.
 //!
-//! It exists because the interesting question about qOS collaboration
-//! is not "does the broker fan out" — the unit tests answer that — but
-//! "does an edit made by a **sandboxed** process reach another
-//! machine". Answering that needs a real process, launched by the real
-//! launcher, into a real bwrap sandbox, reaching the broker the only
-//! way a sandboxed app can: the descriptor the launcher hands it as
-//! `QOS_SVC_COLLAB_FD`. Nothing here dials a path or reads an env
-//! socket; if the handoff is broken the probe cannot work, which is
-//! the point.
+//! Exists because the interesting question is not "does the broker fan
+//! out" (unit tests cover that) but "does an edit from a **sandboxed**
+//! process reach another machine" — which needs a real launcher, a
+//! real bwrap sandbox, and the descriptor the launcher hands a
+//! sandboxed app as `QOS_SVC_COLLAB_FD`; nothing here dials a path or
+//! reads an env socket, so a broken handoff means the probe can't work.
 //!
 //! ```text
 //! qos-collab-probe write:<text>      # author an edit, publish it
 //! qos-collab-probe read:<seconds>    # wait for one, print it
 //! ```
 //!
-//! One argument, because that is all a launched app gets: the launcher
-//! hands the entrypoint a single opaque `argv[1]`. The room comes from
-//! `QOS_WORKSPACE_ID`, which is where every qOS app gets it — the
-//! toolkit turns that value into the cluster id its deltas are
-//! addressed to, so two apps launched into the same workspace
-//! collaborate and two launched into different ones cannot.
+//! The room comes from `QOS_WORKSPACE_ID` (as for every qOS app); the
+//! payload is a genuine Automerge document — `write` publishes real
+//! change bytes via the same `sendUnsignedIncremental` the UI toolkit
+//! uses on every keystroke, and `read` loads what arrives into its own
+//! document. A line from `read` means a real CRDT edit converged.
 //!
-//! The payload is a genuine Automerge document, not a byte marker:
-//! `write` builds one, puts `text` at the root, and hands the change
-//! bytes to `sendUnsignedIncremental` — the same broker method the UI
-//! toolkit calls on every keystroke. `read` loads what arrives into its
-//! own empty document and prints the value it finds. So a line of
-//! output from `read` means a CRDT edit authored in one sandbox
-//! converged in another.
-//!
-//! Exit status is the verdict: 0 only when the thing actually
-//! happened. Every failure names which step failed, because the whole
-//! family of bugs this probe is aimed at is invisible — "collaboration
-//! is off", "no peer connected" and "nobody typed" all render as
-//! silence.
+//! Exit status is the verdict (0 only on real success); every failure
+//! names the step, since "collaboration is off" / "no peer connected"
+//! / "nobody typed" would otherwise all look like silence.
 
 use std::process::ExitCode;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue};
 
-/// Root key the probe reads and writes. One flat string: the probe is
-/// proving delivery, not modelling a document.
+/// Root key the probe reads and writes — one flat string, since the probe proves delivery, not a document model.
 const FIELD: &str = "text";
 
 fn usage() -> ExitCode {
@@ -66,9 +51,8 @@ fn main() -> ExitCode {
     };
     let (mode, arg) = (mode.to_string(), arg.to_string());
 
-    // The room is the collaboration address, and an app that cannot
-    // name one is not in a room. Refuse rather than inventing a
-    // channel id that would quietly reach nobody.
+    // The room is the collaboration address; an app that can't name one
+    // isn't in a room — refuse rather than inventing a channel id that reaches nobody.
     let channel = match std::env::var("QOS_WORKSPACE_ID") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => {
@@ -82,9 +66,8 @@ fn main() -> ExitCode {
     println!("probe: room = {channel}");
 
     // The fd is the whole subject of the exercise, so report it before
-    // trying to use it. `service_fd` returns None both when the env var
-    // is absent and when it names something that is not open — the two
-    // shapes the handoff has failed in.
+    // using it. `service_fd` returns None both when the env var is absent
+    // and when it names something not open — the two shapes the handoff can fail in.
     match runtime_portal::service_fd("collab") {
         Some(fd) => println!("probe: collab service fd = {fd}"),
         None => {
@@ -122,8 +105,7 @@ fn main() -> ExitCode {
 }
 
 /// Dial the broker over the launcher-supplied descriptor and join one
-/// channel. `channel` is the broker's routing key verbatim — the room
-/// uuid, or `<room>#record:<id>` for one document's stream.
+/// channel; `channel` is the broker's routing key verbatim (room uuid, or `<room>#record:<id>`).
 async fn join(
     channel: &str,
 ) -> Result<runtime_collab::ChannelHandle, runtime_portal::NotAvailable> {
@@ -150,8 +132,7 @@ async fn write(channel: &str, text: &str) -> ExitCode {
         eprintln!("probe: FAIL building the document: {e}");
         return ExitCode::from(6);
     }
-    // A fresh document's `save` is its complete change set, which is
-    // what a peer starting from nothing needs in order to apply it.
+    // A fresh document's save is its complete change set, which is what a peer starting from nothing needs to apply it.
     let bytes = doc.save();
 
     if let Err(e) = handle.send_unsigned_incremental(&bytes).await {
@@ -159,9 +140,8 @@ async fn write(channel: &str, text: &str) -> ExitCode {
         return ExitCode::from(7);
     }
     println!("probe: WROTE {} bytes: {text:?}", bytes.len());
-    // The broker's publish is fire-and-forget onto an actor queue, and
-    // this process is about to exit. Give the frame a moment to leave
-    // rather than racing teardown against it.
+    // The broker's publish is fire-and-forget onto an actor queue and
+    // this process is about to exit — give the frame a moment to leave rather than racing teardown.
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     ExitCode::SUCCESS
 }
@@ -187,9 +167,8 @@ async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
                 return None;
             };
             if doc.load_incremental(&event.op).is_err() {
-                // Not a document chunk we can apply — say so and keep
-                // waiting rather than reporting a delivery failure for
-                // what is really a decode failure.
+                // Not a document chunk we can apply — say so and keep waiting rather
+                // than reporting a delivery failure for what's really a decode failure.
                 eprintln!("probe: received {} bytes that did not load", event.op.len());
                 continue;
             }

@@ -1,33 +1,28 @@
 //! `qdoc-pdf` — render a [`qdoc::DocSnapshot`] to a paginated PDF.
 //!
-//! This is the export *engine*. It takes the materialized, read-only view of a
-//! qdoc document (headings, paragraphs, lists, tables, images) and lays it out
-//! onto US-Letter pages, returning the bytes of a valid PDF 1.7 file.
-//!
-//! Wiring this into the editor's "Save as PDF" action is a separate task; this
+//! Takes the materialized, read-only document view and lays it out onto
+//! US-Letter pages, returning the bytes of a valid PDF 1.7 file. This
 //! crate only exposes [`render_pdf`].
 //!
 //! ## Approach
 //!
-//! The PDF is written by a small hand-rolled writer ([`pdf`]) — no `printpdf`
-//! dependency — so the crate stays lockfile-stable and we keep full control of
-//! pagination and image embedding. Text uses the base-14 Helvetica /
-//! Helvetica-Bold fonts (the viewer ships them); we carry the AFM advance
-//! widths ([`metrics`]) to word-wrap accurately. Images are decoded with the
-//! `image` crate and embedded as `/DeviceRGB` `Image` XObjects.
+//! Written by a small hand-rolled writer ([`pdf`]) — no `printpdf`
+//! dependency — for lockfile stability and full control of pagination
+//! and image embedding. Text uses the base-14 Helvetica/Helvetica-Bold
+//! fonts (viewer-shipped); AFM advance widths ([`metrics`]) drive
+//! accurate word-wrap. Images are decoded with the `image` crate and
+//! embedded as `/DeviceRGB` `Image` XObjects.
 //!
 //! ## Known limitations
 //!
-//! - **Fonts**: base-14 Helvetica only. Glyphs outside WinAnsiEncoding (CJK,
-//!   most non-Latin scripts) render as `?`. Italic is not distinguished from
-//!   regular (no Helvetica-Oblique wired up); only bold is.
-//! - **Images**: PNG/JPEG (and anything `image` can decode) are re-encoded to
-//!   raw RGB and Flate-compressed — fine for export, not size-optimal. Images
-//!   that fail to decode fall back to a labelled placeholder box.
-//! - **Tables**: rendered as a simple fixed-grid; no cell merging, no per-cell
-//!   wrapping beyond a single clipped line, no row spanning.
-//! - **Marks**: inline marks (bold/italic spans) are not yet applied per-span;
-//!   bold is driven by block kind/level, not by `strong` marks.
+//! Fonts: base-14 Helvetica only — glyphs outside WinAnsiEncoding (CJK,
+//! most non-Latin) render as `?`; italic isn't distinguished from
+//! regular, only bold is. Images: re-encoded to raw RGB and
+//! Flate-compressed (fine for export, not size-optimal); failures fall
+//! back to a labelled placeholder. Tables: a simple fixed-grid, no
+//! merging/per-cell wrapping beyond one clipped line/row spanning.
+//! Marks: inline bold/italic spans aren't yet applied per-span — bold
+//! comes from block kind/level, not `strong` marks.
 
 mod metrics;
 mod pdf;
@@ -41,9 +36,9 @@ use pdf::{ObjId, PdfWriter, escape_pdf_text};
 /// Errors that can arise while rendering a snapshot to PDF.
 #[derive(Debug)]
 pub enum DocPdfError {
-    /// An image block referenced a blob that could not be decoded. Carries the
-    /// blob hash for diagnostics. Non-fatal in [`render_pdf`] (a placeholder is
-    /// drawn instead); surfaced only by stricter callers.
+    /// An image block referenced a blob that could not be decoded. Carries
+    /// the blob hash for diagnostics; non-fatal in [`render_pdf`] (a
+    /// placeholder is drawn instead).
     ImageDecode(String),
 }
 
@@ -74,8 +69,8 @@ const TABLE_PAD: f32 = 4.0; // cell text padding
 
 // ---- low-level drawing model ------------------------------------------------
 
-/// One drawing op accumulated into a page's content stream. We collect ops per
-/// page and serialize them at the end so the writer stays a single pass.
+/// One drawing op accumulated into a page's content stream, collected
+/// per page and serialized at the end so the writer stays a single pass.
 enum Op {
     /// Show `text` at baseline `(x, y)` in font `bold?` at `size` pt.
     Text { x: f32, y: f32, size: f32, bold: bool, text: String },
@@ -87,8 +82,8 @@ enum Op {
     Image { name: String, x: f32, y: f32, w: f32, h: f32 },
 }
 
-/// One page under construction: a cursor that descends from the top margin and
-/// the list of ops drawn so far.
+/// One page under construction: a cursor descending from the top margin
+/// and the list of ops drawn so far.
 struct Page {
     ops: Vec<Op>,
     /// Image XObjects referenced on this page: `(resource_name, obj_id)`.
@@ -101,14 +96,14 @@ impl Page {
     }
 }
 
-/// The pagination/rendering cursor. Owns the writer (so images can be added as
-/// XObjects on demand) and the running list of pages.
+/// The pagination/rendering cursor. Owns the writer (so images can be
+/// added as XObjects on demand) and the running list of pages.
 struct Layout {
     writer: PdfWriter,
     pages: Vec<Page>,
-    /// Y cursor on the current page (PDF coords: larger = higher). Text is drawn
-    /// at the baseline, so the cursor tracks the *top* of the next line and we
-    /// subtract ascent when placing.
+    /// Y cursor on the current page (PDF coords: larger = higher). Text
+    /// draws at the baseline, so the cursor tracks the *top* of the next
+    /// line and subtracts ascent when placing.
     y: f32,
     next_img: usize,
 }
@@ -136,8 +131,8 @@ impl Layout {
         }
     }
 
-    /// Draw a single already-wrapped line of text at the current cursor, then
-    /// advance the cursor by `leading`. `size`/`bold` pick the font.
+    /// Draw a single already-wrapped line at the current cursor, then
+    /// advance by `leading`. `size`/`bold` pick the font.
     fn line(&mut self, text: &str, x: f32, size: f32, leading: f32, bold: bool) {
         self.ensure(leading);
         // Baseline sits ~`size` below the cursor's top (approx ascent).
@@ -153,12 +148,10 @@ impl Layout {
 
 // ---- public entry point -----------------------------------------------------
 
-/// Render a materialized qdoc snapshot to PDF bytes.
-///
-/// Always succeeds for a well-formed snapshot — image blocks whose blobs fail
-/// to decode degrade to a placeholder box rather than erroring, so the returned
-/// `Result` is `Ok` in practice. An empty document still yields a valid,
-/// single-page PDF.
+/// Render a materialized qdoc snapshot to PDF bytes. Always succeeds for
+/// a well-formed snapshot — undecodable image blobs degrade to a
+/// placeholder box rather than erroring; an empty document still yields
+/// a valid, single-page PDF.
 pub fn render_pdf(snap: &DocSnapshot) -> Result<Vec<u8>, DocPdfError> {
     let mut layout = Layout::new();
 
@@ -282,8 +275,8 @@ fn render_image(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
 }
 
 fn render_table(layout: &mut Layout, block: &BlockView) {
-    // Rows are child blocks; each row's children are cells. Tolerate the
-    // alternate shape where children are flat cells with a `cols` attr.
+    // Rows are child blocks, each row's children its cells. Tolerates
+    // the alternate flat-cells-with-`cols`-attr shape.
     let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
         block.children.iter().map(|row| row.children.iter().collect()).collect()
     } else if !block.children.is_empty() {
@@ -397,9 +390,9 @@ fn placeholder(layout: &mut Layout, label: &str) {
 
 // ---- text wrapping ----------------------------------------------------------
 
-/// Word-wrap `text` to `max_w` points at `size`pt in the regular/bold font.
-/// Hard newlines in the source split lines; over-long single words are hard-
-/// broken so they never overflow the text column.
+/// Word-wrap `text` to `max_w` points at `size`pt. Hard newlines in the
+/// source split lines; over-long single words are hard-broken so they
+/// never overflow the text column.
 fn wrap(text: &str, max_w: f32, size: f32, bold: bool) -> Vec<String> {
     let table = if bold { &metrics::HELVETICA_BOLD } else { &metrics::HELVETICA };
     let mut out = Vec::new();
@@ -463,8 +456,8 @@ fn hard_break(word: &str, max_w: f32, size: f32, table: &[u16; 256]) -> Vec<Stri
     chunks
 }
 
-/// Truncate `text` to fit `max_w` at `size`pt, appending "…" if clipped. Used
-/// for table cells and placeholder labels where we render a single line.
+/// Truncate `text` to fit `max_w` at `size`pt, appending "…" if clipped
+/// — used for table cells and single-line placeholder labels.
 fn clip_to_width(text: &str, max_w: f32, size: f32) -> String {
     let table = &metrics::HELVETICA;
     if metrics::text_width(table, &pdf::to_winansi(text), size) <= max_w {

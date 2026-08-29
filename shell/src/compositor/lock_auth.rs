@@ -1,33 +1,21 @@
 //! Session-lock credential verification.
 //!
-//! The lock screen ([`crate::compositor::lock_controller::LockController`])
-//! must prove the person at the keyboard is the session owner before it
-//! clears the lock. This module is the **injection seam** for that proof:
-//! [`PasswordVerifier`] abstracts "is this password correct for this user?"
-//! so the lock state machine can be driven with a deterministic fake in
-//! tests while the shipped binary talks to the real auth stack.
+//! The lock screen ([`crate::compositor::lock_controller::LockController`]) must prove the
+//! person at the keyboard is the session owner before clearing the lock. [`PasswordVerifier`]
+//! is the injection seam for that proof, so the lock state machine can be driven with a
+//! deterministic fake in tests while the shipped binary talks to the real auth stack.
 //!
-//! * [`GreetdVerifier`] — the real path. Reuses the greeter's greetd
-//!   conversation, which runs the same PAM stack login does but stops at
-//!   the authoritative `Success`/`Error` instead of starting a session —
-//!   why unlock and login share one non-leaky failure message.
-//! * [`FixedVerifier`] — the injected path for headless tests, selected by
-//!   `QOS_LOCK_TEST_PASSWORD`. Compares against a known constant with no
-//!   I/O. Read only when [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]
-//!   is set, so a `--release` binary cannot be talked into accepting a
-//!   caller-chosen password.
+//! [`GreetdVerifier`] is the real path — reuses the greeter's greetd/PAM conversation but stops
+//! at `Success`/`Error` instead of starting a session, which is why unlock and login share one
+//! non-leaky failure message. [`FixedVerifier`] is the injected headless-test path, selected by
+//! `QOS_LOCK_TEST_PASSWORD` and read only when [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]
+//! is set, so a `--release` binary can't be talked into accepting a caller-chosen password.
+//! [`verifier_from_env`] picks between them; the default with neither configured is fail-closed ([`UnavailableVerifier`]).
 //!
-//! [`verifier_from_env`] picks between them. The default when neither is
-//! configured is fail-closed ([`UnavailableVerifier`]): no verifier means
-//! no password is ever accepted.
-//!
-//! A *running* session exposes no greetd socket, so [`GreetdVerifier`] is
-//! only reachable during login. To verify the logged-in user's password
-//! inside a live session, [`HelperVerifier`] spawns the privileged
-//! [`qos-unlock-helper`] binary: username on argv, password on **stdin**
-//! (never argv, so it never lands in `/proc/*/cmdline`), exit code mapped
-//! to a verify result. The compositor itself links no PAM — the helper is
-//! the only piece that touches the auth stack.
+//! A running session exposes no greetd socket, so verifying a live session's password instead
+//! spawns the privileged [`qos-unlock-helper`] binary via [`HelperVerifier`]: username on argv,
+//! password on **stdin** (never argv, so it never lands in `/proc/*/cmdline`), exit code mapped
+//! to a result. The compositor itself links no PAM — the helper is the only piece that touches the auth stack.
 //!
 //! [`qos-unlock-helper`]: ../../../../crates/session/qos-unlock-helper
 
@@ -36,28 +24,20 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The single non-leaky rejection line shown for any wrong credential,
-/// shared by every verifier so unlock never reveals more than login does.
+/// The single non-leaky rejection line shown for any wrong credential, shared by every verifier so unlock never reveals more than login does.
 pub const INCORRECT_MSG: &str = "Incorrect username or password";
 
-/// The non-leaky line shown when verification could not be carried out at
-/// all (no backend, helper missing, timeout). Distinct from a *rejected*
-/// credential, but equally fail-closed: the session stays locked.
+/// The non-leaky line shown when verification could not be carried out at all (no backend, helper missing, timeout) — distinct from a *rejected* credential, but equally fail-closed.
 pub const UNAVAILABLE_MSG: &str = "Password verification is unavailable";
 
-/// Abstracts "is `password` correct for `username`?" so the lock state
-/// machine can be unit-tested with a fake and run against real PAM in
-/// production. `Send + Sync` so a single verifier can be shared (`Arc`) and,
-/// in a later revision, moved onto a worker thread.
+/// Abstracts "is `password` correct for `username`?" so the lock state machine can be
+/// unit-tested with a fake and run against real PAM in production. `Send + Sync` so a verifier can be shared (`Arc`) and later moved onto a worker thread.
 pub trait PasswordVerifier: Send + Sync {
-    /// `Ok(())` iff the credential is valid. `Err` carries the *user-facing*
-    /// one-liner to show on the lock screen — it must never leak which field
-    /// was wrong or any raw PAM text.
+    /// `Ok(())` iff the credential is valid. `Err` carries the *user-facing* one-liner for the lock screen — it must never leak which field was wrong or any raw PAM text.
     fn verify(&self, username: &str, password: &str) -> Result<(), String>;
 }
 
-/// The real verifier: reuses the greeter's greetd/PAM `verify_password`
-/// exchange against the socket at `sock` (typically `$GREETD_SOCK`).
+/// The real verifier: reuses the greeter's greetd/PAM `verify_password` exchange against the socket at `sock` (typically `$GREETD_SOCK`).
 #[derive(Debug, Clone)]
 pub struct GreetdVerifier {
     sock: String,
@@ -73,18 +53,13 @@ impl GreetdVerifier {
 impl PasswordVerifier for GreetdVerifier {
     fn verify(&self, username: &str, password: &str) -> Result<(), String> {
         greeter::greetd_client::verify_password(&self.sock, username, password)
-            // `user_message` is the same non-leaky copy the login box shows
-            // ("Incorrect username or password"), so unlock never reveals
-            // more than login does.
+            // `user_message` is the same non-leaky copy the login box shows ("Incorrect username or password"), so unlock never reveals more than login does.
             .map_err(|e| e.user_message())
     }
 }
 
-/// A verifier that accepts exactly one known password with no I/O. Used by
-/// the headless test harness (and display-less dev sessions) via
-/// `QOS_LOCK_TEST_PASSWORD`, so the lock/unlock state machine runs on the
-/// real code path without a PAM/greetd socket. Never used when
-/// `QOS_LOCK_TEST_PASSWORD` is unset.
+/// A verifier that accepts exactly one known password with no I/O, via `QOS_LOCK_TEST_PASSWORD`
+/// — lets the lock/unlock state machine run the real code path in headless tests without a PAM/greetd socket. Never used when the env var is unset.
 #[derive(Debug, Clone)]
 pub struct FixedVerifier {
     password: String,
@@ -110,45 +85,28 @@ impl PasswordVerifier for FixedVerifier {
     }
 }
 
-/// Env var pointing at the in-session verify helper binary
-/// ([`HelperVerifier`]). In a **developer build** it takes precedence over
-/// the default install path; a `--release` build never reads it (see
-/// [`crate::compositor::dev_env`]), because "name the program that decides
-/// whether this password unlocks the screen" is not a decision the process
-/// environment gets to make on a machine someone actually uses.
+/// Env var pointing at the in-session verify helper binary ([`HelperVerifier`]). In a
+/// **developer build** it takes precedence over the default install path; a `--release` build
+/// never reads it — "name the program that decides whether this password unlocks the screen" is not a decision the process environment gets to make on a real machine.
 pub const UNLOCK_HELPER_ENV: &str = "QOS_UNLOCK_HELPER";
 
-/// Where the helper is installed — by the OS image, and by the host session
-/// RPM (`dist/rpm/qos-session.spec`), which puts it at exactly this path so
-/// no override is needed to unlock a session on a non-qOS host.
+/// Where the helper is installed — by the OS image and the host session RPM (`dist/rpm/qos-session.spec`), at exactly this path so no override is needed on a non-qOS host.
 pub const DEFAULT_UNLOCK_HELPER: &str = "/usr/libexec/qos-unlock-helper";
 
-/// Upper bound on a single verify. Generous enough for a slow PAM stack
-/// (the `pam_unix` fail delay is ~2s; a fingerprint prompt is longer) but
-/// bounded so a wedged helper cannot pin the unlock path forever. Because
-/// verification runs on a worker thread (see
-/// [`crate::compositor::lock_controller`]), this bound never blocks the
-/// compositor loop — it just fails the attempt closed if the helper hangs.
+/// Upper bound on a single verify. Generous for a slow PAM stack (`pam_unix` fail delay is
+/// ~2s; a fingerprint prompt is longer) but bounded so a wedged helper can't pin the unlock path
+/// forever. Runs on a worker thread (see [`crate::compositor::lock_controller`]), so this never blocks the compositor loop — it just fails the attempt closed if the helper hangs.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The **real in-session** verifier: spawns [`DEFAULT_UNLOCK_HELPER`] (or the
-/// [`UNLOCK_HELPER_ENV`] override), writes the password to its stdin, and
-/// maps the exit status:
+/// [`UNLOCK_HELPER_ENV`] override), writes the password to its stdin, and maps the exit status —
+/// `0` → `Ok(())`, `1` → `Err(INCORRECT_MSG)` (PAM denied), anything else / spawn error / timeout → `Err(UNAVAILABLE_MSG)` (fail-closed).
 ///
-/// * `0` → `Ok(())` (authenticated).
-/// * `1` → `Err(INCORRECT_MSG)` (PAM denied — non-leaky).
-/// * anything else / spawn error / timeout → `Err(UNAVAILABLE_MSG)`
-///   (fail-closed: the check could not be trusted, so stay locked).
-///
-/// The password is passed only on stdin, so it never appears in the argv of
-/// the spawned process. The helper's stdout/stderr are discarded, so no raw
-/// PAM text can leak into the UI.
+/// The password is passed only on stdin, never in argv; the helper's stdout/stderr are discarded so no raw PAM text can leak into the UI.
 #[derive(Debug, Clone)]
 pub struct HelperVerifier {
-    /// The command to run. `program[0]` is the executable; `program[1..]`
-    /// are leading args. The username is appended as the final argv entry.
-    /// A single-element vec is the production case
-    /// (`[DEFAULT_UNLOCK_HELPER]`); tests inject a fake helper here.
+    /// The command to run: `program[0]` is the executable, `program[1..]` leading args, username
+    /// appended as the final argv entry. Production is a single-element vec (`[DEFAULT_UNLOCK_HELPER]`); tests inject a fake helper.
     program: Vec<String>,
     timeout: Duration,
 }
@@ -169,10 +127,7 @@ impl HelperVerifier {
     }
 }
 
-/// Poll a spawned child to completion or `None` on timeout. Uses
-/// `try_wait` so the parent keeps the handle and can kill a hung child.
-/// Runs on the verify worker thread, so the short sleep never touches the
-/// compositor loop.
+/// Poll a spawned child to completion or `None` on timeout, using `try_wait` so the parent keeps the handle and can kill a hung child. Runs on the verify worker thread, so the sleep never touches the compositor loop.
 fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
     let start = Instant::now();
     loop {
@@ -208,9 +163,7 @@ impl PasswordVerifier for HelperVerifier {
             Err(_) => return Err(UNAVAILABLE_MSG.to_string()),
         };
 
-        // Hand the password over on stdin (newline-terminated), then close
-        // the pipe so the helper sees EOF. The payload is tiny (< pipe
-        // buffer), so this write never blocks.
+        // Hand the password over on stdin (newline-terminated), then close the pipe so the helper sees EOF — the payload is tiny (< pipe buffer), so this write never blocks.
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
             let _ = stdin.write_all(password.as_bytes());
@@ -233,10 +186,7 @@ impl PasswordVerifier for HelperVerifier {
     }
 }
 
-/// Fail-closed verifier used when no real or injected verifier is configured:
-/// every attempt is rejected, so a locked session with no auth backend stays
-/// locked rather than accepting anything. This is the safe default — never
-/// silently unlock.
+/// Fail-closed verifier used when no real or injected verifier is configured: every attempt is rejected, so a locked session with no auth backend stays locked — the safe default, never silently unlock.
 #[derive(Debug, Clone, Default)]
 pub struct UnavailableVerifier;
 
@@ -246,15 +196,11 @@ impl PasswordVerifier for UnavailableVerifier {
     }
 }
 
-/// Env var injecting a fixed unlock password ([`FixedVerifier`]) for the
-/// headless harness / display-less dev. Read only in developer builds — a
-/// `--release` binary ignores it entirely, so a shipped session cannot be
-/// handed a password to accept. See [`crate::compositor::dev_env`].
+/// Env var injecting a fixed unlock password ([`FixedVerifier`]) for the headless harness /
+/// display-less dev. Read only in developer builds — a `--release` binary ignores it entirely. See [`crate::compositor::dev_env`].
 pub const LOCK_TEST_PASSWORD_ENV: &str = "QOS_LOCK_TEST_PASSWORD";
 
-/// Which verifier [`select_verifier`] picked. Named so the selection policy
-/// can be asserted on directly, without having to introspect a
-/// `dyn PasswordVerifier`.
+/// Which verifier [`select_verifier`] picked — named so the selection policy can be asserted on directly, without introspecting a `dyn PasswordVerifier`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifierChoice {
     /// [`FixedVerifier`] on the given password. Developer builds only.
@@ -267,12 +213,8 @@ pub enum VerifierChoice {
     Unavailable,
 }
 
-/// The verifier selection policy, as a pure function of its inputs.
-///
-/// `dev_overrides` is [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]:
-/// when it is `false` the two developer variables are not consulted at all,
-/// whatever they contain. Passing it in rather than reading the `cfg` here
-/// is what lets the release-build behaviour be tested from a debug test run.
+/// The verifier selection policy, as a pure function of its inputs. `dev_overrides` is
+/// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]: when `false` the two developer variables aren't consulted at all — passed in rather than read from `cfg` here, so release-build behaviour can be tested from a debug run.
 pub fn select_verifier(
     dev_overrides: bool,
     test_password: Option<String>,
@@ -299,14 +241,10 @@ pub fn select_verifier(
     VerifierChoice::Unavailable
 }
 
-/// Select a verifier from the environment via [`select_verifier`].
-///
-/// Returned behind an `Arc` so the run loop and the verify worker thread can
-/// share one verifier.
+/// Select a verifier from the environment via [`select_verifier`]. Returned behind an `Arc` so the run loop and the verify worker thread can share one verifier.
 pub fn verifier_from_env() -> Arc<dyn PasswordVerifier> {
     let dev = crate::compositor::dev_env::DEV_ENV_OVERRIDES;
-    // Reading the two developer variables is itself skipped in a shipped
-    // build, so they cannot influence anything — not even by being present.
+    // Reading the two developer variables is itself skipped in a shipped build, so they cannot influence anything — not even by being present.
     let (test_password, helper_override) = if dev {
         (
             std::env::var(LOCK_TEST_PASSWORD_ENV).ok(),
@@ -334,11 +272,8 @@ pub fn verifier_from_env() -> Arc<dyn PasswordVerifier> {
 mod tests {
     use super::*;
 
-    // ---- select_verifier: the developer-override gate -----------------
-    //
-    // These drive the policy function with `dev_overrides` explicitly, so
-    // the *shipped* behaviour is exercised from an ordinary debug test run
-    // instead of only being reachable in a build the suite never runs.
+    // select_verifier: the developer-override gate — drives the policy function with `dev_overrides`
+    // explicitly, so shipped behaviour is exercised from an ordinary debug test run instead of only being reachable in a build the suite never runs.
 
     #[test]
     fn dev_build_lets_the_test_password_win() {
@@ -356,8 +291,7 @@ mod tests {
 
     #[test]
     fn shipped_build_ignores_the_test_password_entirely() {
-        // Same inputs, gate closed. The injected password must not be able
-        // to displace the real helper — this is the whole point of the gate.
+        // Same inputs, gate closed. The injected password must not be able to displace the real helper — this is the whole point of the gate.
         assert_eq!(
             select_verifier(
                 false,
@@ -380,8 +314,7 @@ mod tests {
 
     #[test]
     fn shipped_build_with_no_helper_installed_falls_closed_not_to_the_override() {
-        // With nothing real to verify against, an ignored override must
-        // leave the session unverifiable rather than becoming the fallback.
+        // With nothing real to verify against, an ignored override must leave the session unverifiable rather than becoming the fallback.
         assert_eq!(
             select_verifier(
                 false,
@@ -404,8 +337,7 @@ mod tests {
 
     #[test]
     fn blank_helper_override_is_not_a_path() {
-        // An empty or whitespace-only override would otherwise spawn "" and
-        // fail closed on every attempt; fall through to the real helper.
+        // An empty or whitespace-only override would otherwise spawn "" and fail closed on every attempt; fall through to the real helper.
         assert_eq!(
             select_verifier(true, None, Some("   ".into()), true, None),
             VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
@@ -457,13 +389,7 @@ mod tests {
         unsafe { std::env::remove_var(LOCK_TEST_PASSWORD_ENV) };
     }
 
-    // ---- HelperVerifier (real subprocess spawn) ----------------------
-    //
-    // These exercise the *real* production mechanism — spawn a helper, feed
-    // the password on stdin, map the exit code — against a controllable fake
-    // helper script standing in for `qos-unlock-helper`. Only the PAM check
-    // itself is injected (the script decides the exit code); the spawn +
-    // stdin + exit-code + timeout plumbing is the shipped path.
+    // HelperVerifier (real subprocess spawn): exercises the *real* production mechanism — spawn a helper, feed the password on stdin, map the exit code — against a fake helper script standing in for `qos-unlock-helper`.
 
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
@@ -472,12 +398,8 @@ mod tests {
 
     static FAKE_SEQ: AtomicU32 = AtomicU32::new(0);
 
-    /// Write a `/bin/sh` script with `body` and return a [`HelperVerifier`]
-    /// that runs it via `sh <script>` (username appended as the trailing
-    /// argv, password on stdin — exactly like the real helper). Invoking
-    /// through `/bin/sh` means the just-written file is *read* by sh, never
-    /// directly `exec`'d, so it can't hit an `ETXTBSY` race with a concurrent
-    /// fork while the file is fresh.
+    /// Write a `/bin/sh` script with `body` and return a [`HelperVerifier`] that runs it via `sh
+    /// <script>` (username on argv, password on stdin — exactly like the real helper); invoked through `/bin/sh` so the freshly-written file is *read*, not directly `exec`'d, avoiding an `ETXTBSY` race with a concurrent fork.
     fn fake_helper(body: &str) -> (HelperVerifier, PathBuf) {
         let n = FAKE_SEQ.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -529,9 +451,7 @@ mod tests {
     #[test]
     #[serial_test::serial(lock_helper)]
     fn helper_timeout_is_unavailable_and_returns_promptly() {
-        // A helper that never answers must not hang the verify — the bound
-        // fires and the attempt fails closed. `exec sleep` so the killed child
-        // is the sleeper itself (no orphaned grandchild).
+        // A helper that never answers must not hang the verify — the bound fires and the attempt fails closed. `exec sleep` so the killed child is the sleeper itself (no orphaned grandchild).
         let (v, path) = fake_helper("exec sleep 30\n");
         let v = v.with_timeout(Duration::from_millis(150));
         let start = Instant::now();
@@ -547,9 +467,7 @@ mod tests {
     #[test]
     #[serial_test::serial(lock_helper)]
     fn helper_receives_password_on_stdin_not_argv() {
-        // Prove the secret is passed on stdin only: the script records its
-        // argv to a file; the password must be absent from it and the
-        // username present.
+        // Prove the secret is passed on stdin only: the script records its argv to a file; the password must be absent from it and the username present.
         let n = FAKE_SEQ.fetch_add(1, Ordering::Relaxed);
         let args_out = std::env::temp_dir().join(format!(
             "qos-fake-helper-argv-{}-{}.txt",
@@ -576,8 +494,7 @@ mod tests {
 
     #[test]
     fn helper_verifier_is_send_sync_for_worker_thread() {
-        // The async unlock path moves an `Arc<dyn PasswordVerifier>` onto a
-        // worker thread, so the helper must be `Send + Sync`.
+        // The async unlock path moves an `Arc<dyn PasswordVerifier>` onto a worker thread, so the helper must be `Send + Sync`.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<HelperVerifier>();
     }

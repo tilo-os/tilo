@@ -1,13 +1,12 @@
 //! The pairing prompt, drawn as OS chrome.
 //!
-//! Every variant of this dialog is the same question in different clothes:
-//! *is the thing in front of you the thing that is asking?* The passkey
-//! comparison is the strongest form — two screens showing the same six digits
-//! is what makes a man-in-the-middle detectable — so the number is the
-//! largest thing on the surface, and the device's name sits right next to it.
+//! Every variant of this dialog is the same question in different
+//! clothes: *is the thing in front of you the thing that is asking?*
+//! The passkey comparison is the strongest form — two screens showing
+//! the same six digits is what makes a man-in-the-middle detectable —
+//! so the number is the largest thing on the surface, with the device's name right next to it.
 //!
-//! Built from shared `ui` widgets so it inherits the system theme and focus
-//! handling. Nothing here is hand-drawn.
+//! Built from shared `ui` widgets, so it inherits the system theme and focus handling. Nothing here is hand-drawn.
 
 use std::collections::HashMap;
 
@@ -28,8 +27,7 @@ pub const KEY_ENTRY: &str = "bluetooth.pair.entry";
 /// Width of the dialog in logical px.
 const DIALOG_WIDTH: f32 = 460.0;
 
-/// The prompt widget. Holds the question and, once the user acts, the answer
-/// for the host to drain.
+/// The prompt widget. Holds the question and, once the user acts, the answer for the host to drain.
 pub struct PairingPromptView {
     request: PairingRequest,
     answer: Option<PairingReply>,
@@ -58,8 +56,7 @@ impl PairingPromptView {
         self.answer.take()
     }
 
-    /// Headline. Names the device, because "Pair with a device?" tells the
-    /// user nothing they can check.
+    /// Headline. Names the device, because "Pair with a device?" tells the user nothing they can check.
     fn title(&self) -> String {
         match &self.request.prompt {
             PairingPrompt::ConfirmPasskey { .. } => {
@@ -81,8 +78,7 @@ impl PairingPromptView {
         }
     }
 
-    /// The sentence under the headline. Says what accepting actually grants,
-    /// in terms of what the device will be able to do.
+    /// The sentence under the headline. Says what accepting actually grants, in terms of what the device will be able to do.
     fn explanation(&self) -> &'static str {
         match &self.request.prompt {
             PairingPrompt::ConfirmPasskey { .. } => {
@@ -119,9 +115,7 @@ impl PairingPromptView {
             ));
 
         // The number, when there is one. Large and monospaced: the whole
-        // security value of this dialog is someone comparing two of these,
-        // and proportional digits at body size make that harder than it
-        // needs to be.
+        // security value of this dialog is comparing two of these, and proportional digits at body size make that harder than it needs to be.
         if let Some(code) = self.request.prompt.passkey_text() {
             body = body.push(Box::new(Card::new(Box::new(
                 Row::new()
@@ -166,9 +160,8 @@ impl PairingPromptView {
             ));
         }
 
-        // A display-only prompt has nothing to accept — offering an OK button
-        // would suggest pressing it completes the pairing, when the other
-        // device is what completes it.
+        // A display-only prompt has nothing to accept — an OK button would
+        // suggest pressing it completes the pairing, when the other device does.
         let actions: Vec<Box<dyn Widget>> = if self.request.prompt.expects_answer() {
             vec![
                 Box::new(Button::new("bluetooth.pair.reject", "Don't pair", Some(KEY_REJECT))),
@@ -203,8 +196,7 @@ fn accept_label(prompt: &PairingPrompt) -> &'static str {
     }
 }
 
-/// `123456` → `123 456`. Six digits in one run is read as a number; split in
-/// half it is read as two triples, which is how people actually compare them.
+/// `123456` → `123 456`. Six digits in one run is read as a number; split in half it's read as two triples, how people actually compare them.
 fn spaced(code: &str) -> String {
     if code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) {
         format!("{} {}", &code[..3], &code[3..])
@@ -240,10 +232,8 @@ impl Widget for PairingPromptView {
             self.answer = Some(PairingReply::Reject);
         } else if read_bool(state, root, KEY_ACCEPT) {
             let _ = state.put(root, KEY_ACCEPT, ScalarValue::Boolean(false));
-            // The typed prompts answer with what was typed. A blank or
-            // unparseable entry is a refusal rather than a zero passkey,
-            // which the device would reject anyway and which reads to the
-            // user as "pairing mysteriously failed".
+            // The typed prompts answer with what was typed — a blank or unparseable
+            // entry is a refusal, not a zero passkey, which the device would reject anyway and read as "pairing mysteriously failed".
             self.answer = Some(match self.request.prompt {
                 PairingPrompt::RequestPasskey => {
                     match read_text(state, root, KEY_ENTRY).trim().parse::<u32>() {
@@ -433,8 +423,7 @@ mod tests {
         assert_eq!(v.take_answer(), Some(PairingReply::Reject));
     }
 
-    /// Reject must win over accept when both keys are somehow set — the safe
-    /// reading of an ambiguous state is "no".
+    /// Reject must win over accept when both keys are somehow set — the safe reading of an ambiguous state is "no".
     #[test]
     fn reject_wins_over_a_simultaneous_accept() {
         let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
@@ -455,8 +444,7 @@ mod tests {
         assert_eq!(v.take_answer(), Some(PairingReply::Passkey(654_321)));
     }
 
-    /// A blank or nonsense entry refuses rather than sending a zero, which
-    /// the device rejects anyway and which reads as an unexplained failure.
+    /// A blank or nonsense entry refuses rather than sending a zero, which the device rejects anyway and reads as an unexplained failure.
     #[test]
     fn an_unparseable_passkey_refuses_rather_than_sending_zero() {
         for entry in ["", "   ", "abcdef"] {
@@ -485,8 +473,7 @@ mod tests {
         assert_eq!(spaced("0000"), "0000", "a legacy PIN is left alone");
     }
 
-    /// The just-works prompt must say out loud that there is nothing to
-    /// check, because it is the weakest flow and looks identical otherwise.
+    /// The just-works prompt must say out loud that there's nothing to check, because it's the weakest flow and looks identical otherwise.
     #[test]
     fn the_just_works_prompt_admits_it_cannot_be_verified() {
         let v = view(PairingPrompt::ConfirmPairing);

@@ -88,9 +88,7 @@ fn lower_block(node: Node, out: &mut Vec<Block>) {
             // A blockquote usually wraps <p>s; flatten each into a Quote block.
             let mut had_child = false;
             for child in node.children() {
-                if child.is_element()
-                    && child.tag_name().name().eq_ignore_ascii_case("p")
-                {
+                if child.is_element() && child.tag_name().name().eq_ignore_ascii_case("p") {
                     let spans = collect_inline(child);
                     if !spans_empty(&spans) {
                         out.push(Block::Quote { spans });
@@ -109,13 +107,15 @@ fn lower_block(node: Node, out: &mut Vec<Block>) {
             let ordered = tag == "ol";
             let mut idx = 0usize;
             for child in node.children() {
-                if child.is_element()
-                    && child.tag_name().name().eq_ignore_ascii_case("li")
-                {
+                if child.is_element() && child.tag_name().name().eq_ignore_ascii_case("li") {
                     idx += 1;
                     let spans = collect_inline(child);
                     if !spans_empty(&spans) {
-                        out.push(Block::ListItem { spans, ordered, index: idx });
+                        out.push(Block::ListItem {
+                            spans,
+                            ordered,
+                            index: idx,
+                        });
                     }
                 }
             }
@@ -275,7 +275,10 @@ mod tests {
             <hr/>
         </body>"#;
         let blocks = parse_xhtml(src);
-        let li = blocks.iter().filter(|b| matches!(b, Block::ListItem { .. })).count();
+        let li = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::ListItem { .. }))
+            .count();
         assert_eq!(li, 2);
         assert!(blocks.iter().any(|b| matches!(b, Block::Quote { .. })));
         assert!(blocks.iter().any(|b| b.is_separator()));

@@ -1,22 +1,13 @@
-//! Building the guest: the root filesystem, the namespaces, and the argv that
-//! makes them.
+//! Building the guest: the root filesystem, the namespaces, and the argv
+//! that makes them. Everything here is a pure function of a [`GuestPlan`]
+//! until [`spawn`] is called, so confinement can be asserted on without a
+//! kernel.
 //!
-//! Everything here is a pure function of a [`GuestPlan`] until [`spawn`] is
-//! called, so the shape of the confinement can be asserted on without a
-//! kernel. The `bwrap` invocation is the whole of the mount and namespace
-//! setup — the supervisor never calls `mount(2)` itself, which is why the
-//! seccomp filter it installs on the guest can deny the syscall outright.
-//!
-//! # Why `bwrap` and not `mount(2)`
-//!
-//! `bwrap` already does exactly the sequence this needs — unshare, mount,
-//! `pivot_root`, install a seccomp filter, `exec` — in that order, with the
-//! filter landing after the last privileged operation and before the guest
-//! exists. Writing that by hand would reproduce a well-reviewed program and
-//! move the moment the filter is installed into code that is much easier to get
-//! wrong. It is also already a hard dependency of qOS's app sandbox.
-//!
-//! # The root the guest ends up in
+//! `bwrap` performs the whole unshare/mount/`pivot_root`/seccomp/`exec`
+//! sequence itself, with the filter landing after the last privileged
+//! operation and before the guest exists — the supervisor never calls
+//! `mount(2)`, which is why its own seccomp filter can deny that syscall
+//! outright.
 //!
 //! ```text
 //! /usr    overlay: lower = [ephemeral layer,] persistent layer, host /usr
@@ -30,9 +21,8 @@
 //! <trusted dirs>          bound read-write, one per `perm trust-dir`
 //! ```
 //!
-//! Nothing else from the host is present. That is the enforcement: a path the
-//! guest was not granted is not missing a permission, it is not in the
-//! namespace.
+//! A path the guest was not granted is not missing a permission — it is
+//! not in the namespace.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -40,24 +30,18 @@ use std::path::{Path, PathBuf};
 use crate::layer::BASE_SUBTREES;
 use crate::profile::Profile;
 
-/// Directories the layer owns outright rather than shadowing.
-///
-/// `/var` cannot be an overlay destination (see [`crate::layer::BASE_SUBTREES`]),
-/// and the host's `/var` is machine state — package caches, service databases,
-/// other users' homes — that a shell has no business reading. Binding the
-/// layer's own is both what works and the tighter grant.
+/// Directories the layer owns outright rather than shadowing: `/var` can't
+/// be an overlay destination (see [`crate::layer::BASE_SUBTREES`]), and the
+/// host's `/var` is machine state a shell has no business reading.
 const LAYER_VAR_DIRS: &[&str] = &["var/lib", "var/cache", "var/log"];
 
 /// `PATH` inside a guest. The runtime's own commands come first so `pkg` means
 /// `pkg` even if a layer installs something by that name.
 pub const GUEST_PATH: &str = "/run/ush/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin";
 
-/// The only variables a guest inherits from the supervisor's own environment.
-///
-/// The rest of the guest's environment is *built* — see the environment block
-/// in [`build_argv`] — and this is the short list of things that describe the
-/// person rather than the session's wiring, so leaving them behind would
-/// change what the user sees for no gain.
+/// The only variables a guest inherits from the supervisor's environment;
+/// the rest is built fresh in [`build_argv`]. These describe the person,
+/// not the session's wiring, so dropping them costs the user nothing.
 pub const INHERITED_ENV: &[&str] = &[
     "LANG",
     "LANGUAGE",
@@ -83,11 +67,9 @@ pub struct GuestPlan {
     /// Layers stacked between the upper and the base, nearest the upper first.
     /// Empty for a persistent session; `[persistent]` for an ephemeral one.
     pub lower_layers: Vec<PathBuf>,
-    /// Where the overlay `workdir`s go. Must be on the same filesystem as
-    /// `upper`, which is why it is the session directory in the store and not
-    /// `/tmp`.
+    /// Where the overlay `workdir`s go; must be on the same filesystem as
+    /// `upper`, hence the store's session directory rather than `/tmp`.
     pub workdir_root: PathBuf,
-    /// The guest's home, from the store.
     pub guest_home: PathBuf,
     /// Where it is mounted — the real user's home path, so `~` and any
     /// absolute path a script has baked in still resolve.
@@ -98,7 +80,6 @@ pub struct GuestPlan {
     pub readable_dirs: Vec<PathBuf>,
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
-    /// The broker socket on the host.
     pub broker_socket: PathBuf,
     /// The compiled seccomp blob for [`Self::profile`].
     pub seccomp_blob: PathBuf,
@@ -106,7 +87,6 @@ pub struct GuestPlan {
     pub command: Vec<String>,
     /// The shell to host when `command` is empty.
     pub shell: PathBuf,
-    /// `TERM` for the guest.
     pub term: String,
     /// Extra environment, applied last.
     pub env: Vec<(String, String)>,
@@ -118,16 +98,13 @@ impl GuestPlan {
         self.workdir_root.join("work").join(subtree)
     }
 
-    /// Create the per-session directories the plan refers to.
-    ///
-    /// The `workdir`s must exist and be empty; `bwrap` will not create them.
+    /// Create the per-session directories the plan refers to: the `workdir`s
+    /// must exist and be empty, since `bwrap` will not create them.
     pub fn prepare(&self) -> std::io::Result<()> {
         for subtree in BASE_SUBTREES {
             let work = self.workdir_for(subtree);
-            // A workdir left behind by a crashed session holds overlayfs's
-            // half-finished copy-ups. Reusing it makes the next mount fail with
-            // a message about the workdir being in use, which reads as a bug in
-            // the runtime rather than as leftover state.
+            // A workdir left behind by a crashed session holds overlayfs's half-finished
+            // copy-ups; reusing it fails the next mount with a message that reads like a bug.
             remove_dir_all_forced(&work);
             std::fs::create_dir_all(&work)?;
         }
@@ -136,11 +113,8 @@ impl GuestPlan {
     }
 }
 
-/// Build the `bwrap` argv for a plan.
-///
-/// Pure. The returned vector starts with `bwrap` and ends with the guest's own
-/// argv, so a caller can print it verbatim under `-v` and get something it can
-/// paste into a shell.
+/// Build the `bwrap` argv for a plan. Pure: the vector starts with `bwrap`
+/// and ends with the guest's own argv, so `-v` output pastes into a shell.
 pub fn build_argv(
     plan: &GuestPlan,
     seccomp_fd: Option<std::os::fd::RawFd>,
@@ -151,27 +125,17 @@ pub fn build_argv(
 
     push(&mut a, "bwrap");
 
-    // ---- environment, emptied ----------------------------------------
-    // `bwrap` hands the parent's whole environment to the guest unless it is
-    // told otherwise, and this parent is the supervisor: it knows where the
-    // store is, where the broker listens, and what the session was started
-    // with. The environment block further down builds the guest's from
-    // scratch, and this is what makes that a complete list rather than a set
-    // of overrides on top of whatever the supervisor was carrying.
-    //
-    // First, because `--clearenv` keeps only what a *later* `--setenv` puts
-    // back.
+    // `bwrap` hands the guest the parent's whole environment unless told
+    // otherwise; clearing it first is what makes the environment block below a
+    // complete list rather than overrides on the supervisor's own environment.
+    // Comes first because `--clearenv` keeps only what a later `--setenv` restores.
     push(&mut a, "--clearenv");
 
-    // ---- namespaces --------------------------------------------------
-    // A fresh user namespace is what makes every mount below possible without
-    // privilege, and uid 0 inside it is what lets `rpm` chown a file into the
-    // layer. Outside the namespace that uid 0 is the unprivileged real user; it
-    // confers nothing on the host.
-    //
-    // With a namespace prepared outside (see [`prepare_userns`]) `bwrap` joins
-    // it rather than creating one — that is how the guest gets more than a
-    // single mapped uid, which nested rootless container tooling needs.
+    // A fresh user namespace makes the mounts below possible without privilege,
+    // and uid 0 inside it is what lets `rpm` chown into the layer — outside the
+    // namespace that uid confers nothing on the host. With a namespace prepared
+    // externally (see [`prepare_userns`]) `bwrap` joins it instead of creating
+    // one, which is how the guest gets more than a single mapped uid.
     match userns_fd {
         Some(fd) => {
             push(&mut a, "--userns");
@@ -192,21 +156,16 @@ pub fn build_argv(
     // The guest must not outlive the supervisor. Without this a crashed
     // supervisor leaves a shell running in a namespace nothing is watching.
     push(&mut a, "--die-with-parent");
-    // Deliberately *not* `--new-session`. It calls `setsid`, which detaches the
-    // guest from its controlling terminal and takes job control with it — no
-    // Ctrl-C, no Ctrl-Z, no foreground process group. `bwrap` documents it as
-    // incompatible with interactive use, and an interactive shell is the only
-    // thing this runtime hosts. What it defends against is `TIOCSTI` injection
-    // back into the parent's terminal, which the kernel has refused by default
-    // since `dev.tty.legacy_tiocsti` shipped off.
+    // Deliberately *not* `--new-session`: it calls `setsid`, detaching the guest
+    // from its controlling terminal and taking job control with it (no Ctrl-C,
+    // no Ctrl-Z). `bwrap` documents it as incompatible with interactive use; what
+    // it defends against — `TIOCSTI` injection — the kernel already refuses.
 
 
 
-    // ---- the layered root --------------------------------------------
     for subtree in BASE_SUBTREES {
-        // `--overlay-src` entries accumulate for the next `--overlay`. The
-        // layers are pushed nearest-the-upper first and the base last, so the
-        // base is the bottom of the stack.
+        // `--overlay-src` entries accumulate for the next `--overlay`; layers are
+        // pushed nearest-the-upper first, base last, so the base ends at the bottom.
         for lower in &plan.lower_layers {
             let dir = lower.join(subtree);
             if dir.is_dir() {
@@ -223,17 +182,12 @@ pub fn build_argv(
         a.push(PathBuf::from("/").join(subtree).into_os_string());
     }
 
-    // The symlinks a Fedora root has and a hand-built one does not.
-    //
-    // usrmerge first: the overlay destinations are `/usr` and `/etc`, so the
-    // new root has no `/bin` at all until these exist — and `execvp("/bin/sh")`,
-    // which is what half the world's scripts start with, would fail.
-    //
-    // `/var/run` and `/var/lock` matter for the same reason one level up. They
-    // are symlinks into `/run` on every modern distribution, and a program that
-    // opens a path under one gets `ENOENT` rather than a permission error when
-    // they are missing — which reads as the program being broken. `podman` is
-    // the case that found this.
+    // The symlinks a Fedora root has and a hand-built one does not. usrmerge
+    // first: the overlay destinations are `/usr` and `/etc`, so the new root has
+    // no `/bin` until these exist, and `execvp("/bin/sh")` would fail. `/var/run`
+    // and `/var/lock` matter the same way one level down — they're symlinks into
+    // `/run` on every modern distribution, and a program that opens a path under
+    // one gets `ENOENT` rather than a clear permission error when missing.
     for (target, link) in root_symlinks(&plan.base) {
         a.push("--symlink".into());
         a.push(target.into_os_string());
@@ -246,7 +200,6 @@ pub fn build_argv(
         a.push(PathBuf::from("/").join(dir).into_os_string());
     }
 
-    // ---- fresh filesystems -------------------------------------------
     for (flag, dest) in [
         ("--proc", "/proc"),
         ("--dev", "/dev"),
@@ -258,23 +211,17 @@ pub fn build_argv(
         a.push(dest.into());
     }
 
-    // ---- the resolver -------------------------------------------------
-    // `/etc/resolv.conf` is a symlink into `/run` on a systemd-resolved host,
-    // and `/run` is a fresh tmpfs in here, so the link dangles and every name
-    // lookup fails. Binding the file the link *points at*, at that path, makes
-    // the link the base already has resolve — no write into `/etc`, and no
-    // guessing about which resolver manages the machine.
-    //
-    // Ordered after the tmpfs deliberately: `bwrap` applies these in sequence,
-    // so a bind under `/run` placed before `--tmpfs /run` is mounted and then
-    // covered over, and the symptom is every mirror being unreachable.
+    // `/etc/resolv.conf` is a symlink into `/run` on a systemd-resolved host, and
+    // `/run` is a fresh tmpfs here, so binding the file the link *points at*, at
+    // that path, makes the base's existing link resolve — no write into `/etc`.
+    // Ordered after the tmpfs: `bwrap` applies flags in sequence, so a bind under
+    // `/run` placed earlier would be mounted and then covered over.
     if let Some((src, dst)) = resolv_bind(&plan.base) {
         a.push("--ro-bind-try".into());
         a.push(src.into_os_string());
         a.push(dst.into_os_string());
     }
 
-    // ---- the runtime's own commands ----------------------------------
     a.push("--dir".into());
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
@@ -289,29 +236,21 @@ pub fn build_argv(
     a.push(plan.broker_socket.clone().into_os_string());
     a.push(crate::GUEST_BROKER_SOCK.into());
 
-    // ---- the guest's home --------------------------------------------
-    // Bound over the real home path, so what the guest sees at `~` is the
-    // store's copy and never the user's files. `/root` gets the same directory
-    // because the guest is uid 0 and `/etc/passwd` says that is where root
-    // lives; a shell that disagreed with `getpwuid` about `$HOME` is a shell
-    // that writes its history somewhere surprising.
-    // `bwrap` will not create a mount point that does not exist at the top of a
-    // fresh root, and the home path is produced by none of the mounts above.
+    // Bound over the real home path, so the guest sees the store's copy at `~`,
+    // never the user's files. `bwrap` won't create a mount point missing at the
+    // top of a fresh root, so `--dir` creates the mountpoint first.
     a.push("--dir".into());
     a.push(plan.home_mountpoint.clone().into_os_string());
     a.push("--bind".into());
     a.push(plan.guest_home.clone().into_os_string());
     a.push(plan.home_mountpoint.clone().into_os_string());
     // The guest is uid 0, so `getpwuid` says its home is `/root`. A symlink
-    // rather than a second bind of the same directory: two mounts of one source
-    // is two things to keep in step, and a program that resolves `~` through
-    // the password database should land on the same inode as one that reads
-    // `$HOME`, not merely on the same contents.
+    // rather than a second bind: two mounts of one source is two things to keep
+    // in step, and `~` should resolve to the same inode `$HOME` does.
     a.push("--symlink".into());
     a.push(plan.home_mountpoint.clone().into_os_string());
     a.push("/root".into());
 
-    // ---- what the user granted ---------------------------------------
     for dir in &plan.readable_dirs {
         a.push("--ro-bind-try".into());
         a.push(dir.clone().into_os_string());
@@ -323,26 +262,20 @@ pub fn build_argv(
         a.push(dir.clone().into_os_string());
     }
 
-    // ---- the developer profile's extras ------------------------------
     if plan.profile.grants_fuse() {
         a.push("--dev-bind-try".into());
         a.push("/dev/fuse".into());
         a.push("/dev/fuse".into());
     }
     if !plan.profile.confines_namespaces() {
-        // `bwrap` empties the capability bounding set before it execs, so a
-        // guest can call `unshare(CLONE_NEWUSER)` and then not be allowed to
-        // write the new namespace's `uid_map` — which is where nested rootless
-        // podman stops. These capabilities exist only inside the guest's own
-        // user namespace, where host uid 0 is unmapped, so they buy authority
-        // over the guest's children and none at all over the machine. They are
-        // still the difference between a boundary and a convenience, which is
-        // why only the developer profile gets them.
+        // `bwrap` empties the capability bounding set before it execs, so a guest
+        // can `unshare(CLONE_NEWUSER)` and then not write the new namespace's
+        // `uid_map` — where nested rootless podman stops. These capabilities exist
+        // only inside the guest's own namespace, so only the developer profile gets them.
         a.push("--cap-add".into());
         a.push("ALL".into());
     }
 
-    // ---- environment --------------------------------------------------
     let setenv = |k: &str, v: &str, a: &mut Vec<OsString>| {
         a.push("--setenv".into());
         a.push(k.into());
@@ -356,10 +289,8 @@ pub fn build_argv(
     setenv("SHELL", &plan.shell.to_string_lossy(), &mut a);
     setenv("QOS_USH_PROFILE", plan.profile.as_str(), &mut a);
     setenv("QOS_USH_BROKER", crate::GUEST_BROKER_SOCK, &mut a);
-    // The user's language, carried across explicitly now that the guest no
-    // longer inherits it. A shell whose `LANG` went missing answers in the C
-    // locale: `ls` stops aligning non-ASCII names, `date` changes format, and
-    // every message changes language mid-session.
+    // Carried across explicitly since the guest no longer inherits it: a shell
+    // with no `LANG` answers in the C locale, breaking `ls`, `date`, and messages.
     for key in INHERITED_ENV {
         let Some(value) = std::env::var_os(key) else {
             continue;
@@ -372,23 +303,16 @@ pub fn build_argv(
     for (k, v) in &plan.env {
         setenv(k, v, &mut a);
     }
-    // The store holds the policy file and the audit log. A guest that learned
-    // where it is could not read it — it is not in the namespace — but telling
-    // it is pointless and the variable would follow a program back out.
+    // The store holds the policy file and audit log; unreachable from inside the
+    // namespace anyway, but leaving the variable set would follow a program out.
     a.push("--unsetenv".into());
     a.push(crate::store::STORE_ENV.into());
 
-    // ---- the syscall filter ------------------------------------------
-    // Placed last of the sandbox flags and applied by `bwrap` immediately
-    // before it execs, i.e. after every mount above has happened. This is the
-    // line that stops the supervisor's need for `mount` and `unshare` from
-    // reaching anything the user runs.
-    //
-    // `bwrap` takes an already-open descriptor rather than a path, so the
-    // caller opens the blob (see [`open_seccomp_fd`]) and passes the number.
-    // A plan with no descriptor produces an argv with no filter, which is why
-    // [`exec`] and [`spawn`] open it themselves rather than leaving it to a
-    // caller who might forget.
+    // Placed last of the sandbox flags and applied by `bwrap` immediately before
+    // it execs, after every mount above — this is what stops the supervisor's
+    // need for `mount`/`unshare` from reaching anything the user runs. `bwrap`
+    // takes an already-open descriptor rather than a path, so [`exec`] and
+    // [`spawn`] open the blob (see [`open_seccomp_fd`]) themselves.
     if let Some(fd) = seccomp_fd {
         a.push("--seccomp".into());
         a.push(fd.to_string().into());
@@ -406,12 +330,9 @@ pub fn build_argv(
     a
 }
 
-/// `remove_dir_all`, but restoring traversal permission as it descends.
-///
-/// overlayfs creates `<workdir>/work` with mode `000`, so an ordinary recursive
-/// delete stops there with "permission denied" and leaves the session directory
-/// behind — the user owns it and simply cannot walk into it. Nothing here is
-/// forced past an owner: it is the caller's own directory either way.
+/// `remove_dir_all`, but restoring traversal permission as it descends:
+/// overlayfs creates `<workdir>/work` with mode `000`, so an ordinary
+/// recursive delete stops there with "permission denied".
 pub fn remove_dir_all_forced(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let Ok(meta) = path.symlink_metadata() else {
@@ -432,22 +353,14 @@ pub fn remove_dir_all_forced(path: &Path) {
 
 /// The symlinks the base's root directory has, recreated in the guest's.
 ///
-/// A root built out of overlays and binds starts with only the directories
-/// those produced. Every symlink the real root carries is therefore missing,
-/// and each one that is missing turns some path into `ENOENT`:
-///
-/// - `/bin`, `/sbin`, `/lib`, `/lib64` → `usr/…`. Without them
-///   `execvp("/bin/sh")` fails, which is how half the world's scripts start.
-/// - `/home` → `var/home` on an ostree system. Without it every path the user
-///   types under `/home` misses the directory the runtime bound their home at.
-/// - `/var/run`, `/var/lock` → `/run`. Nested one level down, so they are added
-///   explicitly rather than read from the root listing.
-///
-/// Read from the base rather than hard-coded, because which of these a machine
-/// has is a property of the distribution's layout, and a guest that disagrees
-/// with its own base about where `/bin` points is a guest where paths mean two
-/// different things. The usrmerge set is the floor for a base that lists none —
-/// a base with no `/bin` at all cannot host a shell.
+/// A root built from overlays and binds starts with only the directories
+/// those produced, so every symlink the real root carries is missing —
+/// `/bin`/`/sbin`/`/lib`/`/lib64` → `usr/…` (without them `execvp("/bin/sh")`
+/// fails), `/home` → `var/home` on an ostree system, and `/var/run`/
+/// `/var/lock` → `/run`. Read from the base rather than hard-coded, since a
+/// guest that disagrees with its base about where `/bin` points is a guest
+/// where paths mean two different things; the usrmerge set is only the floor
+/// for a base that lists none.
 pub fn root_symlinks(base: &Path) -> Vec<(PathBuf, PathBuf)> {
     let mut out: Vec<(PathBuf, PathBuf)> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(base) {
@@ -459,10 +372,8 @@ pub fn root_symlinks(base: &Path) -> Vec<(PathBuf, PathBuf)> {
                     return None;
                 }
                 let name = path.file_name()?;
-                // `/root` is the runtime's to place: the guest is uid 0, so
-                // that is where `getpwuid` sends it, and it must land on the
-                // guest's home rather than wherever the base keeps root's.
-                // (`/root -> var/roothome` on an ostree system.)
+                // `/root` is the runtime's to place: the guest is uid 0, so `getpwuid` sends
+                // it there, and it must land on the guest's home, not the base's root account.
                 if name == "root" {
                     return None;
                 }
@@ -485,14 +396,11 @@ pub fn root_symlinks(base: &Path) -> Vec<(PathBuf, PathBuf)> {
     out
 }
 
-/// Where to bind the host's resolver so `/etc/resolv.conf` resolves in the
-/// guest: `(source on the host, destination in the guest)`.
+/// Where to bind the host's resolver: `(source on host, destination in guest)`.
 ///
-/// The destination is the *link target* when the base's `/etc/resolv.conf` is a
-/// symlink — usually somewhere under `/run`, which the guest replaces with a
-/// tmpfs — and `/etc/resolv.conf` itself when it is a regular file. Returns
-/// `None` when the base has no resolver at all, which is a machine with no
-/// network rather than an error.
+/// Destination is the *link target* when `/etc/resolv.conf` is a symlink
+/// (usually under `/run`, replaced by a tmpfs), else the path itself. `None`
+/// means the base has no resolver — a machine with no network, not an error.
 pub fn resolv_bind(base: &Path) -> Option<(PathBuf, PathBuf)> {
     let link = base.join("etc/resolv.conf");
     let meta = link.symlink_metadata().ok()?;
@@ -508,13 +416,9 @@ pub fn resolv_bind(base: &Path) -> Option<(PathBuf, PathBuf)> {
     Some((resolved, inside))
 }
 
-/// The subordinate id range the real user owns, from `/etc/subuid`.
-///
-/// `dsh` needs it: rootless `podman` allocates uids out of this range to own
-/// the files in an image, and with one uid mapped it can only run images whose
-/// files are all uid 0. Returns `None` when the user has no allocation, which
-/// is a normal state on a machine that has never run a container — `dsh` then
-/// starts with a single uid and says so rather than refusing.
+/// The subordinate id range the real user owns, from `/etc/subuid`. `dsh`
+/// needs it: rootless `podman` allocates uids from this range to own an
+/// image's files. `None` is a normal state on a machine with no containers.
 pub fn subid_range(subid_file: &Path, user: &str, uid: u32) -> Option<(u32, u32)> {
     let text = std::fs::read_to_string(subid_file).ok()?;
     for line in text.lines() {
@@ -529,24 +433,17 @@ pub fn subid_range(subid_file: &Path, user: &str, uid: u32) -> Option<(u32, u32)
     None
 }
 
-/// Build a user namespace with the caller's whole subordinate id range mapped,
-/// and return a descriptor naming it.
+/// Build a user namespace with the caller's whole subordinate id range
+/// mapped, and return a descriptor naming it. Only [`Profile::Dsh`] uses
+/// this: `bwrap --unshare-user` maps exactly one uid, but rootless `podman`
+/// needs a range since an image's files are owned by a spread of uids.
+/// Installing the range needs `CAP_SETUID` in the parent namespace, which
+/// `newuidmap`/`newgidmap` carry as a file capability instead.
 ///
-/// Only [`Profile::Dsh`] uses this. `bwrap --unshare-user` maps exactly one uid,
-/// and rootless `podman` needs a range: an image's files are owned by a spread
-/// of uids, and with one mapped it can only unpack images that are entirely
-/// uid 0. The range lives in `/etc/subuid`, and installing it needs
-/// `CAP_SETUID` in the parent namespace — which no unprivileged process has, and
-/// which is exactly what `newuidmap` carries as a file capability.
-///
-/// So: fork a child into a bare user namespace, let `newuidmap` and `newgidmap`
-/// write its maps from outside, then keep the namespace alive by holding a
-/// descriptor to it while the child goes away. `bwrap --userns` joins it instead
-/// of creating its own.
-///
-/// Returns `None` when the user has no allocation or the helpers are absent;
-/// `dsh` then starts with a single uid, which is a weaker `dsh` and not a
-/// failure.
+/// Forks a child into a bare user namespace, lets the helpers write its maps
+/// from outside, then holds a descriptor to the namespace while the child
+/// exits. `None` when the user has no allocation or the helpers are absent —
+/// `dsh` then starts with a single mapped uid rather than failing.
 pub fn prepare_userns(subid_dir: &Path) -> Option<std::fs::File> {
     // SAFETY: `geteuid`/`getegid` cannot fail.
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
@@ -671,10 +568,8 @@ fn clear_cloexec(file: std::fs::File) -> std::io::Result<std::fs::File> {
 }
 
 /// Open the compiled filter and hand back a descriptor `bwrap` will inherit.
-///
-/// `O_CLOEXEC` has to come off: the number in the argv has to still name this
-/// file after the `exec`. The `File` is returned alongside so the caller keeps
-/// it alive — dropping it would close the descriptor before `bwrap` reads it.
+/// `O_CLOEXEC` must come off so the number in the argv still names this file
+/// after `exec`; the `File` is returned too so the caller keeps it alive.
 pub fn open_seccomp_fd(
     blob: &Path,
 ) -> std::io::Result<(std::fs::File, std::os::fd::RawFd)> {
@@ -693,11 +588,9 @@ pub fn open_seccomp_fd(
     Ok((file, fd))
 }
 
-/// Spawn the guest, replacing the current process.
-///
-/// Never returns on success. `bwrap` becomes the process the caller was, so a
-/// `SIGINT` from a terminal reaches the guest and the exit status is the
-/// guest's own.
+/// Spawn the guest, replacing the current process. Never returns on success:
+/// `bwrap` becomes the process the caller was, so a `SIGINT` reaches the
+/// guest and the exit status is the guest's own.
 pub fn exec(plan: &GuestPlan) -> std::io::Error {
     use std::os::unix::process::CommandExt;
     let (_blob, fd) = match open_seccomp_fd(&plan.seccomp_blob) {
@@ -721,9 +614,8 @@ pub fn spawn(plan: &GuestPlan) -> std::io::Result<std::process::Child> {
         .spawn()
 }
 
-/// The prepared user namespace for a plan, if its profile asks for one. The
-/// `File` is returned so the caller keeps it alive — closing it would destroy
-/// the namespace before `bwrap` joins it.
+/// The prepared user namespace for a plan, if its profile asks for one; the
+/// `File` is returned so the caller keeps it alive until `bwrap` joins it.
 fn userns_for(plan: &GuestPlan) -> (Option<std::fs::File>, Option<std::os::fd::RawFd>) {
     use std::os::fd::AsRawFd;
     if !plan.profile.grants_subid_range() {
@@ -824,8 +716,7 @@ mod tests {
             ("usr/sbin", "/sbin"),
             ("usr/lib", "/lib"),
             ("usr/lib64", "/lib64"),
-            // Without these, anything that opens a path under /var/run gets
-            // ENOENT and reads as broken rather than as confined.
+            // Without these, a path under /var/run reads ENOENT rather than confined.
             ("../run", "/var/run"),
             ("../run/lock", "/var/lock"),
         ] {
@@ -839,9 +730,8 @@ mod tests {
         }
     }
 
-    /// The one that made `perm trust-dir` look broken: `/home` is a symlink to
-    /// `var/home` on an ostree system, and without it every path the user types
-    /// under `/home` misses the directory the runtime bound their home at.
+    /// `/home` is a symlink to `var/home` on an ostree system; without mirroring
+    /// it, paths the user types under `/home` miss where the runtime bound it.
     #[test]
     fn the_root_mirrors_the_bases_own_symlinks() {
         let dir = tempfile::tempdir().unwrap();
@@ -925,16 +815,10 @@ mod tests {
             && w[2] == "/var/home/you/notes"));
     }
 
-    /// A guest with no grants must see no host *content* beyond the base. This
-    /// is "an app sees your files only where you said it may", asserted on the
-    /// argv rather than on the prose.
-    ///
-    /// Three things are bound and each has to justify itself: the store (the
-    /// guest's own layer and home), the runtime binary (read-only, so the guest
-    /// cannot rewrite the next session's confinement), and the machine's
-    /// resolver. The resolver is the same judgement `launcher::profile` makes
-    /// about `/etc/resolv.conf` — it describes the network the machine is on,
-    /// carries no user content, and is read-only.
+    /// A guest with no grants must see no host *content* beyond the base —
+    /// asserted on the argv rather than on the prose. Three things are bound and
+    /// each must justify itself: the store, the runtime binary (read-only, so
+    /// the guest can't rewrite the next session's confinement), and the resolver.
     #[test]
     fn a_guest_with_no_grants_binds_no_user_content() {
         let dir = tempfile::tempdir().unwrap();
@@ -1150,9 +1034,8 @@ mod tests {
     }
 
     /// `bwrap` applies its arguments in order, so a bind under `/run` placed
-    /// before `--tmpfs /run` is mounted and then covered over. The symptom is
-    /// every name lookup failing, which reads as "no network" rather than as an
-    /// argv ordering bug.
+    /// before `--tmpfs /run` gets mounted and covered over — symptom: every
+    /// name lookup fails, which reads as "no network" not an ordering bug.
     #[test]
     fn the_resolver_bind_comes_after_the_run_tmpfs() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,16 +1,13 @@
-//! Integration test: end-to-end RPC round-trip over a real Unix
-//! socket against a hand-rolled fake `WorkspaceFs` server.
+//! Integration test: end-to-end RPC round-trip over a real Unix socket
+//! against a hand-rolled fake `WorkspaceFs` server.
 //!
-//! Covers:
-//! - The `UnixCapnpClient` plumbing (same code-path a real app takes).
-//! - The generated `WorkspaceFs` schema (params, results, capability
-//!   returns).
-//! - The idiomatic `FsClient` wrappers: `open`, `list`, `stat`,
-//!   `FileHandle::write_at`, `FileHandle::read_all`.
+//! Covers the `UnixCapnpClient` plumbing (the same path a real app takes),
+//! the generated `WorkspaceFs` schema, and the idiomatic `FsClient`
+//! wrappers (`open`, `list`, `stat`, `FileHandle::write_at`/`read_all`).
 //!
-//! The fake backend is an in-memory map. Directories are inferred
-//! from path prefixes rather than represented explicitly — the test
-//! only exercises write→read on files and a single list.
+//! The fake backend is an in-memory map; directories are inferred from
+//! path prefixes rather than represented explicitly, so the test only
+//! exercises write→read on files and a single list.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -27,7 +24,7 @@ use runtime_fs::raw::{file_handle, workspace_fs, EntryKind as WireKind, OpenMode
 use runtime_fs::{FsClient, WorkspaceFsClient};
 use runtime_portal::UnixCapnpClient;
 
-// --- Shared in-memory backend --------------------------------------------
+// shared in-memory backend
 
 type Store = Rc<RefCell<BTreeMap<String, Vec<u8>>>>;
 
@@ -35,7 +32,7 @@ fn normalise(path: &str) -> String {
     path.trim_start_matches('/').to_owned()
 }
 
-// --- Server impls --------------------------------------------------------
+// server impls
 
 struct FakeFile {
     store: Store,
@@ -271,7 +268,7 @@ impl workspace_fs::Server for FakeFs {
     }
 }
 
-// --- The test itself -----------------------------------------------------
+// the test itself
 
 #[tokio::test(flavor = "current_thread")]
 async fn round_trip_write_read_list_stat() {

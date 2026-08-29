@@ -1,23 +1,19 @@
 //! The real `systemd-logind` glue (`org.freedesktop.login1`) over `zbus`.
 //!
-//! Everything here performs actual D-Bus I/O against the system bus, so it
-//! only works where `systemd-logind` is running (a real session, a VM, this
-//! dev box). The pure decision logic that decides *whether* to call these
-//! lives in [`super::policy`] / [`super::battery`]; this module is the thin,
-//! honest actuator.
+//! Everything here performs actual D-Bus I/O against the system bus, so it only works where
+//! `systemd-logind` is running. The pure decision logic for *whether* to call these lives in
+//! [`super::policy`] / [`super::battery`]; this module is the thin, honest actuator.
 //!
 //! Three capabilities the compositor needs:
 //!
 //! * **Suspend** — [`LogindManager::suspend`] calls `Manager.Suspend`.
-//! * **Inhibit** — [`LogindManager::inhibit`] takes a `Manager.Inhibit`
-//!   lock and returns a [`LogindInhibitor`] whose `Drop` closes the fd and
-//!   releases the lock. The compositor takes a *block* lock on
-//!   `handle-lid-switch:handle-power-key` so logind delegates those events to
-//!   the compositor's policy instead of acting on them itself, and a
-//!   ref-counted `idle:sleep` lock mirroring the [`super::inhibit`] registry.
-//! * **Sleep coordination** — [`LogindManager::receive_prepare_for_sleep`]
-//!   surfaces the `PrepareForSleep` signal so the compositor can lock before
-//!   the machine sleeps and reset its idle timer on resume.
+//! * **Inhibit** — [`LogindManager::inhibit`] takes a `Manager.Inhibit` lock and returns a
+//!   [`LogindInhibitor`] whose `Drop` closes the fd and releases it. The compositor takes a
+//!   *block* lock on `handle-lid-switch:handle-power-key` to delegate those events to its own
+//!   policy, and a ref-counted `idle:sleep` lock mirroring the [`super::inhibit`] registry.
+//! * **Sleep coordination** — [`LogindManager::receive_prepare_for_sleep`] surfaces
+//!   `PrepareForSleep` so the compositor can lock before sleep and reset its idle timer on
+//!   resume.
 
 use zbus::zvariant::OwnedFd;
 use zbus::Connection;
@@ -40,44 +36,38 @@ impl LogindManager {
         Self::with_connection(&conn).await
     }
 
-    /// Build the proxy on an existing connection (lets the compositor share
-    /// one system-bus connection across logind + UPower).
+    /// Build the proxy on an existing connection (lets the compositor share one system-bus
+    /// connection across logind + UPower).
     pub async fn with_connection(conn: &Connection) -> zbus::Result<Self> {
         let proxy = zbus::Proxy::new(conn, DEST, PATH, IFACE).await?;
         Ok(Self { proxy })
     }
 
-    /// The underlying connection (shared with [`super::upower`] when built
-    /// via [`Self::with_connection`]).
+    /// The underlying connection (shared with [`super::upower`] when built via [`Self::with_connection`]).
     pub fn connection(&self) -> &Connection {
         self.proxy.connection()
     }
 
-    /// `Manager.CanSuspend()` → `"yes"` / `"no"` / `"na"` / `"challenge"`.
-    /// Used to decide whether a suspend request is even worth issuing.
+    /// `Manager.CanSuspend()` → `"yes"` / `"no"` / `"na"` / `"challenge"`. Used to decide whether
+    /// a suspend request is even worth issuing.
     pub async fn can_suspend(&self) -> zbus::Result<String> {
         self.proxy.call("CanSuspend", &()).await
     }
 
-    /// `Manager.Suspend(interactive)` — actually suspend the machine.
-    ///
-    /// `interactive = false` means "do it without a polkit prompt" (the
-    /// session user is authorized). This is the real, irreversible-looking
-    /// call; the caller is responsible for having consulted the policy and
-    /// the inhibitor registry first.
+    /// `Manager.Suspend(interactive)` — actually suspend the machine. `interactive = false`
+    /// means "do it without a polkit prompt" (the session user is authorized). The real,
+    /// irreversible-looking call; the caller must have consulted policy and the inhibitor
+    /// registry first.
     pub async fn suspend(&self, interactive: bool) -> zbus::Result<()> {
         self.proxy.call("Suspend", &(interactive)).await
     }
 
     /// `Manager.Inhibit(what, who, why, mode)` → a lock fd.
     ///
-    /// * `what`  — colon-separated locks, e.g. `"idle:sleep"` or
-    ///   `"handle-lid-switch:handle-power-key"`.
-    /// * `mode`  — `"block"` (veto the action) or `"delay"` (up to
-    ///   `InhibitDelayMaxSec`, for cleanup before it proceeds).
+    /// * `what` — colon-separated locks, e.g. `"idle:sleep"` or `"handle-lid-switch:handle-power-key"`.
+    /// * `mode` — `"block"` (veto) or `"delay"` (up to `InhibitDelayMaxSec`, for cleanup before proceeding).
     ///
-    /// The returned [`LogindInhibitor`] holds the fd open; drop it to
-    /// release.
+    /// The returned [`LogindInhibitor`] holds the fd open; drop it to release.
     pub async fn inhibit(
         &self,
         what: &str,
@@ -89,8 +79,8 @@ impl LogindManager {
         Ok(LogindInhibitor { _fd: fd, what: what.to_string() })
     }
 
-    /// `Manager.ListInhibitors()` → `(what, who, why, mode, uid, pid)` rows.
-    /// Used by tests to prove an [`Self::inhibit`] lock actually landed.
+    /// `Manager.ListInhibitors()` → `(what, who, why, mode, uid, pid)` rows. Used by tests to
+    /// prove an [`Self::inhibit`] lock actually landed.
     #[allow(clippy::type_complexity)]
     pub async fn list_inhibitors(
         &self,
@@ -98,19 +88,17 @@ impl LogindManager {
         self.proxy.call("ListInhibitors", &()).await
     }
 
-    /// Subscribe to `PrepareForSleep(bool)` — `true` just before the system
-    /// sleeps, `false` just after it resumes.
+    /// Subscribe to `PrepareForSleep(bool)` — `true` just before the system sleeps, `false` just
+    /// after it resumes.
     pub async fn receive_prepare_for_sleep(
         &self,
     ) -> zbus::Result<zbus::proxy::SignalStream<'static>> {
         self.proxy.receive_signal("PrepareForSleep").await
     }
 
-    /// Take the "delegate the lid switch and power key to us" *block* lock.
-    ///
-    /// With this held, logind stops acting on `HandleLidSwitch` /
-    /// `HandlePowerKey` itself and leaves them to the compositor's policy.
-    /// Keep the returned inhibitor alive for the session's lifetime.
+    /// Take the "delegate the lid switch and power key to us" *block* lock. With this held,
+    /// logind stops acting on `HandleLidSwitch`/`HandlePowerKey` itself and leaves them to the
+    /// compositor's policy. Keep the returned inhibitor alive for the session's lifetime.
     pub async fn delegate_handled_keys(&self) -> zbus::Result<LogindInhibitor> {
         self.inhibit(
             "handle-lid-switch:handle-power-key:handle-suspend-key",
@@ -122,8 +110,8 @@ impl LogindManager {
     }
 }
 
-/// An outstanding logind inhibitor lock. Dropping it closes the fd, which is
-/// how logind learns the lock is released.
+/// An outstanding logind inhibitor lock. Dropping it closes the fd, which is how logind
+/// learns the lock is released.
 #[derive(Debug)]
 pub struct LogindInhibitor {
     _fd: OwnedFd,
@@ -141,11 +129,9 @@ impl LogindInhibitor {
 mod tests {
     use super::*;
 
-    /// Connect to the real system bus, or print why we skipped and return
-    /// `None`. This is an environment probe, not an `#[ignore]`: where
-    /// logind is present (a real session, a VM, CI with a system bus) the
-    /// body runs and asserts for real; where it is genuinely absent the test
-    /// cannot exercise D-Bus and says so.
+    /// Connect to the real system bus, or print why we skipped and return `None`. An environment
+    /// probe, not an `#[ignore]`: where logind is present the body runs and asserts for real;
+    /// where it's genuinely absent the test cannot exercise D-Bus and says so.
     async fn manager_or_skip(ctx: &str) -> Option<LogindManager> {
         match LogindManager::connect().await {
             Ok(m) => Some(m),

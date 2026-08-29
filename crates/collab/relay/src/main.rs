@@ -1,8 +1,6 @@
-//! Binary entry-point for `qos-relay`.
-//!
-//! Parses CLI flags, merges with TOML config + env vars, builds the
-//! [`Relay`](relay::Relay), and runs the event loop until
-//! SIGTERM/SIGINT.
+//! Binary entry-point for `qos-relay`: parses CLI flags, merges with TOML
+//! config + env vars, builds the [`Relay`](relay::Relay), and runs the
+//! event loop until SIGTERM/SIGINT.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -14,28 +12,23 @@ use relay::{Relay, RelayConfig};
 /// Standalone libp2p gossipsub relay for the qOS collaboration mesh.
 ///
 /// Forwards gossipsub messages on the configured topics (default
-/// `qos.*`) and provides Kademlia DHT bootstrap so peers behind NAT
-/// can find each other. Trust model: the relay is a forwarding
-/// intermediary, not a channel member. Once MLS encryption ships
-/// (Phase 7 of the collab spec) it will see only ciphertext +
-/// metadata.
+/// `qos.*`) and provides Kademlia DHT bootstrap so NATed peers can find
+/// each other. The relay is a forwarding intermediary, not a channel
+/// member; once MLS encryption ships it will see only ciphertext + metadata.
 #[derive(Debug, Parser)]
 #[command(name = "qos-relay", version, about, long_about = None)]
 struct Cli {
-    /// Path to a TOML config file. If unset, falls back to
-    /// `$QOS_RELAY_CONFIG` and finally to the in-binary defaults.
+    /// Path to a TOML config file; falls back to `$QOS_RELAY_CONFIG`, then in-binary defaults.
     #[arg(long, short)]
     config: Option<PathBuf>,
 
-    /// Override `listen` from the config. May be passed multiple
-    /// times. Each value is a libp2p multiaddr e.g.
-    /// `/ip4/0.0.0.0/tcp/4001` or `/ip4/0.0.0.0/udp/4001/quic-v1`.
+    /// Overrides `listen` from the config (repeatable); each value is a
+    /// libp2p multiaddr, e.g. `/ip4/0.0.0.0/tcp/4001` or `/ip4/0.0.0.0/udp/4001/quic-v1`.
     #[arg(long)]
     listen: Vec<Multiaddr>,
 
-    /// Override `bootstrap` from the config. May be passed multiple
-    /// times. Each value must include a `/p2p/<peerid>` suffix so
-    /// the dialled peer can be authenticated.
+    /// Overrides `bootstrap` from the config (repeatable); each value must
+    /// include a `/p2p/<peerid>` suffix so the dialled peer can be authenticated.
     #[arg(long)]
     bootstrap: Vec<Multiaddr>,
 
@@ -43,19 +36,15 @@ struct Cli {
     #[arg(long)]
     identity: Option<PathBuf>,
 
-    /// Override `metrics_listen`. Pass e.g. `127.0.0.1:9090` to
-    /// expose Prometheus metrics on that address.
+    /// Overrides `metrics_listen`, e.g. `127.0.0.1:9090`, to expose Prometheus metrics there.
     #[arg(long)]
     metrics: Option<SocketAddr>,
 
-    /// Override `log_level`. Accepts `tracing_subscriber::EnvFilter`
-    /// directives e.g. `relay=debug,libp2p=info`.
+    /// Overrides `log_level` (`tracing_subscriber::EnvFilter` directives, e.g. `relay=debug,libp2p=info`).
     #[arg(long)]
     log: Option<String>,
 
-    /// Print the effective config (after CLI/env merge) to stdout
-    /// and exit without starting the relay. Useful for `diff`-ing
-    /// what each layer contributed.
+    /// Prints the effective config (after CLI/env merge) to stdout and exits, for diffing what each layer contributed.
     #[arg(long)]
     print_config: bool,
 }

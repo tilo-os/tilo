@@ -1,23 +1,23 @@
-//! The nested **Resource** tree an app publishes, and the **ActionSpec**s each
-//! resource exports.
+//! The nested **Resource** tree an app publishes, and the **ActionSpec**s
+//! each resource exports.
 //!
-//! A [`Resource`] is something the app currently has *open / presented* — a
-//! playing video, an open book — and resources **nest**: a video owns its
-//! comments; a book owns its annotations. Each resource exports
-//! [`ActionSpec`]s: the operations Ctrl+K offers for it.
+//! A [`Resource`] is something the app currently has *open/presented*
+//! (a playing video, an open book); resources **nest** — a video owns
+//! its comments, a book its annotations. Each exports [`ActionSpec`]s:
+//! the operations Ctrl+K offers for it.
 //!
-//! The split that matters: a [`Resource`]/[`ActionSpec`] is **presentation** —
-//! a local, per-frame description with human labels and (for a prompted action)
-//! a closure. The [`EncodedAction`] an `ActionSpec` yields is the **action** —
-//! the serializable, replayable value. The presentation never crosses a
-//! boundary; only the action does.
+//! The split that matters: [`Resource`]/[`ActionSpec`] is
+//! **presentation** — local, per-frame, with human labels and (for a
+//! prompted action) a closure. The [`EncodedAction`] an `ActionSpec`
+//! yields is the **action** — serializable, replayable. Presentation
+//! never crosses a boundary; only the action does.
 
 use std::sync::Arc;
 
 use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus};
 
-/// Stable identity of a resource within the publishing app instance (e.g.
-/// `tube.video:dQw4w9WgXcQ`, `ebook.annotation:<uuid>`).
+/// Stable identity of a resource within the publishing app instance
+/// (e.g. `tube.video:dQw4w9WgXcQ`, `ebook.annotation:<uuid>`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ResourceId(pub String);
 
@@ -30,14 +30,13 @@ impl ResourceId {
     }
 }
 
-/// One open/presented resource and the actions it exports. Resources nest via
-/// [`children`](Resource::children).
+/// One open/presented resource and the actions it exports. Resources
+/// nest via [`children`](Resource::children).
 #[derive(Clone)]
 pub struct Resource {
     pub id: ResourceId,
-    /// A stable kind tag (e.g. `"tube.video"`, `"tube.comment"`,
-    /// `"ebook.book"`, `"ebook.annotation"`). Shared with the global-search
-    /// type registry so the same kind can be enumerated OS-wide.
+    /// A stable kind tag (e.g. `"tube.video"`, `"ebook.annotation"`),
+    /// shared with the global-search type registry for OS-wide enumeration.
     pub kind: String,
     /// Human, localisable label shown in the palette.
     pub label: String,
@@ -76,17 +75,12 @@ impl Resource {
     }
 }
 
-/// What kind of thing an action's one text argument names.
-///
-/// Both arrive as strings; what differs is where a usable one can come from.
-/// Words are what the asker says outright, so an instruction asking for them
-/// contains them. A content hash addresses bytes already in this machine's blob
-/// store — nobody types one and nothing can invent one, so it exists only
-/// because some earlier operation produced the content it names.
-///
-/// Declared on the spec rather than inferred from the prompt, because it is
-/// what lets a caller that cannot see the screen tell "give me a new name" from
-/// "give me the image to place".
+/// What kind of thing an action's one text argument names. Words are
+/// what the asker says outright; a content hash addresses bytes already
+/// in this machine's blob store (nobody types one, it names something
+/// an earlier operation produced). Declared on the spec rather than
+/// inferred, so a caller with no screen can tell "give me a new name"
+/// from "give me the image to place".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Collects {
     /// Free text, in the words of whoever is asking.
@@ -102,9 +96,8 @@ pub enum ActionInput {
     /// Fires immediately with this pre-encoded action.
     Immediate(EncodedAction),
     /// Collects one free-text argument first (the palette shows an argument
-    /// step), then builds the action from it. The closure is presentation-side
-    /// state — it never crosses a boundary; only its output [`EncodedAction`]
-    /// does.
+    /// step), then builds the action from it. The closure is
+    /// presentation-side — only its output [`EncodedAction`] crosses a boundary.
     Prompted {
         prompt: String,
         placeholder: String,
@@ -122,8 +115,8 @@ pub struct ActionSpec {
     pub label: String,
     pub description: Option<String>,
     /// Declared execution locus (mirrors the concrete action's
-    /// [`Action::locus`], so the palette can show / route it before the action
-    /// is even built).
+    /// [`Action::locus`]), so the palette can show/route it before the
+    /// action is built.
     pub locus: ExecutionLocus,
     pub input: ActionInput,
 }
@@ -174,12 +167,10 @@ impl ActionSpec {
         }
     }
 
-    /// An action whose one argument is the content hash of bytes this machine
-    /// already holds, rather than words somebody types.
-    ///
-    /// A separate constructor rather than a parameter on [`Self::prompted`], so
-    /// every action that already exists keeps saying exactly what it said: an
-    /// argument is words unless the app declares otherwise.
+    /// An action whose one argument is the content hash of bytes this
+    /// machine already holds, rather than typed words — a separate
+    /// constructor (not a parameter on [`Self::prompted`]) so every
+    /// existing action keeps saying exactly what it said.
     pub fn prompted_content(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -201,16 +192,16 @@ impl ActionSpec {
     }
 }
 
-/// An app instance implements this to publish the resource tree it currently
-/// has open. The host (`ui::App`) collects the focused instance's tree each
-/// frame; the CRDT `doc` is passed so a provider can enumerate resources that
-/// live *in* the document (e.g. a book's annotations).
+/// An app instance implements this to publish the resource tree it
+/// currently has open. The host collects the focused instance's tree
+/// each frame; `doc` lets a provider enumerate resources living *in* the
+/// document (e.g. a book's annotations).
 pub trait ResourceProvider {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource>;
 }
 
-/// Field separator inside a flattened composite key. A unit-separator control
-/// char never appears in a resource or action id, so splitting is unambiguous.
+/// Field separator inside a flattened composite key — a unit-separator
+/// control char never appears in a resource or action id.
 pub const KEY_SEP: char = '\u{1f}';
 
 /// One (resource, action) pair produced by [`flatten`], addressable by a
@@ -224,8 +215,8 @@ pub struct FlatAction<'a> {
     pub action: &'a ActionSpec,
 }
 
-/// Depth-first flatten of a resource forest into every exported action, parent
-/// resources before their children. This is what the palette lists.
+/// Depth-first flatten of a resource forest into every exported action,
+/// parents before children — what the palette lists.
 pub fn flatten(resources: &[Resource]) -> Vec<FlatAction<'_>> {
     let mut out = Vec::new();
     for r in resources {

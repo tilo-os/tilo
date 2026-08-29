@@ -1,18 +1,10 @@
 //! Turning a client's GPU buffer into pixels the chrome can draw.
 //!
-//! # Why the CPU mmap path is not enough
-//!
-//! [`crate::compositor::foreign::import_dmabuf_rgba`] maps a client's
-//! dma-buf plane and reads it with the CPU. That works for a client
-//! whose buffer lives in system memory — an EGL/GBM client such as
-//! alacritty allocates exactly that. It does **not** work for a Vulkan
-//! client (which every `wgpu`-based qOS app is): its swapchain images
-//! are device-local, and on amdgpu a device-local BO carries
-//! `AMDGPU_GEM_CREATE_NO_CPU_ACCESS`, so `mmap` on the exported fd fails
-//! with `EPERM` no matter how linear the layout is.
-//!
-//! The buffer is perfectly readable — just not by the CPU. So we ask the
-//! GPU to read it:
+//! [`crate::compositor::foreign::import_dmabuf_rgba`] CPU-maps a client's dma-buf, which works
+//! for system-memory buffers (EGL/GBM clients like alacritty) but not a Vulkan client (every
+//! `wgpu`-based qOS app): swapchain images are device-local, and on amdgpu a device-local BO
+//! carries `AMDGPU_GEM_CREATE_NO_CPU_ACCESS`, so `mmap` fails with `EPERM` regardless of layout.
+//! The buffer is readable, just not by the CPU — so the GPU reads it instead:
 //!
 //! ```text
 //!   client dmabuf ─► eglCreateImageKHR (EGL_LINUX_DMA_BUF_EXT)
@@ -21,27 +13,13 @@
 //!                 ─► RGBA8 bytes ─► ForeignFrameStore ─► vello ImageBrush
 //! ```
 //!
-//! This is a real dmabuf import: the client's memory is never copied by
-//! the CPU on the producing side, the GPU does the detiling / format
-//! conversion, and we pay one readback of the visible tile per *commit*
-//! (not per paint — see the store's sequence-number gating).
+//! A real dmabuf import (CPU never copies the client's memory; GPU does detiling/format
+//! conversion; one readback per *commit*, not per paint). Zero-copy to vello isn't feasible —
+//! `peniko::ImageBrush` takes a byte blob and the paint target's wgpu context differs from this
+//! importer's GL context (possibly a different GPU) — so the readback keeps the seam at "bytes".
 //!
-//! # Why not hand the texture to vello
-//!
-//! Zero-copy all the way to the screen would mean giving vello an
-//! externally-owned GPU texture. `peniko::ImageBrush` takes a byte blob,
-//! and the compositor's paint target is a wgpu device that is not the GL
-//! context this importer owns (it can even be a different GPU). Bridging
-//! those is a wgpu-hal-level change well beyond the buffer path; the
-//! readback keeps the seam at "bytes", which every existing consumer
-//! (tiles, share-session encoder, screenshots) already speaks.
-//!
-//! # Lifetime
-//!
-//! One importer per process, created lazily on the first dmabuf commit
-//! and pinned to the thread that created it (GL contexts are not `Send`
-//! and `GlesRenderer` is `!Send`). Construction failure is cached: a box
-//! with no usable EGL device must not re-probe on every frame.
+//! One importer per process, lazily built on the first dmabuf commit and pinned to its creating
+//! thread (`GlesRenderer` is `!Send`); construction failure is cached so a box with no usable EGL device doesn't re-probe every frame.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -56,8 +34,7 @@ use smithay::utils::{Point, Rectangle, Size};
 /// Why the GPU import path is unavailable or failed for one buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GpuImportError {
-    /// No EGL device / context could be created at all — the whole path
-    /// is off for this process.
+    /// No EGL device / context could be created at all — the whole path is off for this process.
     Unavailable(String),
     /// EGL refused to wrap the client's dma-buf as an `EGLImage`.
     ImportFailed(String),
@@ -97,13 +74,9 @@ impl std::fmt::Debug for GpuImporter {
     }
 }
 
-/// Does `device` sit on the DRM node at `want`?
-///
-/// EGL exposes both the primary (`card`) and render (`renderD`) node
-/// names, and which one is populated depends on the driver, so both are
-/// checked. Comparison is on `st_rdev` rather than on the path string —
-/// `/dev/dri/renderD128` and a bind-mounted equivalent are the same
-/// device even though the strings differ.
+/// Does `device` sit on the DRM node at `want`? EGL exposes both the primary (`card`) and
+/// render (`renderD`) node names, so both are checked; comparison is on `st_rdev` rather than
+/// path string, since `/dev/dri/renderD128` and a bind-mounted equivalent are the same device even though the strings differ.
 fn device_matches(device: &EGLDevice, want_rdev: libc::dev_t) -> bool {
     let rdev_of = |p: PathBuf| -> Option<libc::dev_t> {
         use std::os::unix::fs::MetadataExt as _;
@@ -122,13 +95,8 @@ fn device_matches(device: &EGLDevice, want_rdev: libc::dev_t) -> bool {
 }
 
 impl GpuImporter {
-    /// Build an importer on the DRM node at `node`.
-    ///
-    /// `node` should be the same render node the compositor advertises
-    /// as the dmabuf `main_device`, so the buffers a client hands us were
-    /// allocated on the very GPU that reads them back — a cross-device
-    /// import would work only where the kernel can peer-map, and would
-    /// silently be a PCIe copy where it did.
+    /// Build an importer on the DRM node at `node`, which should be the same render node the
+    /// compositor advertises as the dmabuf `main_device` — a cross-device import would work only where the kernel can peer-map, and silently be a PCIe copy where it did.
     pub fn new(node: &Path) -> Result<Self, GpuImportError> {
         use std::os::unix::fs::MetadataExt as _;
         let want = std::fs::metadata(node)
@@ -177,12 +145,8 @@ impl GpuImporter {
 
     /// Import `dmabuf` and read it back into `out` as row-major RGBA8.
     ///
-    /// Returns the buffer's `(width, height)`. `out` is cleared and
-    /// refilled; the caller's `Vec` is reused across commits so a
-    /// steady-state client costs no reallocation.
-    ///
-    /// The GL scratch the readback allocates is released before this
-    /// returns — see [`Self::release_readback_scratch`].
+    /// Returns the buffer's `(width, height)`. `out` is cleared and refilled; the caller's `Vec` is
+    /// reused across commits so a steady-state client costs no reallocation. The GL scratch the readback allocates is released before this returns — see [`Self::release_readback_scratch`].
     pub fn import(
         &mut self,
         dmabuf: &Dmabuf,
@@ -195,27 +159,13 @@ impl GpuImporter {
 
     /// Hand back every GL object the last readback finished with.
     ///
-    /// `copy_texture` allocates a pixel-pack buffer the size of the
-    /// whole client image — for a full-tile window, ~2.8 MB of GTT per
-    /// call — and its `Drop` cannot free it: deleting a GL object needs
-    /// the context current, and `Drop` has no way to make it so. It
-    /// posts the id to the renderer's destruction queue instead, and
-    /// something has to drain that queue.
+    /// `copy_texture` allocates a pixel-pack buffer the size of the whole client image (~2.8 MB of
+    /// GTT for a full-tile window); its `Drop` can't free it, since deleting a GL object needs the
+    /// context current, which `Drop` has no way to arrange — it posts the id to the renderer's destruction queue instead, which something has to drain.
     ///
-    /// Smithay drains it from `Frame::finish` and from `Unbind`, which
-    /// assume a renderer is a thing that draws. This one never draws —
-    /// it only reads client buffers back — so nothing drained the
-    /// queue, and every client commit left one whole-window pixel-pack
-    /// buffer behind for the compositor's lifetime: hundreds of
-    /// megabytes after a minute of an animating window, proportional to
-    /// frames drawn rather than to windows open.
-    ///
-    /// Draining also prunes the dmabuf→texture cache of entries whose
-    /// buffer the client has since destroyed.
-    ///
-    /// A failure here is reported and swallowed: the pixels are already
-    /// copied out, and refusing the frame would trade a visible window
-    /// for a memory saving.
+    /// Smithay drains it from `Frame::finish`/`Unbind` (a renderer that draws); this one only reads
+    /// buffers back, so nothing drained it — every commit leaked a whole-window pixel-pack buffer,
+    /// hundreds of MB after a minute of animation. Draining also prunes the dmabuf→texture cache of buffers the client has since destroyed; a failure here is reported and swallowed since the pixels are already copied out.
     fn release_readback_scratch(&mut self) {
         use smithay::backend::renderer::Renderer as _;
         if let Err(e) = self.renderer.cleanup_texture_cache() {
@@ -243,9 +193,7 @@ impl GpuImporter {
             .import_dmabuf(dmabuf, None)
             .map_err(|e| GpuImportError::ImportFailed(e.to_string()))?;
 
-        // `Abgr8888` is `[R, G, B, A]` in memory — i.e. exactly the
-        // `ImageFormat::Rgba8` blob vello wants, so the readback lands
-        // in its final layout with no swizzle pass.
+        // `Abgr8888` is `[R, G, B, A]` in memory — exactly the `ImageFormat::Rgba8` blob vello wants, so the readback lands in its final layout with no swizzle pass.
         let region = Rectangle::new(
             Point::from((0, 0)),
             Size::from((width as i32, height as i32)),
@@ -270,10 +218,7 @@ impl GpuImporter {
         out.reserve(expected);
         out.extend_from_slice(&bytes[..expected]);
 
-        // The `X` FourCCs have no alpha channel — the fourth byte is
-        // undefined padding, and whatever the driver left there would
-        // otherwise show up as a see-through tile. Force it opaque, the
-        // same way the CPU importer's swizzle does.
+        // The `X` FourCCs have no alpha channel — the fourth byte is undefined padding that would otherwise show up as a see-through tile. Force it opaque, same as the CPU importer's swizzle.
         if is_opaque_fourcc(dmabuf.format().code) {
             for px in out.chunks_exact_mut(4) {
                 px[3] = 0xFF;
@@ -283,11 +228,8 @@ impl GpuImporter {
     }
 }
 
-/// Whether a FourCC's fourth channel is padding rather than alpha.
-///
-/// Free function so the alpha fixup is testable without a GL context —
-/// getting this wrong makes every GPU client's tile translucent, which
-/// is subtle enough to slip through a glance at a screenshot.
+/// Whether a FourCC's fourth channel is padding rather than alpha. Free function so the alpha
+/// fixup is testable without a GL context — getting it wrong makes every GPU client's tile translucent, subtle enough to slip through a glance at a screenshot.
 pub fn is_opaque_fourcc(code: Fourcc) -> bool {
     matches!(code, Fourcc::Xrgb8888 | Fourcc::Xbgr8888)
 }
@@ -298,13 +240,8 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// Run `f` with the thread's GPU importer, building it on first use.
-///
-/// `node` is the render node to build on (the advertised dmabuf main
-/// device). Returns the construction error — cached, so a machine
-/// without EGL pays the probe exactly once — when no importer exists.
-///
-/// Callers must not re-enter: `f` runs with the thread-local borrowed.
+/// Run `f` with the thread's GPU importer, building it on first use. `node` is the render node
+/// to build on. Returns the construction error — cached, so a machine without EGL pays the probe once — when no importer exists. Callers must not re-enter: `f` runs with the thread-local borrowed.
 pub fn with_importer<R>(
     node: &Path,
     f: impl FnOnce(&mut GpuImporter) -> R,
@@ -334,8 +271,7 @@ pub fn with_importer<R>(
     })
 }
 
-/// Whether this thread has a working GPU importer *without* building
-/// one. Used by tests and diagnostics that must not trigger the probe.
+/// Whether this thread has a working GPU importer *without* building one — used by tests and diagnostics that must not trigger the probe.
 pub fn is_ready() -> bool {
     IMPORTER.with(|cell| matches!(cell.borrow().as_ref(), Some(Ok(_))))
 }
@@ -344,13 +280,9 @@ pub fn is_ready() -> bool {
 mod tests {
     use super::*;
 
-    /// GPU memory this process is holding, in KiB.
-    ///
-    /// `drm-memory-<region>:` is reported once per open DRM file and
-    /// once per memory region, so every line has to be summed — reading
-    /// one fd, or one region, undercounts. `None` means this kernel
-    /// exposes no per-file DRM accounting at all, which callers must
-    /// treat as "cannot observe", never as "nothing allocated".
+    /// GPU memory this process is holding, in KiB. `drm-memory-<region>:` is reported once per open
+    /// DRM file and once per region, so every line has to be summed — one fd or one region
+    /// undercounts. `None` means this kernel exposes no per-file DRM accounting, which callers must treat as "cannot observe", never "nothing allocated".
     fn own_gpu_memory_kib() -> Option<u64> {
         let mut total = 0_u64;
         let mut saw_any = false;
@@ -378,15 +310,10 @@ mod tests {
         saw_any.then_some(total)
     }
 
-    /// Every readback allocates a pixel-pack buffer the size of the
-    /// whole client image, and hands it back only when someone drains
-    /// the renderer's destruction queue.
-    ///
-    /// So the invariant is about *repetition*: a hundred readbacks must
-    /// not cost more than a few. This drives the same
-    /// `copy_texture` → `map_texture` → drop → release sequence
-    /// [`GpuImporter::read_back`] runs per client commit, from a
-    /// texture the test can make without a client.
+    /// Every readback allocates a pixel-pack buffer the size of the whole client image, handed back
+    /// only when someone drains the renderer's destruction queue. The invariant is about
+    /// *repetition*: a hundred readbacks must not cost more than a few — this drives the same
+    /// `copy_texture` → `map_texture` → drop → release sequence [`GpuImporter::read_back`] runs per commit, from a texture the test can make without a client.
     #[test]
     fn repeated_readbacks_do_not_accumulate_gpu_memory() {
         use smithay::backend::renderer::ImportMem;
@@ -404,8 +331,7 @@ mod tests {
             ),
         };
 
-        // Big enough that a leaked buffer cannot hide inside a driver's
-        // small-allocation slab: one readback is 4 MiB.
+        // Big enough that a leaked buffer cannot hide inside a driver's small-allocation slab: one readback is 4 MiB.
         const SIDE: i32 = 1024;
         const ROUNDS: usize = 24;
         let pixels = vec![0x40_u8; (SIDE * SIDE * 4) as usize];
@@ -430,8 +356,7 @@ mod tests {
             importer.release_readback_scratch();
         };
 
-        // One warm-up: the first readback also pays for whatever the
-        // driver allocates lazily, which is a one-off, not a leak.
+        // One warm-up: the first readback also pays for whatever the driver allocates lazily, a one-off, not a leak.
         read_back_once(&mut importer);
 
         let Some(before) = own_gpu_memory_kib() else {
@@ -485,9 +410,7 @@ mod tests {
         );
     }
 
-    /// On a machine with a usable GPU the importer must actually build —
-    /// this is the gate that separates "GPU import is wired up" from
-    /// "everything silently fell back to the CPU path".
+    /// On a machine with a usable GPU the importer must actually build — the gate that separates "GPU import is wired up" from "everything silently fell back to the CPU path".
     #[test]
     fn importer_builds_on_the_advertised_render_node() {
         let Ok(node) = crate::compositor::render_node::probe() else {
