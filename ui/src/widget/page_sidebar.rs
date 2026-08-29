@@ -24,8 +24,8 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
-use crate::widget::drag::{DragController, ListMetrics};
 use crate::widget::Widget;
+use crate::widget::drag::{DragController, ListMetrics};
 
 /// Something the host should do to its page/slide model in response to a
 /// sidebar interaction. The ordering-changing variants flag that a save is needed.
@@ -36,7 +36,10 @@ pub enum PageSidebarEvent {
     /// Move the page at `from` to final index `to` (a committed drag or a
     /// "move up/down" menu action). Semantics match `Vec::remove(from)` then
     /// `Vec::insert(to, _)`.
-    Reorder { from: usize, to: usize },
+    Reorder {
+        from: usize,
+        to: usize,
+    },
     /// Inserting the copy right after `index`.
     Duplicate(usize),
     Delete(usize),
@@ -412,7 +415,9 @@ impl PageSidebar {
 
         // Height: one separator sits before Delete.
         let h = actions.len() as f64 * MENU_ROW_H + MENU_SEP_H + 12.0;
-        let x0 = at.x.min(self.rect.x1 - MENU_W - 4.0).max(self.rect.x0 + 4.0);
+        let x0 =
+            at.x.min(self.rect.x1 - MENU_W - 4.0)
+                .max(self.rect.x0 + 4.0);
         let y0 = at.y.min(self.rect.y1 - h - 4.0).max(self.rect.y0 + 4.0);
         let rect = Rect::new(x0, y0, x0 + MENU_W, y0 + h);
 
@@ -426,18 +431,27 @@ impl PageSidebar {
             items.push((act, row));
             y += MENU_ROW_H;
         }
-        self.menu = Some(Menu { index, rect, items, hover: None });
+        self.menu = Some(Menu {
+            index,
+            rect,
+            items,
+            hover: None,
+        });
     }
 
     fn apply_menu(&mut self, act: MenuAction, index: usize) {
         match act {
             MenuAction::Duplicate => self.pending.push(PageSidebarEvent::Duplicate(index)),
-            MenuAction::MoveUp if index > 0 => self
-                .pending
-                .push(PageSidebarEvent::Reorder { from: index, to: index - 1 }),
-            MenuAction::MoveDown if index + 1 < self.count => self
-                .pending
-                .push(PageSidebarEvent::Reorder { from: index, to: index + 1 }),
+            MenuAction::MoveUp if index > 0 => self.pending.push(PageSidebarEvent::Reorder {
+                from: index,
+                to: index - 1,
+            }),
+            MenuAction::MoveDown if index + 1 < self.count => {
+                self.pending.push(PageSidebarEvent::Reorder {
+                    from: index,
+                    to: index + 1,
+                })
+            }
             MenuAction::Delete => self.pending.push(PageSidebarEvent::Delete(index)),
             _ => {}
         }
@@ -480,7 +494,13 @@ impl PageSidebar {
 
         // Thumbnail list, clipped to the viewport so it never bleeds over the
         // header or the add button.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &self.list_vp);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            base,
+            &self.list_vp,
+        );
         for i in 0..self.count {
             if Some(i) == drag_from {
                 continue; // lifted out — the floating ghost is drawn below.
@@ -502,9 +522,21 @@ impl PageSidebar {
                 vello::kurbo::Size::new(self.thumb_w, self.thumb_h),
             ),
         ) {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &self.list_vp);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                base,
+                &self.list_vp,
+            );
             let shadow = RoundedRect::from_rect(ghost.inflate(2.0, 2.0) + Vec2::new(0.0, 4.0), 8.0);
-            scene.fill(Fill::NonZero, base, Color::BLACK.with_alpha_factor(0.35), None, &shadow);
+            scene.fill(
+                Fill::NonZero,
+                base,
+                Color::BLACK.with_alpha_factor(0.35),
+                None,
+                &shadow,
+            );
             thumb(scene, tr, base, from, ghost);
             scene.stroke(
                 &Stroke::new(2.5),
@@ -578,7 +610,13 @@ impl PageSidebar {
         } else {
             (c.text_primary.with_alpha_factor(0.12), 1.0)
         };
-        scene.stroke(&Stroke::new(w), base, ring, None, &RoundedRect::from_rect(rect, 6.0));
+        scene.stroke(
+            &Stroke::new(w),
+            base,
+            ring,
+            None,
+            &RoundedRect::from_rect(rect, 6.0),
+        );
 
         // Right-aligned in the left gutter, vertically centred.
         let label = format!("{}", i + 1);
@@ -586,7 +624,11 @@ impl PageSidebar {
         let (lw, lh) = tr.measure(&label, size, None);
         let lx = self.list_vp.x0 + PAD + NUM_GUTTER - 6.0 - lw as f64;
         let ly = rect.y0 + (rect.height() - lh as f64) / 2.0;
-        let col = if is_current { theme.accent_primary } else { c.text_dim };
+        let col = if is_current {
+            theme.accent_primary
+        } else {
+            c.text_dim
+        };
         tr.draw_text_weighted(
             scene,
             &label,
@@ -594,11 +636,21 @@ impl PageSidebar {
             col,
             base * Affine::translate((lx.max(self.list_vp.x0 + 2.0), ly)),
             None,
-            if is_current { TextWeight::Semibold } else { TextWeight::Regular },
+            if is_current {
+                TextWeight::Semibold
+            } else {
+                TextWeight::Regular
+            },
         );
     }
 
-    fn draw_add_button(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_add_button(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
         let r = self.add_rect;
         let hovered = r.contains(self.last_pointer);
@@ -619,7 +671,11 @@ impl PageSidebar {
             scene,
             &label,
             size,
-            if hovered { theme.accent_primary } else { c.text_primary },
+            if hovered {
+                theme.accent_primary
+            } else {
+                c.text_primary
+            },
             base * Affine::translate((tx.max(r.x0 + 8.0), ty)),
             None,
             TextWeight::Semibold,
@@ -627,7 +683,9 @@ impl PageSidebar {
     }
 
     fn draw_menu(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some(menu) = self.menu.as_ref() else { return };
+        let Some(menu) = self.menu.as_ref() else {
+            return;
+        };
         let c = &theme.tokens.colors;
         let rr = RoundedRect::from_rect(menu.rect, 8.0);
         scene.fill(
@@ -658,7 +716,14 @@ impl PageSidebar {
             let size = 12.5f32;
             let (_, th) = tr.measure(label, size, None);
             let ty = row.y0 + (row.height() - th as f64) / 2.0;
-            tr.draw_text(scene, label, size, col, base * Affine::translate((row.x0 + 12.0, ty)), None);
+            tr.draw_text(
+                scene,
+                label,
+                size,
+                col,
+                base * Affine::translate((row.x0 + 12.0, ty)),
+                None,
+            );
         }
     }
 }
@@ -750,7 +815,10 @@ mod tests {
         let rects = s.thumb_rects();
         assert_eq!(rects.len(), 4);
         for (_, r) in &rects {
-            assert!(r.height() > r.width(), "portrait pages are taller than wide");
+            assert!(
+                r.height() > r.width(),
+                "portrait pages are taller than wide"
+            );
         }
         assert!(rects[1].1.y0 > rects[0].1.y1, "slot 1 sits below slot 0");
     }
@@ -773,7 +841,10 @@ mod tests {
         s.on_motion(far_down);
         assert!(s.is_dragging(), "cleared the drag threshold");
         assert!(s.on_release());
-        assert_eq!(s.take_events(), vec![PageSidebarEvent::Reorder { from: 0, to: 3 }]);
+        assert_eq!(
+            s.take_events(),
+            vec![PageSidebarEvent::Reorder { from: 0, to: 3 }]
+        );
     }
 
     #[test]
@@ -803,7 +874,13 @@ mod tests {
         s.on_right_press(rects[2].1.center());
         s.take_events();
         let menu = s.menu.as_ref().unwrap();
-        let del = menu.items.iter().find(|(a, _)| *a == MenuAction::Delete).unwrap().1.center();
+        let del = menu
+            .items
+            .iter()
+            .find(|(a, _)| *a == MenuAction::Delete)
+            .unwrap()
+            .1
+            .center();
         assert!(s.on_press(del));
         assert_eq!(s.take_events(), vec![PageSidebarEvent::Delete(2)]);
     }
@@ -825,7 +902,10 @@ mod tests {
             .1
             .center();
         s.on_press(up);
-        assert_eq!(s.take_events(), vec![PageSidebarEvent::Reorder { from: 2, to: 1 }]);
+        assert_eq!(
+            s.take_events(),
+            vec![PageSidebarEvent::Reorder { from: 2, to: 1 }]
+        );
     }
 
     #[test]
@@ -833,7 +913,13 @@ mod tests {
         let mut s = rail(4);
         let rects = s.thumb_rects();
         s.on_right_press(rects[0].1.center());
-        let has_up = s.menu.as_ref().unwrap().items.iter().any(|(a, _)| *a == MenuAction::MoveUp);
+        let has_up = s
+            .menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .any(|(a, _)| *a == MenuAction::MoveUp);
         assert!(!has_up, "the first page cannot move up");
     }
 
@@ -867,6 +953,10 @@ mod tests {
         assert!(!s.is_dragging());
         assert!(!s.on_release());
         // No reorder survives a cancel.
-        assert!(!s.take_events().iter().any(|e| matches!(e, PageSidebarEvent::Reorder { .. })));
+        assert!(
+            !s.take_events()
+                .iter()
+                .any(|e| matches!(e, PageSidebarEvent::Reorder { .. }))
+        );
     }
 }

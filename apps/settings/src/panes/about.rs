@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use ui::widget::Widget;
 
-use crate::widgets::{card, caption, hero, rows, value_row};
+use crate::widgets::{caption, card, hero, rows, value_row};
 
 /// Snapshot of the data the About pane reads at construction time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,7 +83,15 @@ impl AboutInfo {
         // Compile-time target arch equals the running machine's arch — an
         // honest fact that needs no syscall.
         let arch = std::env::consts::ARCH.to_string();
-        Self { pretty_name, kernel, uptime, hostname, arch, cpu, memory }
+        Self {
+            pretty_name,
+            kernel,
+            uptime,
+            hostname,
+            arch,
+            cpu,
+            memory,
+        }
     }
 
     /// A short, stable identity fingerprint derived from the hostname.
@@ -96,7 +104,13 @@ impl AboutInfo {
             hash = hash.wrapping_mul(1099511628211);
         }
         let hex = format!("{hash:016x}");
-        format!("{}·{}·{}·{}", &hex[0..4], &hex[4..8], &hex[8..12], &hex[12..16])
+        format!(
+            "{}·{}·{}·{}",
+            &hex[0..4],
+            &hex[4..8],
+            &hex[8..12],
+            &hex[12..16]
+        )
     }
 }
 
@@ -173,7 +187,10 @@ pub(crate) fn parse_cpu_model(contents: &str) -> Option<String> {
 pub(crate) fn parse_mem_total_kb(contents: &str) -> Option<u64> {
     for line in contents.lines() {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
-            return rest.split_whitespace().next().and_then(|n| n.parse::<u64>().ok());
+            return rest
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse::<u64>().ok());
         }
     }
     None
@@ -282,7 +299,10 @@ mod tests {
     #[test]
     fn parses_and_formats_memory() {
         // 16 GiB in kB.
-        assert_eq!(parse_mem_total_kb("MemTotal:       16330124 kB\n"), Some(16_330_124));
+        assert_eq!(
+            parse_mem_total_kb("MemTotal:       16330124 kB\n"),
+            Some(16_330_124)
+        );
         assert_eq!(format_memory(16_330_124), "15.6 GB");
         assert_eq!(format_memory(512 * 1024), "512 MB");
         assert!(parse_mem_total_kb("SwapTotal: 0 kB\n").is_none());

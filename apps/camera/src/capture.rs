@@ -37,7 +37,9 @@ pub struct CamFrame {
 /// this list. Empty when no camera is attached.
 pub fn list_devices() -> Vec<String> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/dev") else { return out };
+    let Ok(entries) = std::fs::read_dir("/dev") else {
+        return out;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
@@ -104,8 +106,13 @@ impl Capture {
                 .build(),
         );
 
-        pipeline.set_state(gst::State::Playing).context("set playing")?;
-        Ok(Self { pipeline, frames: rx })
+        pipeline
+            .set_state(gst::State::Playing)
+            .context("set playing")?;
+        Ok(Self {
+            pipeline,
+            frames: rx,
+        })
     }
 }
 
@@ -131,7 +138,10 @@ mod tests {
             .iter()
             .filter_map(|d| d.rsplit("video").next().and_then(|n| n.parse().ok()))
             .collect();
-        assert!(nums.windows(2).all(|w| w[0] <= w[1]), "devices sorted numerically");
+        assert!(
+            nums.windows(2).all(|w| w[0] <= w[1]),
+            "devices sorted numerically"
+        );
     }
 
     #[test]

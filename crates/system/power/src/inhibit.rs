@@ -60,18 +60,30 @@ impl InhibitRegistry {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.held.insert(id, reason);
         }
-        InhibitToken { id, inner: Arc::downgrade(&self.inner) }
+        InhibitToken {
+            id,
+            inner: Arc::downgrade(&self.inner),
+        }
     }
 
     /// Whether any inhibitor is currently held — the signal the idle loop
     /// consults before suspending.
     pub fn is_inhibited(&self) -> bool {
-        !self.inner.lock().unwrap_or_else(|e| e.into_inner()).held.is_empty()
+        !self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .held
+            .is_empty()
     }
 
     /// How many inhibitors are held.
     pub fn count(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).held.len()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .held
+            .len()
     }
 
     /// The reasons currently holding the machine awake, sorted by acquisition
@@ -108,7 +120,11 @@ impl InhibitToken {
 impl Drop for InhibitToken {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.upgrade() {
-            inner.lock().unwrap_or_else(|e| e.into_inner()).held.remove(&self.id);
+            inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .held
+                .remove(&self.id);
         }
     }
 }

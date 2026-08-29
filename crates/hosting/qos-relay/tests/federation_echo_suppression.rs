@@ -69,13 +69,14 @@ async fn author_never_receives_echo_through_federation() {
     // it back via relay2.
     let mut echoes = 0usize;
     for _ in 0..5 {
-        if let Ok(Some(env)) =
-            tokio::time::timeout(Duration::from_millis(300), c.recv()).await
-        {
+        if let Ok(Some(env)) = tokio::time::timeout(Duration::from_millis(300), c.recv()).await {
             if matches!(env, Envelope::Delta { .. }) {
                 echoes += 1;
             }
         }
     }
-    assert_eq!(echoes, 0, "author received {echoes} echo(es) via federation");
+    assert_eq!(
+        echoes, 0,
+        "author received {echoes} echo(es) via federation"
+    );
 }

@@ -211,16 +211,14 @@ pub fn scan(path: &Path, trusted: &[PathBuf]) -> ScanReport {
         );
     }
     if report.modified_since_install {
-        report.notes.push(
-            "rpm says this file no longer matches what its package installed."
-                .into(),
-        );
+        report
+            .notes
+            .push("rpm says this file no longer matches what its package installed.".into());
     }
     if report.in_trusted_dir {
-        report.notes.push(
-            "inside a directory you trusted, so a write here reaches the host."
-                .into(),
-        );
+        report
+            .notes
+            .push("inside a directory you trusted, so a write here reaches the host.".into());
     }
     // The limit, stated every time rather than in a footnote.
     report.notes.push(NO_DATABASE.into());
@@ -400,7 +398,11 @@ mod tests {
             "the original must stop resolving, or nothing has been quarantined"
         );
         let mode = std::fs::metadata(&stored).unwrap().permissions().mode();
-        assert_eq!(mode & 0o7111, 0, "quarantined file is still runnable: {mode:o}");
+        assert_eq!(
+            mode & 0o7111,
+            0,
+            "quarantined file is still runnable: {mode:o}"
+        );
 
         let listed = quarantine_list(&q);
         assert_eq!(listed.len(), 1);
@@ -483,6 +485,10 @@ mod tests {
     fn the_landlock_outcomes_describe_themselves_honestly() {
         assert!(LandlockOutcome::NotEnforced.describe().contains("NOT"));
         assert!(LandlockOutcome::Errored.describe().contains("NOT"));
-        assert!(LandlockOutcome::PartiallyEnforced.describe().contains("partially"));
+        assert!(
+            LandlockOutcome::PartiallyEnforced
+                .describe()
+                .contains("partially")
+        );
     }
 }

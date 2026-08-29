@@ -83,7 +83,8 @@ pub fn render_epub(snap: &DocSnapshot) -> Result<Vec<u8>, DocEpubError> {
     zw.start_file("mimetype", stored).map_err(zerr)?;
     zw.write_all(MIMETYPE.as_bytes()).map_err(ierr)?;
 
-    zw.start_file("META-INF/container.xml", deflated).map_err(zerr)?;
+    zw.start_file("META-INF/container.xml", deflated)
+        .map_err(zerr)?;
     zw.write_all(CONTAINER_XML.as_bytes()).map_err(ierr)?;
 
     zw.start_file("OEBPS/content.opf", deflated).map_err(zerr)?;
@@ -93,14 +94,16 @@ pub fn render_epub(snap: &DocSnapshot) -> Result<Vec<u8>, DocEpubError> {
     zw.write_all(nav.as_bytes()).map_err(ierr)?;
 
     for ch in &chapters {
-        zw.start_file(format!("OEBPS/{}", ch.href), deflated).map_err(zerr)?;
+        zw.start_file(format!("OEBPS/{}", ch.href), deflated)
+            .map_err(zerr)?;
         zw.write_all(ch.xhtml.as_bytes()).map_err(ierr)?;
     }
 
     for img in &images {
         // Image bytes are already compressed formats (PNG/JPEG/…); store
         // them to avoid deflating incompressible data.
-        zw.start_file(format!("OEBPS/{}", img.href), stored).map_err(zerr)?;
+        zw.start_file(format!("OEBPS/{}", img.href), stored)
+            .map_err(zerr)?;
         zw.write_all(&img.bytes).map_err(ierr)?;
     }
 
@@ -257,7 +260,11 @@ fn build_chapters(snap: &DocSnapshot, images: &[ImageItem]) -> Vec<Chapter> {
             if b.kind == "heading" {
                 hcount += 1;
                 let frag = format!("h{hcount}");
-                headings.push(Heading { level: heading_level(b), text: b.text.clone(), frag: frag.clone() });
+                headings.push(Heading {
+                    level: heading_level(b),
+                    text: b.text.clone(),
+                    frag: frag.clone(),
+                });
                 anchored.push((frag, b));
             } else {
                 anchored.push((String::new(), b));
@@ -270,10 +277,21 @@ fn build_chapters(snap: &DocSnapshot, images: &[ImageItem]) -> Vec<Chapter> {
             .first()
             .map(|h| h.text.clone())
             .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| if gi == 0 { "Start".to_string() } else { format!("Chapter {n}") });
+            .unwrap_or_else(|| {
+                if gi == 0 {
+                    "Start".to_string()
+                } else {
+                    format!("Chapter {n}")
+                }
+            });
 
         let xhtml = render_chapter_xhtml(snap, &anchored, &title, images);
-        chapters.push(Chapter { id, href, headings, xhtml });
+        chapters.push(Chapter {
+            id,
+            href,
+            headings,
+            xhtml,
+        });
     }
     chapters
 }
@@ -305,7 +323,11 @@ fn render_chapter_xhtml(
         // whole snapshots.
         let mut sub = empty_like(snap);
         sub.blocks = vec![(*block).clone()];
-        let opts = qdoc_html::HtmlOptions { fragment: true, title: None, indent: "  ".to_string() };
+        let opts = qdoc_html::HtmlOptions {
+            fragment: true,
+            title: None,
+            indent: "  ".to_string(),
+        };
         let mut frag_html = qdoc_html::render_html(&sub, opts);
 
         // Re-point image data: URIs to packaged file resources.
@@ -328,7 +350,13 @@ fn render_chapter_xhtml(
 /// A blank snapshot sharing the source's blobs + styles, so a
 /// sub-render of one block resolves styles/images identically.
 fn empty_like(snap: &DocSnapshot) -> DocSnapshot {
-    DocSnapshot { schema: snap.schema.clone(), schema_version: snap.schema_version, blobs: snap.blobs.clone(), styles: snap.styles.clone(), ..Default::default() }
+    DocSnapshot {
+        schema: snap.schema.clone(),
+        schema_version: snap.schema_version,
+        blobs: snap.blobs.clone(),
+        styles: snap.styles.clone(),
+        ..Default::default()
+    }
 }
 
 /// Replace the inline `data:` URI `qdoc-html` emits for an image block
@@ -417,7 +445,10 @@ fn self_close_void(tag: &str) -> String {
         .take_while(|c| !c.is_whitespace() && *c != '/')
         .collect::<String>()
         .to_ascii_lowercase();
-    const VOID: &[&str] = &["br", "img", "hr", "area", "base", "col", "embed", "input", "link", "meta", "param", "source", "track", "wbr"];
+    const VOID: &[&str] = &[
+        "br", "img", "hr", "area", "base", "col", "embed", "input", "link", "meta", "param",
+        "source", "track", "wbr",
+    ];
     if VOID.contains(&name.as_str()) {
         let trimmed = inner.trim_end();
         format!("<{trimmed}/>")
@@ -464,7 +495,10 @@ fn build_nav(snap: &DocSnapshot, chapters: &[Chapter]) -> String {
     let mut list = String::new();
     if entries.is_empty() {
         // A nav must contain at least one toc target; link to the first chapter.
-        let href = chapters.first().map(|c| c.href.as_str()).unwrap_or("chapter-1.xhtml");
+        let href = chapters
+            .first()
+            .map(|c| c.href.as_str())
+            .unwrap_or("chapter-1.xhtml");
         list.push_str("  <ol>\n");
         list.push_str(&format!(
             "    <li><a href=\"{}\">{}</a></li>\n",
@@ -527,7 +561,11 @@ fn build_nav_forest(entries: &[(u8, String, String)]) -> Vec<NavNode> {
         while path.last().map(|(l, _)| *l >= *level).unwrap_or(false) {
             path.pop();
         }
-        let node = NavNode { label: label.clone(), link: link.clone(), children: Vec::new() };
+        let node = NavNode {
+            label: label.clone(),
+            link: link.clone(),
+            children: Vec::new(),
+        };
         // Descend to the current parent's children vector by index path.
         let parent_children = walk_children(&mut roots, &path);
         let idx = parent_children.len();
@@ -582,7 +620,11 @@ fn render_nav_forest(nodes: &[NavNode], depth: usize, out: &mut String) {
 fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> String {
     let title = doc_title(snap);
     let author = snap.properties.get("author").cloned();
-    let language = snap.properties.get("language").cloned().unwrap_or_else(|| "en".to_string());
+    let language = snap
+        .properties
+        .get("language")
+        .cloned()
+        .unwrap_or_else(|| "en".to_string());
     let identifier = snap
         .properties
         .get("identifier")
@@ -599,13 +641,25 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
         "    <dc:identifier id=\"book-id\">{}</dc:identifier>\n",
         escape_xml_text(&identifier)
     ));
-    metadata.push_str(&format!("    <dc:title>{}</dc:title>\n", escape_xml_text(&title)));
-    metadata.push_str(&format!("    <dc:language>{}</dc:language>\n", escape_xml_text(&language)));
+    metadata.push_str(&format!(
+        "    <dc:title>{}</dc:title>\n",
+        escape_xml_text(&title)
+    ));
+    metadata.push_str(&format!(
+        "    <dc:language>{}</dc:language>\n",
+        escape_xml_text(&language)
+    ));
     if let Some(a) = &author {
-        metadata.push_str(&format!("    <dc:creator>{}</dc:creator>\n", escape_xml_text(a)));
+        metadata.push_str(&format!(
+            "    <dc:creator>{}</dc:creator>\n",
+            escape_xml_text(a)
+        ));
     }
     if let Some(subject) = snap.properties.get("subject") {
-        metadata.push_str(&format!("    <dc:subject>{}</dc:subject>\n", escape_xml_text(subject)));
+        metadata.push_str(&format!(
+            "    <dc:subject>{}</dc:subject>\n",
+            escape_xml_text(subject)
+        ));
     }
     // EPUB 3 requires a dcterms:modified meta.
     metadata.push_str(&format!(
@@ -637,7 +691,10 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
     // Spine: chapters in order.
     let mut spine = String::new();
     for ch in chapters {
-        spine.push_str(&format!("    <itemref idref=\"{}\"/>\n", escape_xml_attr(&ch.id)));
+        spine.push_str(&format!(
+            "    <itemref idref=\"{}\"/>\n",
+            escape_xml_attr(&ch.id)
+        ));
     }
 
     format!(

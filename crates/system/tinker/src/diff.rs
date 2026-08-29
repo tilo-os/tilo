@@ -139,7 +139,9 @@ fn is_pkg_metadata(path: &Path) -> bool {
         "/var/log/dpkg.log",
     ];
     let s = path.to_string_lossy();
-    PREFIXES.iter().any(|p| s == *p || s.starts_with(&format!("{p}/")))
+    PREFIXES
+        .iter()
+        .any(|p| s == *p || s.starts_with(&format!("{p}/")))
 }
 
 /// Walk `upper` and classify every entry against `base`. `base` is the lower directory the
@@ -148,7 +150,10 @@ fn is_pkg_metadata(path: &Path) -> bool {
 pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
     let mut changes = Vec::new();
 
-    for entry in walkdir::WalkDir::new(upper).min_depth(1).follow_links(false) {
+    for entry in walkdir::WalkDir::new(upper)
+        .min_depth(1)
+        .follow_links(false)
+    {
         let entry = match entry {
             Ok(e) => e,
             // A namespace-mapped uid can write entries the plain host user cannot stat. Skipping them
@@ -165,7 +170,10 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
             }
         };
 
-        let rel = entry.path().strip_prefix(upper).expect("walked under upper");
+        let rel = entry
+            .path()
+            .strip_prefix(upper)
+            .expect("walked under upper");
         let logical = Path::new("/").join(rel);
         let meta = match entry.metadata() {
             Ok(m) => m,
@@ -173,7 +181,11 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
         };
 
         if is_whiteout(&meta) {
-            changes.push(Change { path: logical, kind: ChangeKind::Deleted, size: None });
+            changes.push(Change {
+                path: logical,
+                kind: ChangeKind::Deleted,
+                size: None,
+            });
             continue;
         }
 
@@ -184,7 +196,11 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
             // managers create brand-new directories opaque routinely, and reporting each as a
             // "replacement" would bury the handful that really are one.
             if is_opaque(entry.path()) && base.is_some_and(|b| b.join(rel).is_dir()) {
-                changes.push(Change { path: logical, kind: ChangeKind::Replaced, size: None });
+                changes.push(Change {
+                    path: logical,
+                    kind: ChangeKind::Replaced,
+                    size: None,
+                });
             }
             continue;
         }
@@ -192,14 +208,22 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
         let existed = base.is_some_and(|b| b.join(rel).symlink_metadata().is_ok());
         changes.push(Change {
             path: logical,
-            kind: if existed { ChangeKind::Modified } else { ChangeKind::Added },
+            kind: if existed {
+                ChangeKind::Modified
+            } else {
+                ChangeKind::Added
+            },
             size: Some(meta.len()),
         });
     }
 
     changes.sort();
     let (packages, owned_by_packages) = read_package_receipts(upper);
-    Ok(Diff { changes, packages, owned_by_packages })
+    Ok(Diff {
+        changes,
+        packages,
+        owned_by_packages,
+    })
 }
 
 /// overlayfs marks a deleted path with a 0:0 character device.
@@ -232,7 +256,11 @@ fn getxattr(path: &Path, name: &str) -> Option<Vec<u8>> {
             buf.len(),
         )
     };
-    if n < 0 { None } else { Some(buf[..n as usize].to_vec()) }
+    if n < 0 {
+        None
+    } else {
+        Some(buf[..n as usize].to_vec())
+    }
 }
 
 /// Read package names, and the files they claim, out of the package managers' own install
@@ -248,7 +276,10 @@ fn getxattr(path: &Path, name: &str) -> Option<Vec<u8>> {
 /// in-layer `rpm` binary and is not derived here.
 fn read_package_receipts(
     upper: &Path,
-) -> (BTreeMap<String, Vec<String>>, std::collections::BTreeSet<PathBuf>) {
+) -> (
+    BTreeMap<String, Vec<String>>,
+    std::collections::BTreeSet<PathBuf>,
+) {
     let mut out = BTreeMap::new();
     let mut owned = std::collections::BTreeSet::new();
     let dpkg_info = upper.join("var/lib/dpkg/info");
@@ -302,9 +333,15 @@ mod tests {
         fs::write(upper.join("usr/bin/fresh"), b"hi").unwrap();
 
         let diff = compute(&upper, Some(&base)).unwrap();
-        let by_path: BTreeMap<_, _> =
-            diff.changes.iter().map(|c| (c.path.clone(), c.kind)).collect();
-        assert_eq!(by_path[Path::new("/usr/bin/existing")], ChangeKind::Modified);
+        let by_path: BTreeMap<_, _> = diff
+            .changes
+            .iter()
+            .map(|c| (c.path.clone(), c.kind))
+            .collect();
+        assert_eq!(
+            by_path[Path::new("/usr/bin/existing")],
+            ChangeKind::Modified
+        );
         assert_eq!(by_path[Path::new("/usr/bin/fresh")], ChangeKind::Added);
         // Plain parent directories are structure, not change.
         assert!(!by_path.contains_key(Path::new("/usr")));

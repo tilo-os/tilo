@@ -21,18 +21,18 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::panes::appearance::{text_size_label, text_size_scale, TEXT_SIZES};
+use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
 use crate::prefs::{AccessibilityPrefs, AppearancePrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row_described, El};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described};
 
 // Vision comforts (mirror the shared AppearancePrefs fields).
 pub const HIGH_CONTRAST_KEY: &str = "a11y.high_contrast";
@@ -117,11 +117,15 @@ impl AccessibilityPane {
         );
 
         // --- Pointer: large cursor + size.
-        let cursor_opts: Vec<String> =
-            AccessibilityPrefs::CURSOR_SIZES.iter().map(|(l, _)| l.to_string()).collect();
+        let cursor_opts: Vec<String> = AccessibilityPrefs::CURSOR_SIZES
+            .iter()
+            .map(|(l, _)| l.to_string())
+            .collect();
         let cursor = Dropdown::new(cursor_opts, CURSOR_SIZE_KEY)
             .with_id("a11y.cursor_size")
-            .with_placeholder(AccessibilityPrefs::cursor_size_label(self.access.cursor_size));
+            .with_placeholder(AccessibilityPrefs::cursor_size_label(
+                self.access.cursor_size,
+            ));
         let pointer_card = card(
             "Pointer",
             rows(vec![
@@ -237,7 +241,11 @@ impl Widget for AccessibilityPane {
             };
             seed_bool(state, HIGH_CONTRAST_KEY, self.appearance.high_contrast);
             seed_bool(state, REDUCE_MOTION_KEY, self.appearance.reduce_motion);
-            let _ = state.put(root, TEXT_SIZE_KEY, text_size_label(self.appearance.text_scale));
+            let _ = state.put(
+                root,
+                TEXT_SIZE_KEY,
+                text_size_label(self.appearance.text_scale),
+            );
             seed_bool(state, LARGE_CURSOR_KEY, self.access.large_cursor);
             let _ = state.put(
                 root,
@@ -284,15 +292,30 @@ impl Widget for AccessibilityPane {
                 changed = true;
             }
         };
-        adopt(&mut self.access.large_cursor, Self::read_bool(state, root, LARGE_CURSOR_KEY));
-        adopt(&mut self.access.sticky_keys, Self::read_bool(state, root, STICKY_KEYS_KEY));
-        adopt(&mut self.access.slow_keys, Self::read_bool(state, root, SLOW_KEYS_KEY));
+        adopt(
+            &mut self.access.large_cursor,
+            Self::read_bool(state, root, LARGE_CURSOR_KEY),
+        );
+        adopt(
+            &mut self.access.sticky_keys,
+            Self::read_bool(state, root, STICKY_KEYS_KEY),
+        );
+        adopt(
+            &mut self.access.slow_keys,
+            Self::read_bool(state, root, SLOW_KEYS_KEY),
+        );
         adopt(
             &mut self.access.on_screen_keyboard,
             Self::read_bool(state, root, OSK_KEY),
         );
-        adopt(&mut self.access.visual_alerts, Self::read_bool(state, root, VISUAL_ALERTS_KEY));
-        adopt(&mut self.access.screen_reader, Self::read_bool(state, root, SCREEN_READER_KEY));
+        adopt(
+            &mut self.access.visual_alerts,
+            Self::read_bool(state, root, VISUAL_ALERTS_KEY),
+        );
+        adopt(
+            &mut self.access.screen_reader,
+            Self::read_bool(state, root, SCREEN_READER_KEY),
+        );
 
         if let Some(label) = Self::read_str(state, root, CURSOR_SIZE_KEY)
             && let Some(px) = AccessibilityPrefs::cursor_size_px(&label)
@@ -380,7 +403,15 @@ impl Widget for AccessibilityPane {
             && let Some(&cn) = children.first()
         {
             c.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
             );
         }
     }
@@ -432,17 +463,26 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert_eq!(AccessibilityPane::read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
+        assert_eq!(
+            AccessibilityPane::read_bool(&doc, &root, HIGH_CONTRAST_KEY),
+            Some(true)
+        );
         assert_eq!(
             AccessibilityPane::read_str(&doc, &root, TEXT_SIZE_KEY).as_deref(),
             Some("Large")
         );
-        assert_eq!(AccessibilityPane::read_bool(&doc, &root, LARGE_CURSOR_KEY), Some(true));
+        assert_eq!(
+            AccessibilityPane::read_bool(&doc, &root, LARGE_CURSOR_KEY),
+            Some(true)
+        );
         assert_eq!(
             AccessibilityPane::read_str(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
             Some("Larger")
         );
-        assert_eq!(AccessibilityPane::read_bool(&doc, &root, SCREEN_READER_KEY), Some(true));
+        assert_eq!(
+            AccessibilityPane::read_bool(&doc, &root, SCREEN_READER_KEY),
+            Some(true)
+        );
     }
 
     #[test]
@@ -456,7 +496,11 @@ mod tests {
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         // Turn on high contrast + bump the text size here in Accessibility.
-        let _ = doc.put(&root, HIGH_CONTRAST_KEY, automerge::ScalarValue::Boolean(true));
+        let _ = doc.put(
+            &root,
+            HIGH_CONTRAST_KEY,
+            automerge::ScalarValue::Boolean(true),
+        );
         let _ = doc.put(&root, TEXT_SIZE_KEY, "Larger");
         pane.sync(&mut doc, &root);
         assert!(pane.appearance().high_contrast);
@@ -464,7 +508,10 @@ mod tests {
         // The shared appearance section is what got written — the Appearance
         // pane would load the same value.
         let loaded = SystemPrefs::load();
-        assert!(loaded.appearance.high_contrast, "written to the shared section");
+        assert!(
+            loaded.appearance.high_contrast,
+            "written to the shared section"
+        );
         assert_eq!(loaded.appearance.text_scale, 1.30);
     }
 
@@ -478,9 +525,17 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, LARGE_CURSOR_KEY, automerge::ScalarValue::Boolean(true));
+        let _ = doc.put(
+            &root,
+            LARGE_CURSOR_KEY,
+            automerge::ScalarValue::Boolean(true),
+        );
         let _ = doc.put(&root, CURSOR_SIZE_KEY, "Largest");
-        let _ = doc.put(&root, STICKY_KEYS_KEY, automerge::ScalarValue::Boolean(true));
+        let _ = doc.put(
+            &root,
+            STICKY_KEYS_KEY,
+            automerge::ScalarValue::Boolean(true),
+        );
         let _ = doc.put(&root, OSK_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
         assert!(pane.access().large_cursor);
@@ -488,7 +543,10 @@ mod tests {
         assert!(pane.access().sticky_keys);
         assert!(pane.access().on_screen_keyboard);
         let loaded = SystemPrefs::load().accessibility;
-        assert_eq!(loaded.cursor_size, 64, "persisted to the accessibility section");
+        assert_eq!(
+            loaded.cursor_size, 64,
+            "persisted to the accessibility section"
+        );
         assert!(loaded.on_screen_keyboard);
     }
 

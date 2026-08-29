@@ -195,11 +195,9 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
         },
     );
     let mut argv = argv.into_iter();
-    let program = argv
-        .next()
-        .ok_or_else(|| HostLaunchError::NoExec {
-            id: entry.id.clone(),
-        })?;
+    let program = argv.next().ok_or_else(|| HostLaunchError::NoExec {
+        id: entry.id.clone(),
+    })?;
 
     Ok(HostLaunch {
         desktop_id: entry.id.clone(),
@@ -424,9 +422,6 @@ mod tests {
         for k in launch.env.keys() {
             assert!(vars.contains(k), "{k} must reach the child");
         }
-        assert_eq!(
-            cmd.get_program(),
-            std::ffi::OsStr::new("/usr/bin/flatpak")
-        );
+        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/usr/bin/flatpak"));
     }
 }

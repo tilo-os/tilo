@@ -20,7 +20,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc, ScalarValue, Value};
+use automerge::{
+    AutoCommit, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc, ScalarValue, Value,
+};
 
 use crate::history_source::revert::ChangeRun;
 use crate::widget::history::HistoryEntryId;

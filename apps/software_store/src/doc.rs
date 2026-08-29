@@ -205,7 +205,10 @@ mod tests {
         assert_eq!(snap.installed.get("a").unwrap(), "1.0");
         assert_eq!(snap.installed.get("b").unwrap(), "0.9");
         assert!((snap.installing.get("c").unwrap() - 0.3).abs() < 1e-9);
-        assert!(snap.installed.get("z").is_none(), "second seed must be a no-op");
+        assert!(
+            snap.installed.get("z").is_none(),
+            "second seed must be a no-op"
+        );
     }
 
     #[test]

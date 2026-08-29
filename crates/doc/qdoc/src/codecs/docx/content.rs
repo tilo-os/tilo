@@ -4,7 +4,9 @@
 //! onto inline marks. Unmodeled body-level elements are captured verbatim as fidelity atoms.
 
 use super::container::DocxContainer;
-use super::styles::{attr_val, line_spacing_from_spacing, mark_from_rpr_child, map_jc, StyleRegistry};
+use super::styles::{
+    StyleRegistry, attr_val, line_spacing_from_spacing, map_jc, mark_from_rpr_child,
+};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
@@ -20,8 +22,12 @@ const EMU_PER_PX: f64 = 914400.0 / 96.0;
 /// Build a `rId → media bytes` map from `word/_rels/document.xml.rels`, so the body parser can turn an `a:blip r:embed="rIdN"` into a stored image blob.
 pub(crate) fn build_image_map(container: &DocxContainer) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
-    let Some(rels) = container.get("word/_rels/document.xml.rels") else { return out };
-    let Ok(s) = std::str::from_utf8(rels) else { return out };
+    let Some(rels) = container.get("word/_rels/document.xml.rels") else {
+        return out;
+    };
+    let Ok(s) = std::str::from_utf8(rels) else {
+        return out;
+    };
     let mut reader = Reader::from_str(s);
     loop {
         let ev = match reader.read_event() {
@@ -35,7 +41,11 @@ pub(crate) fn build_image_map(container: &DocxContainer) -> BTreeMap<String, Vec
                 if let (Some(id), Some(target)) = (id, target) {
                     // Targets are relative to `word/`; absolute (`/word/...`) targets are de-slashed.
                     let t = target.trim_start_matches('/');
-                    let part = if t.starts_with("word/") { t.to_string() } else { format!("word/{t}") };
+                    let part = if t.starts_with("word/") {
+                        t.to_string()
+                    } else {
+                        format!("word/{t}")
+                    };
                     if let Some(bytes) = container.get(&part) {
                         out.insert(id, bytes.to_vec());
                     }
@@ -64,7 +74,13 @@ struct DrawingState {
     rel: Option<String>,
 }
 
-fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, kind: &str) -> String {
+fn start_block(
+    doc: &mut DocMut,
+    prev: &mut Option<String>,
+    cur: &mut Option<String>,
+    cur_len: &mut usize,
+    kind: &str,
+) -> String {
     let id = doc.insert_block(prev.as_deref(), kind);
     *prev = Some(id.clone());
     *cur = Some(id.clone());
@@ -132,7 +148,8 @@ pub(crate) fn parse_body(
     // In-progress `<w:ins>`/`<w:del>` wrapper: change id, kind, anchor block, start index; the `ins`/`del` mark applies at close.
     // Deleted runs carry `<w:delText>` instead of `<w:t>` (treated identically here).
     let mut change: Option<(String, crate::snapshot::ChangeKind, Option<String>, usize)> = None;
-    let mut change_ranges: Vec<(String, usize, usize, crate::snapshot::ChangeKind, String)> = Vec::new();
+    let mut change_ranges: Vec<(String, usize, usize, crate::snapshot::ChangeKind, String)> =
+        Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
@@ -228,7 +245,9 @@ pub(crate) fn parse_body(
 
     loop {
         let pos_before = reader.buffer_position() as usize;
-        let ev = reader.read_event().map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
+        let ev = reader
+            .read_event()
+            .map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
 
         if let Some((start, depth)) = capture.as_mut() {
             match &ev {
@@ -266,12 +285,14 @@ pub(crate) fn parse_body(
                     b"wp:wrapNone" | b"wp:wrapTopAndBottom" => dr.wrap = Some("none".to_string()),
                     b"wp:wrapSquare" | b"wp:wrapTight" | b"wp:wrapThrough" => {
                         let side = attr_val(e, b"wrapText");
-                        dr.wrap = Some(match side.as_deref() {
-                            Some("left") => "left",
-                            Some("right") => "right",
-                            _ => "both", // "bothSides" | "largest" | absent
-                        }
-                        .to_string());
+                        dr.wrap = Some(
+                            match side.as_deref() {
+                                Some("left") => "left",
+                                Some("right") => "right",
+                                _ => "both", // "bothSides" | "largest" | absent
+                            }
+                            .to_string(),
+                        );
                     }
                     // Page-relative horizontal/vertical positioning marks a page anchor.
                     b"wp:positionH" | b"wp:positionV" => {
@@ -360,7 +381,11 @@ pub(crate) fn parse_body(
                 b"w:hyperlink" if in_body && cur.is_some() => {
                     // A cross-reference (`w:anchor="name"`): remember target + start index; `r:id`-based external links aren't modeled.
                     if let Some(anchor) = attr_val(&e, b"w:anchor") {
-                        hyperlink = Some((format!("{}{anchor}", crate::schema::CROSS_REF_PREFIX), cur.clone(), cur_len));
+                        hyperlink = Some((
+                            format!("{}{anchor}", crate::schema::CROSS_REF_PREFIX),
+                            cur.clone(),
+                            cur_len,
+                        ));
                     }
                 }
                 b"w:r" if in_body => {
@@ -445,7 +470,9 @@ pub(crate) fn parse_body(
                 }
                 b"w:bookmarkStart" if in_body && cur.is_some() => {
                     // Opens a bookmark's range: remember name + start index. Word's built-in `_GoBack` bookmark has no useful name, so it's skipped.
-                    if let (Some(id), Some(name), Some(b)) = (attr_val(&e, b"w:id"), attr_val(&e, b"w:name"), cur.clone()) {
+                    if let (Some(id), Some(name), Some(b)) =
+                        (attr_val(&e, b"w:id"), attr_val(&e, b"w:name"), cur.clone())
+                    {
                         if name != "_GoBack" {
                             open_bookmarks.insert(id, (b, cur_len, name));
                         }
@@ -534,7 +561,9 @@ pub(crate) fn parse_body(
             Event::Text(t) => {
                 if in_t {
                     if let Some(b) = cur.as_ref() {
-                        let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                        let txt = t
+                            .xml10_content()
+                            .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
                         if !txt.is_empty() {
                             doc.splice_text(b, cur_len, 0, &txt);
                             cur_len += txt.chars().count();
@@ -602,13 +631,15 @@ pub(crate) fn parse_body(
 
 /// The character length of a body block's text (0 if absent).
 fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
-    crate::model::block_text(doc.doc, doc.c, block_id).map(|t| t.chars().count()).unwrap_or(0)
+    crate::model::block_text(doc.doc, doc.c, block_id)
+        .map(|t| t.chars().count())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::container::{minimal_docx, minimal_docx_numbered, minimal_docx_styled};
     use super::super::DocxCodec;
+    use super::super::container::{minimal_docx, minimal_docx_numbered, minimal_docx_styled};
     use crate::{AttrVal, Document, FormatProvider};
 
     #[test]
@@ -643,8 +674,16 @@ mod tests {
         let b = &d.materialize().blocks[0];
         assert_eq!(b.kind, "heading", "named paragraph style → heading");
         assert_eq!(b.text, "My Title");
-        assert_eq!(b.attrs.get("level"), Some(&AttrVal::Int(1)), "level inherited via basedOn");
-        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())), "alignment from the style");
+        assert_eq!(
+            b.attrs.get("level"),
+            Some(&AttrVal::Int(1)),
+            "level inherited via basedOn"
+        );
+        assert_eq!(
+            b.attrs.get("align"),
+            Some(&AttrVal::Str("center".into())),
+            "alignment from the style"
+        );
     }
 
     #[test]
@@ -663,10 +702,34 @@ mod tests {
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
         let p = &d.materialize().blocks[0];
         assert_eq!(p.text, "a bold and more");
-        assert!(p.marks.iter().any(|m| m.name == "strong" && m.start == 2 && m.end == 6), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "em" && m.start == 11 && m.end == 15), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "underline" && m.start == 11 && m.end == 15), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "strike" && m.start == 11 && m.end == 15), "{:?}", p.marks);
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 2 && m.end == 6),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "em" && m.start == 11 && m.end == 15),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "underline" && m.start == 11 && m.end == 15),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "strike" && m.start == 11 && m.end == 15),
+            "{:?}",
+            p.marks
+        );
         let _ = MarkValue::Bool(true);
     }
 
@@ -683,14 +746,32 @@ mod tests {
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "big");
-        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())), "{:?}", b.attrs);
-        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)), "{:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
+        assert_eq!(
+            b.attrs.get("align"),
+            Some(&AttrVal::Str("center".into())),
+            "{:?}",
+            b.attrs
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
+            "{:?}",
+            b.marks
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+            "{:?}",
+            b.marks
+        );
     }
 
     #[test]
     fn imports_named_character_style_and_whitespace() {
-        let styles = r#"<w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style>"#;
+        let styles =
+            r#"<w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style>"#;
         let body = concat!(
             r#"<w:p><w:r><w:t>x</w:t></w:r>"#,
             r#"<w:r><w:rPr><w:rStyle w:val="Strong"/></w:rPr><w:t>y</w:t></w:r></w:p>"#,
@@ -702,7 +783,13 @@ mod tests {
         let snap = d.materialize();
         let p0 = &snap.blocks[0];
         assert_eq!(p0.text, "xy");
-        assert!(p0.marks.iter().any(|m| m.name == "strong" && m.start == 1 && m.end == 2), "named char style → mark: {:?}", p0.marks);
+        assert!(
+            p0.marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 1 && m.end == 2),
+            "named char style → mark: {:?}",
+            p0.marks
+        );
         let p1 = &snap.blocks[1];
         assert!(p1.text.contains('\n'), "w:br → newline: {:?}", p1.text);
         assert!(p1.text.contains('\t'), "w:tab → tab: {:?}", p1.text);
@@ -725,11 +812,23 @@ mod tests {
         let mut d = Document::new();
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
         let snap = d.materialize();
-        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "list_item")
+            .collect();
         assert_eq!(items.len(), 2, "{snap:?}");
         assert_eq!(items[0].text, "first");
-        assert_eq!(items[0].attrs.get("ordered"), Some(&AttrVal::Bool(true)), "decimal numId → ordered");
-        assert_eq!(items[1].attrs.get("ordered"), Some(&AttrVal::Bool(false)), "bullet numId → unordered");
+        assert_eq!(
+            items[0].attrs.get("ordered"),
+            Some(&AttrVal::Bool(true)),
+            "decimal numId → ordered"
+        );
+        assert_eq!(
+            items[1].attrs.get("ordered"),
+            Some(&AttrVal::Bool(false)),
+            "bullet numId → unordered"
+        );
     }
 
     #[test]
@@ -746,7 +845,10 @@ mod tests {
         let snap = d.materialize();
         let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
         assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
-        assert_eq!(cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(), vec!["a", "b", "c", "d"]);
+        assert_eq!(
+            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            vec!["a", "b", "c", "d"]
+        );
         assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
         assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
     }
@@ -770,7 +872,10 @@ mod tests {
             Some(AttrVal::Str(x)) => x.clone(),
             other => panic!("fidelity atom missing xml attr: {other:?}"),
         };
-        assert!(raw.starts_with("<w:sdt") && raw.contains("boxed") && raw.ends_with("</w:sdt>"), "captured raw: {raw}");
+        assert!(
+            raw.starts_with("<w:sdt") && raw.contains("boxed") && raw.ends_with("</w:sdt>"),
+            "captured raw: {raw}"
+        );
     }
 
     #[test]
@@ -789,21 +894,58 @@ mod tests {
         let b = &snap.blocks[0];
         assert_eq!(b.kind, "paragraph");
         assert_eq!(b.text, "hi");
-        assert_eq!(b.attrs.get("style"), Some(&AttrVal::Str("Fancy".into())), "block points at the styleId: {:?}", b.attrs);
+        assert_eq!(
+            b.attrs.get("style"),
+            Some(&AttrVal::Str("Fancy".into())),
+            "block points at the styleId: {:?}",
+            b.attrs
+        );
         // The formatting lives in the style, not directly on the block.
-        assert_eq!(b.attrs.get("align"), None, "alignment comes from the style, not a direct attr: {:?}", b.attrs);
-        assert!(b.marks.is_empty(), "style formatting not lifted as inline marks: {:?}", b.marks);
+        assert_eq!(
+            b.attrs.get("align"),
+            None,
+            "alignment comes from the style, not a direct attr: {:?}",
+            b.attrs
+        );
+        assert!(
+            b.marks.is_empty(),
+            "style formatting not lifted as inline marks: {:?}",
+            b.marks
+        );
 
-        let st = snap.styles.get("Fancy").expect("style lifted into container");
+        let st = snap
+            .styles
+            .get("Fancy")
+            .expect("style lifted into container");
         assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
         assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
         assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
-        assert_eq!(st.get("color"), Some(&AttrVal::Str("#ff0000".into())), "w:color FF0000 → #ff0000");
+        assert_eq!(
+            st.get("color"),
+            Some(&AttrVal::Str("#ff0000".into())),
+            "w:color FF0000 → #ff0000"
+        );
         assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
-        assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)), "w:sz 40 half-points → 20pt");
-        assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())), "Times New Roman → serif");
-        assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)), "180 twips → 12px");
-        assert_eq!(st.get("indent"), Some(&AttrVal::Float(24.0)), "360 twips → 24px");
+        assert_eq!(
+            st.get("size"),
+            Some(&AttrVal::Float(20.0)),
+            "w:sz 40 half-points → 20pt"
+        );
+        assert_eq!(
+            st.get("font"),
+            Some(&AttrVal::Str("serif".into())),
+            "Times New Roman → serif"
+        );
+        assert_eq!(
+            st.get("space_after"),
+            Some(&AttrVal::Float(12.0)),
+            "180 twips → 12px"
+        );
+        assert_eq!(
+            st.get("indent"),
+            Some(&AttrVal::Float(24.0)),
+            "360 twips → 24px"
+        );
     }
 
     #[test]
@@ -822,7 +964,10 @@ mod tests {
         let p = &d.materialize().blocks[0];
         assert_eq!(p.text, "a bonjour");
         assert!(
-            p.marks.iter().any(|m| m.name == "lang" && m.start == 2 && m.end == 9 && m.value == MarkValue::Str("fr".into())),
+            p.marks.iter().any(|m| m.name == "lang"
+                && m.start == 2
+                && m.end == 9
+                && m.value == MarkValue::Str("fr".into())),
             "lang mark over 'bonjour': {:?}",
             p.marks
         );
@@ -839,7 +984,11 @@ mod tests {
         let docx = minimal_docx_styled(styles, body);
         let mut d = Document::new();
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
-        assert_eq!(d.materialize().language.as_deref(), Some("de-DE"), "document default language from docDefaults");
+        assert_eq!(
+            d.materialize().language.as_deref(),
+            Some("de-DE"),
+            "document default language from docDefaults"
+        );
     }
 
     #[test]
@@ -857,11 +1006,19 @@ mod tests {
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
 
-        assert_eq!(snap.language.as_deref(), Some("de-DE"), "document default language survives: {:?}", snap.language);
+        assert_eq!(
+            snap.language.as_deref(),
+            Some("de-DE"),
+            "document default language survives: {:?}",
+            snap.language
+        );
         let b = &snap.blocks[0];
         assert_eq!(b.text, "bonjour monde");
         assert!(
-            b.marks.iter().any(|m| m.name == "lang" && m.start == 0 && m.end == 7 && m.value == MarkValue::Str("fr".into())),
+            b.marks.iter().any(|m| m.name == "lang"
+                && m.start == 0
+                && m.end == 7
+                && m.value == MarkValue::Str("fr".into())),
             "run lang mark `fr` survives over 'bonjour': {:?}",
             b.marks
         );

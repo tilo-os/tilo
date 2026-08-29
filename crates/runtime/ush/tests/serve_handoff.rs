@@ -228,9 +228,7 @@ fn run_handoff() {
     let marker = "USH_HANDOFF_OK";
     let script = "printf 'USH%s_OK-%s\\n' _HANDOFF \"$(whoami)\"\n".to_string();
     // SAFETY: `fd` is a live pty master.
-    let written = unsafe {
-        libc::write(fd, script.as_ptr() as *const libc::c_void, script.len())
-    };
+    let written = unsafe { libc::write(fd, script.as_ptr() as *const libc::c_void, script.len()) };
     assert!(written > 0, "could not write to the pty");
 
     let seen = read_until(fd, marker, Duration::from_secs(60));

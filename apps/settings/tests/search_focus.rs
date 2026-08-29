@@ -195,8 +195,15 @@ impl Harness {
         for ev in [&cursor, &press, &release] {
             let mut handled = false;
             self.app.handle_event(
-                ev, 1.0, &mods, &mut self.doc, &root(), &mut handled, &mut focus_target,
-                self.app_node, &self.taffy,
+                ev,
+                1.0,
+                &mods,
+                &mut self.doc,
+                &root(),
+                &mut handled,
+                &mut focus_target,
+                self.app_node,
+                &self.taffy,
             );
         }
         if let Some(id) = focus_target {
@@ -213,8 +220,15 @@ impl Harness {
         let mut handled = false;
         let mut focus_target = None;
         self.app.handle_event(
-            &ev, 1.0, &mods, &mut self.doc, &root(), &mut handled, &mut focus_target,
-            self.app_node, &self.taffy,
+            &ev,
+            1.0,
+            &mods,
+            &mut self.doc,
+            &root(),
+            &mut handled,
+            &mut focus_target,
+            self.app_node,
+            &self.taffy,
         );
         if let Some(id) = focus_target {
             self.set_focused(Some(id));
@@ -275,7 +289,9 @@ impl Harness {
     }
 
     fn search_field_rect(&self) -> vello::kurbo::Rect {
-        self.search_field().expect("a search TextInput exists").get_rect()
+        self.search_field()
+            .expect("a search TextInput exists")
+            .get_rect()
     }
 
     fn sidebar_row_count(&self) -> usize {
@@ -324,7 +340,10 @@ fn clicking_search_field_focuses_it() {
         "the field starts unfocused (no autofocus on launch)"
     );
     let rect = h.search_field_rect();
-    assert!(rect.width() > 0.0 && rect.height() > 0.0, "field has a real rect");
+    assert!(
+        rect.width() > 0.0 && rect.height() > 0.0,
+        "field has a real rect"
+    );
 
     h.click(rect.center());
 
@@ -343,14 +362,21 @@ fn typing_into_search_filters_and_keeps_focus() {
     // Click to focus, then type a query that filters to a couple of panes.
     let rect = h.search_field_rect();
     h.click(rect.center());
-    assert!(h.search_field().unwrap().is_focused(), "click focused the field");
+    assert!(
+        h.search_field().unwrap().is_focused(),
+        "click focused the field"
+    );
 
     for c in ["n", "e", "t"] {
         h.type_char(c);
     }
 
     // The query reached the app and drove the filter (real sidebar rebuild).
-    assert_eq!(h.app.search_query(), "net", "each typed char reached the query");
+    assert_eq!(
+        h.app.search_query(),
+        "net",
+        "each typed char reached the query"
+    );
     let after = h.sidebar_row_count();
     assert!(
         after < before && after >= 1,
@@ -360,7 +386,9 @@ fn typing_into_search_filters_and_keeps_focus() {
     // The field survived every per-keystroke rebuild: it is still focused and
     // still holds the full typed text (the caret never got dropped, so all
     // three characters landed — the exact thing the old bug broke).
-    let field = h.search_field().expect("field still present after filtering");
+    let field = h
+        .search_field()
+        .expect("field still present after filtering");
     assert!(field.is_focused(), "focus survived the filter rebuilds");
     assert_eq!(
         field.text_review().map(|(_, t)| t),

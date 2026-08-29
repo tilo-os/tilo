@@ -10,13 +10,13 @@
 use std::collections::HashMap;
 
 use file_explorer::FileExplorerWidget;
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -133,7 +133,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.file-explorer"));
+        std::process::exit(ui::headless::run(
+            spec,
+            Box::new(widget),
+            "dev.qos.file-explorer",
+        ));
     }
 
     let (mut state, autosave) = ui::persist::open("dev.qos.file-explorer");
@@ -143,7 +147,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // them apart. `QUICK_APP_ID`/`QOS_USER_ID` name a known replica; a
     // sandboxed launch has neither, so the fallback has to be sound on its
     // own — see [`distinct_actor`].
-    let app_id = named_actor("files").unwrap_or_else(|| distinct_actor("files", state.doc.get_actor()));
+    let app_id =
+        named_actor("files").unwrap_or_else(|| distinct_actor("files", state.doc.get_actor()));
     ui::diag!("file-explorer: automerge actor {app_id}");
     state
         .doc
@@ -197,10 +202,34 @@ fn seed_thumbnails_demo() -> std::path::PathBuf {
     let _ = std::fs::create_dir_all(dir.join("Camera Roll"));
 
     // Real raster images across formats + patterns.
-    write_image(&dir.join("sunset.png"), 640, 480, 0, image::ImageFormat::Png);
-    write_image(&dir.join("harbour.jpg"), 640, 480, 1, image::ImageFormat::Jpeg);
-    write_image(&dir.join("forest-path.png"), 480, 640, 2, image::ImageFormat::Png);
-    write_image(&dir.join("bloom.jpg"), 600, 600, 3, image::ImageFormat::Jpeg);
+    write_image(
+        &dir.join("sunset.png"),
+        640,
+        480,
+        0,
+        image::ImageFormat::Png,
+    );
+    write_image(
+        &dir.join("harbour.jpg"),
+        640,
+        480,
+        1,
+        image::ImageFormat::Jpeg,
+    );
+    write_image(
+        &dir.join("forest-path.png"),
+        480,
+        640,
+        2,
+        image::ImageFormat::Png,
+    );
+    write_image(
+        &dir.join("bloom.jpg"),
+        600,
+        600,
+        3,
+        image::ImageFormat::Jpeg,
+    );
     write_image(&dir.join("study.png"), 720, 480, 4, image::ImageFormat::Png);
 
     // A genuine one-page PDF (pdfium renders its first page) and a real EPUB.
@@ -292,17 +321,33 @@ fn gradient_image(w: u32, h: u32, kind: u8) -> image::RgbaImage {
         let fx = x as f32 / w as f32;
         let fy = y as f32 / h as f32;
         let (r, g, b) = match kind % 5 {
-            0 => (lerp(255.0, 60.0, fy), lerp(150.0, 40.0, fy), lerp(70.0, 130.0, fy)), // sunset
+            0 => (
+                lerp(255.0, 60.0, fy),
+                lerp(150.0, 40.0, fy),
+                lerp(70.0, 130.0, fy),
+            ), // sunset
             1 => {
                 let (dx, dy) = (fx - 0.5, fy - 0.42);
                 let d = (dx * dx + dy * dy).sqrt() * 1.7;
-                (lerp(40.0, 12.0, d), lerp(165.0, 55.0, d), lerp(215.0, 120.0, d)) // harbour
+                (
+                    lerp(40.0, 12.0, d),
+                    lerp(165.0, 55.0, d),
+                    lerp(215.0, 120.0, d),
+                ) // harbour
             }
             2 => {
                 let t = (fx + fy) * 0.5;
-                (lerp(90.0, 24.0, t), lerp(185.0, 95.0, t), lerp(95.0, 55.0, t)) // forest
+                (
+                    lerp(90.0, 24.0, t),
+                    lerp(185.0, 95.0, t),
+                    lerp(95.0, 55.0, t),
+                ) // forest
             }
-            3 => (lerp(240.0, 250.0, fx), lerp(90.0, 190.0, fy), lerp(170.0, 70.0, fx)), // bloom
+            3 => (
+                lerp(240.0, 250.0, fx),
+                lerp(90.0, 190.0, fy),
+                lerp(170.0, 70.0, fx),
+            ), // bloom
             _ => {
                 let band = (((x / 18 + y / 18) % 2) as f32) * 34.0;
                 let c = 120.0 + fy * 70.0 + band;
@@ -383,7 +428,8 @@ fn minimal_epub(title: &str, cover_png: &[u8]) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let stored =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         let deflated =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         zip.start_file("mimetype", stored).unwrap();
@@ -394,7 +440,8 @@ fn minimal_epub(title: &str, cover_png: &[u8]) -> Vec<u8> {
   <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
 </container>"#).unwrap();
         zip.start_file("OEBPS/content.opf", deflated).unwrap();
-        let opf = format!(r#"<?xml version="1.0"?>
+        let opf = format!(
+            r#"<?xml version="1.0"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
   <metadata><dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">{title}</dc:title></metadata>
   <manifest>
@@ -402,10 +449,12 @@ fn minimal_epub(title: &str, cover_png: &[u8]) -> Vec<u8> {
     <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
   </manifest>
   <spine><itemref idref="c1"/></spine>
-</package>"#);
+</package>"#
+        );
         zip.write_all(opf.as_bytes()).unwrap();
         zip.start_file("OEBPS/ch1.xhtml", deflated).unwrap();
-        zip.write_all(b"<html><body><p>Chapter one.</p></body></html>").unwrap();
+        zip.write_all(b"<html><body><p>Chapter one.</p></body></html>")
+            .unwrap();
         zip.start_file("OEBPS/cover.png", deflated).unwrap();
         zip.write_all(cover_png).unwrap();
         zip.finish().unwrap();
@@ -559,7 +608,11 @@ fn render_shot_to_png(
             // Drag a file onto a folder — mid-drop, so the ghost + the folder's
             // drop-target highlight both show. Pick the first published folder
             // row as the target and the first file as the dragged item.
-            let target = widget.debug_folder_targets().into_iter().next().map(|(p, _)| p);
+            let target = widget
+                .debug_folder_targets()
+                .into_iter()
+                .next()
+                .map(|(p, _)| p);
             let source = widget
                 .entries()
                 .iter()
@@ -580,7 +633,15 @@ fn render_shot_to_png(
             let mut focus = None;
             let mods = winit::event::Modifiers::default();
             widget.handle_event(
-                &ev, 1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, child, &taffy,
+                &ev,
+                1.0,
+                &mods,
+                &mut state.doc,
+                &state.root,
+                &mut handled,
+                &mut focus,
+                child,
+                &taffy,
             );
         }
         _ => {}
@@ -613,7 +674,13 @@ fn render_shot_to_png(
         &permission,
     );
     // Composite the overlay layer (context menu + flyout) on top.
-    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
+    widget.draw_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

@@ -28,7 +28,10 @@ struct QpkgHeader {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "qos-install", about = "Install, launch, list, or remove qOS packages.")]
+#[command(
+    name = "qos-install",
+    about = "Install, launch, list, or remove qOS packages."
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -259,18 +262,14 @@ enum RuntimeCmd {
     /// List installed runtime bundle versions.
     List,
     /// Remove an installed runtime bundle by version tag.
-    Remove {
-        version: String,
-    },
+    Remove { version: String },
     /// Print the resolved path for a version (same lookup order as the launcher).
     Path {
         #[arg(long)]
         version: String,
     },
     /// Verify an installed bundle's on-disk hash matches its manifest.
-    Verify {
-        version: String,
-    },
+    Verify { version: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -285,7 +284,9 @@ enum Error {
     Revoked { reason: String },
     #[error("policy refused: --require-attestor {required:?} but package verified as {found}")]
     AttestorMismatch { required: String, found: String },
-    #[error("policy refused: --require-attestor {required:?} and package is self-signed (use --allow-self-signed to override)")]
+    #[error(
+        "policy refused: --require-attestor {required:?} and package is self-signed (use --allow-self-signed to override)"
+    )]
     RequireAttestorWithoutAttestation { required: String },
     #[error("qpkg parse: {0}")]
     Parse(String),
@@ -330,7 +331,9 @@ enum Error {
     RuntimeReferenceMalformed(String),
     #[error("integrity: {0}")]
     Integrity(#[from] install::integrity::IntegrityError),
-    #[error("{package} is installed at {installed}; {candidate} is not newer (use --allow-downgrade to install it anyway)")]
+    #[error(
+        "{package} is installed at {installed}; {candidate} is not newer (use --allow-downgrade to install it anyway)"
+    )]
     NotNewer {
         package: String,
         installed: String,
@@ -483,8 +486,9 @@ fn verify_and_gate(
                     });
                 }
             }
-            let pub_key_hex =
-                extract_publisher_key(&pkg_id, store).map(|k| hex_of(&k)).unwrap_or_default();
+            let pub_key_hex = extract_publisher_key(&pkg_id, store)
+                .map(|k| hex_of(&k))
+                .unwrap_or_default();
             Ok((manifest, pub_key_hex, attestor))
         }
         Verification::UntrustedPublisher { identity, manifest } => {
@@ -517,8 +521,9 @@ fn verify_and_gate(
             Err(Error::Revoked { reason })
         }
         Verification::Trusted { manifest } => {
-            let pub_key_hex =
-                extract_publisher_key(&pkg_id, store).map(|k| hex_of(&k)).unwrap_or_default();
+            let pub_key_hex = extract_publisher_key(&pkg_id, store)
+                .map(|k| hex_of(&k))
+                .unwrap_or_default();
             if let Some(required) = &trust.require_attestor {
                 // Trusted-key path bypasses the attestor chain; --require-attestor is
                 // strict, so refuse here regardless.
@@ -609,8 +614,8 @@ fn place_payload(ingested: &Ingested, dest: &Path) -> Result<PathBuf, Error> {
         fs::remove_dir_all(dest)?;
     }
     fs::create_dir_all(dest)?;
-    let manifest = unpack(ingested.pkg_id, &ingested.store, dest)
-        .map_err(|e| Error::Unpack(e.to_string()))?;
+    let manifest =
+        unpack(ingested.pkg_id, &ingested.store, dest).map_err(|e| Error::Unpack(e.to_string()))?;
     let manifest_path = dest.join("manifest.toml");
     fs::write(
         &manifest_path,
@@ -654,9 +659,7 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
         return Ok(());
     }
     if flags.with_runtime {
-        println!(
-            "  runtime  : qos-runtime/{version} is missing; building it from the host root"
-        );
+        println!("  runtime  : qos-runtime/{version} is missing; building it from the host root");
         return runtime_install(
             &version,
             true,
@@ -676,10 +679,7 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
     }
     Err(Error::RuntimeDependencyMissing {
         package: ingested.id().to_string(),
-        runtime: ingested
-            .runtime_ref()
-            .unwrap_or("qos-runtime")
-            .to_string(),
+        runtime: ingested.runtime_ref().unwrap_or("qos-runtime").to_string(),
         version,
     })
 }
@@ -845,7 +845,11 @@ fn print_install_plan(
     if commands.is_empty() {
         println!("  shims     : none");
     } else {
-        println!("  shims     : {} in {}", commands.join(", "), bin_root()?.display());
+        println!(
+            "  shims     : {} in {}",
+            commands.join(", "),
+            bin_root()?.display()
+        );
     }
     println!("  state     : untouched (a package's files are not its user's data)");
     println!("(nothing was written)");
@@ -1457,7 +1461,9 @@ fn run(
                 "qos-install: REFUSED — installed package's publisher is revoked: {}",
                 rev.reason
             );
-            return Err(Error::Revoked { reason: rev.reason.clone() });
+            return Err(Error::Revoked {
+                reason: rev.reason.clone(),
+            });
         }
     }
     if let Some(required) = &trust.require_attestor {
@@ -1500,7 +1506,9 @@ fn run(
         cmd.arg("--allow-missing-runtime");
     }
     if no_landlock {
-        eprintln!("qos-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging.");
+        eprintln!(
+            "qos-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging."
+        );
         // Not implemented on the CLI yet — surface as a runtime flag if / when needed.
     }
     // exec()-replace so this process's exit code IS the launcher's.
@@ -1590,8 +1598,7 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
 
 fn trust_add(id: &str, pubkey_hex: &str, scope: &str) -> Result<(), Error> {
     // Validate scope + pubkey hex up-front, before touching the file.
-    let scope_parsed =
-        AttestorScope::parse(scope).map_err(|e| Error::Trust(e.to_string()))?;
+    let scope_parsed = AttestorScope::parse(scope).map_err(|e| Error::Trust(e.to_string()))?;
     let _ = decode_hex_32(pubkey_hex).map_err(Error::Trust)?;
     let mut attestors = load_trusted_attestors()?;
     attestors.attestor.retain(|a| a.id != id);
@@ -1601,7 +1608,9 @@ fn trust_add(id: &str, pubkey_hex: &str, scope: &str) -> Result<(), Error> {
         scope: scope_parsed,
     });
     let path = trusted_attestors_path()?;
-    attestors.save(&path).map_err(|e| Error::Trust(e.to_string()))?;
+    attestors
+        .save(&path)
+        .map_err(|e| Error::Trust(e.to_string()))?;
     println!("trust: added {id} (scope: {scope})");
     println!("  file: {}", path.display());
     Ok(())
@@ -1628,7 +1637,9 @@ fn trust_remove(id: &str) -> Result<(), Error> {
         return Err(Error::Trust(format!("no trusted attestor with id {id:?}")));
     }
     let path = trusted_attestors_path()?;
-    attestors.save(&path).map_err(|e| Error::Trust(e.to_string()))?;
+    attestors
+        .save(&path)
+        .map_err(|e| Error::Trust(e.to_string()))?;
     println!("trust: removed {id}");
     Ok(())
 }
@@ -1711,7 +1722,9 @@ fn runtime_install(
 }
 
 fn runtime_list() -> Result<(), Error> {
-    let base = dirs::data_dir().ok_or(Error::NoDataDir)?.join("qos-runtime");
+    let base = dirs::data_dir()
+        .ok_or(Error::NoDataDir)?
+        .join("qos-runtime");
     if !base.exists() {
         println!("(no runtime bundles installed)");
         return Ok(());
@@ -1869,7 +1882,6 @@ fn main() {
     }
 }
 
-
 /// Read a .qpkg tar → [`MemoryBlobStore`] + PackageId. Mirrors
 /// (deliberately duplicated) qos-pkg-cli::read_qpkg so this crate
 /// stays independent.
@@ -1886,10 +1898,7 @@ fn read_qpkg_bytes(bytes: &[u8]) -> Result<(PackageId, MemoryBlobStore), Error> 
     let mut store = MemoryBlobStore::new();
     for entry in ar.entries().map_err(|e| Error::Parse(e.to_string()))? {
         let mut entry = entry.map_err(|e| Error::Parse(e.to_string()))?;
-        let entry_path = entry
-            .path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+        let entry_path = entry.path().map(|p| p.to_path_buf()).unwrap_or_default();
         let name = entry_path.to_string_lossy().to_string();
         let mut buf = Vec::new();
         entry
@@ -1899,9 +1908,8 @@ fn read_qpkg_bytes(bytes: &[u8]) -> Result<(PackageId, MemoryBlobStore), Error> 
             "qpkg.toml" => {
                 let s = String::from_utf8(buf)
                     .map_err(|e| Error::Parse(format!("qpkg.toml not UTF-8: {e}")))?;
-                header = Some(
-                    toml::from_str(&s).map_err(|e| Error::Parse(format!("qpkg.toml: {e}")))?,
-                );
+                header =
+                    Some(toml::from_str(&s).map_err(|e| Error::Parse(format!("qpkg.toml: {e}")))?);
             }
             n if n.starts_with("blobs/") => {
                 store

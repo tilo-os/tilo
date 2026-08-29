@@ -72,10 +72,7 @@ pub struct SeatEnvironment {
 impl SeatEnvironment {
     /// Read the live environment. The only impure function in this module.
     pub fn detect() -> Self {
-        Self::detect_with(
-            |k| std::env::var(k).ok(),
-            |p| Path::new(p).exists(),
-        )
+        Self::detect_with(|k| std::env::var(k).ok(), |p| Path::new(p).exists())
     }
 
     /// [`Self::detect`] with the two effects injected, so tests can build
@@ -279,8 +276,7 @@ mod tests {
 
     /// The exact error the user hit: libseat tried logind, then seatd, and
     /// reported ENOSYS because neither was usable.
-    const ENOSYS: &str =
-        "FailedToOpenSession(Os { code: 38, kind: Unsupported, message: \"Function not implemented\" })";
+    const ENOSYS: &str = "FailedToOpenSession(Os { code: 38, kind: Unsupported, message: \"Function not implemented\" })";
 
     fn env() -> SeatEnvironment {
         SeatEnvironment::default()
@@ -307,10 +303,7 @@ mod tests {
 
     #[test]
     fn detect_with_reads_the_socket_and_seat_dir_through_the_probe() {
-        let e = SeatEnvironment::detect_with(
-            |_| None,
-            |p| p == SEATD_SOCKET,
-        );
+        let e = SeatEnvironment::detect_with(|_| None, |p| p == SEATD_SOCKET);
         assert!(e.seatd_socket, "the seatd socket probe must be consulted");
         assert!(!e.logind_seats);
     }

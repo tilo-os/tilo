@@ -159,13 +159,11 @@ impl DrmPresenter {
         if self.scanouts.len() == 1 {
             let bridge = self.paint.as_mut().expect("paint allocated above");
             let cursor = Some(self.pointer);
-            self.scanouts[0]
-                .scanout
-                .present_into(cursor, |dst, pitch| {
-                    if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
-                        tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
-                    }
-                });
+            self.scanouts[0].scanout.present_into(cursor, |dst, pitch| {
+                if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
+                    tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
+                }
+            });
             return;
         }
 
@@ -202,7 +200,15 @@ impl DrmPresenter {
             let sy = py.max(0) as usize;
             e.scanout.present_no_drain(local_cursor, |dst, pitch| {
                 swizzle_subrect_rgba_to_xrgb8888(
-                    rgba, cw, ch, sx, sy, dst, pitch, ow as usize, oh as usize,
+                    rgba,
+                    cw,
+                    ch,
+                    sx,
+                    sy,
+                    dst,
+                    pitch,
+                    ow as usize,
+                    oh as usize,
                 );
             });
         }
@@ -519,7 +525,10 @@ mod tests {
             &mut paused,
             &mut blanked,
         );
-        assert!(paused, "a paused session must not present into CRTCs it lost");
+        assert!(
+            paused,
+            "a paused session must not present into CRTCs it lost"
+        );
 
         apply_scanout_command(
             ScanoutCommand::Resume { dpms_on: true },

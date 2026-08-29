@@ -154,7 +154,14 @@ impl NavGestureRecognizer {
                     None
                 };
                 if let Some(edge) = edge {
-                    self.touches.insert(id, EdgeTouch { start_x: x, edge, fired: false });
+                    self.touches.insert(
+                        id,
+                        EdgeTouch {
+                            start_x: x,
+                            edge,
+                            fired: false,
+                        },
+                    );
                 }
                 None
             }
@@ -232,9 +239,16 @@ impl DragSelect {
     pub fn press(&mut self, pos: Point, shift: bool) -> PressIntent {
         let now = Instant::now();
         let multi = !shift
-            && self.last_click.map(|t| now.duration_since(t).as_millis() < MULTI_CLICK_MS).unwrap_or(false)
+            && self
+                .last_click
+                .map(|t| now.duration_since(t).as_millis() < MULTI_CLICK_MS)
+                .unwrap_or(false)
             && self.last_pos.distance(pos) < MULTI_CLICK_DIST;
-        self.click_count = if multi { (self.click_count + 1).min(3) } else { 1 };
+        self.click_count = if multi {
+            (self.click_count + 1).min(3)
+        } else {
+            1
+        };
         self.last_click = Some(now);
         self.last_pos = pos;
         self.dragging = true;
@@ -243,7 +257,10 @@ impl DragSelect {
             n if n >= 3 => Granularity::Line,
             _ => Granularity::Char,
         };
-        PressIntent { extend: shift, granularity: self.granularity }
+        PressIntent {
+            extend: shift,
+            granularity: self.granularity,
+        }
     }
 
     /// While dragging, the granularity to extend the selection to the current
@@ -276,7 +293,10 @@ mod tests {
         assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Word);
         assert_eq!(g.press(Point::ZERO, false).granularity, Granularity::Line);
         // a far-away press resets to single
-        assert_eq!(g.press(Point::new(500.0, 500.0), false).granularity, Granularity::Char);
+        assert_eq!(
+            g.press(Point::new(500.0, 500.0), false).granularity,
+            Granularity::Char
+        );
     }
 
     #[test]
@@ -285,7 +305,11 @@ mod tests {
         g.press(Point::ZERO, false);
         let p = g.press(Point::ZERO, true);
         assert!(p.extend, "shift extends");
-        assert_eq!(p.granularity, Granularity::Char, "shift press is not a double-click");
+        assert_eq!(
+            p.granularity,
+            Granularity::Char,
+            "shift press is not a double-click"
+        );
     }
 
     #[test]
@@ -304,11 +328,20 @@ mod tests {
     /// Drive a two-finger swipe as a sequence of precise scroll samples
     /// within one gesture (single `Begin`), returning the first direction
     /// the recogniser commits to.
-    fn swipe(recognizer: &mut NavGestureRecognizer, total_dx: f64, total_dy: f64) -> Option<NavDirection> {
+    fn swipe(
+        recognizer: &mut NavGestureRecognizer,
+        total_dx: f64,
+        total_dy: f64,
+    ) -> Option<NavDirection> {
         let steps = 6;
         let (mut fired, mut phase) = (None, GesturePhase::Begin);
         for i in 0..steps {
-            let d = recognizer.on_scroll(total_dx / steps as f64, total_dy / steps as f64, phase, true);
+            let d = recognizer.on_scroll(
+                total_dx / steps as f64,
+                total_dy / steps as f64,
+                phase,
+                true,
+            );
             fired = fired.or(d);
             phase = GesturePhase::Update;
             let _ = i;
@@ -339,7 +372,10 @@ mod tests {
     #[test]
     fn swipe_fires_once_per_gesture() {
         let mut g = NavGestureRecognizer::new();
-        assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Begin, true), Some(NavDirection::Back));
+        assert_eq!(
+            g.on_scroll(120.0, 0.0, GesturePhase::Begin, true),
+            Some(NavDirection::Back)
+        );
         // Continued travel in the same gesture must not re-fire.
         assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Update, true), None);
     }
@@ -355,18 +391,27 @@ mod tests {
         let w = 1000.0;
         let mut g = NavGestureRecognizer::new();
         assert_eq!(g.on_touch(1, 10.0, 300.0, GesturePhase::Begin, w), None);
-        assert_eq!(g.on_touch(1, 80.0, 305.0, GesturePhase::Update, w), Some(NavDirection::Back));
+        assert_eq!(
+            g.on_touch(1, 80.0, 305.0, GesturePhase::Update, w),
+            Some(NavDirection::Back)
+        );
         assert_eq!(g.on_touch(1, 900.0, 305.0, GesturePhase::End, w), None);
 
         assert_eq!(g.on_touch(2, 995.0, 300.0, GesturePhase::Begin, w), None);
-        assert_eq!(g.on_touch(2, 900.0, 305.0, GesturePhase::Update, w), Some(NavDirection::Forward));
+        assert_eq!(
+            g.on_touch(2, 900.0, 305.0, GesturePhase::Update, w),
+            Some(NavDirection::Forward)
+        );
     }
 
     #[test]
     fn touch_starting_mid_screen_never_navigates() {
         let mut g = NavGestureRecognizer::new();
         g.on_touch(1, 500.0, 300.0, GesturePhase::Begin, 1000.0);
-        assert_eq!(g.on_touch(1, 800.0, 300.0, GesturePhase::Update, 1000.0), None);
+        assert_eq!(
+            g.on_touch(1, 800.0, 300.0, GesturePhase::Update, 1000.0),
+            None
+        );
     }
 
     #[test]
@@ -374,7 +419,14 @@ mod tests {
         let w = 1000.0;
         let mut g = NavGestureRecognizer::new();
         g.on_touch(1, 8.0, 300.0, GesturePhase::Begin, w);
-        assert_eq!(g.on_touch(1, 80.0, 300.0, GesturePhase::Update, w), Some(NavDirection::Back));
-        assert_eq!(g.on_touch(1, 160.0, 300.0, GesturePhase::Update, w), None, "must not re-fire");
+        assert_eq!(
+            g.on_touch(1, 80.0, 300.0, GesturePhase::Update, w),
+            Some(NavDirection::Back)
+        );
+        assert_eq!(
+            g.on_touch(1, 160.0, 300.0, GesturePhase::Update, w),
+            None,
+            "must not re-fire"
+        );
     }
 }

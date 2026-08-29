@@ -326,11 +326,8 @@ pub fn group_entries(
     if entries.is_empty() {
         return Vec::new();
     }
-    let index: HashMap<HistoryEntryId, usize> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.id, i))
-        .collect();
+    let index: HashMap<HistoryEntryId, usize> =
+        entries.iter().enumerate().map(|(i, e)| (e.id, i)).collect();
 
     // Resolve names to index ranges, dropping the ones this surface cannot
     // place.
@@ -464,8 +461,8 @@ fn derived_groups(
         // tear a session differently per peer. A clock running backwards
         // (skewed peer, merged late) likewise reads as no gap, not a
         // negative one.
-        let timed = prev.timestamp != SystemTime::UNIX_EPOCH
-            && cur.timestamp != SystemTime::UNIX_EPOCH;
+        let timed =
+            prev.timestamp != SystemTime::UNIX_EPOCH && cur.timestamp != SystemTime::UNIX_EPOCH;
         let gap = cur
             .timestamp
             .duration_since(prev.timestamp)
@@ -487,10 +484,7 @@ fn derived_groups(
 /// hash is included so two different people who chose the same display name are
 /// still two groups.
 fn author_key(e: &HistoryEntry) -> (&str, &str) {
-    (
-        e.author.name.as_str(),
-        e.author.identity_short.as_str(),
-    )
+    (e.author.name.as_str(), e.author.identity_short.as_str())
 }
 
 fn finish_group(
@@ -625,7 +619,12 @@ mod tests {
             .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
             .collect();
         let groups = group_entries(&entries, &[], &GroupingConfig::default());
-        assert_eq!(groups.len(), 1, "got {:?}", groups.iter().map(ids).collect::<Vec<_>>());
+        assert_eq!(
+            groups.len(),
+            1,
+            "got {:?}",
+            groups.iter().map(ids).collect::<Vec<_>>()
+        );
         assert_eq!(groups[0].len(), 10);
         assert_eq!(groups[0].title(&entries), "10 edits");
         assert_eq!(groups[0].subtitle(&entries), "Alice \u{00b7} +30 -0 chars");
@@ -645,7 +644,11 @@ mod tests {
         // The second group spans six minutes from the first change of the day,
         // but only its own three seconds — the label must describe the group,
         // not the document.
-        assert_eq!(groups[1].span_label(), None, "three seconds is not 'over 6 min'");
+        assert_eq!(
+            groups[1].span_label(),
+            None,
+            "three seconds is not 'over 6 min'"
+        );
     }
 
     #[test]
@@ -662,7 +665,10 @@ mod tests {
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].authors_label(), "Alice");
         assert_eq!(groups[1].authors_label(), "Bob");
-        assert!(groups[1].is_bare_change(), "one change, unnamed: renders as a row");
+        assert!(
+            groups[1].is_bare_change(),
+            "one change, unnamed: renders as a row"
+        );
     }
 
     #[test]
@@ -682,7 +688,10 @@ mod tests {
         let entries: Vec<HistoryEntry> = (0..250)
             .map(|i| entry((i % 251) as u8, "Alice", 1000 + i as u64, OpClass::Splice))
             .collect();
-        let cfg = GroupingConfig { max_changes: 100, ..Default::default() };
+        let cfg = GroupingConfig {
+            max_changes: 100,
+            ..Default::default()
+        };
         let groups = group_entries(&entries, &[], &cfg);
         assert_eq!(groups.len(), 3);
         assert!(groups.iter().all(|g| g.len() <= 100));
@@ -812,7 +821,11 @@ mod tests {
             g.walk(&mut flat);
         }
         let names: Vec<&str> = flat.iter().filter_map(|g| g.name.as_deref()).collect();
-        assert_eq!(names, vec!["outer", "middle"], "the third level is not shown");
+        assert_eq!(
+            names,
+            vec!["outer", "middle"],
+            "the third level is not shown"
+        );
         assert!(flat.iter().all(|g| g.depth < MAX_GROUP_DEPTH));
     }
 
@@ -840,12 +853,22 @@ mod tests {
             named_by: None,
             created: SystemTime::UNIX_EPOCH,
         };
-        let one = group_entries(&entries, &[alice.clone(), bob.clone()], &GroupingConfig::default());
+        let one = group_entries(
+            &entries,
+            &[alice.clone(), bob.clone()],
+            &GroupingConfig::default(),
+        );
         let other = group_entries(&entries, &[bob, alice], &GroupingConfig::default());
         let shape = |gs: &[HistoryGroup]| -> Vec<(Option<String>, usize, usize)> {
-            gs.iter().map(|g| (g.name.clone(), g.start, g.end)).collect()
+            gs.iter()
+                .map(|g| (g.name.clone(), g.start, g.end))
+                .collect()
         };
-        assert_eq!(shape(&one), shape(&other), "merge order must not change the layout");
+        assert_eq!(
+            shape(&one),
+            shape(&other),
+            "merge order must not change the layout"
+        );
         assert_eq!(
             shape(&one),
             vec![
@@ -871,7 +894,10 @@ mod tests {
         }];
         let groups = group_entries(&entries, &named, &GroupingConfig::default());
         assert_eq!(groups.len(), 1);
-        assert!(groups[0].name.is_none(), "no band is invented for a range we cannot place");
+        assert!(
+            groups[0].name.is_none(),
+            "no band is invented for a range we cannot place"
+        );
     }
 
     #[test]

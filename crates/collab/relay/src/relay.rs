@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use libp2p::futures::StreamExt as _;
 use libp2p::swarm::SwarmEvent;
-use libp2p::{Multiaddr, PeerId, Swarm, gossipsub, identify, identity, kad, mdns, noise, tcp, yamux};
+use libp2p::{
+    Multiaddr, PeerId, Swarm, gossipsub, identify, identity, kad, mdns, noise, tcp, yamux,
+};
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::behaviour::{RelayBehaviour, RelayBehaviourEvent};
@@ -178,10 +180,8 @@ impl Relay {
 
     /// Drives the swarm until SIGTERM/SIGINT. Returns `Ok(())` on graceful shutdown, `Err` only if the signal handlers fail to install.
     pub async fn run(mut self) -> anyhow::Result<()> {
-        let mut sigterm = signal(SignalKind::terminate())
-            .context("installing SIGTERM handler")?;
-        let mut sigint = signal(SignalKind::interrupt())
-            .context("installing SIGINT handler")?;
+        let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
+        let mut sigint = signal(SignalKind::interrupt()).context("installing SIGINT handler")?;
 
         loop {
             tokio::select! {
@@ -228,10 +228,7 @@ impl Relay {
         self.handle_swarm_event(event).await;
     }
 
-    async fn handle_swarm_event(
-        &mut self,
-        event: SwarmEvent<RelayBehaviourEvent>,
-    ) {
+    async fn handle_swarm_event(&mut self, event: SwarmEvent<RelayBehaviourEvent>) {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 let local = self.local_peer_id();
@@ -239,12 +236,16 @@ impl Relay {
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 self.connected_peers.insert(peer_id);
-                self.metrics.connected_peers.set(self.connected_peers.len() as i64);
+                self.metrics
+                    .connected_peers
+                    .set(self.connected_peers.len() as i64);
                 tracing::info!(%peer_id, total = self.connected_peers.len(), "peer connected");
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 self.connected_peers.remove(&peer_id);
-                self.metrics.connected_peers.set(self.connected_peers.len() as i64);
+                self.metrics
+                    .connected_peers
+                    .set(self.connected_peers.len() as i64);
                 tracing::info!(%peer_id, total = self.connected_peers.len(), "peer disconnected");
             }
             SwarmEvent::Behaviour(RelayBehaviourEvent::Gossipsub(ev)) => {
@@ -280,13 +281,18 @@ impl Relay {
                     return;
                 }
                 let cap = self.config.rate_limit_per_topic_per_minute;
-                if !self.rate_limiter.check_and_record(&topic, propagation_source, cap) {
+                if !self
+                    .rate_limiter
+                    .check_and_record(&topic, propagation_source, cap)
+                {
                     tracing::warn!(%topic, peer = %propagation_source, "rate limit hit; dropping");
                     return;
                 }
                 self.metrics
                     .messages_forwarded
-                    .get_or_create(&TopicLabels { topic: topic.clone() })
+                    .get_or_create(&TopicLabels {
+                        topic: topic.clone(),
+                    })
                     .inc();
                 self.metrics.bytes_in.inc_by(message.data.len() as u64);
                 tracing::trace!(%topic, peer = %propagation_source, bytes = message.data.len(), "forwarded");
@@ -303,7 +309,10 @@ impl Relay {
                             tracing::info!(%topic_str, %peer_id, "relay subscribed to topic");
                         }
                     }
-                    self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .add_explicit_peer(&peer_id);
                 }
             }
             gossipsub::Event::Unsubscribed { peer_id, topic } => {
@@ -415,8 +424,9 @@ mod tests {
     fn extract_peer_id_finds_suffix() {
         let key = identity::Keypair::generate_ed25519();
         let peer = key.public().to_peer_id();
-        let addr: Multiaddr =
-            format!("/ip4/127.0.0.1/tcp/4001/p2p/{peer}").parse().unwrap();
+        let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/4001/p2p/{peer}")
+            .parse()
+            .unwrap();
         assert_eq!(extract_peer_id(&addr), Some(peer));
     }
 

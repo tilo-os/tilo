@@ -52,7 +52,11 @@ pub enum SplitLayout {
 impl SplitLayout {
     /// Boundary is inclusive at the breakpoint → `Docked`.
     pub fn from_width(total_w: f64, breakpoint: f64) -> Self {
-        if total_w >= breakpoint { SplitLayout::Docked } else { SplitLayout::Overlay }
+        if total_w >= breakpoint {
+            SplitLayout::Docked
+        } else {
+            SplitLayout::Overlay
+        }
     }
 }
 
@@ -89,13 +93,23 @@ pub struct FlapState {
 impl FlapState {
     /// A flap that is open when docked (the common navigation sidebar).
     pub fn open_when_docked() -> Self {
-        Self { user_open: None, reveal: 1.0, last_layout: None, docked_default_open: true }
+        Self {
+            user_open: None,
+            reveal: 1.0,
+            last_layout: None,
+            docked_default_open: true,
+        }
     }
 
     /// A flap that is closed even when docked — summoned on demand (e.g. a
     /// members / inspector panel).
     pub fn closed_by_default() -> Self {
-        Self { user_open: None, reveal: 0.0, last_layout: None, docked_default_open: false }
+        Self {
+            user_open: None,
+            reveal: 0.0,
+            last_layout: None,
+            docked_default_open: false,
+        }
     }
 
     /// Whether the flap is currently open, resolving the user preference
@@ -114,10 +128,14 @@ impl FlapState {
     }
 
     /// Force the flap open (structural action, e.g. opening a detail).
-    pub fn open(&mut self) { self.user_open = Some(true); }
+    pub fn open(&mut self) {
+        self.user_open = Some(true);
+    }
 
     /// Force the flap closed (scrim / Esc / selection-dismiss).
-    pub fn close(&mut self) { self.user_open = Some(false); }
+    pub fn close(&mut self) {
+        self.user_open = Some(false);
+    }
 
     /// Set open state with NO animation — snaps `reveal` to the endpoint.
     /// Used by `--shots` / headless so a frame is deterministic.
@@ -174,7 +192,9 @@ impl FlapState {
 
     /// The raw eased reveal in `0..=1` — used directly for scrim alpha and
     /// docked content inset.
-    pub fn reveal(&self) -> f64 { self.reveal.clamp(0.0, 1.0) }
+    pub fn reveal(&self) -> f64 {
+        self.reveal.clamp(0.0, 1.0)
+    }
 
     /// Ease-out-cubic of [`Self::reveal`] — used for the overlay slide so
     /// the flap decelerates into place.
@@ -372,8 +392,12 @@ impl NavSplit {
                 // Single pane: master OR detail, sliding horizontally.
                 let p = self.push.slide(); // 0 = master, 1 = detail
                 // Master sits at x0, detail slides in from the right.
-                self.sidebar_rect =
-                    Rect::new(self.rect.x0 - w * p, self.rect.y0, self.rect.x1 - w * p, self.rect.y1);
+                self.sidebar_rect = Rect::new(
+                    self.rect.x0 - w * p,
+                    self.rect.y0,
+                    self.rect.x1 - w * p,
+                    self.rect.y1,
+                );
                 self.content_rect = Rect::new(
                     self.rect.x0 + w * (1.0 - p),
                     self.rect.y0,
@@ -447,8 +471,16 @@ impl NavSplit {
                 },
             );
         }
-        self.sidebar.apply_layout(&taffy, s_node, Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0));
-        self.content.apply_layout(&taffy, c_node, Point::new(self.content_rect.x0, self.content_rect.y0));
+        self.sidebar.apply_layout(
+            &taffy,
+            s_node,
+            Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0),
+        );
+        self.content.apply_layout(
+            &taffy,
+            c_node,
+            Point::new(self.content_rect.x0, self.content_rect.y0),
+        );
         self.inner_taffy = Some(taffy);
         self.sidebar_node = Some(s_node);
         self.content_node = Some(c_node);
@@ -461,7 +493,8 @@ impl NavSplit {
     /// `Scrollable` push its new offset down. Falls back to a full
     /// `place_children` if no cached tree exists yet.
     fn reapply_children(&mut self) {
-        if self.inner_taffy.is_none() || self.sidebar_node.is_none() || self.content_node.is_none() {
+        if self.inner_taffy.is_none() || self.sidebar_node.is_none() || self.content_node.is_none()
+        {
             // Shouldn't happen on a reposition, but be safe: fall back to a
             // full solve, paying for the `TextRenderer` only here.
             let mut tr = TextRenderer::new();
@@ -529,7 +562,9 @@ fn split_cache_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
-        std::env::var("QUICK_UI_NO_SPLIT_CACHE").map(|s| !s.is_empty()).unwrap_or(false)
+        std::env::var("QUICK_UI_NO_SPLIT_CACHE")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
     })
 }
 
@@ -619,7 +654,8 @@ impl Widget for NavSplit {
         self.self_tick(theme, text_renderer);
 
         // Content first (it's behind the overlay flap).
-        self.content.draw(scene, transform, text_renderer, theme, presence);
+        self.content
+            .draw(scene, transform, text_renderer, theme, presence);
 
         // Scrim (overlay mode only), then the sidebar on top.
         if self.scrim_rect.width() > 0.0 {
@@ -628,7 +664,8 @@ impl Widget for NavSplit {
             scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
         }
         if self.sidebar_visible() {
-            self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+            self.sidebar
+                .draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -648,16 +685,28 @@ impl Widget for NavSplit {
         if presence.should_cull(self.get_rect()) {
             return;
         }
-        self.content
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        self.content.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
         if self.scrim_rect.width() > 0.0 {
             let alpha = (self.flap.reveal() * 0.5) as f32;
             let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
             scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
         }
         if self.sidebar_visible() {
-            self.sidebar
-                .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            self.sidebar.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
     }
 
@@ -675,8 +724,7 @@ impl Widget for NavSplit {
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -727,9 +775,11 @@ impl Widget for NavSplit {
         let route_sidebar_first = self.layout_mode() == SplitLayout::Overlay
             && self.is_sidebar_open()
             || self.mode == SplitMode::Push && self.push_pane == PushPane::Master;
-        let (Some(taffy), Some(s_node), Some(c_node)) =
-            (self.inner_taffy.as_ref(), self.sidebar_node, self.content_node)
-        else {
+        let (Some(taffy), Some(s_node), Some(c_node)) = (
+            self.inner_taffy.as_ref(),
+            self.sidebar_node,
+            self.content_node,
+        ) else {
             return;
         };
         let order = if route_sidebar_first {
@@ -741,8 +791,11 @@ impl Widget for NavSplit {
             if *handled {
                 break;
             }
-            let target: &mut dyn Widget =
-                if is_sidebar { self.sidebar.as_mut() } else { self.content.as_mut() };
+            let target: &mut dyn Widget = if is_sidebar {
+                self.sidebar.as_mut()
+            } else {
+                self.content.as_mut()
+            };
             target.handle_event(
                 event,
                 scale_factor,
@@ -765,9 +818,13 @@ impl Widget for NavSplit {
         vec![self.sidebar.as_mut(), self.content.as_mut()]
     }
 
-    fn name(&self) -> &str { "NavSplit" }
+    fn name(&self) -> &str {
+        "NavSplit"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn needs_animation_frame(&self) -> bool {
         self.animating
@@ -784,9 +841,7 @@ impl Widget for NavSplit {
 
     fn needs_idle_sync(&self) -> bool {
         // While animating, keep the host pumping frames.
-        self.animating
-            || self.sidebar.needs_idle_sync()
-            || self.content.needs_idle_sync()
+        self.animating || self.sidebar.needs_idle_sync() || self.content.needs_idle_sync()
     }
 }
 
@@ -845,7 +900,10 @@ mod tests {
     fn narrow_is_overlay_and_closed_by_default() {
         let ns = split(600.0, SplitMode::Adaptive);
         assert_eq!(ns.layout_mode(), SplitLayout::Overlay);
-        assert!(!ns.is_sidebar_open(), "overlay sidebar is closed by default");
+        assert!(
+            !ns.is_sidebar_open(),
+            "overlay sidebar is closed by default"
+        );
         // Content spans full width when the flap is closed.
         assert!(
             (ns.content_panel_rect().width() - ns.get_rect().width()).abs() < 1.0,
@@ -860,7 +918,10 @@ mod tests {
         ns.snap_open(true); // settle the animation deterministically
         ns.recompute_rects();
         assert!(ns.is_sidebar_open());
-        assert!(ns.scrim_rect.width() > 0.0, "open overlay flap shows a scrim");
+        assert!(
+            ns.scrim_rect.width() > 0.0,
+            "open overlay flap shows a scrim"
+        );
         // The sidebar slides fully on-screen at reveal 1.
         assert!(
             (ns.sidebar_rect().x0 - ns.get_rect().x0).abs() < 1.0,
@@ -981,7 +1042,14 @@ mod tests {
         let presence = PresenceCtx::default();
         let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+        ns.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &perms,
+        );
         let fills = scene
             .encoding()
             .draw_tags
@@ -998,7 +1066,14 @@ mod tests {
         let presence = PresenceCtx::default();
         let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+        ns.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &perms,
+        );
     }
 
     /// The overlay flap must *slide* — advance its eased reveal across
@@ -1013,7 +1088,11 @@ mod tests {
         // target flips to 1 while the current reveal is 0, so a correct
         // slide must traverse the gap across frames.
         ns.snap_open(false);
-        assert_eq!(ns.flap().reveal(), 0.0, "snap gives a deterministic closed start");
+        assert_eq!(
+            ns.flap().reveal(),
+            0.0,
+            "snap gives a deterministic closed start"
+        );
         ns.open_sidebar();
         assert!(ns.is_sidebar_open());
 
@@ -1099,8 +1178,9 @@ mod tests {
     fn esc_event() -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Escape);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1215,7 +1295,10 @@ mod tests {
         let builds = Rc::new(Cell::new(0usize));
         let mut ns = NavSplit::new(
             Box::new(Text::new("sidebar")),
-            Box::new(Spy { builds: builds.clone(), rect: Rect::ZERO }),
+            Box::new(Spy {
+                builds: builds.clone(),
+                rect: Rect::ZERO,
+            }),
         )
         .with_mode(SplitMode::AlwaysDocked);
 

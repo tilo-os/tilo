@@ -87,7 +87,10 @@ impl GstPlayback {
         playbin
             .set_state(gst::State::Playing)
             .map_err(|e| format!("set playing: {e}"))?;
-        Ok(Self { pipeline: playbin, appsink })
+        Ok(Self {
+            pipeline: playbin,
+            appsink,
+        })
     }
 
     /// Pull the next decoded frame, waiting up to `timeout`.
@@ -150,7 +153,10 @@ impl GstPlayback {
         pipeline
             .set_state(gst::State::Playing)
             .map_err(|e| format!("set playing: {e}"))?;
-        Ok(Self { pipeline: pipeline.upcast(), appsink })
+        Ok(Self {
+            pipeline: pipeline.upcast(),
+            appsink,
+        })
     }
 }
 
@@ -190,7 +196,11 @@ fn frame_from_sample(sample: &gst::Sample) -> Result<Frame, String> {
 
 /// Decode up to `max_frames` frames from `uri`, giving up after `overall`
 /// wall-time. Used by the `--probe-gst` proof path.
-pub fn decode_frames(uri: &str, max_frames: usize, overall: Duration) -> Result<Vec<Frame>, String> {
+pub fn decode_frames(
+    uri: &str,
+    max_frames: usize,
+    overall: Duration,
+) -> Result<Vec<Frame>, String> {
     let play = GstPlayback::open(uri)?;
     let deadline = std::time::Instant::now() + overall;
     let mut out = Vec::new();

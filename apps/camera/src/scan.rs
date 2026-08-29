@@ -8,7 +8,7 @@
 //!   four corner points. The scanner UI draws its bounding box from these
 //!   corners — they come from an actual decode, not a hand-placed overlay.
 
-use crate::model::{classify, ScannedCode};
+use crate::model::{ScannedCode, classify};
 
 /// A square QR module matrix. `modules[y * size + x]` is `true` for a dark
 /// module.
@@ -30,7 +30,10 @@ pub fn encode(payload: &str) -> Option<QrMatrix> {
     let code = qrcode::QrCode::new(payload.as_bytes()).ok()?;
     let size = code.width();
     let colors = code.to_colors();
-    let modules = colors.into_iter().map(|c| c == qrcode::Color::Dark).collect();
+    let modules = colors
+        .into_iter()
+        .map(|c| c == qrcode::Color::Dark)
+        .collect();
     Some(QrMatrix { size, modules })
 }
 

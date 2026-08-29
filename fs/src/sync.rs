@@ -21,7 +21,7 @@ use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
-use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
+use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -53,7 +53,9 @@ async fn write_frame(send: &mut SendStream, data: &[u8]) -> std::io::Result<()> 
 
 async fn read_frame(recv: &mut RecvStream) -> std::io::Result<Vec<u8>> {
     let mut len = [0u8; 4];
-    recv.read_exact(&mut len).await.map_err(std::io::Error::other)?;
+    recv.read_exact(&mut len)
+        .await
+        .map_err(std::io::Error::other)?;
     let n = u32::from_le_bytes(len) as usize;
     if n == 0 {
         return Ok(Vec::new());
@@ -62,7 +64,9 @@ async fn read_frame(recv: &mut RecvStream) -> std::io::Result<Vec<u8>> {
         return Err(std::io::Error::other(format!("sync frame too large: {n}")));
     }
     let mut buf = vec![0u8; n];
-    recv.read_exact(&mut buf).await.map_err(std::io::Error::other)?;
+    recv.read_exact(&mut buf)
+        .await
+        .map_err(std::io::Error::other)?;
     Ok(buf)
 }
 
@@ -146,7 +150,10 @@ pub async fn sync_with_peer(
             write_frame(&mut send, msg.as_deref().unwrap_or(&[])).await?;
             let peer_msg = read_frame(&mut recv).await?;
             if !peer_msg.is_empty() {
-                let _ = namespace.lock().unwrap().sync_receive(&mut state, &peer_msg);
+                let _ = namespace
+                    .lock()
+                    .unwrap()
+                    .sync_receive(&mut state, &peer_msg);
             }
             if msg.is_none() && peer_msg.is_empty() {
                 break;
@@ -222,7 +229,9 @@ impl ProtocolHandler for SyncProtocol {
         // can't leak an accept task or connection forever.
         let exchange = async {
             let mut mode = [0u8; 1];
-            recv.read_exact(&mut mode).await.map_err(AcceptError::from_err)?;
+            recv.read_exact(&mut mode)
+                .await
+                .map_err(AcceptError::from_err)?;
             match mode[0] {
                 MODE_FULL => {
                     let _ = recv.read_to_end(64).await;
@@ -234,7 +243,8 @@ impl ProtocolHandler for SyncProtocol {
                     // Responder: read-then-write each round (mirrors the initiator).
                     let mut state = automerge::sync::State::new();
                     for _ in 0..200 {
-                        let peer_msg = read_frame(&mut recv).await.map_err(AcceptError::from_err)?;
+                        let peer_msg =
+                            read_frame(&mut recv).await.map_err(AcceptError::from_err)?;
                         if !peer_msg.is_empty() {
                             let _ = self
                                 .namespace
@@ -298,8 +308,8 @@ fn admit_blob_caller(
 /// path where the write-side capability model is enforced.
 fn blob_guard(policy: PeerPolicy) -> Option<iroh_blobs::provider::events::EventSender> {
     use iroh_blobs::provider::events::{
-        AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage, RequestMode,
-        ThrottleMode,
+        AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage,
+        RequestMode, ThrottleMode,
     };
 
     if policy.is_none() {
@@ -325,12 +335,12 @@ fn blob_guard(policy: PeerPolicy) -> Option<iroh_blobs::provider::events::EventS
         //
         // Re-asked per request against the live handle, so a revocation does
         // not wait for the connection to end.
-        let caller_may_read_anything =
-            |callers: &std::collections::HashMap<u64, IdentityKey>, conn: u64| {
-                callers
-                    .get(&conn)
-                    .is_some_and(|peer| peer_may_read_anything(&policy, peer))
-            };
+        let caller_may_read_anything = |callers: &std::collections::HashMap<u64, IdentityKey>,
+                                        conn: u64| {
+            callers
+                .get(&conn)
+                .is_some_and(|peer| peer_may_read_anything(&policy, peer))
+        };
         while let Some(msg) = rx.recv().await {
             match msg {
                 ProviderMessage::ClientConnected(msg) => {
@@ -346,21 +356,33 @@ fn blob_guard(policy: PeerPolicy) -> Option<iroh_blobs::provider::events::EventS
                 ProviderMessage::GetRequestReceived(msg) => {
                     let ok = caller_may_read_anything(&callers, msg.inner.connection_id);
                     msg.tx
-                        .send(if ok { Ok(()) } else { Err(AbortReason::Permission) })
+                        .send(if ok {
+                            Ok(())
+                        } else {
+                            Err(AbortReason::Permission)
+                        })
                         .await
                         .ok();
                 }
                 ProviderMessage::GetManyRequestReceived(msg) => {
                     let ok = caller_may_read_anything(&callers, msg.inner.connection_id);
                     msg.tx
-                        .send(if ok { Ok(()) } else { Err(AbortReason::Permission) })
+                        .send(if ok {
+                            Ok(())
+                        } else {
+                            Err(AbortReason::Permission)
+                        })
                         .await
                         .ok();
                 }
                 ProviderMessage::ObserveRequestReceived(msg) => {
                     let ok = caller_may_read_anything(&callers, msg.inner.connection_id);
                     msg.tx
-                        .send(if ok { Ok(()) } else { Err(AbortReason::Permission) })
+                        .send(if ok {
+                            Ok(())
+                        } else {
+                            Err(AbortReason::Permission)
+                        })
                         .await
                         .ok();
                 }
@@ -424,8 +446,17 @@ impl Workspace {
             node: endpoint.addr(),
             workspace: topic,
         };
-        let ws =
-            Self::start(endpoint, lookup, store, hydrator, namespace, policy, topic, vec![]).await?;
+        let ws = Self::start(
+            endpoint,
+            lookup,
+            store,
+            hydrator,
+            namespace,
+            policy,
+            topic,
+            vec![],
+        )
+        .await?;
         Ok((ws, ticket))
     }
 
@@ -676,11 +707,20 @@ mod tests {
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
-        ns_a.lock().unwrap().create_dir(ROOT_INO, "shared", 1).unwrap();
-        let (ws_a, ticket) =
-            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone(), None)
-                .await
-                .unwrap();
+        ns_a.lock()
+            .unwrap()
+            .create_dir(ROOT_INO, "shared", 1)
+            .unwrap();
+        let (ws_a, ticket) = Workspace::host(
+            ep_a.clone(),
+            look_a,
+            store_a.clone(),
+            hyd_a.clone(),
+            ns_a.clone(),
+            None,
+        )
+        .await
+        .unwrap();
 
         // --- joiner B: bootstrap the doc, then join ---
         let (ep_b, look_b) = bind_ephemeral_endpoint().await.unwrap();
@@ -745,10 +785,16 @@ mod tests {
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
-        let (ws_a, ticket) =
-            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone(), None)
-                .await
-                .unwrap();
+        let (ws_a, ticket) = Workspace::host(
+            ep_a.clone(),
+            look_a,
+            store_a.clone(),
+            hyd_a.clone(),
+            ns_a.clone(),
+            None,
+        )
+        .await
+        .unwrap();
 
         // joiner B
         let (ep_b, look_b) = bind_ephemeral_endpoint().await.unwrap();
@@ -793,7 +839,10 @@ mod tests {
             let attr = n.lookup(ROOT_INO, "doc.txt").unwrap();
             n.hash_for(attr.ino.0).unwrap()
         };
-        assert!(!store_b.has(bhash).await, "precondition: B lacks the content");
+        assert!(
+            !store_b.has(bhash).await,
+            "precondition: B lacks the content"
+        );
         let got = hyd_b
             .read(bhash, 0, content.len() as u64)
             .await
@@ -860,7 +909,10 @@ mod tests {
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
-        ns_a.lock().unwrap().create_dir(ROOT_INO, "secret-plans", 1).unwrap();
+        ns_a.lock()
+            .unwrap()
+            .create_dir(ROOT_INO, "secret-plans", 1)
+            .unwrap();
 
         // The workspace grants somebody — just not B.
         let someone_else = identity_of(iroh::SecretKey::generate().public());
@@ -939,7 +991,10 @@ mod tests {
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
-        ns_a.lock().unwrap().create_dir(ROOT_INO, "shared", 1).unwrap();
+        ns_a.lock()
+            .unwrap()
+            .create_dir(ROOT_INO, "shared", 1)
+            .unwrap();
         let content = b"a shared collaborative document body";
         let hash = store_a.write_content(content).await.unwrap().unwrap();
 

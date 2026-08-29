@@ -8,7 +8,9 @@
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use vello::Scene;
-use vello::kurbo::{Affine, Arc, BezPath, Cap, Circle, Line, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{
+    Affine, Arc, BezPath, Cap, Circle, Line, Point, Rect, RoundedRect, Stroke, Vec2,
+};
 use vello::peniko::{Color, Fill};
 
 pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
@@ -20,7 +22,14 @@ pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: 
     scene.fill(Fill::NonZero, t, color, None, &shape);
 }
 
-pub fn stroke_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color, width: f64) {
+pub fn stroke_rrect(
+    scene: &mut Scene,
+    t: Affine,
+    rect: Rect,
+    radius: f64,
+    color: Color,
+    width: f64,
+) {
     let shape = RoundedRect::from_rect(rect, radius);
     scene.stroke(&Stroke::new(width), t, color, None, &shape);
 }
@@ -32,7 +41,13 @@ pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color, 
 }
 
 pub fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color, width: f64) {
-    scene.stroke(&Stroke::new(width), t, color, None, &Line::new((x0, y), (x1, y)));
+    scene.stroke(
+        &Stroke::new(width),
+        t,
+        color,
+        None,
+        &Line::new((x0, y), (x1, y)),
+    );
 }
 
 pub fn dot(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color) {
@@ -74,7 +89,15 @@ pub fn text_bold(
     x: f64,
     y: f64,
 ) {
-    tr.draw_text_weighted(scene, s, size, color, t * Affine::translate((x, y)), None, TextWeight::Bold);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        None,
+        TextWeight::Bold,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -90,7 +113,14 @@ pub fn text_right(
     y: f64,
 ) {
     let (w, _) = tr.measure(s, size, None);
-    tr.draw_text(scene, s, size, color, t * Affine::translate((x_right - w as f64, y)), None);
+    tr.draw_text(
+        scene,
+        s,
+        size,
+        color,
+        t * Affine::translate((x_right - w as f64, y)),
+        None,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -150,7 +180,14 @@ pub fn pill(
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
     fill_rrect(scene, t, rect, h / 2.0, bg);
     let ty = rect.y0 + (h - size as f64) / 2.0;
-    tr.draw_text(scene, label, size, fg, t * Affine::translate((x + pad, ty)), None);
+    tr.draw_text(
+        scene,
+        label,
+        size,
+        fg,
+        t * Affine::translate((x + pad, ty)),
+        None,
+    );
     w
 }
 
@@ -175,7 +212,14 @@ pub fn tag_pill(
     fill_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.18));
     stroke_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.55), 1.0);
     let ty = rect.y0 + (h - size as f64) / 2.0;
-    tr.draw_text(scene, label, size, accent, t * Affine::translate((x + pad, ty)), None);
+    tr.draw_text(
+        scene,
+        label,
+        size,
+        accent,
+        t * Affine::translate((x + pad, ty)),
+        None,
+    );
     w
 }
 
@@ -204,18 +248,37 @@ pub fn ring(
     fill: Color,
     track: Color,
 ) {
-    scene.stroke(&Stroke::new(thickness), t, track, None, &Circle::new(center, radius));
+    scene.stroke(
+        &Stroke::new(thickness),
+        t,
+        track,
+        None,
+        &Circle::new(center, radius),
+    );
     let frac = frac.clamp(0.0, 1.0);
     if frac > 0.001 {
         let start = -std::f64::consts::FRAC_PI_2;
         let sweep = std::f64::consts::TAU * frac;
         let arc = Arc::new(center, Vec2::new(radius, radius), start, sweep, 0.0);
-        scene.stroke(&Stroke::new(thickness).with_caps(Cap::Round), t, fill, None, &arc);
+        scene.stroke(
+            &Stroke::new(thickness).with_caps(Cap::Round),
+            t,
+            fill,
+            None,
+            &arc,
+        );
     }
 }
 
 /// Stroke an arbitrary poly-line path (used for the small vector icons).
-pub fn poly(scene: &mut Scene, t: Affine, pts: &[(f64, f64)], color: Color, width: f64, closed: bool) {
+pub fn poly(
+    scene: &mut Scene,
+    t: Affine,
+    pts: &[(f64, f64)],
+    color: Color,
+    width: f64,
+    closed: bool,
+) {
     if pts.len() < 2 {
         return;
     }
@@ -227,5 +290,11 @@ pub fn poly(scene: &mut Scene, t: Affine, pts: &[(f64, f64)], color: Color, widt
     if closed {
         p.close_path();
     }
-    scene.stroke(&Stroke::new(width).with_caps(Cap::Round), t, color, None, &p);
+    scene.stroke(
+        &Stroke::new(width).with_caps(Cap::Round),
+        t,
+        color,
+        None,
+        &p,
+    );
 }

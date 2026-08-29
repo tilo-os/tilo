@@ -259,7 +259,10 @@ impl Widget for ModalBody {
     }
 
     fn is_focusable(&self) -> bool {
-        self.input.as_ref().map(|i| i.is_focusable()).unwrap_or(false)
+        self.input
+            .as_ref()
+            .map(|i| i.is_focusable())
+            .unwrap_or(false)
     }
 
     fn set_focus(&mut self, focused: bool) {

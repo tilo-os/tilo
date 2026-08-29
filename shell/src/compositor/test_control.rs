@@ -593,16 +593,14 @@ pub fn dispatch_command<S: ControlState>(
             },
             Vec::new(),
         ),
-        Command::StateDump => {
-            (
-                Response::State {
-                    workspace_tree: state.workspace_tree_json(),
-                    chrome: state.chrome_state_json(),
-                    peers: state.peers_json(),
-                },
-                Vec::new(),
-            )
-        }
+        Command::StateDump => (
+            Response::State {
+                workspace_tree: state.workspace_tree_json(),
+                chrome: state.chrome_state_json(),
+                peers: state.peers_json(),
+            },
+            Vec::new(),
+        ),
         Command::Grant {
             subject,
             scope,
@@ -742,7 +740,9 @@ pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope
                 app: app.to_string(),
                 action: action.to_string(),
             }),
-            None => Err(format!("action scope must be action:<app>/<action>, got `{s}`")),
+            None => Err(format!(
+                "action scope must be action:<app>/<action>, got `{s}`"
+            )),
         },
         _ => Err(format!(
             "scope must be workspace, room, app:<id>, fs:<path>, device:<id> \
@@ -1584,20 +1584,23 @@ mod tests {
 
     #[test]
     fn a_nullary_invocation_needs_no_args_key() {
-        let cmd = parse_command(r#"{"op":"actions_invoke","provider":"shell.actions","id":"settings.open"}"#)
-            .expect("an invocation without `args` must still parse");
+        let cmd = parse_command(
+            r#"{"op":"actions_invoke","provider":"shell.actions","id":"settings.open"}"#,
+        )
+        .expect("an invocation without `args` must still parse");
         let (resp, actions) = dispatch_command(&cmd, &ActionState);
         assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
-        assert_eq!(actions.len(), 1, "the nullary path still plans one invocation");
+        assert_eq!(
+            actions.len(),
+            1,
+            "the nullary path still plans one invocation"
+        );
     }
 
     #[test]
     fn arguments_bind_and_reach_the_planned_invocation() {
         let (resp, actions) = dispatch_command(
-            &invoke_with(
-                "text.insert",
-                serde_json::json!({"text": "hello", "at": 3}),
-            ),
+            &invoke_with("text.insert", serde_json::json!({"text": "hello", "at": 3})),
             &ActionState,
         );
         assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
@@ -1611,8 +1614,10 @@ mod tests {
     /// The refusal code matters: `unknown_action` would send the caller looking for an address that's actually fine — the two mistakes are corrected differently.
     #[test]
     fn a_missing_required_argument_is_refused_under_its_own_code() {
-        let (resp, actions) =
-            dispatch_command(&invoke_with("text.insert", serde_json::json!({})), &ActionState);
+        let (resp, actions) = dispatch_command(
+            &invoke_with("text.insert", serde_json::json!({})),
+            &ActionState,
+        );
         assert!(
             actions.is_empty(),
             "a refused invocation must plan nothing; got {actions:?}"
@@ -1639,7 +1644,10 @@ mod tests {
             panic!("expected Response::Err, got {resp:?}");
         };
         assert_eq!(code, "invalid_arguments");
-        assert!(message.contains("text") && message.contains("integer"), "{message}");
+        assert!(
+            message.contains("text") && message.contains("integer"),
+            "{message}"
+        );
     }
 
     /// Silently dropping it is worst: the caller believes it asked for something, gets `ok`, and the difference is invisible without eyes on the screen.

@@ -1012,13 +1012,7 @@ impl ShellNetwork {
                     ts,
                 } = msg
                 {
-                    self.handle_presence_message(
-                        peer_hash,
-                        user.clone(),
-                        key.clone(),
-                        point,
-                        ts,
-                    );
+                    self.handle_presence_message(peer_hash, user.clone(), key.clone(), point, ts);
                     continue;
                 }
                 // Opaque app-level Automerge blobs, not shell-tree
@@ -1184,8 +1178,6 @@ impl Drop for ShellNetwork {
         }
     }
 }
-
-
 
 /// Test-only constructor that wires `ShellNetwork`'s command sender to
 /// a caller-owned receiver, bypassing the libp2p actor. `pub(crate)` so
@@ -1450,7 +1442,10 @@ mod tests {
         let joined = net
             .accept_invite(local, &token)
             .expect("a well-formed invite is accepted");
-        assert_eq!(joined, host_room, "the guest joins the room it was invited to");
+        assert_eq!(
+            joined, host_room,
+            "the guest joins the room it was invited to"
+        );
         assert_eq!(
             tree.read().room_of(local),
             Some(host_room),
@@ -1648,7 +1643,10 @@ mod tests {
                 vec![0xAA],
             );
         }
-        assert!(cmd_rx.try_recv().is_ok(), "the arrival releases one document");
+        assert!(
+            cmd_rx.try_recv().is_ok(),
+            "the arrival releases one document"
+        );
         assert!(
             cmd_rx.try_recv().is_err(),
             "the commits after it must not each broadcast the document again",

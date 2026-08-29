@@ -271,6 +271,9 @@ mod tests {
             LogsDoc::search_set(&mut doc, &ROOT, &long);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-storing the same search grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-storing the same search grew the document {a} -> {b}"
+        );
     }
 }

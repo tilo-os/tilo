@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
-use ed25519_dalek::SigningKey as DalekSigningKey;
 use collab_types::{ChannelId, Ed25519PublicKey, Role};
+use ed25519_dalek::SigningKey as DalekSigningKey;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -30,9 +30,7 @@ use crate::text_render::TextRenderer;
 use crate::text_selection::clipboard_copy;
 use crate::theme::Theme;
 use crate::widget::Widget;
-use crate::widget::identity_flow::{
-    InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite,
-};
+use crate::widget::identity_flow::{InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite};
 use crate::widget::qr::QrWidget;
 
 /// Screen 5: invite-mint form.
@@ -125,9 +123,7 @@ impl InviteMintScreen {
         now: SystemTime,
     ) -> Result<&InviteEnvelope, crate::widget::identity_flow::IdentityFlowError> {
         let channel = self.channel.ok_or_else(|| {
-            crate::widget::identity_flow::IdentityFlowError::DecodeFailed(
-                "no channel set".into(),
-            )
+            crate::widget::identity_flow::IdentityFlowError::DecodeFailed("no channel set".into())
         })?;
         let expires_at = self.expiry.resolve(now);
         let env = mint_invite(
@@ -268,7 +264,8 @@ impl Widget for InviteMintScreen {
         self.expiry_rects.clear();
         for i in 0..4 {
             let x = card_x + pad + i as f64 * seg_w;
-            self.expiry_rects.push(Rect::new(x, seg_y, x + seg_w, seg_y + seg_h));
+            self.expiry_rects
+                .push(Rect::new(x, seg_y, x + seg_w, seg_y + seg_h));
         }
         self.generate_rect = Rect::new(
             card_x + card_w - pad - 160.0,
@@ -366,7 +363,13 @@ impl Widget for InviteMintScreen {
             } else {
                 theme.tokens.colors.text_primary
             };
-            scene.fill(Fill::NonZero, transform, bg, None, &RoundedRect::from_rect(*r, 6.0));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                bg,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -438,8 +441,7 @@ impl Widget for InviteMintScreen {
             "Copy URL",
             13.0,
             theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((self.copy_rect.x0 + 16.0, self.copy_rect.y0 + 12.0)),
+            transform * Affine::translate((self.copy_rect.x0 + 16.0, self.copy_rect.y0 + 12.0)),
             None,
         );
         scene.fill(
@@ -461,8 +463,7 @@ impl Widget for InviteMintScreen {
             "Revoke",
             13.0,
             Color::from_rgb8(220, 80, 80),
-            transform
-                * Affine::translate((self.revoke_rect.x0 + 16.0, self.revoke_rect.y0 + 12.0)),
+            transform * Affine::translate((self.revoke_rect.x0 + 16.0, self.revoke_rect.y0 + 12.0)),
             None,
         );
         if let Some(msg) = &self.clipboard_msg {
@@ -546,7 +547,9 @@ mod tests {
     fn mint_now_errors_without_channel() {
         let mut s = InviteMintScreen::new();
         let (sk, pk) = generate_keypair();
-        let err = s.mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now()).unwrap_err();
+        let err = s
+            .mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now())
+            .unwrap_err();
         assert!(matches!(
             err,
             crate::widget::identity_flow::IdentityFlowError::DecodeFailed(_)
@@ -558,7 +561,8 @@ mod tests {
         let mut s = InviteMintScreen::new();
         s.set_channel(ChannelId::new(), "engineering");
         let (sk, pk) = generate_keypair();
-        s.mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now()).unwrap();
+        s.mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now())
+            .unwrap();
         assert!(s.last_envelope().is_some());
         s.revoke();
         assert!(s.last_envelope().is_none());

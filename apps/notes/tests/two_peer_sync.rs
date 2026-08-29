@@ -8,10 +8,10 @@
 //! checks that the notes app wires them together.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ROOT};
+use automerge::{AutoCommit, ROOT, ReadDoc};
 
-use notes::doc::NotesDoc;
 use notes::NotesApp;
+use notes::doc::NotesDoc;
 use ui::Widget;
 use ui::collaboration::PresencePayload;
 use ui::presence::PresenceKey;
@@ -32,11 +32,19 @@ fn sync_seeds_welcome_page_into_doc() {
     app.sync(&mut doc, &ROOT);
 
     let pages = NotesDoc::list_pages(&doc);
-    assert!(!pages.is_empty(), "sync seeds the welcome page tree into the doc");
+    assert!(
+        !pages.is_empty(),
+        "sync seeds the welcome page tree into the doc"
+    );
 
-    let sel = app.selected_for_test().expect("a page is selected after sync");
+    let sel = app
+        .selected_for_test()
+        .expect("a page is selected after sync");
     let list = NotesDoc::page_blocks_list(&mut doc, sel).unwrap();
-    assert!(doc.length(&list) > 0, "the selected page is seeded with blocks");
+    assert!(
+        doc.length(&list) > 0,
+        "the selected page is seeded with blocks"
+    );
 }
 
 #[test]

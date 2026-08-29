@@ -58,7 +58,10 @@ pub fn month_name(month: u32) -> &'static str {
         "November",
         "December",
     ];
-    NAMES.get((month.max(1) - 1) as usize).copied().unwrap_or("")
+    NAMES
+        .get((month.max(1) - 1) as usize)
+        .copied()
+        .unwrap_or("")
 }
 
 /// `(year, month)` one month earlier, wrapping across the year boundary.

@@ -40,7 +40,13 @@ pub fn stroke_rrect(
 }
 
 pub fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color, width: f64) {
-    scene.stroke(&Stroke::new(width), t, color, None, &Line::new(Point::new(x0, y), Point::new(x1, y)));
+    scene.stroke(
+        &Stroke::new(width),
+        t,
+        color,
+        None,
+        &Line::new(Point::new(x0, y), Point::new(x1, y)),
+    );
 }
 
 pub fn dot(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color) {
@@ -59,7 +65,14 @@ pub fn label(
     y: f64,
     max_w: f64,
 ) {
-    tr.draw_text(scene, text, size, color, t * Affine::translate((x, y)), Some(max_w as f32 + 1.0));
+    tr.draw_text(
+        scene,
+        text,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        Some(max_w as f32 + 1.0),
+    );
 }
 
 /// Draw `text` vertically centred within `[y0, y0+h]`, left edge at `x`.

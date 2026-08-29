@@ -117,7 +117,10 @@ mod tests {
         let _ = hand_off();
         begin(vec![PathBuf::from("/b")]);
         assert!(!is_handed_off());
-        assert_eq!(unclaimed().map(|d| d.paths), Some(vec![PathBuf::from("/b")]));
+        assert_eq!(
+            unclaimed().map(|d| d.paths),
+            Some(vec![PathBuf::from("/b")])
+        );
         end();
     }
 }

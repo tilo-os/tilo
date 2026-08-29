@@ -20,11 +20,11 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
-use crate::color_compat::ColorCompat;
 use crate::widget::identity_flow::{LineEditState, RecoveryChallenge, ScreenOutcome};
 
 /// Screen 2b: type-3-words verification.
@@ -57,7 +57,11 @@ impl RecoveryVerifyScreen {
             rect: Rect::ZERO,
             mnemonic: String::new(),
             challenge: None,
-            editors: [LineEditState::new(), LineEditState::new(), LineEditState::new()],
+            editors: [
+                LineEditState::new(),
+                LineEditState::new(),
+                LineEditState::new(),
+            ],
             focused_slot: None,
             last_attempt_failed: false,
             slot_rects: [Rect::ZERO; 3],
@@ -71,7 +75,11 @@ impl RecoveryVerifyScreen {
     pub fn seed_mnemonic(&mut self, mnemonic: String) {
         self.mnemonic = mnemonic;
         self.challenge = RecoveryChallenge::from_mnemonic(&self.mnemonic).ok();
-        self.editors = [LineEditState::new(), LineEditState::new(), LineEditState::new()];
+        self.editors = [
+            LineEditState::new(),
+            LineEditState::new(),
+            LineEditState::new(),
+        ];
         self.last_attempt_failed = false;
     }
 
@@ -82,14 +90,22 @@ impl RecoveryVerifyScreen {
     /// Pick a fresh 3-word challenge.
     pub fn reseed(&mut self) {
         self.challenge = RecoveryChallenge::from_mnemonic(&self.mnemonic).ok();
-        self.editors = [LineEditState::new(), LineEditState::new(), LineEditState::new()];
+        self.editors = [
+            LineEditState::new(),
+            LineEditState::new(),
+            LineEditState::new(),
+        ];
         self.last_attempt_failed = false;
     }
 
     /// Inject a deterministic challenge, for reproducible test ordering.
     pub fn seed_challenge(&mut self, positions: [usize; 3]) {
         self.challenge = RecoveryChallenge::at_positions(&self.mnemonic, positions).ok();
-        self.editors = [LineEditState::new(), LineEditState::new(), LineEditState::new()];
+        self.editors = [
+            LineEditState::new(),
+            LineEditState::new(),
+            LineEditState::new(),
+        ];
         self.last_attempt_failed = false;
     }
 
@@ -455,10 +471,8 @@ impl Widget for RecoveryVerifyScreen {
                     &RoundedRect::from_rect(r, 6.0),
                 );
                 if let Some((lo, hi)) = self.editors[slot_i].selection_range() {
-                    let (pre_w, _) =
-                        text_renderer.measure(&answer_text[..lo], 14.0, None);
-                    let (mid_w, _) =
-                        text_renderer.measure(&answer_text[lo..hi], 14.0, None);
+                    let (pre_w, _) = text_renderer.measure(&answer_text[..lo], 14.0, None);
+                    let (mid_w, _) = text_renderer.measure(&answer_text[lo..hi], 14.0, None);
                     let sel_color = theme.accent_primary.with_alpha_factor(0.30);
                     scene.fill(
                         Fill::NonZero,
@@ -483,16 +497,13 @@ impl Widget for RecoveryVerifyScreen {
                 );
                 // Caret if focused. Painted over the selection.
                 if focused {
-                    let cursor_byte = self.editors[slot_i]
-                        .cursor
-                        .min(answer_text.len());
+                    let cursor_byte = self.editors[slot_i].cursor.min(answer_text.len());
                     let prefix = &answer_text[..cursor_byte];
                     let (prefix_w, _) = text_renderer.measure(prefix, 14.0, None);
                     let caret_x = r.x0 + 8.0 + prefix_w as f64;
                     let caret_top = r.y0 + 5.0;
                     let caret_bottom = r.y0 + r.height() - 5.0;
-                    let caret_rect =
-                        Rect::new(caret_x, caret_top, caret_x + 1.5, caret_bottom);
+                    let caret_rect = Rect::new(caret_x, caret_top, caret_x + 1.5, caret_bottom);
                     scene.fill(
                         Fill::NonZero,
                         transform,
@@ -582,8 +593,7 @@ impl Widget for RecoveryVerifyScreen {
                 "One or more words didn't match. Try again or pick new words.",
                 12.0,
                 Color::from_rgb8(220, 80, 80),
-                transform
-                    * Affine::translate((card.x0 + pad, self.continue_rect.y0 - 24.0)),
+                transform * Affine::translate((card.x0 + pad, self.continue_rect.y0 - 24.0)),
                 None,
             );
         }

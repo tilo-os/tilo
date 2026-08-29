@@ -32,7 +32,9 @@ pub struct CitySearchProvider {
 impl CitySearchProvider {
     /// Snapshot the current saved cities into a provider.
     pub fn new(cities: &[SavedLocation]) -> Self {
-        Self { cities: cities.to_vec() }
+        Self {
+            cities: cities.to_vec(),
+        }
     }
 
     /// The `action_id` for a saved city — what a chosen row hands back.
@@ -43,7 +45,9 @@ impl CitySearchProvider {
     /// Resolve an `action_id` produced by this provider back into a
     /// [`LocationId`]. Returns `None` for an id this provider did not emit.
     pub fn parse_action_id(action_id: &str) -> Option<LocationId> {
-        action_id.strip_prefix(ACTION_PREFIX).and_then(|rest| rest.parse::<LocationId>().ok())
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .and_then(|rest| rest.parse::<LocationId>().ok())
     }
 }
 
@@ -88,7 +92,10 @@ mod tests {
         let cities = saved();
         let provider = CitySearchProvider::new(&cities);
         let hits = provider.search("tokyo");
-        assert!(hits.iter().any(|r| r.title == "Tokyo"), "the provider surfaces the saved city");
+        assert!(
+            hits.iter().any(|r| r.title == "Tokyo"),
+            "the provider surfaces the saved city"
+        );
         assert!(hits.iter().all(|r| r.kind == CITY_KIND));
     }
 
@@ -110,7 +117,10 @@ mod tests {
             .into_iter()
             .find(|r| r.action_id == CitySearchProvider::action_id(some.id))
             .expect("the city is findable through the registry");
-        assert_eq!(CitySearchProvider::parse_action_id(&hit.action_id), Some(some.id));
+        assert_eq!(
+            CitySearchProvider::parse_action_id(&hit.action_id),
+            Some(some.id)
+        );
     }
 
     #[test]
@@ -143,6 +153,10 @@ mod tests {
         assert_ne!(app.selected_city(), Some(id), "not already selected");
 
         app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(app.selected_city(), Some(id), "activation opened the chosen city");
+        assert_eq!(
+            app.selected_city(),
+            Some(id),
+            "activation opened the chosen city"
+        );
     }
 }

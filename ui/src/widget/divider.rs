@@ -37,11 +37,21 @@ pub struct Divider {
 
 impl Divider {
     pub fn horizontal() -> Self {
-        Self { axis: DividerAxis::Horizontal, thickness: 1.0, color: None, rect: Rect::ZERO }
+        Self {
+            axis: DividerAxis::Horizontal,
+            thickness: 1.0,
+            color: None,
+            rect: Rect::ZERO,
+        }
     }
 
     pub fn vertical() -> Self {
-        Self { axis: DividerAxis::Vertical, thickness: 1.0, color: None, rect: Rect::ZERO }
+        Self {
+            axis: DividerAxis::Vertical,
+            thickness: 1.0,
+            color: None,
+            rect: Rect::ZERO,
+        }
     }
 
     /// Logical pixels.
@@ -79,7 +89,10 @@ impl Widget for Divider {
             .new_leaf(Style {
                 // Never shrink the 1px cross-axis away under tight budgets.
                 flex_shrink: 0.0,
-                size: taffy::Size { width: w, height: h },
+                size: taffy::Size {
+                    width: w,
+                    height: h,
+                },
                 ..Default::default()
             })
             .unwrap();
@@ -109,7 +122,13 @@ impl Widget for Divider {
             return;
         }
         let color = self.color.unwrap_or(theme.border_standard);
-        scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &self.rect);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            color,
+            None,
+            &self.rect,
+        );
     }
 
     fn handle_event(
@@ -126,9 +145,13 @@ impl Widget for Divider {
     ) {
     }
 
-    fn name(&self) -> &str { "Divider" }
+    fn name(&self) -> &str {
+        "Divider"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 #[cfg(test)]
@@ -154,7 +177,9 @@ mod tests {
                 &[child],
             )
             .unwrap();
-        taffy.compute_layout(parent, taffy::Size::max_content()).unwrap();
+        taffy
+            .compute_layout(parent, taffy::Size::max_content())
+            .unwrap();
         d.apply_layout(&taffy, child, Point::ZERO);
         let r = d.get_rect();
         (d, r)
@@ -163,7 +188,11 @@ mod tests {
     #[test]
     fn horizontal_is_one_px_tall_and_fills_width() {
         let (_d, r) = lay_out(Divider::horizontal());
-        assert!((r.height() - 1.0).abs() < 0.5, "1px tall, got {}", r.height());
+        assert!(
+            (r.height() - 1.0).abs() < 0.5,
+            "1px tall, got {}",
+            r.height()
+        );
         assert!(r.width() > 100.0, "fills parent width, got {}", r.width());
     }
 
@@ -171,13 +200,21 @@ mod tests {
     fn vertical_is_one_px_wide_and_fills_height() {
         let (_d, r) = lay_out(Divider::vertical());
         assert!((r.width() - 1.0).abs() < 0.5, "1px wide, got {}", r.width());
-        assert!(r.height() > 100.0, "fills parent height, got {}", r.height());
+        assert!(
+            r.height() > 100.0,
+            "fills parent height, got {}",
+            r.height()
+        );
     }
 
     #[test]
     fn with_thickness_overrides_cross_axis() {
         let (_d, r) = lay_out(Divider::horizontal().with_thickness(3.0));
-        assert!((r.height() - 3.0).abs() < 0.5, "3px tall, got {}", r.height());
+        assert!(
+            (r.height() - 3.0).abs() < 0.5,
+            "3px tall, got {}",
+            r.height()
+        );
     }
 
     #[test]

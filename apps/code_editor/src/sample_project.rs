@@ -217,9 +217,6 @@ pub fn default_open(project: &Project) -> Option<crate::model::NodeId> {
     project
         .nodes
         .values()
-        .find(|n| {
-            n.name == "main.rs"
-                && matches!(n.kind, NodeKind::File { .. })
-        })
+        .find(|n| n.name == "main.rs" && matches!(n.kind, NodeKind::File { .. }))
         .map(|n| n.id)
 }

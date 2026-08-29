@@ -44,8 +44,12 @@ impl Default for ZipLimits {
 /// for a DTD/entity declaration and rejected if found (XXE defence).
 ///
 /// Any breach of a limit is a [`CodecError::Parse`] — the input is never silently truncated.
-pub fn read_zip_parts(bytes: &[u8], limits: &ZipLimits) -> Result<Vec<(String, Vec<u8>)>, CodecError> {
-    let mut ar = ZipArchive::new(Cursor::new(bytes)).map_err(|e| CodecError::Parse(format!("zip open: {e}")))?;
+pub fn read_zip_parts(
+    bytes: &[u8],
+    limits: &ZipLimits,
+) -> Result<Vec<(String, Vec<u8>)>, CodecError> {
+    let mut ar = ZipArchive::new(Cursor::new(bytes))
+        .map_err(|e| CodecError::Parse(format!("zip open: {e}")))?;
     if ar.len() > limits.max_parts {
         return Err(CodecError::Parse(format!(
             "zip has {} entries, over the {} limit (possible zip bomb)",
@@ -56,7 +60,9 @@ pub fn read_zip_parts(bytes: &[u8], limits: &ZipLimits) -> Result<Vec<(String, V
     let mut parts = Vec::with_capacity(ar.len());
     let mut total: u64 = 0;
     for i in 0..ar.len() {
-        let mut f = ar.by_index(i).map_err(|e| CodecError::Parse(format!("zip entry {i}: {e}")))?;
+        let mut f = ar
+            .by_index(i)
+            .map_err(|e| CodecError::Parse(format!("zip entry {i}: {e}")))?;
         let name = f.name().to_string();
         if name.ends_with('/') {
             continue;
@@ -83,7 +89,8 @@ pub fn read_zip_parts(bytes: &[u8], limits: &ZipLimits) -> Result<Vec<(String, V
         let read = (&mut f)
             .take(cap + 1)
             .read_to_end(&mut buf)
-            .map_err(|e| CodecError::Parse(format!("zip read {name}: {e}")))? as u64;
+            .map_err(|e| CodecError::Parse(format!("zip read {name}: {e}")))?
+            as u64;
         if read > cap {
             return Err(CodecError::Parse(format!(
                 "zip part {name} inflates past the {cap}-byte per-part limit (possible zip bomb)"
@@ -154,7 +161,10 @@ mod tests {
 
     #[test]
     fn reads_a_normal_package() {
-        let z = zip_with(&[("a.xml", b"<x/>"), ("b.bin", b"\x00\x01\x02")], CompressionMethod::Deflated);
+        let z = zip_with(
+            &[("a.xml", b"<x/>"), ("b.bin", b"\x00\x01\x02")],
+            CompressionMethod::Deflated,
+        );
         let parts = read_zip_parts(&z, &ZipLimits::default()).unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].0, "a.xml");
@@ -163,12 +173,23 @@ mod tests {
 
     #[test]
     fn rejects_too_many_parts() {
-        let entries: Vec<(String, Vec<u8>)> = (0..20).map(|i| (format!("p{i}.dat"), vec![i as u8])).collect();
-        let refs: Vec<(&str, &[u8])> = entries.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+        let entries: Vec<(String, Vec<u8>)> = (0..20)
+            .map(|i| (format!("p{i}.dat"), vec![i as u8]))
+            .collect();
+        let refs: Vec<(&str, &[u8])> = entries
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.as_slice()))
+            .collect();
         let z = zip_with(&refs, CompressionMethod::Stored);
-        let limits = ZipLimits { max_parts: 8, ..ZipLimits::default() };
+        let limits = ZipLimits {
+            max_parts: 8,
+            ..ZipLimits::default()
+        };
         let err = read_zip_parts(&z, &limits).unwrap_err();
-        assert!(format!("{err}").contains("entries"), "expected entry-count rejection, got {err}");
+        assert!(
+            format!("{err}").contains("entries"),
+            "expected entry-count rejection, got {err}"
+        );
     }
 
     #[test]
@@ -177,10 +198,20 @@ mod tests {
         // in the entry header — the pre-check must reject it without inflating the payload.
         let bomb = vec![0u8; 4 * 1024 * 1024];
         let z = zip_with(&[("content.xml", &bomb)], CompressionMethod::Deflated);
-        assert!(z.len() < 64 * 1024, "the bomb must be tiny on disk: {} bytes", z.len());
-        let limits = ZipLimits { max_part_bytes: 1024 * 1024, ..ZipLimits::default() };
+        assert!(
+            z.len() < 64 * 1024,
+            "the bomb must be tiny on disk: {} bytes",
+            z.len()
+        );
+        let limits = ZipLimits {
+            max_part_bytes: 1024 * 1024,
+            ..ZipLimits::default()
+        };
         let err = read_zip_parts(&z, &limits).unwrap_err();
-        assert!(format!("{err}").contains("per-part limit"), "expected size rejection, got {err}");
+        assert!(
+            format!("{err}").contains("per-part limit"),
+            "expected size rejection, got {err}"
+        );
     }
 
     #[test]
@@ -190,9 +221,15 @@ mod tests {
             &[("a.dat", &part), ("b.dat", &part), ("c.dat", &part)],
             CompressionMethod::Deflated,
         );
-        let limits = ZipLimits { max_total_bytes: 1024 * 1024, ..ZipLimits::default() };
+        let limits = ZipLimits {
+            max_total_bytes: 1024 * 1024,
+            ..ZipLimits::default()
+        };
         let err = read_zip_parts(&z, &limits).unwrap_err();
-        assert!(format!("{err}").contains("total limit"), "expected total rejection, got {err}");
+        assert!(
+            format!("{err}").contains("total limit"),
+            "expected total rejection, got {err}"
+        );
     }
 
     #[test]
@@ -200,13 +237,19 @@ mod tests {
         let evil = br#"<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY a "boom">]><doc>&a;</doc>"#;
         let z = zip_with(&[("content.xml", evil)], CompressionMethod::Deflated);
         let err = read_zip_parts(&z, &ZipLimits::default()).unwrap_err();
-        assert!(format!("{err}").contains("DTD"), "expected DTD rejection, got {err}");
+        assert!(
+            format!("{err}").contains("DTD"),
+            "expected DTD rejection, got {err}"
+        );
     }
 
     #[test]
     fn allows_doctype_bytes_in_binary_part() {
         // The same bytes inside a non-XML part are harmless (never parsed as XML).
-        let z = zip_with(&[("image.png", b"<!DOCTYPE not-xml>")], CompressionMethod::Deflated);
+        let z = zip_with(
+            &[("image.png", b"<!DOCTYPE not-xml>")],
+            CompressionMethod::Deflated,
+        );
         let parts = read_zip_parts(&z, &ZipLimits::default()).unwrap();
         assert_eq!(parts.len(), 1);
     }

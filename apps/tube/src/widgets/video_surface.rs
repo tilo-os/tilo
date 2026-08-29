@@ -22,7 +22,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
-    Blob, BlendMode, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage,
+    BlendMode, Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage,
     ImageFormat as Format,
 };
 
@@ -114,8 +114,7 @@ impl VideoSurface {
         let dh = ih * scale;
         let dx = self.rect.x0 + (rw - dw) * 0.5;
         let dy = self.rect.y0 + (rh - dh) * 0.5;
-        let brush_transform =
-            Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
+        let brush_transform = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
 
         // Clip to the rounded player rect so the oversized (cover) image crops
         // to the silhouette instead of bleeding past the corners.

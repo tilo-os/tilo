@@ -31,9 +31,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{
-    AnnoKind, Annotation, Comment, PtRect, Reply, Signature, Swatch,
-};
+use crate::model::{AnnoKind, Annotation, Comment, PtRect, Reply, Signature, Swatch};
 
 pub struct PdfDoc;
 
@@ -203,7 +201,13 @@ impl PdfDoc {
                     y: Self::get_f64(doc, &m, "y").unwrap_or(0.0),
                 },
             };
-            out.push(Annotation { id, page, kind, color, author });
+            out.push(Annotation {
+                id,
+                page,
+                kind,
+                color,
+                author,
+            });
         }
         out
     }
@@ -391,7 +395,11 @@ impl PdfDoc {
     /// are `x,y` pairs joined by spaces (reusing [`Self::points_to_str`]),
     /// strokes joined by `;`.
     fn strokes_to_str(strokes: &[Vec<(f64, f64)>]) -> String {
-        strokes.iter().map(|s| Self::points_to_str(s)).collect::<Vec<_>>().join(";")
+        strokes
+            .iter()
+            .map(|s| Self::points_to_str(s))
+            .collect::<Vec<_>>()
+            .join(";")
     }
 
     fn strokes_from_str(s: &str) -> Vec<Vec<(f64, f64)>> {
@@ -479,7 +487,9 @@ mod tests {
         Annotation {
             id: Annotation::new_id(),
             page,
-            kind: AnnoKind::Highlight { rect: PtRect::new(10.0, 20.0, 100.0, 14.0) },
+            kind: AnnoKind::Highlight {
+                rect: PtRect::new(10.0, 20.0, 100.0, 14.0),
+            },
             color: Swatch::Yellow,
             author: "Alice".into(),
         }
@@ -508,7 +518,9 @@ mod tests {
         let a = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Ink { points: vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)] },
+            kind: AnnoKind::Ink {
+                points: vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)],
+            },
             color: Swatch::Blue,
             author: "Bob".into(),
         };
@@ -565,7 +577,9 @@ mod tests {
         let a = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Ink { points: vec![(1.0, 2.0), (3.0, 4.0)] },
+            kind: AnnoKind::Ink {
+                points: vec![(1.0, 2.0), (3.0, 4.0)],
+            },
             color: Swatch::Blue,
             author: "Bob".into(),
         };
@@ -589,7 +603,10 @@ mod tests {
             body: "Is this still accurate?".into(),
             created: 5,
             resolved: false,
-            replies: vec![Reply { author: "Bob".into(), body: "Yes, verified.".into() }],
+            replies: vec![Reply {
+                author: "Bob".into(),
+                body: "Yes, verified.".into(),
+            }],
         };
         let cid = c.id.clone();
         PdfDoc::add_comment(&mut doc, &c);
@@ -599,7 +616,14 @@ mod tests {
         assert_eq!(got[0].replies.len(), 1);
         assert_eq!(got[0].replies[0].author, "Bob");
 
-        PdfDoc::add_reply(&mut doc, &cid, &Reply { author: "Carol".into(), body: "Agreed.".into() });
+        PdfDoc::add_reply(
+            &mut doc,
+            &cid,
+            &Reply {
+                author: "Carol".into(),
+                body: "Agreed.".into(),
+            },
+        );
         PdfDoc::set_comment_resolved(&mut doc, &cid, true);
         PdfDoc::set_comment_body(&mut doc, &cid, "Edited: confirmed accurate.");
         let got = PdfDoc::list_comments(&doc);
@@ -663,7 +687,9 @@ mod tests {
             rect: PtRect::new(100.0, 100.0, 200.0, 70.0),
             signer: "Grace".into(),
             date: "2026-08-17".into(),
-            ink: crate::model::SignatureInk::Drawn { strokes: strokes.clone() },
+            ink: crate::model::SignatureInk::Drawn {
+                strokes: strokes.clone(),
+            },
         };
         PdfDoc::add_signature(&mut doc, &s);
         let got = PdfDoc::list_signatures(&doc);
@@ -716,7 +742,11 @@ mod tests {
         PdfDoc::delete_annotation(&mut doc, &aid);
         assert!(PdfDoc::list_annotations(&doc).is_empty());
         let left = PdfDoc::list_comments(&doc);
-        assert_eq!(left.len(), 1, "anchored comment should be deleted with its annotation");
+        assert_eq!(
+            left.len(),
+            1,
+            "anchored comment should be deleted with its annotation"
+        );
         assert_eq!(left[0].body, "free");
     }
 

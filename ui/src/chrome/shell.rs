@@ -113,10 +113,18 @@ pub struct SelectionState {
 
 impl SelectionState {
     pub fn new(active: bool, hover: bool, pressed: bool) -> Self {
-        Self { active, hover, pressed }
+        Self {
+            active,
+            hover,
+            pressed,
+        }
     }
     pub fn active(active: bool) -> Self {
-        Self { active, hover: false, pressed: false }
+        Self {
+            active,
+            hover: false,
+            pressed: false,
+        }
     }
 }
 
@@ -296,11 +304,10 @@ fn vertical(
     vello::peniko::Gradient::new_linear(y(dense), y(thin))
         .with_extend(vello::peniko::Extend::Pad)
         .with_stops(
-            &stops
-                .map(|(offset, gain)| vello::peniko::ColorStop {
-                    offset,
-                    color: scaled(color, gain).into(),
-                })[..],
+            &stops.map(|(offset, gain)| vello::peniko::ColorStop {
+                offset,
+                color: scaled(color, gain).into(),
+            })[..],
         )
 }
 
@@ -385,7 +392,10 @@ pub fn paint_glass_body(
             .with_extend(vello::peniko::Extend::Pad)
             .with_stops(
                 &[
-                    vello::peniko::ColorStop { offset: 0.0, color: glow.into() },
+                    vello::peniko::ColorStop {
+                        offset: 0.0,
+                        color: glow.into(),
+                    },
                     vello::peniko::ColorStop {
                         offset: GLASS_GLOW_SPAN as f32,
                         color: glow.with_alpha_factor(0.0).into(),
@@ -420,9 +430,9 @@ pub fn panel_ground(theme: &Theme) -> Color {
     let declared = colors.surfaces.overlay;
     let grounds = [base, colors.surfaces.window_card];
     let clears = |c: Color| {
-        grounds.iter().all(|g| {
-            (relative_luminance(c) - relative_luminance(*g)).abs() >= PANEL_MIN_DELTA
-        })
+        grounds
+            .iter()
+            .all(|g| (relative_luminance(c) - relative_luminance(*g)).abs() >= PANEL_MIN_DELTA)
     };
     if clears(declared) {
         return declared;
@@ -573,7 +583,10 @@ pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
     let v = value as f64 / 255.0;
     let tone = (strength * 255.0).round().clamp(0.0, 255.0) / 255.0;
     let toned = v * (1.0 - tone) + v * v * tone;
-    let level = (strength * SCRIM_LEVEL_SHARE as f64 * 255.0).round().clamp(0.0, 255.0) / 255.0;
+    let level = (strength * SCRIM_LEVEL_SHARE as f64 * 255.0)
+        .round()
+        .clamp(0.0, 255.0)
+        / 255.0;
     let hue = theme.tokens.colors.surfaces.scrim.to_rgba8();
     // The scrim hue is a near-neutral by construction, so its own relative
     // luminance is the honest stand-in for "the grey it adds".
@@ -734,7 +747,8 @@ mod tests {
             let brightens = theme.tokens.colors.lifts_bright();
             let dense_end_is_top = lit < seated;
             assert_eq!(
-                dense_end_is_top, brightens,
+                dense_end_is_top,
+                brightens,
                 "{}: the film is densest at the {} on a palette whose \
                  surfaces lift {} — that is a pill lit from below",
                 theme.name,
@@ -809,7 +823,10 @@ mod tests {
                 ah.fill.to_rgba8().to_u32(),
                 "{name}: an active control brightened on hover"
             );
-            assert_eq!(a.scale, ah.scale, "{name}: an active control resized on hover");
+            assert_eq!(
+                a.scale, ah.scale,
+                "{name}: an active control resized on hover"
+            );
         }
     }
 
@@ -832,8 +849,13 @@ mod tests {
     fn no_role_resolves_to_an_off_scale_radius() {
         let theme = Theme::dark();
         let radii = &theme.tokens.radii;
-        let on_scale =
-            [0.0, radii.sm as f64, radii.md as f64, radii.lg as f64, radii.xl as f64];
+        let on_scale = [
+            0.0,
+            radii.sm as f64,
+            radii.md as f64,
+            radii.lg as f64,
+            radii.xl as f64,
+        ];
         for role in [
             ChromeRole::Bar,
             ChromeRole::Panel,
@@ -845,7 +867,10 @@ mod tests {
                 on_scale.iter().any(|s| (s - r).abs() < f64::EPSILON),
                 "{role:?} resolved to {r}, which is not on the radius scale"
             );
-            assert!((r - 16.0).abs() > f64::EPSILON, "{role:?} resolved to the absent 16 px step");
+            assert!(
+                (r - 16.0).abs() > f64::EPSILON,
+                "{role:?} resolved to the absent 16 px step"
+            );
         }
     }
 
@@ -871,8 +896,7 @@ mod tests {
             let base = theme.tokens.colors.surfaces.base;
             let ground = panel_ground(&theme);
             let border = panel_border(&theme);
-            let fill_delta =
-                (relative_luminance(ground) - relative_luminance(base)).abs();
+            let fill_delta = (relative_luminance(ground) - relative_luminance(base)).abs();
             // The border is translucent; composite it over the panel
             // ground to judge what the eye actually receives.
             let a = border.components[3];
@@ -883,8 +907,7 @@ mod tests {
                 border.components[2] * a + g[2] * (1.0 - a),
                 1.0,
             ]);
-            let edge_delta =
-                (relative_luminance(edge) - relative_luminance(ground)).abs();
+            let edge_delta = (relative_luminance(edge) - relative_luminance(ground)).abs();
             assert!(
                 fill_delta >= PANEL_MIN_DELTA || edge_delta >= PANEL_MIN_DELTA,
                 "{name}: a panel is indistinguishable from the desktop \
@@ -910,8 +933,16 @@ mod tests {
     /// different amounts of dimming on a light page versus a dark desktop.
     fn lstar(v: u8) -> f64 {
         let s = v as f64 / 255.0;
-        let y = if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) };
-        if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y }
+        let y = if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        };
+        if y > 0.008856 {
+            116.0 * y.cbrt() - 16.0
+        } else {
+            903.3 * y
+        }
     }
 
     /// The flat fill this replaced, so comparisons below are against what
@@ -976,8 +1007,8 @@ mod tests {
                 let span_before = i32::from(hi) - i32::from(lo);
                 let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
                     - i32::from(scrim_maps(lo, 0.45, &theme));
-                let flat_after = i32::from(flat_wash(hi, 0.45, &theme))
-                    - i32::from(flat_wash(lo, 0.45, &theme));
+                let flat_after =
+                    i32::from(flat_wash(hi, 0.45, &theme)) - i32::from(flat_wash(lo, 0.45, &theme));
                 assert!(
                     span_after >= flat_after,
                     "on {name} the scrim compresses {lo}..{hi} harder than the \
@@ -1050,7 +1081,11 @@ mod tests {
         let ground = scrim_maps(0, 0.45, &theme);
         let lum = |v: u8| {
             let s = v as f64 / 255.0;
-            if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+            if s <= 0.03928 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
         };
         let ratio = (lum(ink) + 0.05) / (lum(ground) + 0.05);
         assert!(
@@ -1166,10 +1201,18 @@ impl StripRibbon {
         let x0 = x1 - RIBBON_SEG_W;
         let mut y = self.content.center().y - self.extent() / 2.0;
         for k in 0..i {
-            y += if k == self.focused { RIBBON_SEG_H_FOCUSED } else { RIBBON_SEG_H };
+            y += if k == self.focused {
+                RIBBON_SEG_H_FOCUSED
+            } else {
+                RIBBON_SEG_H
+            };
             y += RIBBON_GAP;
         }
-        let h = if i == self.focused { RIBBON_SEG_H_FOCUSED } else { RIBBON_SEG_H };
+        let h = if i == self.focused {
+            RIBBON_SEG_H_FOCUSED
+        } else {
+            RIBBON_SEG_H
+        };
         Some(Rect::new(x0, y, x1, y + h))
     }
 
@@ -1201,14 +1244,23 @@ impl StripRibbon {
             return;
         }
         for i in 0..self.count {
-            let Some(seg) = self.segment_rect(i) else { continue };
+            let Some(seg) = self.segment_rect(i) else {
+                continue;
+            };
             let tier = selection_tier(
                 theme,
                 SelectionState::new(i == self.focused, hover == Some(i), false),
             );
-            let shape = RoundedRect::from_rect(seg, ChromeRole::Selector.radius(theme, seg.height()));
+            let shape =
+                RoundedRect::from_rect(seg, ChromeRole::Selector.radius(theme, seg.height()));
             let fill = ribbon_fill(theme, i == self.focused, hover == Some(i));
-            scene.fill(Fill::NonZero, transform, fill.with_alpha_factor(alpha), None, &shape);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fill.with_alpha_factor(alpha),
+                None,
+                &shape,
+            );
             if let Some(edge) = tier.border {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
@@ -1300,10 +1352,18 @@ impl StripRail {
         let y0 = y1 - RAIL_SEG_H;
         let mut x = self.content.center().x - self.extent() / 2.0;
         for k in 0..i {
-            x += if k == self.focused { RAIL_SEG_W_FOCUSED } else { RAIL_SEG_W };
+            x += if k == self.focused {
+                RAIL_SEG_W_FOCUSED
+            } else {
+                RAIL_SEG_W
+            };
             x += RAIL_GAP;
         }
-        let w = if i == self.focused { RAIL_SEG_W_FOCUSED } else { RAIL_SEG_W };
+        let w = if i == self.focused {
+            RAIL_SEG_W_FOCUSED
+        } else {
+            RAIL_SEG_W
+        };
         Some(Rect::new(x, y0, x + w, y1))
     }
 
@@ -1339,12 +1399,20 @@ impl StripRail {
             return;
         }
         for i in 0..self.count {
-            let Some(seg) = self.segment_rect(i) else { continue };
+            let Some(seg) = self.segment_rect(i) else {
+                continue;
+            };
             let present = self.visible.contains(&i);
             let shape =
                 RoundedRect::from_rect(seg, ChromeRole::Selector.radius(theme, seg.height()));
             let fill = rail_fill(theme, i == self.focused, hover == Some(i), present);
-            scene.fill(Fill::NonZero, transform, fill.with_alpha_factor(alpha), None, &shape);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fill.with_alpha_factor(alpha),
+                None,
+                &shape,
+            );
             let tier = selection_tier(
                 theme,
                 SelectionState::new(i == self.focused, hover == Some(i), false),
@@ -1399,7 +1467,9 @@ mod rail_tests {
             "the focused segment must be longer than an unfocused one"
         );
         assert!(
-            rects.iter().all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
+            rects
+                .iter()
+                .all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
             "every segment sits on the rail's baseline"
         );
     }
@@ -1462,7 +1532,11 @@ mod ribbon_tests {
     use vello::kurbo::Point;
 
     fn ribbon(count: usize, focused: usize) -> StripRibbon {
-        StripRibbon { content: Rect::new(0.0, 40.0, 1600.0, 900.0), count, focused }
+        StripRibbon {
+            content: Rect::new(0.0, 40.0, 1600.0, 900.0),
+            count,
+            focused,
+        }
     }
 
     #[test]
@@ -1495,7 +1569,11 @@ mod ribbon_tests {
     fn the_ribbon_stays_centred_whichever_strip_has_focus() {
         let content = Rect::new(0.0, 40.0, 1600.0, 900.0);
         for focused in 0..4 {
-            let r = StripRibbon { content, count: 4, focused };
+            let r = StripRibbon {
+                content,
+                count: 4,
+                focused,
+            };
             let first = r.segment_rect(0).unwrap();
             let last = r.segment_rect(3).unwrap();
             let mid = (first.y0 + last.y1) / 2.0;
@@ -1518,7 +1596,11 @@ mod ribbon_tests {
                 hit.width(),
                 hit.height()
             );
-            assert_eq!(r.hit(hit.center()), Some(i), "segment {i} is not hittable at its centre");
+            assert_eq!(
+                r.hit(hit.center()),
+                Some(i),
+                "segment {i} is not hittable at its centre"
+            );
         }
     }
 
@@ -1575,7 +1657,10 @@ mod ribbon_tests {
                 "{name}: an unfocused segment is invisible, so a second strip \
                  cannot be discovered by looking"
             );
-            assert!(hover > idle, "{name}: hover ({hover:.4}) does not lift off idle ({idle:.4})");
+            assert!(
+                hover > idle,
+                "{name}: hover ({hover:.4}) does not lift off idle ({idle:.4})"
+            );
             assert!(
                 focused > hover,
                 "{name}: the focused segment ({focused:.4}) is less prominent than a \

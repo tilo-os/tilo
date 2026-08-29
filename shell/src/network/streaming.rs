@@ -655,13 +655,11 @@ mod tests {
         let display: Display<State> = Display::new().expect("wayland display");
         let mut state = State::new(event_loop.handle(), display.handle());
 
-        let applied = state.apply_remote_desktop_action(
-            RemoteAction::PointerMotionAbsolute {
-                stream: 1,
-                x: 200.0,
-                y: 150.0,
-            },
-        );
+        let applied = state.apply_remote_desktop_action(RemoteAction::PointerMotionAbsolute {
+            stream: 1,
+            x: 200.0,
+            y: 150.0,
+        });
         assert!(applied, "absolute motion must reach the seat pointer");
         let loc = state.seat.get_pointer().unwrap().current_location();
         assert_eq!((loc.x, loc.y), (200.0, 150.0));
@@ -689,10 +687,12 @@ mod tests {
         let mut state = State::new(event_loop.handle(), display.handle());
 
         let kc: i32 = 30; // 'a' keycode
-        assert!(state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
-            keycode: kc,
-            pressed: true,
-        }));
+        assert!(
+            state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
+                keycode: kc,
+                pressed: true,
+            })
+        );
         {
             let kb = state.seat.get_keyboard().expect("keyboard on seat");
             assert!(

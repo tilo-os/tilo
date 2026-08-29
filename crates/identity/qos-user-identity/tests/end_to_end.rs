@@ -83,7 +83,9 @@ fn full_enrollment_and_directory_sync_flow() {
     // 7. They exchange deltas. Both accept because:
     //    - Every delta's author cert chains to the same user identity.
     //    - No revocation is active.
-    let primary_delta = primary_dir.sync_incremental(&primary_sk, 1_700_000).unwrap();
+    let primary_delta = primary_dir
+        .sync_incremental(&primary_sk, 1_700_000)
+        .unwrap();
     let phone_delta = phone_dir.sync_incremental(&phone_sk, 1_700_000).unwrap();
     let revs = RevocationList::new();
 
@@ -160,11 +162,15 @@ fn peer_from_different_user_is_rejected() {
 
     // Bob presenting his cert against Alice's directory: rejected.
     let revs = RevocationList::new();
-    assert!(alice_dir
-        .apply_incremental(&bob_delta, &b_cert, &revs, 400)
-        .is_err());
+    assert!(
+        alice_dir
+            .apply_incremental(&bob_delta, &b_cert, &revs, 400)
+            .is_err()
+    );
     // Same in reverse.
-    assert!(bob_dir
-        .apply_incremental(&alice_delta, &a_cert, &revs, 400)
-        .is_err());
+    assert!(
+        bob_dir
+            .apply_incremental(&alice_delta, &a_cert, &revs, 400)
+            .is_err()
+    );
 }

@@ -26,7 +26,7 @@
 //! Any app author gets the same measurement over their own root with one call:
 //! `ui::profiling::run_scenario_on(state, app_root(), &scenario)`.
 
-use ui::profiling::{run_scenario_on, PerfScenario, PerfStep};
+use ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
 use ui::state::State;
 use ui::theme::Theme;
 use ui::widget::{Column, Scrollable, Text, Widget};

@@ -7,17 +7,16 @@
 //! construct here. The popover's own filtering / arrow-nav / Enter
 //! semantics are unit-pinned in `widget::link_popover::tests`.
 
-use ui::widget::{BlockEditor, BlockKind};
 use ui::widget::link_popover::PageEntry;
 use ui::widget::marks::Mark;
+use ui::widget::{BlockEditor, BlockKind};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey, SmolStr};
 
 fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = logical_key;
-    ev.physical_key =
-        PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
@@ -35,9 +34,18 @@ fn char_press(c: &str) -> WindowEvent {
 
 fn seed_pages() -> Vec<PageEntry> {
     vec![
-        PageEntry { id: uuid::Uuid::from_u128(1), title: "Welcome".into() },
-        PageEntry { id: uuid::Uuid::from_u128(2), title: "Roadmap".into() },
-        PageEntry { id: uuid::Uuid::from_u128(3), title: "Tips".into() },
+        PageEntry {
+            id: uuid::Uuid::from_u128(1),
+            title: "Welcome".into(),
+        },
+        PageEntry {
+            id: uuid::Uuid::from_u128(2),
+            title: "Roadmap".into(),
+        },
+        PageEntry {
+            id: uuid::Uuid::from_u128(3),
+            title: "Tips".into(),
+        },
     ]
 }
 
@@ -69,7 +77,9 @@ fn block_editor_double_bracket_opens_popover_and_commits_link() {
     editor.set_focus(true);
     // Pre-seed the popover open as if the user had typed `[[` — driving
     // real keystrokes needs a TaffyTree the test doesn't have.
-    editor.link_popover_mut().set_anchor(vello::kurbo::Point::ZERO);
+    editor
+        .link_popover_mut()
+        .set_anchor(vello::kurbo::Point::ZERO);
     editor.link_popover_mut().set_visible(true);
     // Prime the block's text so the commit splice has something to land
     // on, as if `[[` had already been typed at byte 0.
@@ -81,10 +91,9 @@ fn block_editor_double_bracket_opens_popover_and_commits_link() {
     // popover directly and test the lower-level contract: selection
     // drains to a PageEntry the host then splices in.
     editor.link_popover_mut().set_filter("Welcome");
-    editor.link_popover_mut().handle_key(&key_press(
-        Key::Named(NamedKey::Enter),
-        None,
-    ));
+    editor
+        .link_popover_mut()
+        .handle_key(&key_press(Key::Named(NamedKey::Enter), None));
     let chosen = editor.link_popover_mut().take_selection().unwrap();
     assert_eq!(chosen.title, "Welcome");
 

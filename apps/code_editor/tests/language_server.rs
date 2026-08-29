@@ -81,10 +81,7 @@ fn project_with_a_deliberate_error() -> tempfile::TempDir {
 
 /// Drive a client until `want` returns true, or the budget runs out. Returns
 /// every event seen, so a failure can report what actually happened.
-fn pump_until(
-    client: &mut LspClient,
-    want: impl Fn(&[LspEvent]) -> bool,
-) -> (Vec<LspEvent>, bool) {
+fn pump_until(client: &mut LspClient, want: impl Fn(&[LspEvent]) -> bool) -> (Vec<LspEvent>, bool) {
     let deadline = Instant::now() + BUDGET;
     let mut seen = Vec::new();
     while Instant::now() < deadline {
@@ -106,9 +103,7 @@ fn pump_until(
 
 fn require_binary(name: &str) {
     let found = std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|p| p.join(name).is_file())
-        })
+        .map(|paths| std::env::split_paths(&paths).any(|p| p.join(name).is_file()))
         .unwrap_or(false);
     assert!(
         found,
@@ -144,9 +139,9 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
     client.did_save(&uri);
 
     let (events, ok) = pump_until(&mut client, |seen| {
-        seen.iter().any(|e| {
-            matches!(e, LspEvent::Diagnostics { diagnostics, .. } if !diagnostics.is_empty())
-        })
+        seen.iter().any(
+            |e| matches!(e, LspEvent::Diagnostics { diagnostics, .. } if !diagnostics.is_empty()),
+        )
     });
 
     assert!(
@@ -180,7 +175,10 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
                 diags.iter().map(|d| &d.message).collect::<Vec<_>>()
             )
         });
-    assert_eq!(found.severity, 1, "an unresolved name is an error, not a hint");
+    assert_eq!(
+        found.severity, 1,
+        "an unresolved name is an error, not a hint"
+    );
     assert_eq!(
         found.range.start.line, 5,
         "the error is on the line the call is on (0-based)"
@@ -215,9 +213,9 @@ fn indexing_is_visible_while_it_happens() {
         summarise(&events)
     );
 
-    let titled = events.iter().any(|e| {
-        matches!(e, LspEvent::Progress(p) if !p.title.is_empty())
-    });
+    let titled = events
+        .iter()
+        .any(|e| matches!(e, LspEvent::Progress(p) if !p.title.is_empty()));
     assert!(titled, "at least one progress notification names its task");
 }
 

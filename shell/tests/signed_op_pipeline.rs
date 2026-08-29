@@ -10,12 +10,12 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
+use collab_fixtures::{role_attestation, signed_op};
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
     Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
     generate_keypair, sign_event, sign_op,
 };
-use collab_fixtures::{role_attestation, signed_op};
 use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
@@ -126,7 +126,15 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
     }
     wait_for_announced(&handle, 3);
 
-    let valid_op = signed_op(&editor_sk, editor_pk, artifact, editor_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
+    let valid_op = signed_op(
+        &editor_sk,
+        editor_pk,
+        artifact,
+        editor_att_id,
+        OpClass::Splice,
+        b"hello from a valid peer".to_vec(),
+        1,
+    );
     write_frame(
         &mut editor,
         &CollabRequest::SignedSyncIncremental {
@@ -154,7 +162,15 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
     }
 
     // A forged attestation id that is NOT in the channel's role table.
-    let invalid_op = signed_op(&outsider_sk, outsider_pk, artifact, outsider_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
+    let invalid_op = signed_op(
+        &outsider_sk,
+        outsider_pk,
+        artifact,
+        outsider_att_id,
+        OpClass::Splice,
+        b"hello from a valid peer".to_vec(),
+        1,
+    );
     write_frame(
         &mut outsider,
         &CollabRequest::SignedSyncIncremental {
@@ -230,7 +246,15 @@ fn replay_of_same_signed_op_is_dropped() {
     }
     wait_for_announced(&handle, 2);
 
-    let op = signed_op(&editor_sk, editor_pk, artifact, editor_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
+    let op = signed_op(
+        &editor_sk,
+        editor_pk,
+        artifact,
+        editor_att_id,
+        OpClass::Splice,
+        b"hello from a valid peer".to_vec(),
+        1,
+    );
 
     write_frame(
         &mut editor,

@@ -20,7 +20,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use ui::collaboration::{CollabEvent, CollaborationManager, CollabRequest};
+use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -115,8 +115,9 @@ impl PlayerApp {
                 // contacted — even though `decode` compiles the real backend in
                 // by default. `--shots --open <file>` is the real-decode path.
                 app.player.set_engine(media::MediaEngine::new_synthesized());
-                app.player
-                    .open(media::Source::Remote { url: "https://demo.local/clip.mp4".into() });
+                app.player.open(media::Source::Remote {
+                    url: "https://demo.local/clip.mp4".into(),
+                });
                 app.title = "Demo clip".to_string();
                 // Park at a fixed position and pause so the synthesized frame and
                 // the transport read-out are byte-deterministic across runs: a
@@ -154,7 +155,13 @@ impl PlayerApp {
             vec!["1080p".into(), "720p".into(), "480p".into(), "Auto".into()],
             0,
         ));
-        self.player.set_setting(PlayerSetting::toggle("captions", Icon::FileText, "Captions", 2, true));
+        self.player.set_setting(PlayerSetting::toggle(
+            "captions",
+            Icon::FileText,
+            "Captions",
+            2,
+            true,
+        ));
         self.player.set_setting(PlayerSetting::choice(
             "speed",
             Icon::List,
@@ -163,8 +170,15 @@ impl PlayerApp {
             vec!["0.5×".into(), "1×".into(), "1.5×".into(), "2×".into()],
             1,
         ));
-        self.player.set_setting(PlayerSetting::toggle("autoplay", Icon::Play, "Autoplay", 0, true));
-        self.player.set_setting(PlayerSetting::button("loop", Icon::Refresh, "Loop", 0));
+        self.player.set_setting(PlayerSetting::toggle(
+            "autoplay",
+            Icon::Play,
+            "Autoplay",
+            0,
+            true,
+        ));
+        self.player
+            .set_setting(PlayerSetting::button("loop", Icon::Refresh, "Loop", 0));
     }
 
     /// Attach collaborative playback: a live collab socket plus the host/
@@ -284,7 +298,12 @@ impl PlayerApp {
         // A soft translucent scrim behind the title so it stays legible over
         // bright frames, without a hard opaque bar.
         let scrim_h = 44.0;
-        let scrim = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + scrim_h);
+        let scrim = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + scrim_h,
+        );
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -353,7 +372,10 @@ impl Widget for PlayerApp {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
-                    size: Size { width: percent(1.0), height: percent(1.0) },
+                    size: Size {
+                        width: percent(1.0),
+                        height: percent(1.0),
+                    },
                     ..Default::default()
                 },
                 &[player_node],
@@ -390,7 +412,8 @@ impl Widget for PlayerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.player.draw(scene, transform, text_renderer, theme, presence);
+        self.player
+            .draw(scene, transform, text_renderer, theme, presence);
         if self.overlay_visible() {
             self.paint_overlay(scene, transform, text_renderer, theme);
         }
@@ -430,7 +453,14 @@ impl Widget for PlayerApp {
         let children = taffy.children(node_id).unwrap();
         if let Some(&player_node) = children.first() {
             self.player.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, player_node,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                player_node,
                 taffy,
             );
         }
@@ -564,8 +594,14 @@ mod tests {
         app.open_path(PathBuf::from("/tmp/Clip.mp4"));
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &root());
-        assert!(app.player.latest_frame().is_some(), "a frame is produced once opened");
-        assert!(app.player.duration_ms() > 0, "duration mirrored from the engine");
+        assert!(
+            app.player.latest_frame().is_some(),
+            "a frame is produced once opened"
+        );
+        assert!(
+            app.player.duration_ms() > 0,
+            "duration mirrored from the engine"
+        );
         assert!(app.player.is_playing(), "autoplay after open");
     }
 
@@ -577,7 +613,10 @@ mod tests {
         app.sync(&mut doc, &root()); // baseline the synth clock
         std::thread::sleep(std::time::Duration::from_millis(40));
         app.sync(&mut doc, &root());
-        assert!(app.player.position_ms() > 0, "playhead advanced while playing");
+        assert!(
+            app.player.position_ms() > 0,
+            "playhead advanced while playing"
+        );
 
         // Seek mid-play: the target lands in both the widget cache and the engine.
         app.player.seek_to_ms(50_000);
@@ -587,7 +626,10 @@ mod tests {
         // Playback continues forward from the seek target, not back to the start.
         std::thread::sleep(std::time::Duration::from_millis(30));
         app.sync(&mut doc, &root());
-        assert!(app.player.position_ms() >= 50_000, "seek stuck; playback rode on from it");
+        assert!(
+            app.player.position_ms() >= 50_000,
+            "seek stuck; playback rode on from it"
+        );
     }
 
     #[test]
@@ -648,8 +690,22 @@ mod tests {
                 is_synthetic: false,
             }
         };
-        app.handle_event(&space, 1.0, &mods, &mut doc, &r, &mut handled, &mut focus_target, node, &taffy);
+        app.handle_event(
+            &space,
+            1.0,
+            &mods,
+            &mut doc,
+            &r,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
         assert!(handled, "the app forwarded the key to the player");
-        assert_ne!(app.player.is_playing(), was_playing, "Space toggled playback via the app");
+        assert_ne!(
+            app.player.is_playing(),
+            was_playing,
+            "Space toggled playback via the app"
+        );
     }
 }

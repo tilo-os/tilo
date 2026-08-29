@@ -37,8 +37,12 @@ pub enum Filetype {
 }
 
 impl Filetype {
-    pub const ALL: [Filetype; 4] =
-        [Filetype::Docs, Filetype::Code, Filetype::Image, Filetype::Video];
+    pub const ALL: [Filetype; 4] = [
+        Filetype::Docs,
+        Filetype::Code,
+        Filetype::Image,
+        Filetype::Video,
+    ];
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -68,7 +72,9 @@ impl Default for SearchFilter {
 }
 
 impl SearchFilter {
-    pub fn toggle_full_text(&mut self) { self.full_text = !self.full_text; }
+    pub fn toggle_full_text(&mut self) {
+        self.full_text = !self.full_text;
+    }
 
     pub fn toggle_filetype(&mut self, ft: Filetype) {
         if !self.filetypes.remove(&ft) {
@@ -76,7 +82,9 @@ impl SearchFilter {
         }
     }
 
-    pub fn set_scope(&mut self, scope: SearchScope) { self.scope = scope; }
+    pub fn set_scope(&mut self, scope: SearchScope) {
+        self.scope = scope;
+    }
 }
 
 type SelectFn = dyn Fn(&mut AutoCommit, &ObjId) + Send + Sync;
@@ -235,7 +243,9 @@ impl CommandEntry {
             entry = entry.description(desc.clone());
         }
         if let ActionInput::Prompted {
-            prompt, placeholder, ..
+            prompt,
+            placeholder,
+            ..
         } = &fa.action.input
         {
             entry = entry.with_argument(prompt.clone(), placeholder.clone());
@@ -283,7 +293,9 @@ fn elide_middle(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> Str
 /// `Some(match_count - gap_penalty)` when `query` matches `text` as a
 /// case-insensitive subsequence; `None` otherwise.
 fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
-    if query.is_empty() { return Some(0); }
+    if query.is_empty() {
+        return Some(0);
+    }
     let q: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
     let t: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
     let mut qi = 0usize;
@@ -292,14 +304,22 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     let mut prev_match: Option<usize> = None;
     for (ti, ch) in t.iter().enumerate() {
         if qi < q.len() && *ch == q[qi] {
-            if let Some(pm) = prev_match { gaps += (ti - pm - 1) as i32; }
+            if let Some(pm) = prev_match {
+                gaps += (ti - pm - 1) as i32;
+            }
             prev_match = Some(ti);
             qi += 1;
             matches += 1;
-            if qi == q.len() { break; }
+            if qi == q.len() {
+                break;
+            }
         }
     }
-    if qi < q.len() { None } else { Some(matches - gaps) }
+    if qi < q.len() {
+        None
+    } else {
+        Some(matches - gaps)
+    }
 }
 
 /// Shared by `draw` and the layout tests so they can't disagree.
@@ -369,7 +389,9 @@ enum VisualRow {
 }
 
 impl Default for CommandPalette {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CommandPalette {
@@ -475,17 +497,27 @@ impl CommandPalette {
         let list = if self.rows.is_empty() {
             EMPTY_STATE_HEIGHT
         } else {
-            self.rows_height().clamp(self.row_height(), self.max_list_height())
+            self.rows_height()
+                .clamp(self.row_height(), self.max_list_height())
         };
-        let height =
-            PADDING * 2.0 + INPUT_HEIGHT + PADDING + self.filter_block() + list + PADDING + FOOTER_HEIGHT;
+        let height = PADDING * 2.0
+            + INPUT_HEIGHT
+            + PADDING
+            + self.filter_block()
+            + list
+            + PADDING
+            + FOOTER_HEIGHT;
         (self.card_width(), height)
     }
 
     /// Counts what a host capped away, falling back to the painted count
     /// with no host totals — the footer must agree with the section headers.
     pub fn result_total(&self) -> usize {
-        if self.rows.iter().any(|r| matches!(r, VisualRow::Header { .. })) {
+        if self
+            .rows
+            .iter()
+            .any(|r| matches!(r, VisualRow::Header { .. }))
+        {
             self.rows
                 .iter()
                 .map(|r| match r {
@@ -628,8 +660,8 @@ impl CommandPalette {
         handled: &mut bool,
     ) {
         use crate::text_selection::{
-            clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-            prev_char_boundary, prev_word_boundary, Selection,
+            Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+            prev_char_boundary, prev_word_boundary,
         };
         // Everything past this point consumes the key.
         *handled = true;
@@ -754,7 +786,9 @@ impl CommandPalette {
         }
     }
 
-    pub fn search_filter(&self) -> &SearchFilter { &self.search_filter }
+    pub fn search_filter(&self) -> &SearchFilter {
+        &self.search_filter
+    }
     pub fn search_filter_mut(&mut self) -> &mut SearchFilter {
         &mut self.search_filter
     }
@@ -822,8 +856,7 @@ impl CommandPalette {
         let r = self.query_selection.range();
         self.query.replace_range(r.clone(), s);
         let new_caret = r.start + s.len();
-        self.query_selection =
-            crate::text_selection::Selection::collapsed(new_caret);
+        self.query_selection = crate::text_selection::Selection::collapsed(new_caret);
         self.rebuild();
     }
 
@@ -835,13 +868,14 @@ impl CommandPalette {
         }
         let r = self.query_selection.range();
         self.query.replace_range(r.clone(), "");
-        self.query_selection =
-            crate::text_selection::Selection::collapsed(r.start);
+        self.query_selection = crate::text_selection::Selection::collapsed(r.start);
         self.rebuild();
         true
     }
 
-    pub fn query(&self) -> &str { &self.query }
+    pub fn query(&self) -> &str {
+        &self.query
+    }
 
     pub fn set_filter(&mut self, f: Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>) {
         self.filter = Some(f);
@@ -852,7 +886,9 @@ impl CommandPalette {
         self.visible.iter().map(|&i| &self.entries[i]).collect()
     }
 
-    pub fn cursor(&self) -> usize { self.cursor }
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
 
     /// Clamps silently so overlay callers hit-testing post-layout rects
     /// don't have to bounds-check.
@@ -881,9 +917,7 @@ impl CommandPalette {
     /// enough to keep the cursor's row inside the card.
     fn painted_window(&self) -> (usize, usize) {
         let budget = (self.footer_rect().y0 - PADDING - self.list_top_y()).max(0.0);
-        let target = self
-            .visual_index_of(self.cursor)
-            .unwrap_or(0);
+        let target = self.visual_index_of(self.cursor).unwrap_or(0);
         let mut start = 0usize;
         loop {
             let mut used = 0.0;
@@ -936,9 +970,7 @@ impl CommandPalette {
     }
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
-        (0..self.visible.len()).find(|&i| {
-            self.row_rect(i).map(|r| r.contains(p)).unwrap_or(false)
-        })
+        (0..self.visible.len()).find(|&i| self.row_rect(i).map(|r| r.contains(p)).unwrap_or(false))
     }
 
     /// `rounded-3xl` = 24 px (Tailwind).
@@ -1028,7 +1060,7 @@ impl CommandPalette {
         let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
 
         let active_fill = theme.tokens.colors.accent[5];
-        let idle_fill = Color::from_rgba8(255, 255, 255, 13);  // white/5
+        let idle_fill = Color::from_rgba8(255, 255, 255, 13); // white/5
         let active_text = theme.tokens.colors.text_primary;
         let idle_text = theme.tokens.colors.text_dim;
 
@@ -1059,8 +1091,8 @@ impl CommandPalette {
         let ft_chip_w = ft_w as f64 + 16.0;
         let ft_chip = Self::chip_rect(strip, strip.x1 - ft_chip_w, ft_chip_w);
         let ft_on = self.search_filter.full_text;
-        let ft_active_fill = Color::from_rgba8(34, 197, 94, 51);  // emerald-500/20
-        let ft_active_text = Color::from_rgba8(0x4a, 0xde, 0x80, 0xff);  // emerald-400
+        let ft_active_fill = Color::from_rgba8(34, 197, 94, 51); // emerald-500/20
+        let ft_active_text = Color::from_rgba8(0x4a, 0xde, 0x80, 0xff); // emerald-400
         self.draw_chip(
             scene,
             transform,
@@ -1079,7 +1111,9 @@ impl CommandPalette {
             let label = ft.label();
             let (w, _) = text_renderer.measure(label, chip_text_size, None);
             let chip_w = w as f64 + 16.0;
-            if fx + chip_w > max_x { break; }
+            if fx + chip_w > max_x {
+                break;
+            }
             let chip = Self::chip_rect(strip, fx, chip_w);
             let active = self.search_filter.filetypes.contains(&ft);
             self.draw_chip(
@@ -1114,13 +1148,7 @@ impl CommandPalette {
         // `rounded-full` ≈ half-height radius.
         let radius = chip.height() / 2.0;
         let shape = RoundedRect::from_rect(chip, radius);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            body,
-            None,
-            &shape,
-        );
+        scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
         let (w, h) = text_renderer.measure(label, text_size, None);
         let tx = (chip.x0 + chip.x1) / 2.0 - w as f64 / 2.0;
         let ty = (chip.y0 + chip.y1) / 2.0 - h as f64 / 2.0;
@@ -1229,8 +1257,7 @@ impl CommandPalette {
                 &right,
                 size,
                 dim,
-                transform
-                    * Affine::translate((footer.x1 - sw as f64 - 6.0, cy - sh as f64 / 2.0)),
+                transform * Affine::translate((footer.x1 - sw as f64 - 6.0, cy - sh as f64 / 2.0)),
                 None,
             );
         }
@@ -1414,8 +1441,7 @@ impl CommandPalette {
                 kb,
                 desc_size,
                 colors.ink_on(kb_fill, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST),
-                transform
-                    * Affine::translate((chip.x0 + 7.0, chip.center().y - kh as f64 / 2.0)),
+                transform * Affine::translate((chip.x0 + 7.0, chip.center().y - kh as f64 / 2.0)),
                 None,
             );
             text_right = chip.x0 - 8.0;
@@ -1462,8 +1488,7 @@ impl CommandPalette {
                     &sub,
                     desc_size,
                     subtitle_ink,
-                    transform
-                        * Affine::translate((text_x, ly + label_size as f64 + 3.0)),
+                    transform * Affine::translate((text_x, ly + label_size as f64 + 3.0)),
                     None,
                 );
             }
@@ -1538,8 +1563,7 @@ impl CommandPalette {
             hint,
             hint_size,
             colors.text_dim,
-            transform
-                * Affine::translate((cx - hw as f64 / 2.0, cy + title_size as f64 + 6.0)),
+            transform * Affine::translate((cx - hw as f64 / 2.0, cy + title_size as f64 + 6.0)),
             None,
         );
     }
@@ -1548,8 +1572,13 @@ impl CommandPalette {
         self.visible.clear();
         for (i, e) in self.entries.iter().enumerate() {
             if let Some(f) = &self.filter
-                && !f(e) { continue; }
-            if !self.bypass_fuzzy && !e.matches(&self.query) { continue; }
+                && !f(e)
+            {
+                continue;
+            }
+            if !self.bypass_fuzzy && !e.matches(&self.query) {
+                continue;
+            }
             self.visible.push(i);
         }
         if self.cursor >= self.visible.len() {
@@ -1572,9 +1601,7 @@ impl CommandPalette {
                 let total = entry.group_total.unwrap_or_else(|| {
                     self.visible[entry_i..]
                         .iter()
-                        .take_while(|&&j| {
-                            self.entries[j].group.as_deref() == Some(group)
-                        })
+                        .take_while(|&&j| self.entries[j].group.as_deref() == Some(group))
                         .count()
                 });
                 self.rows.push(VisualRow::Header {
@@ -1671,8 +1698,7 @@ impl Widget for CommandPalette {
         // body rather than floating beside it.
         let row_rect = self.input_row_rect();
         let layout = self.compute_input_layout(row_rect);
-        let field_shape =
-            RoundedRect::from_rect(row_rect, theme.tokens.radii.lg as f64);
+        let field_shape = RoundedRect::from_rect(row_rect, theme.tokens.radii.lg as f64);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1705,8 +1731,7 @@ impl Widget for CommandPalette {
         // pressed by now, and two different chords open this palette at two
         // scopes — one label would misname one of them.
         let text_size = theme.tokens.typography.scale.base;
-        let text_y =
-            layout.input_rect.y0 + (layout.input_rect.height() - text_size as f64) / 2.0;
+        let text_y = layout.input_rect.y0 + (layout.input_rect.height() - text_size as f64) / 2.0;
         let mut tx = layout.input_rect.x0;
         let avail = layout.input_rect.width();
         if let Some(arg) = &self.arg_state {
@@ -1728,7 +1753,8 @@ impl Widget for CommandPalette {
             } else {
                 (arg.buffer.as_str(), colors.text_primary)
             };
-            let body = text_renderer.elide_to_width(body, text_size, (layout.input_rect.x1 - tx) as f32);
+            let body =
+                text_renderer.elide_to_width(body, text_size, (layout.input_rect.x1 - tx) as f32);
             text_renderer.draw_text(
                 scene,
                 &body,
@@ -1755,10 +1781,7 @@ impl Widget for CommandPalette {
         }
 
         // Skipped when the host paints its own controls into the reserved band.
-        if self.mode == PaletteMode::Search
-            && !self.hide_filter_strip
-            && !self.host_filter_strip
-        {
+        if self.mode == PaletteMode::Search && !self.hide_filter_strip && !self.host_filter_strip {
             self.draw_filter_strip(scene, transform, text_renderer, theme);
         }
 
@@ -1770,7 +1793,6 @@ impl Widget for CommandPalette {
 
         self.draw_footer(scene, transform, text_renderer, theme);
     }
-
 
     fn handle_event(
         &mut self,
@@ -1784,17 +1806,25 @@ impl Widget for CommandPalette {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        if !self.is_focused { return; }
+        if !self.is_focused {
+            return;
+        }
         if let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: element_state, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: element_state,
+                    ..
+                },
             ..
         } = event
         {
-            if *element_state != ElementState::Pressed { return; }
+            if *element_state != ElementState::Pressed {
+                return;
+            }
             use crate::text_selection::{
-                clipboard_copy, clipboard_paste, next_char_boundary,
-                next_word_boundary, prev_char_boundary, prev_word_boundary,
-                Selection,
+                Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+                prev_char_boundary, prev_word_boundary,
             };
             let mods = modifiers.state();
             let shift = mods.shift_key();
@@ -1886,44 +1916,41 @@ impl Widget for CommandPalette {
                     }
                     *handled = true;
                 }
-                Key::Character(s) if ctrl => {
-                    match s.as_str() {
-                        "a" | "A" => {
-                            self.query_selection.anchor = 0;
-                            self.query_selection.cursor = self.query.len();
-                            *handled = true;
-                        }
-                        "c" | "C" => {
-                            let r = self.query_selection.range();
-                            if !r.is_empty() {
-                                clipboard_copy(&self.query[r]);
-                            }
-                            *handled = true;
-                        }
-                        "x" | "X" => {
-                            let r = self.query_selection.range();
-                            if !r.is_empty() {
-                                clipboard_copy(&self.query[r.clone()]);
-                                self.delete_query_selection();
-                            }
-                            *handled = true;
-                        }
-                        "v" | "V" => {
-                            if let Some(s) = clipboard_paste() {
-                                self.replace_query_selection(&s);
-                            }
-                            *handled = true;
-                        }
-                        _ => {}
+                Key::Character(s) if ctrl => match s.as_str() {
+                    "a" | "A" => {
+                        self.query_selection.anchor = 0;
+                        self.query_selection.cursor = self.query.len();
+                        *handled = true;
                     }
-                }
+                    "c" | "C" => {
+                        let r = self.query_selection.range();
+                        if !r.is_empty() {
+                            clipboard_copy(&self.query[r]);
+                        }
+                        *handled = true;
+                    }
+                    "x" | "X" => {
+                        let r = self.query_selection.range();
+                        if !r.is_empty() {
+                            clipboard_copy(&self.query[r.clone()]);
+                            self.delete_query_selection();
+                        }
+                        *handled = true;
+                    }
+                    "v" | "V" => {
+                        if let Some(s) = clipboard_paste() {
+                            self.replace_query_selection(&s);
+                        }
+                        *handled = true;
+                    }
+                    _ => {}
+                },
                 Key::Named(NamedKey::Space) => {
                     self.replace_query_selection(" ");
                     *handled = true;
                 }
                 Key::Character(s) => {
-                    let filtered: String =
-                        s.chars().filter(|c| !c.is_control()).collect();
+                    let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
                     if !filtered.is_empty() {
                         self.replace_query_selection(&filtered);
                         *handled = true;
@@ -1934,17 +1961,29 @@ impl Widget for CommandPalette {
         }
     }
 
-    fn name(&self) -> &str { "CommandPalette" }
+    fn name(&self) -> &str {
+        "CommandPalette"
+    }
 
     /// `widget_registry` resolves this to the palette's rect; centre-of-rect
     /// lands inside the input row in all supported viewports.
-    fn test_id(&self) -> Option<&str> { Some("command_palette_input") }
+    fn test_id(&self) -> Option<&str> {
+        Some("command_palette_input")
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
 
     /// Only traps focus as a modal command launcher; the default Search
     /// palette leaves this `false` so the shell's overlay host drives focus.
@@ -2022,8 +2061,7 @@ mod tests {
         // pattern; `handle_event` only inspects `logical_key` + `state`.
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -2250,11 +2288,7 @@ mod tests {
         );
     }
 
-    fn dispatch(
-        p: &mut CommandPalette,
-        event: WindowEvent,
-        modifiers: Modifiers,
-    ) {
+    fn dispatch(p: &mut CommandPalette, event: WindowEvent, modifiers: Modifiers) {
         let mut doc = AutoCommit::new();
         let doc_root = automerge::ROOT.clone();
         let mut handled = false;
@@ -2446,12 +2480,22 @@ mod tests {
         assert_eq!(p.selected_id(), Some("export"), "cursor advanced two rows");
 
         let mut handled = false;
-        dispatch_h(&mut p, key_press(Key::Named(NamedKey::ArrowUp)), Modifiers::default(), &mut handled);
+        dispatch_h(
+            &mut p,
+            key_press(Key::Named(NamedKey::ArrowUp)),
+            Modifiers::default(),
+            &mut handled,
+        );
         assert!(handled);
         assert_eq!(p.selected_id(), Some("sum"));
 
         let mut handled = false;
-        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Enter)), Modifiers::default(), &mut handled);
+        dispatch_h(
+            &mut p,
+            key_press(Key::Named(NamedKey::Enter)),
+            Modifiers::default(),
+            &mut handled,
+        );
         assert!(handled, "Enter is consumed");
         let outcome = p.take_outcome().expect("Enter emits an outcome");
         assert_eq!(outcome.id, "sum");
@@ -2478,21 +2522,42 @@ mod tests {
         assert_eq!(p.selected_id(), Some("goto"));
 
         let mut handled = false;
-        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Enter)), Modifiers::default(), &mut handled);
+        dispatch_h(
+            &mut p,
+            key_press(Key::Named(NamedKey::Enter)),
+            Modifiers::default(),
+            &mut handled,
+        );
         assert!(handled);
-        assert!(p.in_argument_mode(), "entry with an argument opens the arg step");
+        assert!(
+            p.in_argument_mode(),
+            "entry with an argument opens the arg step"
+        );
         assert_eq!(p.argument_buffer(), Some("A1"));
-        assert!(p.take_outcome().is_none(), "no outcome until the argument is confirmed");
+        assert!(
+            p.take_outcome().is_none(),
+            "no outcome until the argument is confirmed"
+        );
 
         for ch in ["B", "1", "2"] {
             let mut h = false;
-            dispatch_h(&mut p, key_press(Key::Character(SmolStr::new(ch))), Modifiers::default(), &mut h);
+            dispatch_h(
+                &mut p,
+                key_press(Key::Character(SmolStr::new(ch))),
+                Modifiers::default(),
+                &mut h,
+            );
             assert!(h, "typing in the arg field is consumed");
         }
         assert_eq!(p.argument_buffer(), Some("B12"));
 
         let mut handled = false;
-        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Enter)), Modifiers::default(), &mut handled);
+        dispatch_h(
+            &mut p,
+            key_press(Key::Named(NamedKey::Enter)),
+            Modifiers::default(),
+            &mut handled,
+        );
         assert!(handled);
         let outcome = p.take_outcome().expect("confirming emits an outcome");
         assert_eq!(outcome.id, "goto");
@@ -2504,10 +2569,20 @@ mod tests {
     fn command_mode_escape_from_argument_returns_to_list() {
         let mut p = seeded_command_palette();
         let mut h = false;
-        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Enter)), Modifiers::default(), &mut h);
+        dispatch_h(
+            &mut p,
+            key_press(Key::Named(NamedKey::Enter)),
+            Modifiers::default(),
+            &mut h,
+        );
         assert!(p.in_argument_mode());
         let mut h = false;
-        dispatch_h(&mut p, key_press(Key::Named(NamedKey::Escape)), Modifiers::default(), &mut h);
+        dispatch_h(
+            &mut p,
+            key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default(),
+            &mut h,
+        );
         assert!(h, "Escape is consumed");
         assert!(!p.in_argument_mode(), "Escape leaves the argument step");
         assert!(p.is_open(), "…but the palette is still open on the list");
@@ -2539,10 +2614,16 @@ mod tests {
         let (w, h) = p.desired_size();
         p.set_rect(Rect::new(0.0, 0.0, w, h));
         assert!(p.row_rect(0).is_some());
-        assert!(p.row_rect(p.max_visible_rows()).is_none(), "row past the cap is scrolled off");
+        assert!(
+            p.row_rect(p.max_visible_rows()).is_none(),
+            "row past the cap is scrolled off"
+        );
 
         p.set_cursor(19);
-        assert!(p.row_rect(19).is_some(), "highlighted last row stays visible");
+        assert!(
+            p.row_rect(19).is_some(),
+            "highlighted last row stays visible"
+        );
         assert!(p.row_rect(0).is_none(), "the top row scrolled out of view");
     }
 
@@ -2653,7 +2734,10 @@ mod tests {
                     r.y1 <= footer_top,
                     "row {i} at {r:?} runs into the footer at {footer_top}"
                 );
-                assert!(r.y0 >= p.list_top_y() - 0.01, "row {i} starts above the list");
+                assert!(
+                    r.y0 >= p.list_top_y() - 0.01,
+                    "row {i} starts above the list"
+                );
             }
         }
     }
@@ -2750,15 +2834,7 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         p.handle_event(
-            &event,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &root,
-            handled,
-            &mut focus,
-            node,
-            &taffy,
+            &event, 1.0, &modifiers, &mut doc, &root, handled, &mut focus, node, &taffy,
         );
     }
 }

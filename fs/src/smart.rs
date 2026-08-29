@@ -17,7 +17,10 @@ pub struct Heuristics {
 
 impl Heuristics {
     pub fn new(hydrator: Arc<Hydrator>, namespace: Arc<Mutex<Namespace>>) -> Self {
-        Self { hydrator, namespace }
+        Self {
+            hydrator,
+            namespace,
+        }
     }
 
     /// Called when a file inode is opened.

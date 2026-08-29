@@ -15,19 +15,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use automerge::{AutoCommit, ObjId};
+use collab_types::{
+    Attestation, AttestationId, ChannelEvent, ChannelId, Claim, Clearance, Ed25519PublicKey, Role,
+    RoleAttestation, Signature, generate_keypair, sign_event, verify_event,
+};
 use ed25519_dalek::SigningKey as DalekSigningKey;
 use hmac::{Hmac, Mac};
-use collab_types::{
-    Attestation, AttestationId, ChannelEvent, ChannelId, Claim, Clearance, Ed25519PublicKey,
-    RoleAttestation, Role, Signature, generate_keypair, sign_event, verify_event,
-};
-use threshold_identity::{
-    EnrolmentRound1, EnrolmentRound2, ThresholdError, ThresholdIdentity,
-};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use taffy::{NodeId, TaffyTree};
+use threshold_identity::{EnrolmentRound1, EnrolmentRound2, ThresholdError, ThresholdIdentity};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -336,46 +334,24 @@ impl PairingHandshake {
         Self::default()
     }
 
-    pub fn publish_pairer_reply(
-        &self,
-        nonce: &[u8; 16],
-        reply: EnrolmentRound2,
-        mac: [u8; 64],
-    ) {
+    pub fn publish_pairer_reply(&self, nonce: &[u8; 16], reply: EnrolmentRound2, mac: [u8; 64]) {
         let key = hex::encode(nonce);
         let mut guard = self.inner.lock().unwrap();
-        guard
-            .entry(key)
-            .or_default()
-            .reply = Some((reply, mac));
+        guard.entry(key).or_default().reply = Some((reply, mac));
     }
 
-    pub fn take_pairer_reply(
-        &self,
-        nonce: &[u8; 16],
-    ) -> Option<(EnrolmentRound2, [u8; 64])> {
+    pub fn take_pairer_reply(&self, nonce: &[u8; 16]) -> Option<(EnrolmentRound2, [u8; 64])> {
         let key = hex::encode(nonce);
         self.inner.lock().unwrap().get_mut(&key)?.reply.take()
     }
 
-    pub fn publish_host_round2(
-        &self,
-        nonce: &[u8; 16],
-        reply: EnrolmentRound2,
-        mac: [u8; 64],
-    ) {
+    pub fn publish_host_round2(&self, nonce: &[u8; 16], reply: EnrolmentRound2, mac: [u8; 64]) {
         let key = hex::encode(nonce);
         let mut guard = self.inner.lock().unwrap();
-        guard
-            .entry(key)
-            .or_default()
-            .host_round2 = Some((reply, mac));
+        guard.entry(key).or_default().host_round2 = Some((reply, mac));
     }
 
-    pub fn take_host_round2(
-        &self,
-        nonce: &[u8; 16],
-    ) -> Option<(EnrolmentRound2, [u8; 64])> {
+    pub fn take_host_round2(&self, nonce: &[u8; 16]) -> Option<(EnrolmentRound2, [u8; 64])> {
         let key = hex::encode(nonce);
         self.inner.lock().unwrap().get_mut(&key)?.host_round2.take()
     }
@@ -485,9 +461,9 @@ impl InviteEnvelope {
 
     pub fn from_url(url: &str) -> Result<Self, IdentityFlowError> {
         let prefix = "qos://invite/";
-        let suffix = url
-            .strip_prefix(prefix)
-            .ok_or_else(|| IdentityFlowError::DecodeFailed("missing qos://invite/ prefix".into()))?;
+        let suffix = url.strip_prefix(prefix).ok_or_else(|| {
+            IdentityFlowError::DecodeFailed("missing qos://invite/ prefix".into())
+        })?;
         let bytes = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, suffix)
             .ok_or_else(|| IdentityFlowError::DecodeFailed("base32 decode failed".into()))?;
         postcard::from_bytes(&bytes)
@@ -544,7 +520,9 @@ pub fn build_attestation_from_invite(
         .delegation_secret
         .as_slice()
         .try_into()
-        .map_err(|_| IdentityFlowError::DecodeFailed("delegation secret must be 32 bytes".into()))?;
+        .map_err(|_| {
+            IdentityFlowError::DecodeFailed("delegation secret must be 32 bytes".into())
+        })?;
     let delegation_sk = DalekSigningKey::from_bytes(&secret);
     let mut attestation = Attestation {
         id: AttestationId::new(),
@@ -608,10 +586,7 @@ impl RecoveryChallenge {
     }
 
     /// Deterministic constructor for tests.
-    pub fn at_positions(
-        mnemonic: &str,
-        positions: [usize; 3],
-    ) -> Result<Self, IdentityFlowError> {
+    pub fn at_positions(mnemonic: &str, positions: [usize; 3]) -> Result<Self, IdentityFlowError> {
         let words: Vec<&str> = mnemonic.split_whitespace().collect();
         if words.len() != 24 {
             return Err(IdentityFlowError::DecodeFailed(format!(
@@ -624,15 +599,15 @@ impl RecoveryChallenge {
             words[positions[1] - 1].to_string(),
             words[positions[2] - 1].to_string(),
         ];
-        Ok(Self { positions, expected })
+        Ok(Self {
+            positions,
+            expected,
+        })
     }
 
     /// Drives the verify screen's correct-word border colour.
     pub fn expected_word(&self, slot: usize) -> String {
-        self.expected
-            .get(slot)
-            .cloned()
-            .unwrap_or_default()
+        self.expected.get(slot).cloned().unwrap_or_default()
     }
 
     pub fn check(&self, answers: &[&str; 3]) -> bool {
@@ -845,48 +820,43 @@ impl LineEditState {
                 self.text.replace_range(self.cursor..target, "");
                 true
             }
-            Key::Character(s) if ctrl => {
-                match s.to_lowercase().as_str() {
-                    "a" => {
-                        self.selection_anchor = Some(0);
-                        self.cursor = self.text.len();
-                        true
-                    }
-                    "c" => {
-                        let sel = self.selected_text();
-                        let bytes = if sel.is_empty() {
-                            self.text.clone()
-                        } else {
-                            sel.to_string()
-                        };
-                        crate::text_selection::clipboard_copy(&bytes);
-                        true
-                    }
-                    "x" => {
-                        if self.selection_range().is_some() {
-                            let sel = self.selected_text().to_string();
-                            crate::text_selection::clipboard_copy(&sel);
-                            self.delete_selection();
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    "v" => {
-                        if let Some(pasted) = crate::text_selection::clipboard_paste() {
-                            let cleaned: String = pasted
-                                .chars()
-                                .filter(|c| !c.is_control())
-                                .collect();
-                            self.insert_str(&cleaned);
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
+            Key::Character(s) if ctrl => match s.to_lowercase().as_str() {
+                "a" => {
+                    self.selection_anchor = Some(0);
+                    self.cursor = self.text.len();
+                    true
                 }
-            }
+                "c" => {
+                    let sel = self.selected_text();
+                    let bytes = if sel.is_empty() {
+                        self.text.clone()
+                    } else {
+                        sel.to_string()
+                    };
+                    crate::text_selection::clipboard_copy(&bytes);
+                    true
+                }
+                "x" => {
+                    if self.selection_range().is_some() {
+                        let sel = self.selected_text().to_string();
+                        crate::text_selection::clipboard_copy(&sel);
+                        self.delete_selection();
+                        true
+                    } else {
+                        false
+                    }
+                }
+                "v" => {
+                    if let Some(pasted) = crate::text_selection::clipboard_paste() {
+                        let cleaned: String = pasted.chars().filter(|c| !c.is_control()).collect();
+                        self.insert_str(&cleaned);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            },
             _ => {
                 // Skip control codes: they arrive as zero-width chars on some platforms.
                 if let Some(t) = text_input {
@@ -952,7 +922,11 @@ fn draw_done_card(
         None,
         &vello::kurbo::Circle::new((avatar_cx, avatar_cy), avatar_d / 2.0),
     );
-    let initial: String = display_name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    let initial: String = display_name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
     let (iw, _) = text_renderer.measure(&initial, 28.0, None);
     text_renderer.draw_text(
         scene,
@@ -1120,12 +1094,8 @@ impl IdentityFlow {
             (IdentityFlowScreen::RecoveryVerify, ScreenOutcome::Back) => {
                 IdentityFlowScreen::RecoveryShare
             }
-            (IdentityFlowScreen::AddDeviceHost, ScreenOutcome::Advance) => {
-                IdentityFlowScreen::Done
-            }
-            (IdentityFlowScreen::AddDeviceHost, ScreenOutcome::Back) => {
-                IdentityFlowScreen::Done
-            }
+            (IdentityFlowScreen::AddDeviceHost, ScreenOutcome::Advance) => IdentityFlowScreen::Done,
+            (IdentityFlowScreen::AddDeviceHost, ScreenOutcome::Back) => IdentityFlowScreen::Done,
             (IdentityFlowScreen::PairDevice, ScreenOutcome::Advance) => IdentityFlowScreen::Done,
             (IdentityFlowScreen::PairDevice, ScreenOutcome::Back) => IdentityFlowScreen::Done,
             (IdentityFlowScreen::InviteMint, ScreenOutcome::Advance) => IdentityFlowScreen::Done,
@@ -1199,13 +1169,23 @@ impl Widget for IdentityFlow {
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
         match self.current {
-            IdentityFlowScreen::CreateIdentity => self.create_identity.apply_layout(taffy, node, origin),
-            IdentityFlowScreen::RecoveryShare => self.recovery_share.apply_layout(taffy, node, origin),
-            IdentityFlowScreen::RecoveryVerify => self.recovery_verify.apply_layout(taffy, node, origin),
-            IdentityFlowScreen::AddDeviceHost => self.add_device_host.apply_layout(taffy, node, origin),
+            IdentityFlowScreen::CreateIdentity => {
+                self.create_identity.apply_layout(taffy, node, origin)
+            }
+            IdentityFlowScreen::RecoveryShare => {
+                self.recovery_share.apply_layout(taffy, node, origin)
+            }
+            IdentityFlowScreen::RecoveryVerify => {
+                self.recovery_verify.apply_layout(taffy, node, origin)
+            }
+            IdentityFlowScreen::AddDeviceHost => {
+                self.add_device_host.apply_layout(taffy, node, origin)
+            }
             IdentityFlowScreen::PairDevice => self.pair_device.apply_layout(taffy, node, origin),
             IdentityFlowScreen::InviteMint => self.invite_mint.apply_layout(taffy, node, origin),
-            IdentityFlowScreen::InviteAccept => self.invite_accept.apply_layout(taffy, node, origin),
+            IdentityFlowScreen::InviteAccept => {
+                self.invite_accept.apply_layout(taffy, node, origin)
+            }
             IdentityFlowScreen::Done => {
                 // No inner screen; self.rect already set above.
             }
@@ -1221,15 +1201,43 @@ impl Widget for IdentityFlow {
         presence: &PresenceCtx,
     ) {
         match self.current {
-            IdentityFlowScreen::CreateIdentity => self.create_identity.draw(scene, transform, text_renderer, theme, presence),
-            IdentityFlowScreen::RecoveryShare => self.recovery_share.draw(scene, transform, text_renderer, theme, presence),
-            IdentityFlowScreen::RecoveryVerify => self.recovery_verify.draw(scene, transform, text_renderer, theme, presence),
-            IdentityFlowScreen::AddDeviceHost => self.add_device_host.draw(scene, transform, text_renderer, theme, presence),
-            IdentityFlowScreen::PairDevice => self.pair_device.draw(scene, transform, text_renderer, theme, presence),
-            IdentityFlowScreen::InviteMint => self.invite_mint.draw(scene, transform, text_renderer, theme, presence),
-            IdentityFlowScreen::InviteAccept => self.invite_accept.draw(scene, transform, text_renderer, theme, presence),
+            IdentityFlowScreen::CreateIdentity => {
+                self.create_identity
+                    .draw(scene, transform, text_renderer, theme, presence)
+            }
+            IdentityFlowScreen::RecoveryShare => {
+                self.recovery_share
+                    .draw(scene, transform, text_renderer, theme, presence)
+            }
+            IdentityFlowScreen::RecoveryVerify => {
+                self.recovery_verify
+                    .draw(scene, transform, text_renderer, theme, presence)
+            }
+            IdentityFlowScreen::AddDeviceHost => {
+                self.add_device_host
+                    .draw(scene, transform, text_renderer, theme, presence)
+            }
+            IdentityFlowScreen::PairDevice => {
+                self.pair_device
+                    .draw(scene, transform, text_renderer, theme, presence)
+            }
+            IdentityFlowScreen::InviteMint => {
+                self.invite_mint
+                    .draw(scene, transform, text_renderer, theme, presence)
+            }
+            IdentityFlowScreen::InviteAccept => {
+                self.invite_accept
+                    .draw(scene, transform, text_renderer, theme, presence)
+            }
             IdentityFlowScreen::Done => {
-                draw_done_card(self.store.as_ref(), scene, transform, text_renderer, theme, self.rect);
+                draw_done_card(
+                    self.store.as_ref(),
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    self.rect,
+                );
             }
         }
     }
@@ -1247,28 +1255,83 @@ impl Widget for IdentityFlow {
         taffy: &TaffyTree<()>,
     ) {
         let outcome = match self.current {
-            IdentityFlowScreen::CreateIdentity => {
-                self.create_identity.handle_event_screen(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy, &*self.store,
-                )
-            }
+            IdentityFlowScreen::CreateIdentity => self.create_identity.handle_event_screen(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+                &*self.store,
+            ),
             IdentityFlowScreen::RecoveryShare => self.recovery_share.handle_event_screen(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             ),
             IdentityFlowScreen::RecoveryVerify => self.recovery_verify.handle_event_screen(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             ),
             IdentityFlowScreen::AddDeviceHost => self.add_device_host.handle_event_screen(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             ),
             IdentityFlowScreen::PairDevice => self.pair_device.handle_event_screen(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             ),
             IdentityFlowScreen::InviteMint => self.invite_mint.handle_event_screen(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             ),
             IdentityFlowScreen::InviteAccept => self.invite_accept.handle_event_screen(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             ),
             IdentityFlowScreen::Done => ScreenOutcome::Stay,
         };
@@ -1361,8 +1424,7 @@ mod tests {
         let mut rng = OsRng;
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (_session, round1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
-        let payload =
-            PairingPayload::new(nonce, id.group_public_key(), &round1).unwrap();
+        let payload = PairingPayload::new(nonce, id.group_public_key(), &round1).unwrap();
         let bytes = payload.to_json_bytes().unwrap();
         let back = PairingPayload::from_json_bytes(&bytes).unwrap();
         assert_eq!(payload, back);
@@ -1394,7 +1456,8 @@ mod tests {
         assert!(url.starts_with("qos://invite/"));
         let back = InviteEnvelope::from_url(&url).unwrap();
         assert_eq!(env, back);
-        back.verify_signature().expect("owner signature must verify");
+        back.verify_signature()
+            .expect("owner signature must verify");
     }
 
     #[test]
@@ -1411,7 +1474,10 @@ mod tests {
         )
         .unwrap();
         env.channel_name = "treasury".into();
-        assert!(env.verify_signature().is_err(), "renamed envelope must fail");
+        assert!(
+            env.verify_signature().is_err(),
+            "renamed envelope must fail"
+        );
     }
 
     #[test]
@@ -1458,7 +1524,9 @@ mod tests {
             // Inner attestation signature must verify against the
             // delegation pubkey (which the owner signed).
             let bytes = ra.attestation.signing_bytes().unwrap();
-            assert!(verify_event(&bytes, &ra.attestation.signature, &ra.attestation.issued_by).is_ok());
+            assert!(
+                verify_event(&bytes, &ra.attestation.signature, &ra.attestation.issued_by).is_ok()
+            );
         } else {
             panic!("expected AttestationIssued, got {event:?}");
         }
@@ -1531,7 +1599,10 @@ mod tests {
         assert_eq!(rec, back);
         assert_eq!(back.display_name, "alice");
         assert_eq!(back.avatar_color, [248, 113, 113]);
-        assert_eq!(back.public_key().as_bytes(), id.group_public_key().as_bytes());
+        assert_eq!(
+            back.public_key().as_bytes(),
+            id.group_public_key().as_bytes()
+        );
     }
 
     /// The property that makes a minted identity an identity: the
@@ -1583,9 +1654,8 @@ mod tests {
 
         let mut rng = OsRng;
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec =
-            IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], SystemTime::now())
-                .unwrap();
+        let rec = IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], SystemTime::now())
+            .unwrap();
         let back = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
 
         let revived = back.into_threshold_identity().unwrap();
@@ -1623,13 +1693,9 @@ mod tests {
     fn memory_store_round_trip() {
         let mut rng = OsRng;
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec = IdentityRecord::from_threshold_identity(
-            &id,
-            "bob",
-            [180, 200, 220],
-            SystemTime::now(),
-        )
-        .unwrap();
+        let rec =
+            IdentityRecord::from_threshold_identity(&id, "bob", [180, 200, 220], SystemTime::now())
+                .unwrap();
         let store = MemoryIdentityStore::new();
         assert!(store.load().unwrap().is_none());
         store.save(&rec).unwrap();
@@ -1673,10 +1739,18 @@ mod tests {
             pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
         // Each processes the other's round-1, producing round-2 replies
         // addressed to the peer.
-        let host_outgoing = host_session.receive_round1(std::slice::from_ref(&pairer_round1)).unwrap();
-        let pairer_outgoing = pairer_session.receive_round1(std::slice::from_ref(&host_round1)).unwrap();
+        let host_outgoing = host_session
+            .receive_round1(std::slice::from_ref(&pairer_round1))
+            .unwrap();
+        let pairer_outgoing = pairer_session
+            .receive_round1(std::slice::from_ref(&host_round1))
+            .unwrap();
         let host_to_pairer = host_outgoing.into_iter().find(|(i, _)| *i == 2).unwrap().1;
-        let pairer_to_host = pairer_outgoing.into_iter().find(|(i, _)| *i == 1).unwrap().1;
+        let pairer_to_host = pairer_outgoing
+            .into_iter()
+            .find(|(i, _)| *i == 1)
+            .unwrap()
+            .1;
         host_session.receive_round2(&[pairer_to_host]).unwrap();
         pairer_session.receive_round2(&[host_to_pairer]).unwrap();
         host.adopt_dkg_outcome(host_session).unwrap();
@@ -1687,7 +1761,10 @@ mod tests {
             "DKG must produce a shared group public key"
         );
         assert!(!host.is_single_device(), "host must be in threshold mode");
-        assert!(!pairer.is_single_device(), "pairer must be in threshold mode");
+        assert!(
+            !pairer.is_single_device(),
+            "pairer must be in threshold mode"
+        );
 
         let message = b"hello from the ceremony".to_vec();
         let host_round1 = host.sign_round1(&mut rng).unwrap();
@@ -1710,5 +1787,4 @@ mod tests {
         verify_event(&message, &sig, host.group_public_key())
             .expect("threshold-produced signature must verify as plain Ed25519");
     }
-
 }

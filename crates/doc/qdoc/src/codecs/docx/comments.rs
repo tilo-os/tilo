@@ -4,7 +4,7 @@
 //! a comment onto a `comment` mark over the body range carrying the comment id, plus its
 //! author/date/content in the `comments` container.
 
-use crate::model::{materialize_comments, DocMut, DocRef};
+use crate::model::{DocMut, DocRef, materialize_comments};
 use crate::snapshot::BlockView;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -17,7 +17,9 @@ pub(super) const COMMENTS_PART: &str = "word/comments.xml";
 /// parser can wire each `commentRangeStart/End` onto the canonical comment.
 pub(super) fn import_comments_part(xml: &[u8], doc: &mut DocMut) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
-    let Ok(s) = std::str::from_utf8(xml) else { return map };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return map;
+    };
     let mut reader = Reader::from_str(s);
     // Per-comment capture: (docx id, author, date, raw-XML start byte, open depth).
     let mut capture: Option<(String, String, String, usize, i32)> = None;
@@ -69,7 +71,10 @@ fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> 
     let mut cur_len: usize = 0;
     let mut in_t = false;
 
-    let open_block = |doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize| {
+    let open_block = |doc: &mut DocMut,
+                      prev: &mut Option<String>,
+                      cur: &mut Option<String>,
+                      cur_len: &mut usize| {
         if let Some(id) = doc.insert_comment_block(&comment_id, prev.as_deref(), "paragraph") {
             *prev = Some(id.clone());
             *cur = Some(id);
@@ -121,7 +126,10 @@ fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> 
 }
 
 fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
-    e.attributes().flatten().find(|a| a.key.as_ref() == key).and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == key)
+        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
 }
 
 fn push_escaped(out: &mut String, c: char) {
@@ -195,13 +203,20 @@ pub(super) fn export_comments(doc: &DocRef) -> ExportedComments {
     let comments = materialize_comments(doc.doc, doc.c);
     let mut id_map = BTreeMap::new();
     if comments.is_empty() {
-        return ExportedComments { comments_xml: None, id_map };
+        return ExportedComments {
+            comments_xml: None,
+            id_map,
+        };
     }
     let mut inner = String::new();
     for (i, c) in comments.iter().enumerate() {
         let docx_id = i as i64;
         id_map.insert(c.id.clone(), docx_id);
-        let date = if c.date.is_empty() { String::new() } else { format!(r#" w:date="{}""#, escape_attr(&c.date)) };
+        let date = if c.date.is_empty() {
+            String::new()
+        } else {
+            format!(r#" w:date="{}""#, escape_attr(&c.date))
+        };
         inner.push_str(&format!(
             r#"<w:comment w:id="{docx_id}" w:author="{}"{date} w:initials="">{}</w:comment>"#,
             escape_attr(&c.author),
@@ -212,11 +227,17 @@ pub(super) fn export_comments(doc: &DocRef) -> ExportedComments {
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{inner}</w:comments>"#
     );
-    ExportedComments { comments_xml: Some(xml.into_bytes()), id_map }
+    ExportedComments {
+        comments_xml: Some(xml.into_bytes()),
+        id_map,
+    }
 }
 
 /// The `<w:commentReference>` run for a comment id, or `None` when it isn't being exported.
-pub(super) fn comment_reference_run(comment_id: &str, id_map: &BTreeMap<String, i64>) -> Option<String> {
+pub(super) fn comment_reference_run(
+    comment_id: &str,
+    id_map: &BTreeMap<String, i64>,
+) -> Option<String> {
     let docx_id = id_map.get(comment_id)?;
     Some(format!(
         r#"<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="{docx_id}"/></w:r>"#
@@ -224,13 +245,19 @@ pub(super) fn comment_reference_run(comment_id: &str, id_map: &BTreeMap<String, 
 }
 
 /// The `<w:commentRangeStart>` empty element for a comment id, or `None` when absent.
-pub(super) fn comment_range_start(comment_id: &str, id_map: &BTreeMap<String, i64>) -> Option<String> {
+pub(super) fn comment_range_start(
+    comment_id: &str,
+    id_map: &BTreeMap<String, i64>,
+) -> Option<String> {
     let docx_id = id_map.get(comment_id)?;
     Some(format!(r#"<w:commentRangeStart w:id="{docx_id}"/>"#))
 }
 
 /// The `<w:commentRangeEnd>` empty element for a comment id, or `None` when absent.
-pub(super) fn comment_range_end(comment_id: &str, id_map: &BTreeMap<String, i64>) -> Option<String> {
+pub(super) fn comment_range_end(
+    comment_id: &str,
+    id_map: &BTreeMap<String, i64>,
+) -> Option<String> {
     let docx_id = id_map.get(comment_id)?;
     Some(format!(r#"<w:commentRangeEnd w:id="{docx_id}"/>"#))
 }

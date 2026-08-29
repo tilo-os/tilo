@@ -237,7 +237,10 @@ mod tests {
 
         let mut blank = entry("dev.qos.blank", "Blank", vec![]);
         blank.versions[0].qpkg_url = "  ".into();
-        sign_entry(&mut blank, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+        sign_entry(
+            &mut blank,
+            &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
+        );
         assert!(entry_to_app(&verified(blank), "main").is_none());
     }
 

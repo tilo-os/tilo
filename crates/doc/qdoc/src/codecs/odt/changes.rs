@@ -138,7 +138,11 @@ pub(super) fn render_tracked_changes(changes: &[ChangeView]) -> String {
             // only the change-info; an empty `text:p` keeps the element schema-valid.
             ChangeKind::Del => format!("<text:deletion>{info}<text:p/></text:deletion>"),
         };
-        out.push_str(&format!(r#"<text:changed-region xml:id="{}" text:id="{}">{region}</text:changed-region>"#, escape_attr(&c.id), escape_attr(&c.id)));
+        out.push_str(&format!(
+            r#"<text:changed-region xml:id="{}" text:id="{}">{region}</text:changed-region>"#,
+            escape_attr(&c.id),
+            escape_attr(&c.id)
+        ));
     }
     out.push_str("</text:tracked-changes>");
     out
@@ -146,13 +150,23 @@ pub(super) fn render_tracked_changes(changes: &[ChangeView]) -> String {
 
 /// The `<office:change-info>` (author + optional date) for a change.
 fn render_change_info(c: &ChangeView) -> String {
-    let date = if c.date.is_empty() { String::new() } else { format!("<dc:date>{}</dc:date>", escape_text(&c.date)) };
-    format!("<office:change-info><dc:creator>{}</dc:creator>{date}</office:change-info>", escape_text(&c.author))
+    let date = if c.date.is_empty() {
+        String::new()
+    } else {
+        format!("<dc:date>{}</dc:date>", escape_text(&c.date))
+    };
+    format!(
+        "<office:change-info><dc:creator>{}</dc:creator>{date}</office:change-info>",
+        escape_text(&c.author)
+    )
 }
 
 /// The `<text:change-start>` marker opening a change's range in the body.
 pub(super) fn render_change_start(id: &str) -> String {
-    format!(r#"<text:change-start text:change-id="{}"/>"#, escape_attr(id))
+    format!(
+        r#"<text:change-start text:change-id="{}"/>"#,
+        escape_attr(id)
+    )
 }
 
 /// The `<text:change-end>` marker closing a change's range in the body.

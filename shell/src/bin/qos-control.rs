@@ -473,7 +473,10 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
                 .max()
                 .unwrap_or(0);
             for entry in &actions {
-                let provider = entry.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+                let provider = entry
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                 let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
                 let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -489,7 +492,10 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
             let title = answer.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let provider = answer.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+            let provider = answer
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let id = answer.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             println!("invoked {provider}:{id}  {title}");
         }

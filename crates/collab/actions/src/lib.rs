@@ -53,20 +53,20 @@ pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLoc
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec};
 pub use envelope::ActionEnvelope;
 pub use executor::{
-    apply_local, apply_local_by, dispatch, dispatch_by, replay, ActionTransport, Dispatched,
-    HostDecision, LocalTransport,
+    ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
+    dispatch, dispatch_by, replay,
 };
 pub use registry::ActionRegistry;
 pub use resource::{
-    flatten, ActionInput, ActionSpec, Collects, FlatAction, Resource, ResourceId, ResourceProvider,
-    KEY_SEP,
+    ActionInput, ActionSpec, Collects, FlatAction, KEY_SEP, Resource, ResourceId, ResourceProvider,
+    flatten,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{AutoCommit, ReadDoc, ScalarValue, ROOT};
+    use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
     use serde::{Deserialize, Serialize};
 
     /// A real action: set a scalar under a key, and (for lists) append.
@@ -129,7 +129,11 @@ mod tests {
     #[test]
     fn action_replays_to_identical_doc_on_peer() {
         let (mut a, mut b) = two_replicas();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = Counter::Put {
             key: "score".into(),
@@ -238,7 +242,10 @@ mod tests {
         let mut tx = HostTransport { submitted: vec![] };
         let d = dispatch(&mut a, &action, encoded, &mut tx).unwrap();
         assert!(matches!(d, Dispatched::SubmittedToHost(_)));
-        assert!(!d.mutated_local(), "host-accepted action is not applied locally");
+        assert!(
+            !d.mutated_local(),
+            "host-accepted action is not applied locally"
+        );
         assert_eq!(tx.submitted.len(), 1, "submitted to the host once");
         assert_eq!(a.get_heads(), before, "local doc untouched");
         assert_eq!(d.envelope().locus, ExecutionLocus::ServerPreferred);
@@ -259,7 +266,10 @@ mod tests {
         assert_eq!(tx.replicated.len(), 1);
         // The append landed in the list.
         let (val, list) = a.get(&ROOT, "queue").unwrap().unwrap();
-        assert!(matches!(val, automerge::Value::Object(automerge::ObjType::List)));
+        assert!(matches!(
+            val,
+            automerge::Value::Object(automerge::ObjType::List)
+        ));
         assert_eq!(a.length(&list), 1);
     }
 

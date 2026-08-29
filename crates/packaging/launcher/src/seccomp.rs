@@ -204,11 +204,8 @@ pub fn resolve_profile(requested: &str, package_id: &str) -> ProfileDecision {
 
 /// Syscalls that take a page-protection bitmask in argument 2 and can
 /// therefore produce a writable, executable mapping.
-const PROT_ARG_SYSCALLS: &[libc::c_long] = &[
-    libc::SYS_mmap,
-    libc::SYS_mprotect,
-    libc::SYS_pkey_mprotect,
-];
+const PROT_ARG_SYSCALLS: &[libc::c_long] =
+    &[libc::SYS_mmap, libc::SYS_mprotect, libc::SYS_pkey_mprotect];
 
 /// `PROT_WRITE | PROT_EXEC`, used as both mask and value so the rule
 /// reads "both bits are set" rather than "exactly this" — `PROT_READ`
@@ -516,7 +513,10 @@ mod tests {
             // SAFETY: every caller is in the `process_env` serial group, and
             // `Drop` restores what was there.
             unsafe { std::env::set_var(JIT_POLICY_PATH_ENV, &file) };
-            Self { _dir: dir, previous }
+            Self {
+                _dir: dir,
+                previous,
+            }
         }
 
         /// A path that does not exist, so the compiled-in fallback decides.
@@ -527,7 +527,10 @@ mod tests {
             unsafe {
                 std::env::set_var(JIT_POLICY_PATH_ENV, dir.path().join("does-not-exist.conf"))
             };
-            Self { _dir: dir, previous }
+            Self {
+                _dir: dir,
+                previous,
+            }
         }
     }
 
@@ -699,8 +702,8 @@ mod tests {
     /// on one image than another.
     #[test]
     fn the_shipped_policy_file_and_the_builtin_list_agree() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../os/usr/lib/qos/jit-entitled.conf");
+        let repo =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/usr/lib/qos/jit-entitled.conf");
         let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
             panic!(
                 "the image's entitlement list must be in the tree at {}: {e}",

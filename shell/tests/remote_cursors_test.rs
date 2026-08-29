@@ -95,7 +95,11 @@ fn a_desktop_pointer_is_not_redrawn_inside_the_tile() {
     let drawn = ov.cursors_to_draw(&ctx);
 
     // Both are well inside the tile, so bounds are not what decides it.
-    assert_eq!(drawn.len(), 1, "the compositor's pointer must not be redrawn here");
+    assert_eq!(
+        drawn.len(),
+        1,
+        "the compositor's pointer must not be redrawn here"
+    );
     assert_eq!(
         drawn[0].user_id, "window",
         "and the one nothing else paints must still be drawn",

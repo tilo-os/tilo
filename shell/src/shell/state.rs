@@ -1710,7 +1710,10 @@ impl WorkspaceTree {
         let changed = if name.is_empty() {
             entry.remove(peer_id).is_some()
         } else {
-            entry.insert(peer_id.to_string(), name.to_string()).as_deref() != Some(name)
+            entry
+                .insert(peer_id.to_string(), name.to_string())
+                .as_deref()
+                != Some(name)
         };
         if entry.is_empty() {
             self.room_peer_names.remove(&room);
@@ -1772,8 +1775,7 @@ impl WorkspaceTree {
             );
             return false;
         }
-        self.room_authority
-            .insert(room, RoomAuthority::Peer(peer));
+        self.room_authority.insert(room, RoomAuthority::Peer(peer));
         self.flush_to_disk();
         true
     }
@@ -1927,8 +1929,11 @@ impl WorkspaceTree {
         let caps: Vec<CapOverride> = ws.capabilities.clone();
         let peer_names: std::collections::BTreeMap<String, String> =
             self.room_peer_names.get(&room).cloned().unwrap_or_default();
-        let held: std::collections::BTreeMap<String, String> =
-            self.room_records_held.get(&room).cloned().unwrap_or_default();
+        let held: std::collections::BTreeMap<String, String> = self
+            .room_records_held
+            .get(&room)
+            .cloned()
+            .unwrap_or_default();
         let strips: Vec<Strip> = ws.strips.clone();
         let room_str = room.to_string();
         let local_salt = self.local_salt();
@@ -2357,8 +2362,7 @@ impl WorkspaceTree {
                     let Some(gid) = Self::contents_key_id(&gkey) else {
                         continue;
                     };
-                    let Some((_, group_entry)) =
-                        doc.get(&groups_id, gkey.as_str()).ok().flatten()
+                    let Some((_, group_entry)) = doc.get(&groups_id, gkey.as_str()).ok().flatten()
                     else {
                         continue;
                     };
@@ -2433,7 +2437,11 @@ impl WorkspaceTree {
             if peer_salt_of(strip.id) == local_salt {
                 out.push((
                     strip.id,
-                    format!("s|{}|{}", strip.order, strip.name.clone().unwrap_or_default()),
+                    format!(
+                        "s|{}|{}",
+                        strip.order,
+                        strip.name.clone().unwrap_or_default()
+                    ),
                 ));
             }
             for group in &strip.groups {
@@ -2500,16 +2508,18 @@ impl WorkspaceTree {
         };
         let mut changed = false;
         let previous: Vec<StripId> = ws.strips.iter().map(|s| s.id).collect();
-        let mut by_strip: std::collections::BTreeMap<u64, ReplicatedStrip> = replicated
-            .into_iter()
-            .map(|s| (s.id, s))
-            .collect();
+        let mut by_strip: std::collections::BTreeMap<u64, ReplicatedStrip> =
+            replicated.into_iter().map(|s| (s.id, s)).collect();
 
         // **Which strip a peer's windows land in is this machine's
         // business** — taking a peer's strip id literally would mint a
         // second strip that stacks below ours; instead their groups
         // merge into the strip we're using, keeping their own ids.
-        let foreign: Vec<u64> = by_strip.keys().copied().filter(|id| !is_local(*id)).collect();
+        let foreign: Vec<u64> = by_strip
+            .keys()
+            .copied()
+            .filter(|id| !is_local(*id))
+            .collect();
         let mut peer_groups: Vec<ReplicatedGroup> = Vec::new();
         for sid in foreign {
             let rep = by_strip.remove(&sid).expect("key just listed");
@@ -2556,7 +2566,11 @@ impl WorkspaceTree {
             if let Some(extra) = adopting {
                 rep.groups.extend(extra);
             }
-            out.push((order, sid, Self::merge_strip(strip, rep, &is_local, &mut changed)));
+            out.push((
+                order,
+                sid,
+                Self::merge_strip(strip, rep, &is_local, &mut changed),
+            ));
         }
         for (sid, rep) in by_strip {
             out.push((rep.order, sid, Self::hydrate_strip(rep)));
@@ -2567,10 +2581,7 @@ impl WorkspaceTree {
 
         let ws_id = ws.id;
         let live: Vec<StripId> = ws.strips.iter().map(|s| s.id).collect();
-        let vanished: Vec<StripId> = previous
-            .into_iter()
-            .filter(|s| !live.contains(s))
-            .collect();
+        let vanished: Vec<StripId> = previous.into_iter().filter(|s| !live.contains(s)).collect();
 
         // Removed rather than repointed: resolvers already fall back to
         // the first strip/group with no explicit selection.
@@ -2607,7 +2618,10 @@ impl WorkspaceTree {
             rep.groups.into_iter().map(|g| (g.id, g)).collect();
 
         let mut out: Vec<(u64, u64, WindowGroup)> = Vec::new();
-        for (i, group) in std::mem::take(&mut local.window_groups).into_iter().enumerate() {
+        for (i, group) in std::mem::take(&mut local.window_groups)
+            .into_iter()
+            .enumerate()
+        {
             let gid = group.id;
             match by_group.remove(&gid) {
                 Some(rep) => {
@@ -2668,8 +2682,7 @@ impl WorkspaceTree {
                         }
                         if let Some(tile) = rep.tile.clone() {
                             let tile = Self::localise_tile(tile, Some(&tab.tile), &rep.title);
-                            if serde_json::to_vec(&tab.tile).ok()
-                                != serde_json::to_vec(&tile).ok()
+                            if serde_json::to_vec(&tab.tile).ok() != serde_json::to_vec(&tile).ok()
                             {
                                 tab.tile = tile;
                                 *changed = true;
@@ -2745,11 +2758,7 @@ impl WorkspaceTree {
     /// app id survives as [`TileContent::PeerWindow`]. `current` is
     /// preferred once a local instance is bound, or the peer's
     /// re-projection would take the window away again every round.
-    fn localise_tile(
-        tile: TileContent,
-        current: Option<&TileContent>,
-        title: &str,
-    ) -> TileContent {
+    fn localise_tile(tile: TileContent, current: Option<&TileContent>, title: &str) -> TileContent {
         match tile {
             TileContent::Foreign { app_id, .. } => {
                 // Already resolved here, to our own instance or the same
@@ -3455,31 +3464,27 @@ impl WorkspaceTree {
                         // same share of this replica's own display, not
                         // the sender's pixel count. `width_pixels` is the
                         // pre-fraction shape — migrate rather than drop it.
-                        let width = match self
-                            .doc
-                            .get(&group_entry, "width_permille")
-                            .ok()
-                            .flatten()
-                        {
-                            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                                ScalarValue::Uint(v) if *v > 0 => {
-                                    Some(WindowWidth::Fraction(*v as u16))
-                                }
-                                _ => None,
-                            },
-                            _ => None,
-                        }
-                        .or_else(|| {
-                            match self.doc.get(&group_entry, "width_pixels").ok().flatten() {
+                        let width =
+                            match self.doc.get(&group_entry, "width_permille").ok().flatten() {
                                 Some((Value::Scalar(s), _)) => match s.as_ref() {
                                     ScalarValue::Uint(v) if *v > 0 => {
-                                        Some(WindowWidth::from_legacy_pixels(*v as u32))
+                                        Some(WindowWidth::Fraction(*v as u16))
                                     }
                                     _ => None,
                                 },
                                 _ => None,
                             }
-                        });
+                            .or_else(|| {
+                                match self.doc.get(&group_entry, "width_pixels").ok().flatten() {
+                                    Some((Value::Scalar(s), _)) => match s.as_ref() {
+                                        ScalarValue::Uint(v) if *v > 0 => {
+                                            Some(WindowWidth::from_legacy_pixels(*v as u32))
+                                        }
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                }
+                            });
 
                         let ws = match self.workspaces.iter_mut().find(|w| w.id == ws_id) {
                             Some(w) => w,
@@ -4945,7 +4950,11 @@ impl WorkspaceTree {
 pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
     let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
     for c in roster {
-        if let Some(rgb) = c.cursor_color.as_deref().and_then(ui::presence::parse_hex_color) {
+        if let Some(rgb) = c
+            .cursor_color
+            .as_deref()
+            .and_then(ui::presence::parse_hex_color)
+        {
             explicit.insert(c.id.clone(), rgb);
         }
     }
@@ -5209,7 +5218,10 @@ mod bootstrap_tests {
         let mut tree = WorkspaceTree::bootstrap_default();
         tree.append_empty_workspace("Second");
         let rooms: Vec<RoomId> = tree.workspaces.iter().map(|w| w.room).collect();
-        assert!(rooms.len() >= 2, "need two rooms to tell a sweep from a hit");
+        assert!(
+            rooms.len() >= 2,
+            "need two rooms to tell a sweep from a hit"
+        );
         let peer = 0x33_u64;
         for r in &rooms {
             assert!(tree.note_peer_present(*r, peer, "dana"));
@@ -5337,7 +5349,10 @@ mod bootstrap_tests {
         assert!(
             tree.collaborators.is_empty(),
             "the tree-level roster fallback boots non-empty: {:?}",
-            tree.collaborators.iter().map(|c| &c.name).collect::<Vec<_>>(),
+            tree.collaborators
+                .iter()
+                .map(|c| &c.name)
+                .collect::<Vec<_>>(),
         );
         // And the chrome's own arithmetic agrees: no peers to count.
         assert_eq!(
@@ -5630,7 +5645,11 @@ mod automerge_foundation_tests {
 
         assert_eq!(
             guest.take_inbound_room_records(),
-            vec![(room, "file:/docs/plan.md".to_string(), "document".to_string())],
+            vec![(
+                room,
+                "file:/docs/plan.md".to_string(),
+                "document".to_string()
+            )],
             "the guest must be handed the reference its host made",
         );
     }
@@ -5798,7 +5817,11 @@ mod automerge_foundation_tests {
         let guest_group = salted(GUEST, 2);
         let guest_tab_a = salted(GUEST, 3);
         let guest_tab_b = salted(GUEST, 4);
-        let gi = guest.workspaces.iter().position(|w| w.room == room).unwrap();
+        let gi = guest
+            .workspaces
+            .iter()
+            .position(|w| w.room == room)
+            .unwrap();
         let guest_ws = guest.workspaces[gi].id;
         guest.workspaces[gi].strips = vec![Strip {
             id: guest_strip,
@@ -5953,10 +5976,12 @@ mod automerge_foundation_tests {
         let accepted = host
             .apply_room_changes(room, &tampered, &PeerOrigin::hub(2))
             .expect("the check is a refusal, not an error");
-        assert!(!accepted, "a batch rewriting our own window must be refused");
+        assert!(
+            !accepted,
+            "a batch rewriting our own window must be refused"
+        );
         assert_eq!(
-            host.workspaces[hi].strips[0].window_groups[0].tabs[0].title,
-            "Plan",
+            host.workspaces[hi].strips[0].window_groups[0].tabs[0].title, "Plan",
             "and nothing about it may be stored",
         );
     }
@@ -6004,7 +6029,10 @@ mod automerge_foundation_tests {
             .flatten()
             .expect("the room's windows must be in its document");
         let (_, strip) = doc
-            .get(&contents, WorkspaceTree::contents_key(strip_id.raw()).as_str())
+            .get(
+                &contents,
+                WorkspaceTree::contents_key(strip_id.raw()).as_str(),
+            )
             .ok()
             .flatten()
             .expect("the strip");
@@ -6166,7 +6194,10 @@ mod automerge_foundation_tests {
 
     /// The owner and capability ids the receiver's own **room document**
     /// records — not its cache, so a divergent fold can't hide behind it.
-    fn governance_in_room_doc(tree: &mut WorkspaceTree, room: RoomId) -> (Option<String>, Vec<String>) {
+    fn governance_in_room_doc(
+        tree: &mut WorkspaceTree,
+        room: RoomId,
+    ) -> (Option<String>, Vec<String>) {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let Some(doc) = tree.room_docs.get(&room) else {
             return (None, Vec::new());
@@ -6216,12 +6247,16 @@ mod automerge_foundation_tests {
         );
 
         assert_eq!(
-            host.room_peer_names_in_doc(room).get(&bob).map(String::as_str),
+            host.room_peer_names_in_doc(room)
+                .get(&bob)
+                .map(String::as_str),
             Some("bob"),
             "the name has to be in the room document, which is what replicates",
         );
         assert_eq!(
-            host.room_peer_labels(room).get(&handle_of(&bob)).map(String::as_str),
+            host.room_peer_labels(room)
+                .get(&handle_of(&bob))
+                .map(String::as_str),
             Some("bob"),
             "and it has to be reachable from the handle a presence frame carries",
         );
@@ -6240,7 +6275,9 @@ mod automerge_foundation_tests {
         host.room_docs.clear();
 
         assert_eq!(
-            host.room_peer_labels(room).get(&handle_of(&bob)).map(String::as_str),
+            host.room_peer_labels(room)
+                .get(&handle_of(&bob))
+                .map(String::as_str),
             Some("bob"),
             "the machine that governs the room is the one the document is \
              projected from, so its cache is the same authority",
@@ -6255,7 +6292,11 @@ mod automerge_foundation_tests {
         let bob = peer_id(9);
         assert!(host.name_peer(room, &"ada".to_string(), &bob, "bob"));
         ship(&mut host, &mut guest, room, 1);
-        assert!(guest.room_peer_labels(room).contains_key(&handle_of(&bob)));
+        assert!(
+            guest
+                .room_peer_labels(room)
+                .contains_key(&handle_of(&bob))
+        );
 
         // A name the guest holds locally and the room does not.
         guest
@@ -6269,7 +6310,10 @@ mod automerge_foundation_tests {
             !labels.values().any(|n| n == "Somebody Else"),
             "a guest must not show a name that is not in the room document",
         );
-        assert_eq!(labels.get(&handle_of(&bob)).map(String::as_str), Some("bob"));
+        assert_eq!(
+            labels.get(&handle_of(&bob)).map(String::as_str),
+            Some("bob")
+        );
     }
 
     /// A peer nobody named is left as the id it arrived under — an
@@ -6306,12 +6350,18 @@ mod automerge_foundation_tests {
         ship(&mut host, &mut guest, room, 1);
 
         assert_eq!(
-            guest.room_peer_names_in_doc(room).get(&bob).map(String::as_str),
+            guest
+                .room_peer_names_in_doc(room)
+                .get(&bob)
+                .map(String::as_str),
             Some("bob"),
             "a guest reads names out of the replicated room document",
         );
         assert_eq!(
-            guest.room_peer_labels(room).get(&handle_of(&bob)).map(String::as_str),
+            guest
+                .room_peer_labels(room)
+                .get(&handle_of(&bob))
+                .map(String::as_str),
             Some("bob"),
         );
     }
@@ -6370,7 +6420,9 @@ mod automerge_foundation_tests {
             .expect("well-formed change blobs parse");
 
         assert_eq!(
-            host.room_peer_names_in_doc(room).get(&bob).map(String::as_str),
+            host.room_peer_names_in_doc(room)
+                .get(&bob)
+                .map(String::as_str),
             Some("bob"),
             "a guest must not be able to rename anyone in a room it joined",
         );
@@ -6502,7 +6554,9 @@ mod automerge_foundation_tests {
             let mut carol = WorkspaceTree::default();
             let carol_ws = carol.append_empty_workspace("Mine");
             assert!(carol.set_room(carol_ws, room), "carol joins the room");
-            carol.room_authority.insert(room, RoomAuthority::Peer(PeerOrigin::hub(1)));
+            carol
+                .room_authority
+                .insert(room, RoomAuthority::Peer(PeerOrigin::hub(1)));
             carol
                 .apply_room_changes(room, &legitimate, &PeerOrigin::hub(1))
                 .expect("the host's document parses");
@@ -6763,8 +6817,7 @@ mod automerge_foundation_tests {
         let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
         let new_share: u16 = 600;
 
-        tree_a.workspaces[0].strips[0].window_groups[0].width =
-            WindowWidth::Fraction(new_share);
+        tree_a.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(new_share);
         tree_a.doc_set_width(target_group, new_share);
 
         let changes = tree_a.export_changes_since(&[]);
@@ -7901,12 +7954,20 @@ mod agent_membership {
         let mut ws = room();
         ws.grant_as(
             &"ada".to_string(),
-            CapOverride::membership(Subject::person("bob"), ws.id.raw().to_string(), Verb::Write),
+            CapOverride::membership(
+                Subject::person("bob"),
+                ws.id.raw().to_string(),
+                Verb::Write,
+            ),
         )
         .expect("owner grants");
         ws.grant_as(
             &"ada".to_string(),
-            CapOverride::membership(Subject::agent("scribe"), ws.id.raw().to_string(), Verb::Write),
+            CapOverride::membership(
+                Subject::agent("scribe"),
+                ws.id.raw().to_string(),
+                Verb::Write,
+            ),
         )
         .expect("owner grants");
 
@@ -7949,8 +8010,12 @@ mod agent_membership {
         let mut ws = room();
         ws.grant_as(
             &"ada".to_string(),
-            CapOverride::membership(Subject::agent("scribe"), ws.id.raw().to_string(), Verb::Write)
-                .with_expiry(1),
+            CapOverride::membership(
+                Subject::agent("scribe"),
+                ws.id.raw().to_string(),
+                Verb::Write,
+            )
+            .with_expiry(1),
         )
         .expect("owner grants");
         assert!(ws.agent_members().is_empty());
@@ -8018,7 +8083,11 @@ mod peer_window_merge_tests {
         let mut changed = false;
         let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
         match &merged.tabs[0].tile {
-            TileContent::PeerWindow { app_id, label, note } => {
+            TileContent::PeerWindow {
+                app_id,
+                label,
+                note,
+            } => {
                 assert_eq!(app_id, APP);
                 assert_eq!(label, "Word Processor", "the peer's own name for it");
                 assert!(note.is_empty(), "nobody has answered for it yet");

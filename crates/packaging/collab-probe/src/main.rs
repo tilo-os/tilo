@@ -26,7 +26,7 @@
 use std::process::ExitCode;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 
 /// Root key the probe reads and writes — one flat string, since the probe proves delivery, not a document model.
 const FIELD: &str = "text";
@@ -173,7 +173,9 @@ async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
                 continue;
             }
             match doc.get(&ROOT, FIELD) {
-                Ok(Some((value, _))) => return Some(value.to_str().unwrap_or_default().to_string()),
+                Ok(Some((value, _))) => {
+                    return Some(value.to_str().unwrap_or_default().to_string());
+                }
                 _ => continue,
             }
         }

@@ -28,14 +28,14 @@ use std::time::SystemTime;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use collab_types::{ChannelId, Role, generate_keypair};
+use rand_core::OsRng;
+use threshold_identity::ThresholdIdentity;
 use ui::widget::identity_flow::{
     IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityRecord, IdentityStore,
     InviteEnvelope, MemoryIdentityStore, mint_invite,
 };
 use ui::{App, State};
-use collab_types::{ChannelId, Role, generate_keypair};
-use threshold_identity::ThresholdIdentity;
-use rand_core::OsRng;
 
 fn parse_screen_arg(name: &str) -> Option<IdentityFlowScreen> {
     Some(match name {
@@ -94,8 +94,7 @@ impl IdentityStore for DemoFileStore {
         let bytes = record.to_json_bytes()?;
         // 0600 lands on the temp file, so the record is never readable by
         // anyone else at its final path.
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)
-            .map_err(IdentityFlowError::Io)?;
+        atomic_file::write_with_mode(&self.path, &bytes, 0o600).map_err(IdentityFlowError::Io)?;
         *self.cached.lock().unwrap() = Some(record.clone());
         eprintln!(
             "identity_flow_demo: wrote identity to {} (0600)",
@@ -135,13 +134,9 @@ fn main() {
 
     let mut rng = OsRng;
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-    let record = IdentityRecord::from_threshold_identity(
-        &id,
-        "alice",
-        [248, 113, 113],
-        SystemTime::now(),
-    )
-    .unwrap();
+    let record =
+        IdentityRecord::from_threshold_identity(&id, "alice", [248, 113, 113], SystemTime::now())
+            .unwrap();
     flow.recovery_share.seed_from_record(&record);
     let mnemonic = flow.recovery_share.mnemonic().to_string();
     flow.recovery_verify.seed_mnemonic(mnemonic);
@@ -150,11 +145,10 @@ fn main() {
             let mut id_local = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
             id_local.begin_enrolment(1, 2, 2, &mut rng).unwrap()
         };
-        let _ = flow
-            .add_device_host
-            .begin(r1, sess, *id.group_public_key());
+        let _ = flow.add_device_host.begin(r1, sess, *id.group_public_key());
     }
-    flow.invite_mint.set_channel(ChannelId::new(), "engineering");
+    flow.invite_mint
+        .set_channel(ChannelId::new(), "engineering");
     let (owner_sk, owner_pk) = generate_keypair();
     let env: InviteEnvelope = mint_invite(
         ChannelId::new(),

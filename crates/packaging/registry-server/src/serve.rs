@@ -74,7 +74,10 @@ pub async fn handle(
     let path = req.uri().path().to_string();
 
     let res = match (method, path.as_str()) {
-        (Method::GET, "/health") => Ok(json_response(StatusCode::OK, &serde_json::json!({"ok": true}))),
+        (Method::GET, "/health") => Ok(json_response(
+            StatusCode::OK,
+            &serde_json::json!({"ok": true}),
+        )),
         (Method::GET, "/registry") => handle_get_registry(&state).await,
         (Method::GET, "/entries") => handle_get_entries(&state).await,
         (Method::GET, p) if p.starts_with("/entries/") => {
@@ -160,7 +163,10 @@ async fn handle_post_entries(
     // Verify the signature FIRST — no touching disk before the
     // request is proven authorised.
     if let Err(e) = verify_change_request(&change, &allow_snapshot) {
-        warn!("rejecting change request for {}: {e:?}", change.entry.package_id);
+        warn!(
+            "rejecting change request for {}: {e:?}",
+            change.entry.package_id
+        );
         let (code, msg) = match e {
             VerifyError::PublisherNotAllowed => (
                 StatusCode::FORBIDDEN,

@@ -267,11 +267,7 @@ mod tests {
     fn a_replica_that_opens_empty_never_closes_the_photograph_the_room_holds() {
         for (open_actor, empty_actor) in [(1u8, 2u8), (2u8, 1u8)] {
             for empty_is_ahead in [false, true] {
-                run_the_empty_replica_against_the_open_one(
-                    open_actor,
-                    empty_actor,
-                    empty_is_ahead,
-                );
+                run_the_empty_replica_against_the_open_one(open_actor, empty_actor, empty_is_ahead);
             }
         }
     }

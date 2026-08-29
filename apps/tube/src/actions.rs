@@ -30,7 +30,7 @@
 //! would only add an unused field.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
@@ -294,9 +294,16 @@ mod tests {
         assert_eq!(video.kind, "tube.video");
         let video_actions: Vec<&str> = video.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(video_actions.contains(&"like"), "video exports like");
-        assert!(video_actions.contains(&"queue"), "video exports add-to-queue");
+        assert!(
+            video_actions.contains(&"queue"),
+            "video exports add-to-queue"
+        );
 
-        assert_eq!(video.children.len(), n_comments, "each comment is a child resource");
+        assert_eq!(
+            video.children.len(),
+            n_comments,
+            "each comment is a child resource"
+        );
         let c0 = &video.children[0];
         assert_eq!(c0.kind, "tube.comment");
         let comment_actions: Vec<&str> = c0.actions.iter().map(|a| a.id.as_str()).collect();
@@ -369,7 +376,11 @@ mod tests {
         let mut tx = LocalTransport::new();
         let d = run_row(&mut palette, &mut doc, &registry(), &mut tx, "Like video");
         assert!(matches!(d, qos_actions::Dispatched::AppliedLocal(_)));
-        assert_eq!(read_bool(&doc, "likes", &vid), Some(true), "like written to CRDT");
+        assert_eq!(
+            read_bool(&doc, "likes", &vid),
+            Some(true),
+            "like written to CRDT"
+        );
         assert_eq!(tx.replicated.len(), 1, "replicated once");
     }
 
@@ -401,6 +412,9 @@ mod tests {
             _ => panic!("queue list"),
         };
         assert_eq!(doc.length(&queue), 1);
-        assert_eq!(doc.get(&queue, 0).unwrap().unwrap().0.to_str(), Some(vid.as_str()));
+        assert_eq!(
+            doc.get(&queue, 0).unwrap().unwrap().0.to_str(),
+            Some(vid.as_str())
+        );
     }
 }

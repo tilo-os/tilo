@@ -424,12 +424,7 @@ impl HexView {
             None
         } else {
             let cur = self.model.cursor();
-            Some(
-                self.matches
-                    .iter()
-                    .position(|&m| m >= cur)
-                    .unwrap_or(0),
-            )
+            Some(self.matches.iter().position(|&m| m >= cur).unwrap_or(0))
         };
     }
 
@@ -459,7 +454,8 @@ impl HexView {
         // Accept "0x.." hex or plain decimal.
         let parsed = if let Some(hex) = q.strip_prefix("0x").or_else(|| q.strip_prefix("0X")) {
             usize::from_str_radix(hex, 16).ok()
-        } else if q.chars().all(|c| c.is_ascii_hexdigit()) && q.chars().any(|c| c.is_ascii_alphabetic())
+        } else if q.chars().all(|c| c.is_ascii_hexdigit())
+            && q.chars().any(|c| c.is_ascii_alphabetic())
         {
             usize::from_str_radix(q, 16).ok()
         } else {
@@ -573,16 +569,43 @@ impl HexView {
         // Right-aligned pills: mode + endianness + width.
         let mut x = bar.x1 - pad;
         let width_label = format!("{}/row", self.model.bytes_per_row());
-        x = self.draw_pill(scene, t, tr, theme, x, bar, &width_label, tokens.colors.neutral[3]);
+        x = self.draw_pill(
+            scene,
+            t,
+            tr,
+            theme,
+            x,
+            bar,
+            &width_label,
+            tokens.colors.neutral[3],
+        );
         x -= 8.0;
         let endian_color = tokens.colors.accent[4];
-        x = self.draw_pill(scene, t, tr, theme, x, bar, self.model.endian().label(), endian_color);
+        x = self.draw_pill(
+            scene,
+            t,
+            tr,
+            theme,
+            x,
+            bar,
+            self.model.endian().label(),
+            endian_color,
+        );
         x -= 8.0;
         let mode_color = match self.model.mode() {
             EditMode::Overwrite => tokens.colors.neutral[3],
             EditMode::Insert => tokens.colors.semantic.warning,
         };
-        let _ = self.draw_pill(scene, t, tr, theme, x, bar, self.model.mode().label(), mode_color);
+        let _ = self.draw_pill(
+            scene,
+            t,
+            tr,
+            theme,
+            x,
+            bar,
+            self.model.mode().label(),
+            mode_color,
+        );
     }
 
     /// Draw a small rounded pill ending at `right_x`; returns its left x.
@@ -731,7 +754,9 @@ impl HexView {
                 let hex_x = m.hex_x0 + c as f64 * m.hex_col_w;
                 let ascii_x = m.ascii_x0 + c as f64 * m.char_w;
 
-                let selected = selection.map(|(lo, hi)| off >= lo && off <= hi).unwrap_or(false);
+                let selected = selection
+                    .map(|(lo, hi)| off >= lo && off <= hi)
+                    .unwrap_or(false);
                 let inspected = inspector_span
                     .map(|(lo, hi)| off >= lo && off <= hi)
                     .unwrap_or(false);
@@ -748,8 +773,7 @@ impl HexView {
 
                 // --- cell background layers (lowest to highest) ---
                 let cell_hex = Rect::new(hex_x - 3.0, y, hex_x + m.byte_w + 3.0, y + m.row_h);
-                let cell_ascii =
-                    Rect::new(ascii_x - 1.0, y, ascii_x + m.char_w + 1.0, y + m.row_h);
+                let cell_ascii = Rect::new(ascii_x - 1.0, y, ascii_x + m.char_w + 1.0, y + m.row_h);
 
                 if inspected && !is_cursor {
                     let tint = with_alpha(tokens.colors.accent[5], 40);
@@ -775,7 +799,13 @@ impl HexView {
                     } else {
                         (cell_ascii, cell_hex)
                     };
-                    scene.fill(Fill::NonZero, t, tokens.colors.accent[ui_accent_idx()], None, &cell);
+                    scene.fill(
+                        Fill::NonZero,
+                        t,
+                        tokens.colors.accent[ui_accent_idx()],
+                        None,
+                        &cell,
+                    );
                     // The mirror column gets a faint outline so the synced
                     // position is visible in both panes.
                     scene.stroke(
@@ -807,7 +837,11 @@ impl HexView {
                     hex_color,
                     t * Affine::translate((hex_x, text_y)),
                     None,
-                    if is_dirty { TextWeight::Bold } else { TextWeight::Regular },
+                    if is_dirty {
+                        TextWeight::Bold
+                    } else {
+                        TextWeight::Regular
+                    },
                     false,
                     true,
                 );
@@ -861,7 +895,12 @@ impl HexView {
         m: &GridMetrics,
     ) {
         let tokens = &theme.tokens;
-        let panel = Rect::new(m.inspector_x0, m.grid_top - 2.0, self.rect.x1, m.grid_bottom);
+        let panel = Rect::new(
+            m.inspector_x0,
+            m.grid_top - 2.0,
+            self.rect.x1,
+            m.grid_bottom,
+        );
         scene.fill(Fill::NonZero, t, tokens.colors.surfaces.base, None, &panel);
         scene.stroke(
             &Stroke::new(1.0),
@@ -1043,9 +1082,13 @@ impl HexView {
         let tsz = tokens.typography.scale.x2l;
         let (tw, _) = tr.measure_weighted(title, tsz, None, TextWeight::Semibold);
         tr.draw_text_weighted(
-            scene, title, tsz, c.text_primary,
+            scene,
+            title,
+            tsz,
+            c.text_primary,
             t * Affine::translate((cx - tw as f64 / 2.0, cy - 78.0)),
-            None, TextWeight::Semibold,
+            None,
+            TextWeight::Semibold,
         );
 
         // Subtitle.
@@ -1053,7 +1096,10 @@ impl HexView {
         let ssz = tokens.typography.scale.sm;
         let (sw, _) = tr.measure(sub, ssz, None);
         tr.draw_text(
-            scene, sub, ssz, c.text_dim,
+            scene,
+            sub,
+            ssz,
+            c.text_dim,
             t * Affine::translate((cx - sw as f64 / 2.0, cy - 40.0)),
             None,
         );
@@ -1068,11 +1114,21 @@ impl HexView {
         let by0 = cy - 8.0;
         let btn = Rect::new(bx0, by0, bx0 + bw, by0 + bh);
         let accent = c.accent[ui_accent_idx()];
-        scene.fill(Fill::NonZero, t, accent, None, &RoundedRect::from_rect(btn, 10.0));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            accent,
+            None,
+            &RoundedRect::from_rect(btn, 10.0),
+        );
         tr.draw_text_weighted(
-            scene, label, bsz, contrast_on(accent),
+            scene,
+            label,
+            bsz,
+            contrast_on(accent),
             t * Affine::translate((bx0 + (bw - lw as f64) / 2.0, by0 + (bh - bsz as f64) / 2.0)),
-            None, TextWeight::Semibold,
+            None,
+            TextWeight::Semibold,
         );
         self.open_button = btn;
 
@@ -1081,7 +1137,10 @@ impl HexView {
         let hsz = tokens.typography.scale.xs;
         let (hw, _) = tr.measure(hint, hsz, None);
         tr.draw_text(
-            scene, hint, hsz, c.text_dim,
+            scene,
+            hint,
+            hsz,
+            c.text_dim,
             t * Affine::translate((cx - hw as f64 / 2.0, by0 + bh + 16.0)),
             None,
         );
@@ -1091,7 +1150,10 @@ impl HexView {
             if *error {
                 let (mw, _) = tr.measure(msg, ssz, None);
                 tr.draw_text(
-                    scene, msg, ssz, c.semantic.danger,
+                    scene,
+                    msg,
+                    ssz,
+                    c.semantic.danger,
                     t * Affine::translate((cx - mw as f64 / 2.0, by0 + bh + 44.0)),
                     None,
                 );
@@ -1112,7 +1174,13 @@ impl HexView {
         let x0 = self.rect.x1 - w - 24.0;
         let y0 = self.rect.y0 + 56.0;
         let panel = RoundedRect::new(x0, y0, x0 + w, y0 + h, 10.0);
-        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.raised, None, &panel);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            tokens.colors.surfaces.raised,
+            None,
+            &panel,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             t,
@@ -1126,8 +1194,20 @@ impl HexView {
         // Kind toggle chip.
         let kind = self.search_kind.label();
         let chip_w = 48.0;
-        let chip = RoundedRect::new(x0 + pad, y0 + 12.0, x0 + pad + chip_w, y0 + 12.0 + 22.0, 6.0);
-        scene.fill(Fill::NonZero, t, tokens.colors.accent[ui_accent_idx()], None, &chip);
+        let chip = RoundedRect::new(
+            x0 + pad,
+            y0 + 12.0,
+            x0 + pad + chip_w,
+            y0 + 12.0 + 22.0,
+            6.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            tokens.colors.accent[ui_accent_idx()],
+            None,
+            &chip,
+        );
         tr.draw_text_weighted(
             scene,
             kind,
@@ -1208,8 +1288,20 @@ impl HexView {
         let x0 = self.rect.x0 + (self.rect.width() - w) / 2.0;
         let y0 = self.rect.y0 + 80.0;
         let panel = RoundedRect::new(x0, y0, x0 + w, y0 + h, 10.0);
-        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.raised, None, &panel);
-        scene.stroke(&Stroke::new(1.0), t, tokens.colors.border_focus, None, &panel);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            tokens.colors.surfaces.raised,
+            None,
+            &panel,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            tokens.colors.border_focus,
+            None,
+            &panel,
+        );
 
         let pad = 14.0;
         tr.draw_text_weighted(
@@ -1516,10 +1608,7 @@ impl Widget for HexView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(
-                    position.x / scale_factor,
-                    position.y / scale_factor,
-                );
+                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
@@ -1615,12 +1704,12 @@ impl Widget for HexView {
                             self.model.move_row_end(shift);
                         }
                     }
-                    Key::Named(NamedKey::PageUp) => {
-                        self.model.page_up(self.visible_rows.saturating_sub(1).max(1), shift)
-                    }
-                    Key::Named(NamedKey::PageDown) => {
-                        self.model.page_down(self.visible_rows.saturating_sub(1).max(1), shift)
-                    }
+                    Key::Named(NamedKey::PageUp) => self
+                        .model
+                        .page_up(self.visible_rows.saturating_sub(1).max(1), shift),
+                    Key::Named(NamedKey::PageDown) => self
+                        .model
+                        .page_down(self.visible_rows.saturating_sub(1).max(1), shift),
                     Key::Named(NamedKey::Tab) => {
                         self.model.toggle_column();
                     }

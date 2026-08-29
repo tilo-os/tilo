@@ -1,16 +1,20 @@
-use ui::widget::command_palette::{CommandPalette, CommandEntry};
 use std::sync::{Arc, Mutex};
+use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
 #[test]
 fn command_palette_filters_by_query() {
     let mut p = CommandPalette::new();
     let hits = Arc::new(Mutex::new(Vec::new()));
     let h = hits.clone();
-    p.push(CommandEntry::new("ws.create", "Create Workspace")
-        .on_select(move |_, _| h.lock().unwrap().push("create")));
+    p.push(
+        CommandEntry::new("ws.create", "Create Workspace")
+            .on_select(move |_, _| h.lock().unwrap().push("create")),
+    );
     let h = hits.clone();
-    p.push(CommandEntry::new("ws.rename", "Rename Workspace")
-        .on_select(move |_, _| h.lock().unwrap().push("rename")));
+    p.push(
+        CommandEntry::new("ws.rename", "Rename Workspace")
+            .on_select(move |_, _| h.lock().unwrap().push("rename")),
+    );
     p.set_query("ren");
     assert_eq!(p.visible_entries().len(), 1);
     assert_eq!(p.visible_entries()[0].label, "Rename Workspace");

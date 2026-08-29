@@ -113,9 +113,7 @@ impl DuplicateError {
 pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateError> {
     let (kind, title, group) = {
         let tree = st.tree();
-        let ws = tree
-            .active_workspace()
-            .ok_or(DuplicateError::NoActiveTab)?;
+        let ws = tree.active_workspace().ok_or(DuplicateError::NoActiveTab)?;
         let strip = tree
             .active_strip
             .get(&ws.id)
@@ -229,7 +227,9 @@ mod tests {
         let group = focused_group(&st).unwrap();
         let groups_before = {
             let tree = st.tree();
-            tree.active_workspace().unwrap().strips[0].window_groups.len()
+            tree.active_workspace().unwrap().strips[0]
+                .window_groups
+                .len()
         };
         open_terminal(&mut st, Destination::Beside);
         let tree = st.tree();

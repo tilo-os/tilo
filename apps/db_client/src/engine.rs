@@ -11,8 +11,8 @@
 
 use std::time::Instant;
 
-use rusqlite::types::ValueRef;
 use rusqlite::Connection;
+use rusqlite::types::ValueRef;
 
 use crate::model::{
     Cell, ColumnInfo, ConnectionProfile, DatabaseSchema, Engine, ForeignKey, IndexInfo,
@@ -121,7 +121,10 @@ impl SqliteEngine {
     }
 
     fn table_foreign_keys(&self, table: &str) -> Result<Vec<ForeignKey>, String> {
-        let sql = format!("PRAGMA foreign_key_list(\"{}\")", table.replace('"', "\"\""));
+        let sql = format!(
+            "PRAGMA foreign_key_list(\"{}\")",
+            table.replace('"', "\"\"")
+        );
         let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
         let fks = stmt
             .query_map([], |r| {
@@ -195,10 +198,7 @@ impl SqliteEngine {
 
         if col_count == 0 {
             // DML/DDL — execute and report affected rows.
-            let affected = self
-                .conn
-                .execute(trimmed, [])
-                .map_err(|e| e.to_string())?;
+            let affected = self.conn.execute(trimmed, []).map_err(|e| e.to_string())?;
             return Ok(QueryResult {
                 columns: Vec::new(),
                 rows: Vec::new(),
@@ -312,7 +312,9 @@ pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
             Err("SQLite connection has no file path".to_string())
         }
         Engine::Sqlite => SqliteEngine::open_file(&profile.file_path).map(LiveEngine::Sqlite),
-        Engine::Postgres => crate::engine_pg::PostgresEngine::connect(profile).map(LiveEngine::Postgres),
+        Engine::Postgres => {
+            crate::engine_pg::PostgresEngine::connect(profile).map(LiveEngine::Postgres)
+        }
         Engine::MySql => crate::engine_mysql::MySqlEngine::connect(profile).map(LiveEngine::MySql),
     }
 }
@@ -335,7 +337,9 @@ mod tests {
     #[test]
     fn select_returns_rows_with_columns() {
         let eng = SqliteEngine::open_sample().unwrap();
-        let r = eng.run("SELECT name FROM artists ORDER BY name LIMIT 3").unwrap();
+        let r = eng
+            .run("SELECT name FROM artists ORDER BY name LIMIT 3")
+            .unwrap();
         assert!(r.is_select);
         assert_eq!(r.columns, vec!["name".to_string()]);
         assert_eq!(r.rows.len(), 3);

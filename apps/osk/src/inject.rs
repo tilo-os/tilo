@@ -178,10 +178,7 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
     // --- symbols: one single-level key per code → exactly one keysym. ---
     keymap.push_str("xkb_symbols \"qos-osk\" {\n");
     for (sym, code) in &assigned {
-        keymap.push_str(&format!(
-            "key <I{code}> {{ [ {} ] }};\n",
-            sym.keysym_name()
-        ));
+        keymap.push_str(&format!("key <I{code}> {{ [ {} ] }};\n", sym.keysym_name()));
     }
     keymap.push_str("};\n");
 
@@ -344,8 +341,7 @@ mod wayland {
 
             // The manager is the protocol that may be missing — its absence is
             // the expected "degrade to null" path.
-            let manager: ZwpVirtualKeyboardManagerV1 =
-                globals.bind(&qh, 1..=1, ()).ok()?;
+            let manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).ok()?;
             // A seat is required to create the keyboard.
             let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=8, ()).ok()?;
 
@@ -369,9 +365,9 @@ mod wayland {
         /// re-uploading a fresh keymap (via a `memfd`) if any is missing.
         /// Returns the keycode assigned to each requested symbol, in order.
         fn ensure_keymap(&mut self, needed: &[Symbol]) -> Option<Vec<u32>> {
-            let all_present = needed.iter().all(|s| {
-                self.current_keymap.iter().any(|(sym, _)| sym == s)
-            });
+            let all_present = needed
+                .iter()
+                .all(|s| self.current_keymap.iter().any(|(sym, _)| sym == s));
             if !all_present || self.current_keymap.is_empty() {
                 let (keymap_str, assigned) = build_keymap(needed);
                 self.upload_keymap(&keymap_str)?;

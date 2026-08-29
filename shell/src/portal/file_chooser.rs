@@ -556,10 +556,9 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (code, results) = rt.block_on(backend.pick_and_grant(
-            FilePickerOptions::new(caller, "Open", false),
-            FsMode::Read,
-        ));
+        let (code, results) = rt.block_on(
+            backend.pick_and_grant(FilePickerOptions::new(caller, "Open", false), FsMode::Read),
+        );
         assert_eq!(code, 1);
         assert!(results.is_empty());
     }
@@ -574,9 +573,10 @@ mod tests {
         ] {
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(38));
             let picked = PathBuf::from("/tmp/target.txt");
-            let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(
-                vec![picked.clone()],
-            )));
+            let fp =
+                FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
+                    picked.clone(),
+                ])));
             let sc = ScreenCastStreamProvisionerHandle::new(Arc::new(
                 MockScreenCastProvisioner::new_with_node(1, "t"),
             ));
@@ -596,10 +596,9 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            let (code, _) = rt.block_on(backend.pick_and_grant(
-                FilePickerOptions::new(caller.clone(), "t", save),
-                mode,
-            ));
+            let (code, _) = rt.block_on(
+                backend.pick_and_grant(FilePickerOptions::new(caller.clone(), "t", save), mode),
+            );
             assert_eq!(code, 0);
 
             let tree = store.tree_handle();

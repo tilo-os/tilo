@@ -117,7 +117,11 @@ impl SourceEditor {
         let text = self.code.value().to_string();
         let start = byte_of_line_col(&text, 1, 0);
         let end = byte_of_line_col(&text, 3, 0).min(text.len());
-        let (a, b) = if end > start { (start, end) } else { (0, text.len().min(24)) };
+        let (a, b) = if end > start {
+            (start, end)
+        } else {
+            (0, text.len().min(24))
+        };
         self.code.set_selection(a, b);
         self.focused = true;
     }
@@ -199,7 +203,15 @@ impl SourceEditor {
         // `text_id` is the object the widget was bound to; pass it as the root so
         // the resolve falls back to it even if the binding were ever cleared.
         self.code.handle_event(
-            event, 1.0, modifiers, doc, text_id, &mut handled, &mut focus_target, node, &taffy,
+            event,
+            1.0,
+            modifiers,
+            doc,
+            text_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
         );
         handled
     }
@@ -226,7 +238,13 @@ impl SourceEditor {
 
         // Diagnostics overlay, drawn on top using the widget's geometry, clipped
         // to the pane so squiggles/markers never spill past it.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &self.rect);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &self.rect,
+        );
         self.draw_diagnostics(scene, transform, tr, theme, diags);
         scene.pop_layer();
 
@@ -344,7 +362,13 @@ impl SourceEditor {
             None,
             &RoundedRect::from_rect(card.inflate(2.0, 2.0), 8.0),
         );
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &RoundedRect::from_rect(card, 7.0));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, 7.0),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -428,12 +452,21 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
         d.end_col.unwrap_or(d.col? + 1).saturating_sub(1),
     );
     let b0 = byte_of_line_col(text, sl, sc);
-    let b1 = byte_of_line_col(text, el, ec).max(b0 + 1).min(text.len().max(b0 + 1));
+    let b1 = byte_of_line_col(text, el, ec)
+        .max(b0 + 1)
+        .min(text.len().max(b0 + 1));
     Some((b0, b1.min(text.len())))
 }
 
 /// Stroke a wavy underline (a squiggle) between `x0` and `x1` at baseline `y`.
-fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64, color: vello::peniko::Color) {
+fn draw_squiggle(
+    scene: &mut Scene,
+    transform: Affine,
+    x0: f64,
+    x1: f64,
+    y: f64,
+    color: vello::peniko::Color,
+) {
     if x1 <= x0 {
         return;
     }
@@ -456,7 +489,7 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64,
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ObjType, ReadDoc, ROOT};
+    use automerge::{ObjType, ROOT, ReadDoc};
 
     fn doc_with(text: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
@@ -504,7 +537,10 @@ mod tests {
             hints: vec![],
         };
         let (b0, b1) = diag_byte_span(&d, t).unwrap();
-        assert!(b1 > b0, "a zero-width span still underlines at least one byte");
+        assert!(
+            b1 > b0,
+            "a zero-width span still underlines at least one byte"
+        );
     }
 
     #[test]

@@ -56,11 +56,17 @@ mod tests {
 
     #[test]
     fn each_dialog_is_configured_for_its_own_job() {
-        let open = PickRequest::open("Open a PDF", "Open").filter(pdf_filter()).all_files();
+        let open = PickRequest::open("Open a PDF", "Open")
+            .filter(pdf_filter())
+            .all_files();
         assert_eq!(open.title(), "Open a PDF");
         assert!(!open.is_multiple());
         assert_eq!(open.filter_names(), vec!["PDF documents", "All files"]);
-        assert_eq!(open.suggested_name(), None, "an open dialog seeds no filename");
+        assert_eq!(
+            open.suggested_name(),
+            None,
+            "an open dialog seeds no filename"
+        );
 
         let import = PickRequest::open("Import pages from a PDF or image", "Import")
             .filter(pdf_or_image_filter())
@@ -69,7 +75,8 @@ mod tests {
 
         // The Save dialog deliberately has no "All files" escape hatch: the
         // output is always a PDF.
-        let save = PickRequest::save("Save annotated PDF", "Save", "notes.pdf").filter(pdf_filter());
+        let save =
+            PickRequest::save("Save annotated PDF", "Save", "notes.pdf").filter(pdf_filter());
         assert_eq!(save.suggested_name(), Some("notes.pdf"));
         assert_eq!(save.filter_names(), vec!["PDF documents"]);
     }

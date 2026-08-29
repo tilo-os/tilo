@@ -414,8 +414,7 @@ impl SelectedAction<'_> {
         chrome: &Chrome,
         args: impl IntoIterator<Item = (String, ArgValue)>,
     ) -> Result<(), ActionError> {
-        let bound =
-            ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
+        let bound = ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
         (self.result.on_open)(doc, root, chrome, &bound)
     }
 

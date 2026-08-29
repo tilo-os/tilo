@@ -27,7 +27,9 @@ fn scrollable_momentum_decays() {
     s.set_viewport_size(200.0, 500.0);
     s.fling(0.0, 1500.0);
     let before = s.offset_y();
-    for _ in 0..120 { s.tick(1.0 / 60.0); }
+    for _ in 0..120 {
+        s.tick(1.0 / 60.0);
+    }
     let after = s.offset_y();
     assert!(after > before);
     assert!(s.momentum_speed() < 10.0);

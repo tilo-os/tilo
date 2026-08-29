@@ -119,7 +119,11 @@ impl RustyPipeBackend {
                 builder.build()
             })
             .map_err(|e| BackendError(format!("rustypipe build: {e}")))?;
-        Ok(Self { rp, rt, potoken_desc })
+        Ok(Self {
+            rp,
+            rt,
+            potoken_desc,
+        })
     }
 
     fn block<F, T>(&self, fut: F) -> T
@@ -137,7 +141,11 @@ impl RustyPipeBackend {
         let res = self
             .block(async { q.search::<YouTubeItem, _>(query).await })
             .map_err(|e| BackendError(format!("search_items: {e}")))?;
-        let mut out = SearchItems { videos: Vec::new(), playlists: Vec::new(), channels: Vec::new() };
+        let mut out = SearchItems {
+            videos: Vec::new(),
+            playlists: Vec::new(),
+            channels: Vec::new(),
+        };
         for it in res.items.items {
             match it {
                 YouTubeItem::Video(v) => out.videos.push(map_video_item(v)),
@@ -161,7 +169,10 @@ impl RustyPipeBackend {
             .unwrap_or_else(|| (String::new(), "Unknown".into()));
         let thumb = best_thumb(&pl.thumbnail);
         let thumbnail_url = if thumb.is_empty() {
-            videos.first().map(|v| v.thumbnail_url.clone()).unwrap_or_default()
+            videos
+                .first()
+                .map(|v| v.thumbnail_url.clone())
+                .unwrap_or_default()
         } else {
             thumb
         };
@@ -405,7 +416,10 @@ impl YtBackend for RustyPipeBackend {
             banner_url: String::new(),
         };
         let uploads = ch.content.items.into_iter().map(map_video_item).collect();
-        Ok(BackendResult::Channel { channel: Box::new(channel), uploads })
+        Ok(BackendResult::Channel {
+            channel: Box::new(channel),
+            uploads,
+        })
     }
 
     fn related(&self, id: &str) -> BackendOutcome {
@@ -415,7 +429,12 @@ impl YtBackend for RustyPipeBackend {
         let d = self
             .block(async { q.video_details(id).await })
             .map_err(|e| BackendError(format!("related: {e}")))?;
-        let vids = d.recommended.items.into_iter().map(map_video_item).collect();
+        let vids = d
+            .recommended
+            .items
+            .into_iter()
+            .map(map_video_item)
+            .collect();
         Ok(BackendResult::Videos(vids))
     }
 
@@ -424,7 +443,9 @@ impl YtBackend for RustyPipeBackend {
         let items = self
             .block(async { q.trending().await })
             .map_err(|e| BackendError(format!("trending: {e}")))?;
-        Ok(BackendResult::Videos(items.into_iter().map(map_video_item).collect()))
+        Ok(BackendResult::Videos(
+            items.into_iter().map(map_video_item).collect(),
+        ))
     }
 
     fn comments(&self, id: &str) -> Result<Vec<Comment>, BackendError> {
@@ -490,8 +511,14 @@ impl YtBackend for RustyPipeBackend {
             fps: s.fps,
             quality: s.quality.clone(),
             content_length: s.size,
-            init_range: s.init_range.as_ref().map(|r| (r.start as u64, r.end as u64)),
-            index_range: s.index_range.as_ref().map(|r| (r.start as u64, r.end as u64)),
+            init_range: s
+                .init_range
+                .as_ref()
+                .map(|r| (r.start as u64, r.end as u64)),
+            index_range: s
+                .index_range
+                .as_ref()
+                .map(|r| (r.start as u64, r.end as u64)),
         })
     }
 }
@@ -509,7 +536,10 @@ mod tests {
             "https://yt3.ggpht.com/abc=s176",
         );
         // Already-absolute and empty URLs pass through untouched.
-        assert_eq!(absolute_url("https://yt3.ggpht.com/x"), "https://yt3.ggpht.com/x");
+        assert_eq!(
+            absolute_url("https://yt3.ggpht.com/x"),
+            "https://yt3.ggpht.com/x"
+        );
         assert_eq!(absolute_url("http://example.com/y"), "http://example.com/y");
         assert_eq!(absolute_url(""), "");
     }
@@ -529,7 +559,9 @@ mod tests {
         let comments = backend.comments("aqz-KE-bpKQ").expect("real comments call");
         assert!(!comments.is_empty(), "the video has top comments");
         assert!(
-            comments.iter().any(|c| !c.text.is_empty() && !c.author.is_empty()),
+            comments
+                .iter()
+                .any(|c| !c.text.is_empty() && !c.author.is_empty()),
             "at least one comment has real author + text"
         );
     }

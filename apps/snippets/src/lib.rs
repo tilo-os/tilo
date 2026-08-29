@@ -21,7 +21,7 @@ pub mod search_provider;
 pub mod seed;
 
 pub use app::SnippetsApp;
-pub use model::{Language, Library, Selection, Snippet, SnippetId, SmartFolder};
+pub use model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
 
 use ui::widget::Widget;
 

@@ -1,12 +1,48 @@
 #[derive(Clone, Debug)]
-pub struct TypeScale { pub xs: f32, pub sm: f32, pub base: f32, pub lg: f32, pub xl: f32, pub x2l: f32, pub x3l: f32, pub x4l: f32 }
+pub struct TypeScale {
+    pub xs: f32,
+    pub sm: f32,
+    pub base: f32,
+    pub lg: f32,
+    pub xl: f32,
+    pub x2l: f32,
+    pub x3l: f32,
+    pub x4l: f32,
+}
 
-impl Default for TypeScale { fn default() -> Self { Self { xs: 10.0, sm: 12.0, base: 14.0, lg: 16.0, xl: 20.0, x2l: 24.0, x3l: 32.0, x4l: 40.0 } } }
+impl Default for TypeScale {
+    fn default() -> Self {
+        Self {
+            xs: 10.0,
+            sm: 12.0,
+            base: 14.0,
+            lg: 16.0,
+            xl: 20.0,
+            x2l: 24.0,
+            x3l: 32.0,
+            x4l: 40.0,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
-pub struct WeightScale { pub regular: u16, pub medium: u16, pub semibold: u16, pub bold: u16 }
+pub struct WeightScale {
+    pub regular: u16,
+    pub medium: u16,
+    pub semibold: u16,
+    pub bold: u16,
+}
 
-impl Default for WeightScale { fn default() -> Self { Self { regular: 400, medium: 500, semibold: 600, bold: 700 } } }
+impl Default for WeightScale {
+    fn default() -> Self {
+        Self {
+            regular: 400,
+            medium: 500,
+            semibold: 600,
+            bold: 700,
+        }
+    }
+}
 
 /// A named font family, wrapped so consumers can extend with fallbacks/weights later
 /// without breaking token consumers.
@@ -16,7 +52,11 @@ pub struct FontFamily {
 }
 
 impl FontFamily {
-    pub fn new(family: impl Into<String>) -> Self { Self { family: family.into() } }
+    pub fn new(family: impl Into<String>) -> Self {
+        Self {
+            family: family.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

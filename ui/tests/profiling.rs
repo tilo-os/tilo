@@ -4,7 +4,7 @@
 //! stands up the same headless [`ui::headless::Driver`] the persistence
 //! harness uses.
 
-use ui::profiling::{run_scenario_on, PerfScenario, PerfStep, FRAME_BUDGET_US};
+use ui::profiling::{FRAME_BUDGET_US, PerfScenario, PerfStep, run_scenario_on};
 use ui::state::State;
 use ui::widget::{Column, Scrollable, Text, Widget};
 
@@ -48,7 +48,11 @@ fn scroll_scenario_produces_per_pass_stats() {
     // Real, non-zero time: rebuilding layout for 150 rows and drawing them
     // each frame on the production path costs something.
     assert!(report.total.max_us > 0, "total frame time was measured");
-    assert!(report.draw.max_us > 0, "draw pass was measured: {:?}", report.draw);
+    assert!(
+        report.draw.max_us > 0,
+        "draw pass was measured: {:?}",
+        report.draw
+    );
     assert!(
         report.build_layout.max_us > 0,
         "build_layout pass was measured: {:?}",
@@ -65,7 +69,10 @@ fn scroll_scenario_produces_per_pass_stats() {
     for w in report.samples.windows(2) {
         assert!(w[1].frame > w[0].frame, "frame indices increase");
     }
-    assert!(report.samples[0].frame >= 3, "warmup frames were counted then cleared");
+    assert!(
+        report.samples[0].frame >= 3,
+        "warmup frames were counted then cleared"
+    );
 }
 
 /// A steady-state scenario dispatches no input, so `handle_event` is zero for

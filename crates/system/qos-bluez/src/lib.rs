@@ -41,12 +41,11 @@ pub mod client;
 pub mod model;
 
 pub use agent::{
-    AgentEvent, AgentEvents, AgentRegistration, DeviceNames, PairingAgent, AGENT_CAPABILITY,
-    AGENT_PATH, DEFAULT_ANSWER_TIMEOUT,
+    AGENT_CAPABILITY, AGENT_PATH, AgentEvent, AgentEvents, AgentRegistration,
+    DEFAULT_ANSWER_TIMEOUT, DeviceNames, PairingAgent,
 };
-pub use client::{error_text, BluezClient, PairOutcome, DISCOVERY_WINDOW};
+pub use client::{BluezClient, DISCOVERY_WINDOW, PairOutcome, error_text};
 pub use model::{
-    address_from_path, adapter_from_interfaces, device_from_interfaces, path_for_address,
-    reply_answers, sort_devices, AdapterInfo, DeviceInfo, PairingPrompt, PairingReply,
-    PairingRequest,
+    AdapterInfo, DeviceInfo, PairingPrompt, PairingReply, PairingRequest, adapter_from_interfaces,
+    address_from_path, device_from_interfaces, path_for_address, reply_answers, sort_devices,
 };

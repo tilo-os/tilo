@@ -136,7 +136,10 @@ fn client() -> reqwest::blocking::Client {
 /// `GET /api/skipSegments?videoID=<id>&categories=[…]` endpoint. A 404 (the
 /// API's "no segments for this video" response) is treated as an empty list
 /// rather than an error.
-pub fn fetch_sponsor(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<Vec<Segment>> {
+pub fn fetch_sponsor(
+    client: &reqwest::blocking::Client,
+    video_id: &str,
+) -> anyhow::Result<Vec<Segment>> {
     let cats = category_json();
     let resp = client
         .get("https://sponsor.ajay.app/api/skipSegments")
@@ -162,11 +165,20 @@ pub fn parse_skip_segments(resp: &serde_json::Value) -> Vec<Segment> {
                 let start = times.first().and_then(|x| x.as_f64()).unwrap_or(0.0);
                 let end = times.get(1).and_then(|x| x.as_f64()).unwrap_or(start);
                 let votes = s.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
-                out.push(Segment { category: cat, start, end, votes });
+                out.push(Segment {
+                    category: cat,
+                    start,
+                    end,
+                    votes,
+                });
             }
         }
     }
-    out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -195,10 +207,7 @@ pub fn fetch_dearrow(
 /// thumbnail_url)`. Picks the highest-scored non-original entry (a locked entry
 /// wins over vote count, matching DeArrow's own precedence), and skips entries
 /// the community has voted down. Pure (no I/O) so it is unit-tested directly.
-pub fn parse_dearrow(
-    resp: &serde_json::Value,
-    video_id: &str,
-) -> (Option<String>, Option<String>) {
+pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String>, Option<String>) {
     // Score an entry: locked entries win outright; otherwise by vote count.
     // Downvoted-into-removal entries (votes < 0 and not locked) are dropped.
     let score = |e: &serde_json::Value| -> Option<i64> {
@@ -248,10 +257,7 @@ pub fn parse_dearrow(
 
 /// Fetch the crowdsourced dislike count for a video via Return YouTube Dislike
 /// (`GET /votes?videoId=<id>`).
-pub fn fetch_dislikes(
-    client: &reqwest::blocking::Client,
-    video_id: &str,
-) -> anyhow::Result<u64> {
+pub fn fetch_dislikes(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<u64> {
     let resp: serde_json::Value = client
         .get("https://returnyoutubedislikeapi.com/votes")
         .query(&[("videoId", video_id)])
@@ -288,15 +294,30 @@ pub fn search(
             if item.get("type").and_then(|t| t.as_str()) != Some("video") {
                 continue;
             }
-            let id = item.get("videoId").and_then(|v| v.as_str()).unwrap_or_default();
+            let id = item
+                .get("videoId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             if id.is_empty() {
                 continue;
             }
-            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
-            let author = item.get("author").and_then(|v| v.as_str()).unwrap_or("Unknown");
-            let author_id = item.get("authorId").and_then(|v| v.as_str()).unwrap_or(author);
+            let title = item
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Untitled");
+            let author = item
+                .get("author")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown");
+            let author_id = item
+                .get("authorId")
+                .and_then(|v| v.as_str())
+                .unwrap_or(author);
             let views = item.get("viewCount").and_then(|v| v.as_u64()).unwrap_or(0);
-            let duration = item.get("lengthSeconds").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let duration = item
+                .get("lengthSeconds")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
             let published = item
                 .get("publishedText")
                 .and_then(|v| v.as_str())
@@ -339,7 +360,10 @@ pub fn search(
                 dearrow_thumb: false,
                 sponsor: vec![],
                 comments: vec![],
-                live: item.get("liveNow").and_then(|v| v.as_bool()).unwrap_or(false),
+                live: item
+                    .get("liveNow")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             });
         }
     }
@@ -541,14 +565,23 @@ impl Worker {
                             // Real "up next" comes off the detail response; fetch
                             // it alongside the metadata (live only — the sample
                             // already carries full detail for its own ids).
-                            let related =
-                                match fetch(&live, offline.as_ref(), Query::Related(id.clone()), false, &up_tx) {
-                                    Some((BackendResult::Videos(r), _)) => r,
-                                    _ => Vec::new(),
-                                };
-                            if let Some((BackendResult::Video(v), used_live)) =
-                                fetch(&live, offline.as_ref(), Query::Video(id.clone()), false, &up_tx)
-                            {
+                            let related = match fetch(
+                                &live,
+                                offline.as_ref(),
+                                Query::Related(id.clone()),
+                                false,
+                                &up_tx,
+                            ) {
+                                Some((BackendResult::Videos(r), _)) => r,
+                                _ => Vec::new(),
+                            };
+                            if let Some((BackendResult::Video(v), used_live)) = fetch(
+                                &live,
+                                offline.as_ref(),
+                                Query::Video(id.clone()),
+                                false,
+                                &up_tx,
+                            ) {
                                 send_status(&up_tx, used_live);
                                 let _ = up_tx.send(Update::VideoMeta { video: v, related });
                             }
@@ -567,7 +600,8 @@ impl Worker {
                                         }
                                         Ok(_) => {}
                                         Err(e) => {
-                                            let _ = up_tx.send(Update::Note(format!("comments: {e}")));
+                                            let _ =
+                                                up_tx.send(Update::Note(format!("comments: {e}")));
                                         }
                                     }
                                 }
@@ -590,7 +624,11 @@ impl Worker {
                                 Some((url, has_audio, quality)) => {
                                     let _ = up_tx.send(Update::Note(format!(
                                         "stream: {quality} {} [{}]",
-                                        if has_audio { "video+audio" } else { "video only" },
+                                        if has_audio {
+                                            "video+audio"
+                                        } else {
+                                            "video only"
+                                        },
                                         short_host(&url)
                                     )));
                                     let _ = up_tx.send(Update::StreamResolved {
@@ -615,7 +653,10 @@ impl Worker {
         {
             tracing::error!("failed to spawn the tube-fetch worker thread: {e}");
         }
-        Self { tx: req_tx, rx: up_rx }
+        Self {
+            tx: req_tx,
+            rx: up_rx,
+        }
     }
 
     pub fn request(&self, req: Request) {
@@ -689,7 +730,10 @@ fn try_live_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
     // Fallback: the in-process rustypipe InnerTube client.
     match crate::backend::live::RustyPipeBackend::new() {
         Ok(b) => {
-            let _ = up_tx.send(Update::Note(format!("live backend ready (fallback): {}", b.name())));
+            let _ = up_tx.send(Update::Note(format!(
+                "live backend ready (fallback): {}",
+                b.name()
+            )));
             Some(Box::new(b))
         }
         Err(e) => {
@@ -716,7 +760,9 @@ fn try_enricher(up_tx: &Sender<Update>) -> Option<crate::backend::live::RustyPip
     match crate::backend::live::RustyPipeBackend::new() {
         Ok(b) => Some(b),
         Err(e) => {
-            let _ = up_tx.send(Update::Note(format!("rustypipe enrichment unavailable ({e})")));
+            let _ = up_tx.send(Update::Note(format!(
+                "rustypipe enrichment unavailable ({e})"
+            )));
             None
         }
     }
@@ -736,7 +782,9 @@ fn enrich_video_avatars(videos: &mut [Video], items: &crate::backend::live::Sear
     for v in &items.videos {
         if !v.channel_avatar_url.is_empty() {
             if !v.channel_id.is_empty() {
-                by_id.entry(v.channel_id.as_str()).or_insert(v.channel_avatar_url.as_str());
+                by_id
+                    .entry(v.channel_id.as_str())
+                    .or_insert(v.channel_avatar_url.as_str());
             }
             by_name
                 .entry(norm_channel_name(&v.channel_name))
@@ -748,7 +796,9 @@ fn enrich_video_avatars(videos: &mut [Video], items: &crate::backend::live::Sear
             if !c.id.is_empty() {
                 by_id.entry(c.id.as_str()).or_insert(c.avatar_url.as_str());
             }
-            by_name.entry(norm_channel_name(&c.name)).or_insert(c.avatar_url.as_str());
+            by_name
+                .entry(norm_channel_name(&c.name))
+                .or_insert(c.avatar_url.as_str());
         }
     }
     for v in videos.iter_mut() {
@@ -781,9 +831,7 @@ fn fetch(
             }
         }
     }
-    if fallback
-        && let Ok(r) = offline.run(query)
-    {
+    if fallback && let Ok(r) = offline.run(query) {
         return Some((r, false));
     }
     None
@@ -857,7 +905,10 @@ fn live_popular_feed(
 /// popular seeds overlap, so the union needs a dedup pass.
 fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
     let mut seen = std::collections::HashSet::new();
-    videos.into_iter().filter(|v| seen.insert(v.id.clone())).collect()
+    videos
+        .into_iter()
+        .filter(|v| seen.insert(v.id.clone()))
+        .collect()
 }
 
 /// Broadcast which data source just answered so the UI pill reflects reality.
@@ -867,7 +918,10 @@ fn send_status(up_tx: &Sender<Update>, live: bool) {
     } else {
         "offline — sample data"
     };
-    let _ = up_tx.send(Update::Status { live, label: label.into() });
+    let _ = up_tx.send(Update::Status {
+        live,
+        label: label.into(),
+    });
 }
 
 #[cfg(test)]
@@ -929,6 +983,9 @@ mod tests {
             "DeArrow returns community branding for Despacito"
         );
         let dislikes = fetch_dislikes(&c, vid).expect("real RYD call");
-        assert!(dislikes > 0, "Despacito has crowdsourced dislikes ({dislikes})");
+        assert!(
+            dislikes > 0,
+            "Despacito has crowdsourced dislikes ({dislikes})"
+        );
     }
 }

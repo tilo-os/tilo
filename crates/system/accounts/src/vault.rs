@@ -47,7 +47,10 @@ pub struct Secret {
 impl Secret {
     /// A password-only secret.
     pub fn password(password: impl Into<String>) -> Self {
-        Self { password: password.into(), token: None }
+        Self {
+            password: password.into(),
+            token: None,
+        }
     }
 
     /// Whether this secret carries nothing worth persisting.
@@ -82,7 +85,10 @@ impl SecretVault {
     pub fn open() -> Self {
         match crate::config_root() {
             Some(root) => Self::open_in(&root),
-            None => Self { dir: PathBuf::from("accounts/vault"), entries: BTreeMap::new() },
+            None => Self {
+                dir: PathBuf::from("accounts/vault"),
+                entries: BTreeMap::new(),
+            },
         }
     }
 
@@ -297,7 +303,8 @@ mod tests {
         let enc = crate::vault_dir_in(&root).join("vault.enc");
         let raw = std::fs::read(&enc).unwrap();
         assert!(
-            !raw.windows(b"s3cr3t-value".len()).any(|w| w == b"s3cr3t-value"),
+            !raw.windows(b"s3cr3t-value".len())
+                .any(|w| w == b"s3cr3t-value"),
             "password must not be recoverable from the sealed file"
         );
         std::fs::remove_dir_all(&root).ok();
@@ -317,7 +324,10 @@ mod tests {
         let key_path = crate::vault_dir_in(&root).join("vault.key");
         std::fs::write(&key_path, [0u8; KEY_LEN]).unwrap();
         let v = SecretVault::open_in(&root);
-        assert!(v.get(&id).is_none(), "a wrong key must not decrypt the vault");
+        assert!(
+            v.get(&id).is_none(),
+            "a wrong key must not decrypt the vault"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -17,13 +17,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use channel_crypto::{ChannelGroup, MemberKey};
+use collab_fixtures::role_attestation;
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
     CompactionCheckpoint, Ed25519PublicKey, EncryptionMetadata, OpClass, Role, RoleAttestation,
     Signature, SignedOp, encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event,
     sign_op,
 };
-use collab_fixtures::{role_attestation};
 use ed25519_dalek::SigningKey;
 use rand_08::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -162,8 +162,7 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     let (bob_sk, bob_pk) = generate_keypair();
 
     // 4. Olga mints Editor attestations for Alice's threshold key and Bob's plain key.
-    let alice_att =
-        role_attestation(&olga_sk, olga_pk, alice_group_pk, channel_id, Role::Editor);
+    let alice_att = role_attestation(&olga_sk, olga_pk, alice_group_pk, channel_id, Role::Editor);
     let bob_att = role_attestation(&olga_sk, olga_pk, bob_pk, channel_id, Role::Editor);
     let alice_att_id = alice_att.attestation.id;
     let bob_att_id = bob_att.attestation.id;

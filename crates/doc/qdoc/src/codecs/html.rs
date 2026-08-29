@@ -34,7 +34,11 @@ impl FormatProvider for HtmlCodec {
         let t = s.trim_start();
         if t.starts_with("<!doctype html") || t.starts_with("<html") || t.starts_with("<head") {
             Confidence::High
-        } else if t.starts_with("<h1") || t.starts_with("<p>") || t.starts_with("<body") || t.starts_with("<div") {
+        } else if t.starts_with("<h1")
+            || t.starts_with("<p>")
+            || t.starts_with("<body")
+            || t.starts_with("<div")
+        {
             Confidence::Medium
         } else {
             Confidence::None
@@ -50,17 +54,23 @@ impl FormatProvider for HtmlCodec {
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
         // Reusing `qdoc-html`'s writer here would need `qdoc` to depend on it — a cycle.
         Err(CodecError::Unsupported(
-            "HTML export is provided by the `qdoc-html` crate (editor), not the qdoc codec".to_string(),
+            "HTML export is provided by the `qdoc-html` crate (editor), not the qdoc codec"
+                .to_string(),
         ))
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     /// A start tag: lowercased name + raw attrs (between the name and `>`/`/>`).
-    Open { name: String, attrs: String, self_closing: bool },
-    Close { name: String },
+    Open {
+        name: String,
+        attrs: String,
+        self_closing: bool,
+    },
+    Close {
+        name: String,
+    },
     Text(String),
 }
 
@@ -101,8 +111,7 @@ fn tokenize(src: &str) -> Vec<Token> {
                 i = (i + 1).min(n);
                 continue;
             }
-            let is_tag = i + 1 < n
-                && (chars[i + 1] == '/' || chars[i + 1].is_ascii_alphabetic());
+            let is_tag = i + 1 < n && (chars[i + 1] == '/' || chars[i + 1].is_ascii_alphabetic());
             if !is_tag {
                 text.push(c);
                 i += 1;
@@ -137,7 +146,12 @@ fn tokenize(src: &str) -> Vec<Token> {
             let raw: String = chars[i + 1..j].iter().collect();
             flush_text!();
             if let Some(close) = raw.strip_prefix('/') {
-                let name = close.trim().split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+                let name = close
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
                 if !name.is_empty() {
                     out.push(Token::Close { name });
                 }
@@ -160,7 +174,11 @@ fn tokenize(src: &str) -> Vec<Token> {
                     i = (i + 1).min(n);
                     continue;
                 }
-                out.push(Token::Open { name, attrs, self_closing });
+                out.push(Token::Open {
+                    name,
+                    attrs,
+                    self_closing,
+                });
             }
             i = j + 1;
         } else {
@@ -191,7 +209,6 @@ fn starts_with_ci(chars: &[char], i: usize, pat: &str) -> bool {
         .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
-
 /// Unescapes HTML entities: numeric (`&#NN;`, `&#xHH;`) and common named ones;
 /// unknown entities and a bare `&` pass through unchanged.
 fn unescape_entities(s: &str) -> String {
@@ -209,7 +226,12 @@ fn unescape_entities(s: &str) -> String {
             continue;
         }
         let mut j = i + 1;
-        while j < n && j - i <= 12 && chars[j] != ';' && chars[j] != '&' && !chars[j].is_whitespace() {
+        while j < n
+            && j - i <= 12
+            && chars[j] != ';'
+            && chars[j] != '&'
+            && !chars[j].is_whitespace()
+        {
             j += 1;
         }
         if j < n && chars[j] == ';' {
@@ -272,7 +294,6 @@ fn decode_entity(ent: &str) -> Option<String> {
     Some(ch.to_string())
 }
 
-
 /// Parses a raw attribute string (`a="1" b='2' c=3 d`) into `(name_lower, value)` pairs; valueless attrs get an empty value.
 fn parse_attrs(raw: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = raw.chars().collect();
@@ -290,7 +311,10 @@ fn parse_attrs(raw: &str) -> Vec<(String, String)> {
         while i < n && !chars[i].is_whitespace() && chars[i] != '=' && chars[i] != '/' {
             i += 1;
         }
-        let name: String = chars[start..i].iter().collect::<String>().to_ascii_lowercase();
+        let name: String = chars[start..i]
+            .iter()
+            .collect::<String>()
+            .to_ascii_lowercase();
         if name.is_empty() {
             i += 1;
             continue;
@@ -328,26 +352,38 @@ fn parse_attrs(raw: &str) -> Vec<(String, String)> {
 
 /// The value of attribute `key` (case-insensitive) in a raw attr string, if present.
 fn attr_value(raw: &str, key: &str) -> Option<String> {
-    parse_attrs(raw).into_iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    parse_attrs(raw)
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
 }
 
 /// Parses a `style="…"` string into the model run-marks it implies (mirrors the markdown codec's `marks_from_span_style`).
 fn marks_from_style(style: &str) -> Vec<(&'static str, MarkVal)> {
     let mut out: Vec<(&'static str, MarkVal)> = Vec::new();
     for decl in style.split(';') {
-        let Some((prop, val)) = decl.split_once(':') else { continue };
+        let Some((prop, val)) = decl.split_once(':') else {
+            continue;
+        };
         let prop = prop.trim().to_ascii_lowercase();
         let val = val.trim();
         match prop.as_str() {
             "color" => out.push(("color", MarkVal::Str(normalize_css_color(val)))),
-            "background" | "background-color" => out.push(("highlight", MarkVal::Str(normalize_css_color(val)))),
+            "background" | "background-color" => {
+                out.push(("highlight", MarkVal::Str(normalize_css_color(val))))
+            }
             "font-size" => {
-                let num = val.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%').trim();
+                let num = val
+                    .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%')
+                    .trim();
                 if let Ok(f) = num.parse::<f64>() {
                     out.push(("fontSize", MarkVal::Int(f.round() as i64)));
                 }
             }
-            "font-family" => out.push(("fontFamily", MarkVal::Str(generic_font_family(val).to_string()))),
+            "font-family" => out.push((
+                "fontFamily",
+                MarkVal::Str(generic_font_family(val).to_string()),
+            )),
             "font-weight" => {
                 if val == "bold" || val.parse::<i32>().map(|w| w >= 600).unwrap_or(false) {
                     out.push(("strong", MarkVal::Bool(true)));
@@ -411,7 +447,6 @@ fn generic_font_family(val: &str) -> &'static str {
         "sans"
     }
 }
-
 
 /// A mark value: boolean toggle, a string payload, or an integer (fontSize).
 #[derive(Clone)]
@@ -482,7 +517,11 @@ fn import_html(src: &str, doc: &mut DocMut) {
         }
 
         match tok {
-            Token::Open { name, attrs, self_closing } => {
+            Token::Open {
+                name,
+                attrs,
+                self_closing,
+            } => {
                 match name.as_str() {
                     "head" | "title" => {
                         if !self_closing {
@@ -495,19 +534,37 @@ fn import_html(src: &str, doc: &mut DocMut) {
                     "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                         finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
                         let level = name[1..].parse::<i64>().unwrap_or(1).clamp(1, 6);
-                        let id = open_block(doc, &mut prev_block, &mut cur_block, &mut cur_len, "heading");
+                        let id = open_block(
+                            doc,
+                            &mut prev_block,
+                            &mut cur_block,
+                            &mut cur_len,
+                            "heading",
+                        );
                         doc.set_attr(&id, "level", level);
                     }
                     "p" => {
                         if quote_depth > 0 {
                             // Inside a blockquote, `<p>` text flows into the quote block, opened lazily if needed.
                             if cur_block.is_none() {
-                                let id = open_block(doc, &mut prev_block, &mut cur_block, &mut cur_len, "quote");
+                                let id = open_block(
+                                    doc,
+                                    &mut prev_block,
+                                    &mut cur_block,
+                                    &mut cur_len,
+                                    "quote",
+                                );
                                 let _ = id;
                             }
                         } else {
                             finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                            open_block(doc, &mut prev_block, &mut cur_block, &mut cur_len, "paragraph");
+                            open_block(
+                                doc,
+                                &mut prev_block,
+                                &mut cur_block,
+                                &mut cur_len,
+                                "paragraph",
+                            );
                         }
                     }
                     "blockquote" => {
@@ -529,7 +586,13 @@ fn import_html(src: &str, doc: &mut DocMut) {
                         finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
                         let ordered = lists.last().map(|l| l.ordered).unwrap_or(false);
                         let level = lists.len().saturating_sub(1);
-                        let id = open_block(doc, &mut prev_block, &mut cur_block, &mut cur_len, "list_item");
+                        let id = open_block(
+                            doc,
+                            &mut prev_block,
+                            &mut cur_block,
+                            &mut cur_len,
+                            "list_item",
+                        );
                         doc.set_attr(&id, "ordered", ordered);
                         if level > 0 {
                             doc.set_attr(&id, "level", level as i64);
@@ -551,7 +614,13 @@ fn import_html(src: &str, doc: &mut DocMut) {
                     "td" | "th" => {
                         if let Some(tid) = table_id.clone() {
                             finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                            let id = open_block(doc, &mut prev_block, &mut cur_block, &mut cur_len, "cell");
+                            let id = open_block(
+                                doc,
+                                &mut prev_block,
+                                &mut cur_block,
+                                &mut cur_len,
+                                "cell",
+                            );
                             doc.set_attr(&id, "table", tid.as_str());
                             doc.set_attr(&id, "row", trow as i64);
                             doc.set_attr(&id, "col", tcol as i64);
@@ -559,7 +628,13 @@ fn import_html(src: &str, doc: &mut DocMut) {
                     }
                     "pre" => {
                         finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                        let id = open_block(doc, &mut prev_block, &mut cur_block, &mut cur_len, "paragraph");
+                        let id = open_block(
+                            doc,
+                            &mut prev_block,
+                            &mut cur_block,
+                            &mut cur_len,
+                            "paragraph",
+                        );
                         doc.set_attr(&id, "code", true);
                         pre_depth += 1;
                     }
@@ -567,19 +642,59 @@ fn import_html(src: &str, doc: &mut DocMut) {
                         finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
                         insert_image(doc, &mut prev_block, &mut cur_block, &mut cur_len, &attrs);
                     }
-                    "strong" | "b" => push_inline(&mut inline, &name, cur_len, vec![("strong", MarkVal::Bool(true))]),
-                    "em" | "i" => push_inline(&mut inline, &name, cur_len, vec![("em", MarkVal::Bool(true))]),
-                    "u" | "ins" => push_inline(&mut inline, &name, cur_len, vec![("underline", MarkVal::Bool(true))]),
-                    "s" | "strike" | "del" => push_inline(&mut inline, &name, cur_len, vec![("strike", MarkVal::Bool(true))]),
-                    "sup" => push_inline(&mut inline, &name, cur_len, vec![("super", MarkVal::Bool(true))]),
-                    "sub" => push_inline(&mut inline, &name, cur_len, vec![("sub", MarkVal::Bool(true))]),
-                    "mark" => push_inline(&mut inline, &name, cur_len, vec![("highlight", MarkVal::Str("#ffff00".to_string()))]),
+                    "strong" | "b" => push_inline(
+                        &mut inline,
+                        &name,
+                        cur_len,
+                        vec![("strong", MarkVal::Bool(true))],
+                    ),
+                    "em" | "i" => push_inline(
+                        &mut inline,
+                        &name,
+                        cur_len,
+                        vec![("em", MarkVal::Bool(true))],
+                    ),
+                    "u" | "ins" => push_inline(
+                        &mut inline,
+                        &name,
+                        cur_len,
+                        vec![("underline", MarkVal::Bool(true))],
+                    ),
+                    "s" | "strike" | "del" => push_inline(
+                        &mut inline,
+                        &name,
+                        cur_len,
+                        vec![("strike", MarkVal::Bool(true))],
+                    ),
+                    "sup" => push_inline(
+                        &mut inline,
+                        &name,
+                        cur_len,
+                        vec![("super", MarkVal::Bool(true))],
+                    ),
+                    "sub" => push_inline(
+                        &mut inline,
+                        &name,
+                        cur_len,
+                        vec![("sub", MarkVal::Bool(true))],
+                    ),
+                    "mark" => push_inline(
+                        &mut inline,
+                        &name,
+                        cur_len,
+                        vec![("highlight", MarkVal::Str("#ffff00".to_string()))],
+                    ),
                     "code" => {
                         // Inline `<code>` → mono mark; inside `<pre>` it's structural.
                         if pre_depth > 0 {
                             push_inline(&mut inline, &name, cur_len, vec![]);
                         } else {
-                            push_inline(&mut inline, &name, cur_len, vec![("fontFamily", MarkVal::Str("mono".to_string()))]);
+                            push_inline(
+                                &mut inline,
+                                &name,
+                                cur_len,
+                                vec![("fontFamily", MarkVal::Str("mono".to_string()))],
+                            );
                         }
                     }
                     "a" => {
@@ -667,7 +782,13 @@ fn import_html(src: &str, doc: &mut DocMut) {
                     if collapsed.trim().is_empty() {
                         continue;
                     }
-                    open_block(doc, &mut prev_block, &mut cur_block, &mut cur_len, "paragraph");
+                    open_block(
+                        doc,
+                        &mut prev_block,
+                        &mut cur_block,
+                        &mut cur_len,
+                        "paragraph",
+                    );
                 }
                 if let Some(b) = cur_block.as_ref() {
                     doc.splice_text(b, cur_len, 0, &collapsed);
@@ -737,7 +858,9 @@ fn insert_image(
 /// Decodes a `data:[mime][;base64],payload` URI into bytes; `None` for a non-data
 /// URI or undecodable payload (base64 only, matching `qdoc-html`).
 fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
-    let rest = src.strip_prefix("data:").or_else(|| src.strip_prefix("DATA:"))?;
+    let rest = src
+        .strip_prefix("data:")
+        .or_else(|| src.strip_prefix("DATA:"))?;
     let comma = rest.find(',')?;
     let meta = &rest[..comma];
     let payload = &rest[comma + 1..];
@@ -798,8 +921,17 @@ fn collapse_ws(s: &str) -> String {
     out
 }
 
-fn push_inline(inline: &mut Vec<OpenInline>, tag: &str, start: usize, marks: Vec<(&'static str, MarkVal)>) {
-    inline.push(OpenInline { tag: tag.to_string(), marks, start });
+fn push_inline(
+    inline: &mut Vec<OpenInline>,
+    tag: &str,
+    start: usize,
+    marks: Vec<(&'static str, MarkVal)>,
+) {
+    inline.push(OpenInline {
+        tag: tag.to_string(),
+        marks,
+        start,
+    });
 }
 
 /// Closes the nearest open wrapper matching `tag`, emitting its marks over `[start, cur_len)` into `pending`; robust to mis-nesting.
@@ -821,18 +953,35 @@ fn close_inline(
         let w = inline.remove(pos);
         if let Some(block) = cur_block {
             for (name, value) in w.marks {
-                pending.push(PendingMark { block: block.clone(), start: w.start, end: cur_len, name, value });
+                pending.push(PendingMark {
+                    block: block.clone(),
+                    start: w.start,
+                    end: cur_len,
+                    name,
+                    value,
+                });
             }
         }
     }
 }
 
 /// Closes every still-open inline wrapper, emitting marks up to `cur_len`; called at block boundaries so an unclosed `<b>` doesn't bleed forward.
-fn finish_inline(inline: &mut Vec<OpenInline>, pending: &mut Vec<PendingMark>, cur_block: &Option<String>, cur_len: usize) {
+fn finish_inline(
+    inline: &mut Vec<OpenInline>,
+    pending: &mut Vec<PendingMark>,
+    cur_block: &Option<String>,
+    cur_len: usize,
+) {
     while let Some(w) = inline.pop() {
         if let Some(block) = cur_block {
             for (name, value) in w.marks {
-                pending.push(PendingMark { block: block.clone(), start: w.start, end: cur_len, name, value });
+                pending.push(PendingMark {
+                    block: block.clone(),
+                    start: w.start,
+                    end: cur_len,
+                    name,
+                    value,
+                });
             }
         }
     }
@@ -841,8 +990,8 @@ fn finish_inline(inline: &mut Vec<OpenInline>, pending: &mut Vec<PendingMark>, c
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::DocSnapshot;
     use crate::Document;
+    use crate::snapshot::DocSnapshot;
 
     fn import(src: &str) -> DocSnapshot {
         let mut d = Document::new();
@@ -852,7 +1001,10 @@ mod tests {
 
     #[test]
     fn detect_recognizes_html_signature() {
-        assert_eq!(HtmlCodec.detect(b"<!doctype html>\n<html>"), Confidence::High);
+        assert_eq!(
+            HtmlCodec.detect(b"<!doctype html>\n<html>"),
+            Confidence::High
+        );
         assert_eq!(HtmlCodec.detect(b"  <html lang=\"en\">"), Confidence::High);
         assert_eq!(HtmlCodec.detect(b"<p>hi</p>"), Confidence::Medium);
         assert_eq!(HtmlCodec.detect(b"plain text"), Confidence::None);
@@ -863,10 +1015,20 @@ mod tests {
         let snap = import("<h1>Title</h1><h2>Sub</h2><p>Body text</p>");
         assert_eq!(snap.blocks[0].kind, "heading");
         assert_eq!(snap.blocks[0].text, "Title");
-        assert_eq!(snap.blocks[0].attrs.get("level"), Some(&crate::AttrVal::Int(1)));
+        assert_eq!(
+            snap.blocks[0].attrs.get("level"),
+            Some(&crate::AttrVal::Int(1))
+        );
         assert_eq!(snap.blocks[1].kind, "heading");
-        assert_eq!(snap.blocks[1].attrs.get("level"), Some(&crate::AttrVal::Int(2)));
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
+        assert_eq!(
+            snap.blocks[1].attrs.get("level"),
+            Some(&crate::AttrVal::Int(2))
+        );
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("paragraph");
         assert_eq!(p.text, "Body text");
     }
 
@@ -875,10 +1037,34 @@ mod tests {
         let snap = import("<p>a<strong>b</strong><em>c</em><u>d</u><s>e</s></p>");
         let p = &snap.blocks[0];
         assert_eq!(p.text, "abcde");
-        assert!(p.marks.iter().any(|m| m.name == "strong" && m.start == 1 && m.end == 2), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "em" && m.start == 2 && m.end == 3), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "underline" && m.start == 3 && m.end == 4), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "strike" && m.start == 4 && m.end == 5), "{:?}", p.marks);
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 1 && m.end == 2),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "em" && m.start == 2 && m.end == 3),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "underline" && m.start == 3 && m.end == 4),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "strike" && m.start == 4 && m.end == 5),
+            "{:?}",
+            p.marks
+        );
     }
 
     #[test]
@@ -895,43 +1081,77 @@ mod tests {
         let snap = import(r#"<p>See <a href="https://qos.dev/">the docs</a> now</p>"#);
         let p = &snap.blocks[0];
         assert_eq!(p.text, "See the docs now");
-        let link = p.marks.iter().find(|m| m.name == "link").expect("link mark");
-        assert_eq!(link.value, crate::document::MarkValue::Str("https://qos.dev/".into()));
+        let link = p
+            .marks
+            .iter()
+            .find(|m| m.name == "link")
+            .expect("link mark");
+        assert_eq!(
+            link.value,
+            crate::document::MarkValue::Str("https://qos.dev/".into())
+        );
         assert_eq!(&p.text[link.start..link.end], "the docs");
     }
 
     #[test]
     fn unordered_and_ordered_list_items() {
         let snap = import("<ul><li>one</li><li>two</li></ul><ol><li>first</li></ol>");
-        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "list_item")
+            .collect();
         assert_eq!(items.len(), 3, "{snap:?}");
         assert_eq!(items[0].text, "one");
-        assert_eq!(items[0].attrs.get("ordered"), Some(&crate::AttrVal::Bool(false)));
-        assert_eq!(items[2].attrs.get("ordered"), Some(&crate::AttrVal::Bool(true)));
+        assert_eq!(
+            items[0].attrs.get("ordered"),
+            Some(&crate::AttrVal::Bool(false))
+        );
+        assert_eq!(
+            items[2].attrs.get("ordered"),
+            Some(&crate::AttrVal::Bool(true))
+        );
     }
 
     #[test]
     fn nested_lists_carry_level() {
         let snap = import("<ul><li>top</li><ul><li>sub</li></ul></ul>");
-        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "list_item")
+            .collect();
         assert_eq!(items.len(), 2);
         let sub = items.iter().find(|b| b.text == "sub").expect("sub item");
-        assert_eq!(sub.attrs.get("level"), Some(&crate::AttrVal::Int(1)), "{:?}", sub.attrs);
+        assert_eq!(
+            sub.attrs.get("level"),
+            Some(&crate::AttrVal::Int(1)),
+            "{:?}",
+            sub.attrs
+        );
     }
 
     #[test]
     fn blockquote_becomes_quote_block() {
         let snap = import("<blockquote><p>quoted line</p></blockquote>");
-        let q = snap.blocks.iter().find(|b| b.kind == "quote").expect("quote block");
+        let q = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "quote")
+            .expect("quote block");
         assert!(q.text.contains("quoted line"), "got {:?}", q.text);
     }
 
     #[test]
     fn table_cells_tagged_table_row_col() {
-        let snap = import("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>");
+        let snap =
+            import("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>");
         let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
         assert_eq!(cells.len(), 4, "{snap:?}");
-        assert_eq!(cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(), vec!["a", "b", "1", "2"]);
+        assert_eq!(
+            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            vec!["a", "b", "1", "2"]
+        );
         assert_eq!(cells[0].attrs.get("row"), Some(&crate::AttrVal::Int(0)));
         assert_eq!(cells[0].attrs.get("col"), Some(&crate::AttrVal::Int(0)));
         assert_eq!(cells[3].attrs.get("row"), Some(&crate::AttrVal::Int(1)));
@@ -958,34 +1178,53 @@ mod tests {
 
     #[test]
     fn script_and_style_are_skipped() {
-        let snap = import("<p>before</p><script>alert('x'); 1 < 2;</script><style>p{color:red}</style><p>after</p>");
+        let snap = import(
+            "<p>before</p><script>alert('x'); 1 < 2;</script><style>p{color:red}</style><p>after</p>",
+        );
         let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
-        assert_eq!(texts, vec!["before".to_string(), "after".to_string()], "{snap:?}");
+        assert_eq!(
+            texts,
+            vec!["before".to_string(), "after".to_string()],
+            "{snap:?}"
+        );
     }
 
     #[test]
     fn head_is_skipped() {
         let snap = import("<head><title>Doc Title</title></head><body><p>Body</p></body>");
         let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
-        assert_eq!(texts, vec!["Body".to_string()], "title must not leak into body: {snap:?}");
+        assert_eq!(
+            texts,
+            vec!["Body".to_string()],
+            "title must not leak into body: {snap:?}"
+        );
     }
 
     #[test]
     fn span_style_carries_color_size_font() {
-        let snap = import(r#"<p><span style="color: #ff0000; font-size: 20pt; font-family: serif">styled</span></p>"#);
+        let snap = import(
+            r#"<p><span style="color: #ff0000; font-size: 20pt; font-family: serif">styled</span></p>"#,
+        );
         let p = &snap.blocks[0];
         assert_eq!(p.text, "styled");
         assert!(
-            p.marks.iter().any(|m| m.name == "color" && m.value == crate::document::MarkValue::Str("#ff0000".into())),
-            "{:?}", p.marks
+            p.marks.iter().any(|m| m.name == "color"
+                && m.value == crate::document::MarkValue::Str("#ff0000".into())),
+            "{:?}",
+            p.marks
         );
         assert!(
-            p.marks.iter().any(|m| m.name == "fontSize" && m.value == crate::document::MarkValue::Int(20)),
-            "{:?}", p.marks
+            p.marks
+                .iter()
+                .any(|m| m.name == "fontSize" && m.value == crate::document::MarkValue::Int(20)),
+            "{:?}",
+            p.marks
         );
         assert!(
-            p.marks.iter().any(|m| m.name == "fontFamily" && m.value == crate::document::MarkValue::Str("serif".into())),
-            "{:?}", p.marks
+            p.marks.iter().any(|m| m.name == "fontFamily"
+                && m.value == crate::document::MarkValue::Str("serif".into())),
+            "{:?}",
+            p.marks
         );
     }
 
@@ -994,8 +1233,10 @@ mod tests {
         let snap = import(r#"<p><span style="background: #ffff00">hi</span></p>"#);
         let p = &snap.blocks[0];
         assert!(
-            p.marks.iter().any(|m| m.name == "highlight" && m.value == crate::document::MarkValue::Str("#ffff00".into())),
-            "{:?}", p.marks
+            p.marks.iter().any(|m| m.name == "highlight"
+                && m.value == crate::document::MarkValue::Str("#ffff00".into())),
+            "{:?}",
+            p.marks
         );
     }
 
@@ -1004,29 +1245,57 @@ mod tests {
         let snap = import("<p>x<sup>2</sup>y<sub>n</sub></p>");
         let p = &snap.blocks[0];
         assert_eq!(p.text, "x2yn");
-        assert!(p.marks.iter().any(|m| m.name == "super" && m.start == 1 && m.end == 2), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "sub" && m.start == 3 && m.end == 4), "{:?}", p.marks);
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "super" && m.start == 1 && m.end == 2),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "sub" && m.start == 3 && m.end == 4),
+            "{:?}",
+            p.marks
+        );
     }
 
     #[test]
     fn data_uri_image_becomes_blob() {
         // A 1-byte payload "A" (base64 "QQ==").
         let snap = import(r#"<p><img src="data:image/png;base64,QQ==" alt="pic"></p>"#);
-        let img = snap.blocks.iter().find(|b| b.kind == "image").expect("image block");
+        let img = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "image")
+            .expect("image block");
         assert_eq!(img.text, "pic");
         let blob = match img.attrs.get("blob") {
             Some(crate::AttrVal::Str(s)) => s.clone(),
             other => panic!("expected blob attr, got {other:?}"),
         };
-        assert_eq!(snap.blobs.get(&blob).map(|b| b.as_slice()), Some(b"A".as_slice()), "{:?}", snap.blobs);
+        assert_eq!(
+            snap.blobs.get(&blob).map(|b| b.as_slice()),
+            Some(b"A".as_slice()),
+            "{:?}",
+            snap.blobs
+        );
     }
 
     #[test]
     fn http_image_keeps_src() {
         let snap = import(r#"<img src="https://example.com/p.png" alt="remote">"#);
-        let img = snap.blocks.iter().find(|b| b.kind == "image").expect("image block");
+        let img = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "image")
+            .expect("image block");
         assert_eq!(img.text, "remote");
-        assert_eq!(img.attrs.get("src"), Some(&crate::AttrVal::Str("https://example.com/p.png".into())));
+        assert_eq!(
+            img.attrs.get("src"),
+            Some(&crate::AttrVal::Str("https://example.com/p.png".into()))
+        );
     }
 
     #[test]
@@ -1039,9 +1308,17 @@ mod tests {
     fn unclosed_tags_are_tolerated() {
         // No closing `</b>`/`</p>`; the importer must still produce sane blocks.
         let snap = import("<p>start <b>bold and more");
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("paragraph");
         assert_eq!(p.text, "start bold and more");
-        assert!(p.marks.iter().any(|m| m.name == "strong"), "unclosed bold still marks: {:?}", p.marks);
+        assert!(
+            p.marks.iter().any(|m| m.name == "strong"),
+            "unclosed bold still marks: {:?}",
+            p.marks
+        );
     }
 
     #[test]

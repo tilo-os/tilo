@@ -27,14 +27,14 @@ use vello::peniko::Color;
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey};
 
+use std::cell::Cell;
+use std::rc::Rc;
 use ui::Widget;
-use ui::presence::PresenceCtx;
 use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{FlapState, ModalDialog, SegmentedFace, SplitLayout, ToggleGroup};
-use std::cell::Cell;
-use std::rc::Rc;
 
 use crate::catalog::sample_catalog;
 use crate::doc::StoreDoc;
@@ -42,7 +42,7 @@ use crate::draw::{self, alpha, mix};
 use crate::flatpak::Remote;
 use crate::flatpakref::FlatpakRef;
 use crate::model::{
-    AppEntry, Category, Catalog, Compat, InstallPhase, InstallSnapshot, InstallState, Permission,
+    AppEntry, Catalog, Category, Compat, InstallPhase, InstallSnapshot, InstallState, Permission,
     QosAppModel, Review, Source, UpdateProgress,
 };
 use crate::probe::ProbeResult;
@@ -299,7 +299,9 @@ impl SoftwareStore {
     /// `installed`, `updates`, `search:<query>`, `detail:<app-id>`, and
     /// `menu` (snaps the narrow-window navigation drawer open over a scrim).
     pub fn apply_shot_view_env(&mut self) {
-        let Ok(spec) = std::env::var("SOFTWARE_STORE_SHOT_VIEW") else { return };
+        let Ok(spec) = std::env::var("SOFTWARE_STORE_SHOT_VIEW") else {
+            return;
+        };
         let spec = spec.trim();
         if spec == "installed" {
             self.tab = Tab::Installed;
@@ -314,13 +316,15 @@ impl SoftwareStore {
             // also enqueues them into the batch.
             self.tab = Tab::Updates;
             let stage: [(&str, f64); 2] = [
-                ("org.gimp.GIMP", 0.32),        // mid-download (< 0.6)
+                ("org.gimp.GIMP", 0.32),         // mid-download (< 0.6)
                 ("com.visualstudio.code", 0.78), // installing (>= 0.6)
             ];
             for (id, p) in stage {
                 self.enqueue_update(id);
                 let elapsed = INSTALL_DURATION.mul_f64(p);
-                let start = Instant::now().checked_sub(elapsed).unwrap_or_else(Instant::now);
+                let start = Instant::now()
+                    .checked_sub(elapsed)
+                    .unwrap_or_else(Instant::now);
                 self.install_start.insert(id.to_string(), start);
             }
             // LibreOffice (seeded mid-install) becomes the *queued* row here —
@@ -362,7 +366,12 @@ impl SoftwareStore {
     }
 
     fn body_rect(&self) -> Rect {
-        Rect::new(self.rect.x0, self.rect.y0 + HEADER_H, self.rect.x1, self.rect.y1)
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 + HEADER_H,
+            self.rect.x1,
+            self.rect.y1,
+        )
     }
 
     /// Resolve the navigation layout from the *allocated* width. At or above
@@ -382,7 +391,12 @@ impl SoftwareStore {
     fn nav_toggle_rect(&self) -> Rect {
         let cy = self.rect.y0 + HEADER_H / 2.0;
         let x0 = self.rect.x0 + BODY_PAD_X;
-        Rect::new(x0, cy - NAV_TOGGLE_SZ / 2.0, x0 + NAV_TOGGLE_SZ, cy + NAV_TOGGLE_SZ / 2.0)
+        Rect::new(
+            x0,
+            cy - NAV_TOGGLE_SZ / 2.0,
+            x0 + NAV_TOGGLE_SZ,
+            cy + NAV_TOGGLE_SZ / 2.0,
+        )
     }
 
     /// The navigation drawer's current on-screen rect. Slides in from the
@@ -452,7 +466,12 @@ impl SoftwareStore {
         let active = self
             .update_batch
             .iter()
-            .filter(|id| matches!(self.batch_status(id), Some(BatchRowStatus::InProgress { .. })))
+            .filter(|id| {
+                matches!(
+                    self.batch_status(id),
+                    Some(BatchRowStatus::InProgress { .. })
+                )
+            })
             .count();
         let mut free = UPDATE_CONCURRENCY.saturating_sub(active);
         if free == 0 {
@@ -582,7 +601,12 @@ impl SoftwareStore {
             }
         }
         let overall = if n == 0 { 0.0 } else { sum / n as f64 };
-        UpdateProgress { queued, active, done, overall }
+        UpdateProgress {
+            queued,
+            active,
+            done,
+            overall,
+        }
     }
 
     /// Clear the update batch once every app in it has finished (so the
@@ -622,7 +646,10 @@ impl SoftwareStore {
                     self.worker.request(Request::Update(id.to_string()));
                 }
                 Some((_, remote)) => {
-                    self.worker.request(Request::Install { remote, app_id: id.to_string() });
+                    self.worker.request(Request::Install {
+                        remote,
+                        app_id: id.to_string(),
+                    });
                 }
                 None => {
                     self.worker.request(Request::Install {
@@ -823,7 +850,11 @@ impl SoftwareStore {
             }
             WorkerMsg::SearchResults { apps, .. } => new_live.extend(apps.iter().cloned()),
             WorkerMsg::Detail(app) => new_live.push((**app).clone()),
-            WorkerMsg::ActionDone { target, kind, outcome } => {
+            WorkerMsg::ActionDone {
+                target,
+                kind,
+                outcome,
+            } => {
                 finished_actions.push((target.clone(), *kind));
                 if let crate::flatpak::ActionOutcome::Failed(e) = outcome {
                     errors.push(format!("{}: {e}", short_target(target)));
@@ -858,7 +889,10 @@ impl SoftwareStore {
         for (id, ver) in installed_updates {
             if self.catalog.get(&id).is_some() || self.live_apps.contains_key(&id) {
                 let v = if ver.is_empty() {
-                    self.catalog.get(&id).map(|a| a.latest_version.clone()).unwrap_or_default()
+                    self.catalog
+                        .get(&id)
+                        .map(|a| a.latest_version.clone())
+                        .unwrap_or_default()
                 } else {
                     ver
                 };
@@ -898,7 +932,9 @@ impl SoftwareStore {
         if q.len() < 2 || q == self.search_dispatched {
             return;
         }
-        let Some(changed) = self.search_changed_at else { return };
+        let Some(changed) = self.search_changed_at else {
+            return;
+        };
         // 220ms debounce — long enough to coalesce a burst of keystrokes,
         // short enough to feel instant.
         if changed.elapsed() < Duration::from_millis(220) {
@@ -940,7 +976,12 @@ impl SoftwareStore {
             self.catalog.apps.iter().map(|a| a.id.as_str()).collect();
         // Prefer cached worker results for this exact query; else any live
         // apps already merged that match.
-        if let Some(hits) = self.worker.caches.search.get(&self.search_query.trim().to_string()) {
+        if let Some(hits) = self
+            .worker
+            .caches
+            .search
+            .get(&self.search_query.trim().to_string())
+        {
             for a in hits {
                 if !curated.contains(a.id.as_str()) && a.matches(&q) {
                     out.push(a.clone());
@@ -997,11 +1038,14 @@ impl SoftwareStore {
     /// to the worker, start the local progress animation, and dismiss the
     /// sheet.
     fn confirm_pending_ref(&mut self, state: &mut AutoCommit) {
-        let Some(r) = self.pending_ref.take() else { return };
+        let Some(r) = self.pending_ref.take() else {
+            return;
+        };
         // Drive the visible progress bar via the same simulated-install path.
         self.start_install(state, &r.app_id);
         if self.worker.is_live() {
-            self.worker.request(Request::InstallRef(r.source_path.clone()));
+            self.worker
+                .request(Request::InstallRef(r.source_path.clone()));
         }
         self.tab = Tab::Browse;
         self.detail = Some(r.app_id.clone());
@@ -1058,7 +1102,12 @@ impl SoftwareStore {
         targets: &mut Vec<HitTarget>,
     ) {
         let c = &theme.tokens.colors;
-        let header = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + HEADER_H);
+        let header = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + HEADER_H,
+        );
         // Opaque header background (paints over any scrolled body).
         draw::fill_rect(scene, t, header, c.surfaces.base);
         // Bottom hairline.
@@ -1086,9 +1135,33 @@ impl SoftwareStore {
         if self.detail.is_some() {
             let back_rect = Rect::new(x, cy - 16.0, x + 64.0, cy + 16.0);
             let hov = back_rect.contains(self.mouse);
-            draw::fill_round(scene, t, back_rect, 8.0, if hov { c.surface_white_10 } else { c.surfaces.raised });
-            draw::text_w(scene, tr, t, "‹  Back", theme.tokens.typography.scale.sm, TextWeight::Medium, c.text_primary, x + 12.0, cy - 8.0, None);
-            targets.push(HitTarget { rect: back_rect, action: Action::Back });
+            draw::fill_round(
+                scene,
+                t,
+                back_rect,
+                8.0,
+                if hov {
+                    c.surface_white_10
+                } else {
+                    c.surfaces.raised
+                },
+            );
+            draw::text_w(
+                scene,
+                tr,
+                t,
+                "‹  Back",
+                theme.tokens.typography.scale.sm,
+                TextWeight::Medium,
+                c.text_primary,
+                x + 12.0,
+                cy - 8.0,
+                None,
+            );
+            targets.push(HitTarget {
+                rect: back_rect,
+                action: Action::Back,
+            });
         }
 
         // The OS owns the window title/app-name/logo — no wordmark drawn here.
@@ -1133,7 +1206,9 @@ impl SoftwareStore {
             }
             let labels: Vec<&str> = tabs.iter().map(|(_, l)| l.as_str()).collect();
             let selected = if self.detail.is_none() && self.search_query.is_empty() {
-                tabs.iter().position(|(tab, _)| self.tab == *tab).unwrap_or(usize::MAX)
+                tabs.iter()
+                    .position(|(tab, _)| self.tab == *tab)
+                    .unwrap_or(usize::MAX)
             } else {
                 usize::MAX
             };
@@ -1157,15 +1232,33 @@ impl SoftwareStore {
                 if *tab == Tab::Updates && up_count > 0 {
                     let bw = draw::measure(tr, label, tsize).0;
                     let badge_c = Point::new(r.x0 + 14.0 + bw + 12.0, cy);
-                    let bg_badge = if active { Color::WHITE } else { c.semantic.warning };
+                    let bg_badge = if active {
+                        Color::WHITE
+                    } else {
+                        c.semantic.warning
+                    };
                     let badge = Circle::new(badge_c, 9.0);
                     scene.fill(vello::peniko::Fill::NonZero, t, bg_badge, None, &badge);
                     let txt = up_count.to_string();
                     let (nw, nh) = draw::measure(tr, &txt, theme.tokens.typography.scale.xs);
                     let nfg = if active { c.accent[5] } else { Color::WHITE };
-                    draw::text_w(scene, tr, t, &txt, theme.tokens.typography.scale.xs, TextWeight::Bold, nfg, badge_c.x - nw / 2.0, badge_c.y - nh / 2.0, None);
+                    draw::text_w(
+                        scene,
+                        tr,
+                        t,
+                        &txt,
+                        theme.tokens.typography.scale.xs,
+                        TextWeight::Bold,
+                        nfg,
+                        badge_c.x - nw / 2.0,
+                        badge_c.y - nh / 2.0,
+                        None,
+                    );
                 }
-                targets.push(HitTarget { rect: r, action: Action::SetTab(*tab) });
+                targets.push(HitTarget {
+                    rect: r,
+                    action: Action::SetTab(*tab),
+                });
             }
             origin
         };
@@ -1173,7 +1266,12 @@ impl SoftwareStore {
         // Search pill, to the left of the tabs. Draw it only while it clears the
         // left cluster (nav toggle / Back chevron) rather than the old wordmark.
         let search_w = 280.0_f64;
-        let search_r = Rect::new(tabs_origin - GAP - search_w, cy - 16.0, tabs_origin - GAP, cy + 16.0);
+        let search_r = Rect::new(
+            tabs_origin - GAP - search_w,
+            cy - 16.0,
+            tabs_origin - GAP,
+            cy + 16.0,
+        );
         if search_r.x0 > self.rect.x0 + BODY_PAD_X + 80.0 {
             self.draw_search_bar(scene, tr, t, theme, targets, search_r);
         }
@@ -1201,9 +1299,20 @@ impl SoftwareStore {
         let tsize = theme.tokens.typography.scale.sm;
         let cy = rect.center().y;
         let focused = self.search_focused;
-        let border = if focused { c.border_focus } else { c.border_standard };
+        let border = if focused {
+            c.border_focus
+        } else {
+            c.border_standard
+        };
         draw::fill_round(scene, t, rect, theme.tokens.radii.full, c.surfaces.raised);
-        draw::stroke_round(scene, t, rect, theme.tokens.radii.full, border, if focused { 2.0 } else { 1.0 });
+        draw::stroke_round(
+            scene,
+            t,
+            rect,
+            theme.tokens.radii.full,
+            border,
+            if focused { 2.0 } else { 1.0 },
+        );
 
         // Leading magnifier glyph, vertically centred on the pill: `draw::text`
         // places the glyph's top-left at `y`, so we offset by half its measured
@@ -1212,15 +1321,45 @@ impl SoftwareStore {
         let glyph = "⌕";
         let glyph_size = 16.0_f32;
         let (_, gh) = draw::measure(tr, glyph, glyph_size);
-        draw::text(scene, tr, t, glyph, glyph_size, c.text_dim, rect.x0 + 12.0, cy - gh / 2.0, None);
+        draw::text(
+            scene,
+            tr,
+            t,
+            glyph,
+            glyph_size,
+            c.text_dim,
+            rect.x0 + 12.0,
+            cy - gh / 2.0,
+            None,
+        );
 
         // Query / placeholder text, centred on the same midline as the glyph.
         let tx = rect.x0 + 32.0;
         let text_y = cy - draw::measure(tr, "Ag", tsize).1 / 2.0;
         if self.search_query.is_empty() && !focused {
-            draw::text(scene, tr, t, "Search apps…", tsize, c.text_dim, tx, text_y, None);
+            draw::text(
+                scene,
+                tr,
+                t,
+                "Search apps…",
+                tsize,
+                c.text_dim,
+                tx,
+                text_y,
+                None,
+            );
         } else {
-            draw::text(scene, tr, t, &self.search_query, tsize, c.text_primary, tx, text_y, None);
+            draw::text(
+                scene,
+                tr,
+                t,
+                &self.search_query,
+                tsize,
+                c.text_primary,
+                tx,
+                text_y,
+                None,
+            );
             if focused {
                 let cw = draw::measure(tr, &self.search_query, tsize).0;
                 let caret = Rect::new(tx + cw + 1.0, cy - 9.0, tx + cw + 2.5, cy + 9.0);
@@ -1231,11 +1370,27 @@ impl SoftwareStore {
                 let clr = Rect::new(rect.x1 - 26.0, cy - 11.0, rect.x1 - 6.0, cy + 11.0);
                 let hov = clr.contains(self.mouse);
                 let (xw, xh) = draw::measure(tr, "✕", 13.0);
-                draw::text(scene, tr, t, "✕", 13.0, if hov { c.text_primary } else { c.text_dim }, clr.center().x - xw / 2.0, cy - xh / 2.0, None);
-                targets.push(HitTarget { rect: clr, action: Action::ClearSearch });
+                draw::text(
+                    scene,
+                    tr,
+                    t,
+                    "✕",
+                    13.0,
+                    if hov { c.text_primary } else { c.text_dim },
+                    clr.center().x - xw / 2.0,
+                    cy - xh / 2.0,
+                    None,
+                );
+                targets.push(HitTarget {
+                    rect: clr,
+                    action: Action::ClearSearch,
+                });
             }
         }
-        targets.push(HitTarget { rect, action: Action::FocusSearch });
+        targets.push(HitTarget {
+            rect,
+            action: Action::FocusSearch,
+        });
     }
 
     /// The hamburger / close toggle shown in the header on narrow windows.
@@ -1251,7 +1406,17 @@ impl SoftwareStore {
         let c = &theme.tokens.colors;
         let btn = self.nav_toggle_rect();
         let hov = btn.contains(self.mouse);
-        draw::fill_round(scene, t, btn, theme.tokens.radii.md, if hov { c.surface_white_10 } else { c.surfaces.raised });
+        draw::fill_round(
+            scene,
+            t,
+            btn,
+            theme.tokens.radii.md,
+            if hov {
+                c.surface_white_10
+            } else {
+                c.surfaces.raised
+            },
+        );
         draw::stroke_round(scene, t, btn, theme.tokens.radii.md, c.border_standard, 1.0);
 
         let cx = btn.center().x;
@@ -1260,20 +1425,46 @@ impl SoftwareStore {
         if open {
             // Close (X) affordance while the drawer is showing.
             let r = 6.0;
-            let line = vello::kurbo::Line::new(Point::new(cx - r, cyc - r), Point::new(cx + r, cyc + r));
-            scene.stroke(&vello::kurbo::Stroke::new(1.8), t, c.text_primary, None, &line);
-            let line2 = vello::kurbo::Line::new(Point::new(cx + r, cyc - r), Point::new(cx - r, cyc + r));
-            scene.stroke(&vello::kurbo::Stroke::new(1.8), t, c.text_primary, None, &line2);
+            let line =
+                vello::kurbo::Line::new(Point::new(cx - r, cyc - r), Point::new(cx + r, cyc + r));
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.8),
+                t,
+                c.text_primary,
+                None,
+                &line,
+            );
+            let line2 =
+                vello::kurbo::Line::new(Point::new(cx + r, cyc - r), Point::new(cx - r, cyc + r));
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.8),
+                t,
+                c.text_primary,
+                None,
+                &line2,
+            );
         } else {
             // Three-line hamburger.
             let line_w = 15.0;
             for i in 0..3 {
                 let ly = cyc - 6.0 + i as f64 * 6.0;
-                let line = vello::kurbo::Line::new(Point::new(cx - line_w / 2.0, ly), Point::new(cx + line_w / 2.0, ly));
-                scene.stroke(&vello::kurbo::Stroke::new(1.8), t, c.text_primary, None, &line);
+                let line = vello::kurbo::Line::new(
+                    Point::new(cx - line_w / 2.0, ly),
+                    Point::new(cx + line_w / 2.0, ly),
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.8),
+                    t,
+                    c.text_primary,
+                    None,
+                    &line,
+                );
             }
         }
-        targets.push(HitTarget { rect: btn, action: Action::ToggleNav });
+        targets.push(HitTarget {
+            rect: btn,
+            action: Action::ToggleNav,
+        });
     }
 
     /// Draw the overlay navigation drawer (narrow mode). Dims the content
@@ -1298,15 +1489,26 @@ impl SoftwareStore {
         // Scrim over the whole window; tapping it dismisses the drawer.
         let scrim = alpha(Color::from_rgba8(0, 0, 0, 255), reveal * 0.5);
         draw::fill_rect(scene, t, self.rect, scrim);
-        targets.push(HitTarget { rect: self.rect, action: Action::DismissNav });
+        targets.push(HitTarget {
+            rect: self.rect,
+            action: Action::DismissNav,
+        });
 
         // Drawer panel — opaque raised surface sliding in from the left.
         let drawer = self.nav_drawer_rect();
         draw::fill_rect(scene, t, drawer, c.surfaces.base);
-        draw::fill_rect(scene, t, Rect::new(drawer.x1 - 1.0, drawer.y0, drawer.x1, drawer.y1), c.border_standard);
+        draw::fill_rect(
+            scene,
+            t,
+            Rect::new(drawer.x1 - 1.0, drawer.y0, drawer.x1, drawer.y1),
+            c.border_standard,
+        );
         // Absorb clicks on the panel (registered after the scrim, before the
         // rows) so empty drawer space doesn't dismiss via the scrim below.
-        targets.push(HitTarget { rect: drawer, action: Action::NavAbsorb });
+        targets.push(HitTarget {
+            rect: drawer,
+            action: Action::NavAbsorb,
+        });
 
         let pad = 18.0;
         let x = drawer.x0 + pad;
@@ -1341,25 +1543,62 @@ impl SoftwareStore {
                 draw::fill_round(scene, t, r, theme.tokens.radii.md, bg);
             }
             let fg = if active { Color::WHITE } else { c.text_primary };
-            draw::text_w(scene, tr, t, label, ty.base, TextWeight::Medium, fg, r.x0 + 14.0, r.center().y - ty.base as f64 / 2.0 - 1.0, None);
+            draw::text_w(
+                scene,
+                tr,
+                t,
+                label,
+                ty.base,
+                TextWeight::Medium,
+                fg,
+                r.x0 + 14.0,
+                r.center().y - ty.base as f64 / 2.0 - 1.0,
+                None,
+            );
             // Updates count badge on the right of the row.
             if *tab == Tab::Updates && up_count > 0 {
                 let badge_c = Point::new(r.x1 - 20.0, r.center().y);
-                let bg_badge = if active { Color::WHITE } else { c.semantic.warning };
+                let bg_badge = if active {
+                    Color::WHITE
+                } else {
+                    c.semantic.warning
+                };
                 let badge = Circle::new(badge_c, 10.0);
                 scene.fill(vello::peniko::Fill::NonZero, t, bg_badge, None, &badge);
                 let txt = up_count.to_string();
                 let (nw, nh) = draw::measure(tr, &txt, ty.xs);
                 let nfg = if active { c.accent[5] } else { Color::WHITE };
-                draw::text_w(scene, tr, t, &txt, ty.xs, TextWeight::Bold, nfg, badge_c.x - nw / 2.0, badge_c.y - nh / 2.0, None);
+                draw::text_w(
+                    scene,
+                    tr,
+                    t,
+                    &txt,
+                    ty.xs,
+                    TextWeight::Bold,
+                    nfg,
+                    badge_c.x - nw / 2.0,
+                    badge_c.y - nh / 2.0,
+                    None,
+                );
             }
-            targets.push(HitTarget { rect: r, action: Action::SetTab(*tab) });
+            targets.push(HitTarget {
+                rect: r,
+                action: Action::SetTab(*tab),
+            });
             ry += row_h + 6.0;
         }
     }
 
     /// Draw an icon tile for `app` at `rect`, theme-derived colour.
-    fn icon(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, rect: Rect, app: &AppEntry) {
+    fn icon(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        rect: Rect,
+        app: &AppEntry,
+    ) {
         let base = theme.tokens.colors.accent[app.icon_tone.min(10)];
         let sheen = mix(base, Color::WHITE, 0.5);
         draw::icon_tile(scene, tr, t, rect, base, sheen, &app.monogram, Color::WHITE);
@@ -1388,17 +1627,29 @@ impl SoftwareStore {
                 None,
             ),
             BtnStyle::Neutral => (
-                if hovered { c.surface_white_20 } else { c.surface_white_10 },
+                if hovered {
+                    c.surface_white_20
+                } else {
+                    c.surface_white_10
+                },
                 c.text_primary,
                 Some(c.border_standard),
             ),
             BtnStyle::Ghost => (
-                if hovered { c.surface_white_10 } else { Color::TRANSPARENT },
+                if hovered {
+                    c.surface_white_10
+                } else {
+                    Color::TRANSPARENT
+                },
                 c.text_dim,
                 Some(c.border_standard),
             ),
             BtnStyle::Danger => (
-                if hovered { alpha(c.semantic.danger, 0.22) } else { Color::TRANSPARENT },
+                if hovered {
+                    alpha(c.semantic.danger, 0.22)
+                } else {
+                    Color::TRANSPARENT
+                },
                 c.semantic.danger,
                 Some(alpha(c.semantic.danger, 0.5)),
             ),
@@ -1443,7 +1694,18 @@ impl SoftwareStore {
         let c = &theme.tokens.colors;
         match self.live_state(app) {
             InstallState::Available => {
-                Self::pill_button(scene, tr, t, theme, targets, rect, "Install", BtnStyle::Primary, rect.contains(self.mouse), Action::Install(app.id.clone()));
+                Self::pill_button(
+                    scene,
+                    tr,
+                    t,
+                    theme,
+                    targets,
+                    rect,
+                    "Install",
+                    BtnStyle::Primary,
+                    rect.contains(self.mouse),
+                    Action::Install(app.id.clone()),
+                );
             }
             InstallState::Installing(p) => {
                 // Track.
@@ -1466,19 +1728,66 @@ impl SoftwareStore {
                     let (sw, _) = draw::measure(tr, &short, size);
                     (short, sw)
                 };
-                draw::text_w(scene, tr, t, &label, size, TextWeight::Semibold, Color::WHITE, rect.center().x - lw / 2.0, rect.center().y - lh / 2.0, None);
+                draw::text_w(
+                    scene,
+                    tr,
+                    t,
+                    &label,
+                    size,
+                    TextWeight::Semibold,
+                    Color::WHITE,
+                    rect.center().x - lw / 2.0,
+                    rect.center().y - lh / 2.0,
+                    None,
+                );
                 // Cancel target spans the whole control.
-                targets.push(HitTarget { rect, action: Action::Cancel(app.id.clone()) });
+                targets.push(HitTarget {
+                    rect,
+                    action: Action::Cancel(app.id.clone()),
+                });
             }
             InstallState::Installed => {
                 if allow_remove {
                     let half = rect.width() / 2.0 - 4.0;
                     let open_r = Rect::new(rect.x0, rect.y0, rect.x0 + half, rect.y1);
                     let rem_r = Rect::new(rect.x1 - half, rect.y0, rect.x1, rect.y1);
-                    Self::pill_button(scene, tr, t, theme, targets, open_r, "Open", BtnStyle::Neutral, open_r.contains(self.mouse), Action::Open(app.id.clone()));
-                    Self::pill_button(scene, tr, t, theme, targets, rem_r, "Remove", BtnStyle::Danger, rem_r.contains(self.mouse), Action::Remove(app.id.clone()));
+                    Self::pill_button(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        targets,
+                        open_r,
+                        "Open",
+                        BtnStyle::Neutral,
+                        open_r.contains(self.mouse),
+                        Action::Open(app.id.clone()),
+                    );
+                    Self::pill_button(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        targets,
+                        rem_r,
+                        "Remove",
+                        BtnStyle::Danger,
+                        rem_r.contains(self.mouse),
+                        Action::Remove(app.id.clone()),
+                    );
                 } else {
-                    Self::pill_button(scene, tr, t, theme, targets, rect, "Open", BtnStyle::Neutral, rect.contains(self.mouse), Action::Open(app.id.clone()));
+                    Self::pill_button(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        targets,
+                        rect,
+                        "Open",
+                        BtnStyle::Neutral,
+                        rect.contains(self.mouse),
+                        Action::Open(app.id.clone()),
+                    );
                 }
             }
             InstallState::UpdateAvailable(_) => {
@@ -1486,10 +1795,43 @@ impl SoftwareStore {
                     let half = rect.width() / 2.0 - 4.0;
                     let up_r = Rect::new(rect.x0, rect.y0, rect.x0 + half, rect.y1);
                     let open_r = Rect::new(rect.x1 - half, rect.y0, rect.x1, rect.y1);
-                    Self::pill_button(scene, tr, t, theme, targets, up_r, "Update", BtnStyle::Primary, up_r.contains(self.mouse), Action::Update(app.id.clone()));
-                    Self::pill_button(scene, tr, t, theme, targets, open_r, "Open", BtnStyle::Neutral, open_r.contains(self.mouse), Action::Open(app.id.clone()));
+                    Self::pill_button(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        targets,
+                        up_r,
+                        "Update",
+                        BtnStyle::Primary,
+                        up_r.contains(self.mouse),
+                        Action::Update(app.id.clone()),
+                    );
+                    Self::pill_button(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        targets,
+                        open_r,
+                        "Open",
+                        BtnStyle::Neutral,
+                        open_r.contains(self.mouse),
+                        Action::Open(app.id.clone()),
+                    );
                 } else {
-                    Self::pill_button(scene, tr, t, theme, targets, rect, "Update", BtnStyle::Primary, rect.contains(self.mouse), Action::Update(app.id.clone()));
+                    Self::pill_button(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        targets,
+                        rect,
+                        "Update",
+                        BtnStyle::Primary,
+                        rect.contains(self.mouse),
+                        Action::Update(app.id.clone()),
+                    );
                 }
             }
         }
@@ -1509,28 +1851,100 @@ impl SoftwareStore {
         let c = &theme.tokens.colors;
         let hov = rect.contains(self.mouse);
         draw::fill_round(scene, t, rect, theme.tokens.radii.lg, c.surfaces.raised);
-        draw::stroke_round(scene, t, rect, theme.tokens.radii.lg, if hov { c.border_focus } else { c.border_standard }, 1.0);
+        draw::stroke_round(
+            scene,
+            t,
+            rect,
+            theme.tokens.radii.lg,
+            if hov {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+            1.0,
+        );
 
         let pad = 14.0;
         let icon_sz = 46.0;
-        let icon_r = Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x0 + pad + icon_sz, rect.y0 + pad + icon_sz);
+        let icon_r = Rect::new(
+            rect.x0 + pad,
+            rect.y0 + pad,
+            rect.x0 + pad + icon_sz,
+            rect.y0 + pad + icon_sz,
+        );
         self.icon(scene, tr, t, theme, icon_r, app);
 
         let text_x = icon_r.x1 + 12.0;
         let text_w = rect.x1 - pad - text_x;
-        draw::text_w(scene, tr, t, &app.name, theme.tokens.typography.scale.base, TextWeight::Bold, c.text_primary, text_x, rect.y0 + pad, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &app.name,
+            theme.tokens.typography.scale.base,
+            TextWeight::Bold,
+            c.text_primary,
+            text_x,
+            rect.y0 + pad,
+            None,
+        );
         let dev = draw::ellipsize(tr, &app.developer, theme.tokens.typography.scale.xs, text_w);
-        draw::text(scene, tr, t, &dev, theme.tokens.typography.scale.xs, c.text_dim, text_x, rect.y0 + pad + 20.0, None);
+        draw::text(
+            scene,
+            tr,
+            t,
+            &dev,
+            theme.tokens.typography.scale.xs,
+            c.text_dim,
+            text_x,
+            rect.y0 + pad + 20.0,
+            None,
+        );
 
         // Summary (wrapped, 2 lines max region).
         let sum_y = icon_r.y1 + 12.0;
-        let summary = draw::ellipsize(tr, &app.summary, theme.tokens.typography.scale.sm, text_w + icon_sz + 12.0);
-        draw::text(scene, tr, t, &summary, theme.tokens.typography.scale.sm, c.text_dim, rect.x0 + pad, sum_y, Some((rect.width() - pad * 2.0) as f32));
+        let summary = draw::ellipsize(
+            tr,
+            &app.summary,
+            theme.tokens.typography.scale.sm,
+            text_w + icon_sz + 12.0,
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            &summary,
+            theme.tokens.typography.scale.sm,
+            c.text_dim,
+            rect.x0 + pad,
+            sum_y,
+            Some((rect.width() - pad * 2.0) as f32),
+        );
 
         // Bottom row: rating + action button.
         let row_y = rect.y1 - pad - 26.0;
-        draw::rating_stars(scene, t, rect.x0 + pad, row_y + 9.0, app.rating, 6.0, 2.0, c.semantic.warning, c.surface_white_20);
-        draw::text(scene, tr, t, &app.rating_label(), theme.tokens.typography.scale.xs, c.text_dim, rect.x0 + pad + 70.0, row_y + 3.0, None);
+        draw::rating_stars(
+            scene,
+            t,
+            rect.x0 + pad,
+            row_y + 9.0,
+            app.rating,
+            6.0,
+            2.0,
+            c.semantic.warning,
+            c.surface_white_20,
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            &app.rating_label(),
+            theme.tokens.typography.scale.xs,
+            c.text_dim,
+            rect.x0 + pad + 70.0,
+            row_y + 3.0,
+            None,
+        );
 
         let btn_w = 96.0_f64;
         let btn = Rect::new(rect.x1 - pad - btn_w, row_y, rect.x1 - pad, row_y + 26.0);
@@ -1538,7 +1952,13 @@ impl SoftwareStore {
 
         // Whole-card click → detail (registered first so buttons, pushed
         // later, win the reverse hit-test).
-        targets.insert(0, HitTarget { rect, action: Action::OpenDetail(app.id.clone()) });
+        targets.insert(
+            0,
+            HitTarget {
+                rect,
+                action: Action::OpenDetail(app.id.clone()),
+            },
+        );
     }
 
     /// A large featured/hero card.
@@ -1556,42 +1976,148 @@ impl SoftwareStore {
         let accent = c.accent[app.icon_tone.min(10)];
         let hov = rect.contains(self.mouse);
         // Banner: deep accent base with a lighter diagonal-ish sheen band.
-        draw::fill_round(scene, t, rect, theme.tokens.radii.xl, mix(accent, c.surfaces.base, 0.35));
+        draw::fill_round(
+            scene,
+            t,
+            rect,
+            theme.tokens.radii.xl,
+            mix(accent, c.surfaces.base, 0.35),
+        );
         let band = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + rect.height() * 0.5);
         let band_round = vello::kurbo::RoundedRect::new(
             band.x0,
             band.y0,
             band.x1,
             band.y1,
-            vello::kurbo::RoundedRectRadii::new(theme.tokens.radii.xl as f64, theme.tokens.radii.xl as f64, 0.0, 0.0),
+            vello::kurbo::RoundedRectRadii::new(
+                theme.tokens.radii.xl as f64,
+                theme.tokens.radii.xl as f64,
+                0.0,
+                0.0,
+            ),
         );
-        scene.fill(vello::peniko::Fill::NonZero, t, alpha(mix(accent, Color::WHITE, 0.25), 0.35), None, &band_round);
-        draw::stroke_round(scene, t, rect, theme.tokens.radii.xl, if hov { alpha(Color::WHITE, 0.5) } else { c.border_white_20 }, 1.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            t,
+            alpha(mix(accent, Color::WHITE, 0.25), 0.35),
+            None,
+            &band_round,
+        );
+        draw::stroke_round(
+            scene,
+            t,
+            rect,
+            theme.tokens.radii.xl,
+            if hov {
+                alpha(Color::WHITE, 0.5)
+            } else {
+                c.border_white_20
+            },
+            1.0,
+        );
 
         let pad = 18.0;
         // "Editor's Choice" eyebrow.
-        draw::text_w(scene, tr, t, "FEATURED", theme.tokens.typography.scale.xs, TextWeight::Bold, alpha(Color::WHITE, 0.8), rect.x0 + pad, rect.y0 + pad, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            "FEATURED",
+            theme.tokens.typography.scale.xs,
+            TextWeight::Bold,
+            alpha(Color::WHITE, 0.8),
+            rect.x0 + pad,
+            rect.y0 + pad,
+            None,
+        );
 
         let icon_sz = 64.0;
-        let icon_r = Rect::new(rect.x0 + pad, rect.y0 + pad + 22.0, rect.x0 + pad + icon_sz, rect.y0 + pad + 22.0 + icon_sz);
+        let icon_r = Rect::new(
+            rect.x0 + pad,
+            rect.y0 + pad + 22.0,
+            rect.x0 + pad + icon_sz,
+            rect.y0 + pad + 22.0 + icon_sz,
+        );
         self.icon(scene, tr, t, theme, icon_r, app);
 
         let tx = icon_r.x1 + 14.0;
-        draw::text_w(scene, tr, t, &app.name, theme.tokens.typography.scale.xl, TextWeight::Bold, Color::WHITE, tx, icon_r.y0, None);
-        let dev = draw::ellipsize(tr, &app.developer, theme.tokens.typography.scale.sm, rect.x1 - pad - tx);
-        draw::text(scene, tr, t, &dev, theme.tokens.typography.scale.sm, alpha(Color::WHITE, 0.8), tx, icon_r.y0 + 26.0, None);
-        draw::rating_stars(scene, t, tx, icon_r.y0 + 52.0, app.rating, 6.0, 2.0, Color::WHITE, alpha(Color::WHITE, 0.3));
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &app.name,
+            theme.tokens.typography.scale.xl,
+            TextWeight::Bold,
+            Color::WHITE,
+            tx,
+            icon_r.y0,
+            None,
+        );
+        let dev = draw::ellipsize(
+            tr,
+            &app.developer,
+            theme.tokens.typography.scale.sm,
+            rect.x1 - pad - tx,
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            &dev,
+            theme.tokens.typography.scale.sm,
+            alpha(Color::WHITE, 0.8),
+            tx,
+            icon_r.y0 + 26.0,
+            None,
+        );
+        draw::rating_stars(
+            scene,
+            t,
+            tx,
+            icon_r.y0 + 52.0,
+            app.rating,
+            6.0,
+            2.0,
+            Color::WHITE,
+            alpha(Color::WHITE, 0.3),
+        );
 
         // Summary across the bottom.
-        let sum = draw::ellipsize(tr, &app.summary, theme.tokens.typography.scale.sm, rect.width() - pad * 2.0 - 110.0);
-        draw::text(scene, tr, t, &sum, theme.tokens.typography.scale.sm, alpha(Color::WHITE, 0.92), rect.x0 + pad, rect.y1 - pad - 34.0, None);
+        let sum = draw::ellipsize(
+            tr,
+            &app.summary,
+            theme.tokens.typography.scale.sm,
+            rect.width() - pad * 2.0 - 110.0,
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            &sum,
+            theme.tokens.typography.scale.sm,
+            alpha(Color::WHITE, 0.92),
+            rect.x0 + pad,
+            rect.y1 - pad - 34.0,
+            None,
+        );
 
         // Action button bottom-right.
         let btn_w = 110.0_f64;
-        let btn = Rect::new(rect.x1 - pad - btn_w, rect.y1 - pad - 30.0, rect.x1 - pad, rect.y1 - pad);
+        let btn = Rect::new(
+            rect.x1 - pad - btn_w,
+            rect.y1 - pad - 30.0,
+            rect.x1 - pad,
+            rect.y1 - pad,
+        );
         self.action_control(scene, tr, t, theme, targets, btn, app, false);
 
-        targets.insert(0, HitTarget { rect, action: Action::OpenDetail(app.id.clone()) });
+        targets.insert(
+            0,
+            HitTarget {
+                rect,
+                action: Action::OpenDetail(app.id.clone()),
+            },
+        );
     }
 
     /// Draw one category chip at `*x`, advancing `*x` past it.
@@ -1614,14 +2140,34 @@ impl SoftwareStore {
         let r = Rect::new(*x, y, *x + w, y + 32.0);
         let active = self.active_category == cat;
         let hov = r.contains(self.mouse);
-        let bg = if active { c.accent[5] } else if hov { c.surface_white_10 } else { c.surfaces.raised };
+        let bg = if active {
+            c.accent[5]
+        } else if hov {
+            c.surface_white_10
+        } else {
+            c.surfaces.raised
+        };
         draw::fill_round(scene, t, r, theme.tokens.radii.full, bg);
         if !active {
             draw::stroke_round(scene, t, r, theme.tokens.radii.full, c.border_standard, 1.0);
         }
         let fg = if active { Color::WHITE } else { c.text_dim };
-        draw::text_w(scene, tr, t, label, size, TextWeight::Medium, fg, r.x0 + 14.0, r.center().y - size as f64 / 2.0 - 1.0, None);
-        targets.push(HitTarget { rect: r, action: Action::SetCategory(cat) });
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            label,
+            size,
+            TextWeight::Medium,
+            fg,
+            r.x0 + 14.0,
+            r.center().y - size as f64 / 2.0 - 1.0,
+            None,
+        );
+        targets.push(HitTarget {
+            rect: r,
+            action: Action::SetCategory(cat),
+        });
         *x += w + 10.0;
     }
 
@@ -1639,14 +2185,44 @@ impl SoftwareStore {
         let mut x = x0;
         self.draw_chip(scene, tr, t, theme, targets, &mut x, y, "All", None);
         for cat in Category::ALL {
-            self.draw_chip(scene, tr, t, theme, targets, &mut x, y, cat.label(), Some(cat));
+            self.draw_chip(
+                scene,
+                tr,
+                t,
+                theme,
+                targets,
+                &mut x,
+                y,
+                cat.label(),
+                Some(cat),
+            );
         }
         y + 32.0
     }
 
     /// Section header text. Returns y after it.
-    fn section(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, x: f64, y: f64, title: &str) -> f64 {
-        draw::text_w(scene, tr, t, title, theme.tokens.typography.scale.lg, TextWeight::Bold, theme.tokens.colors.text_primary, x, y, None);
+    fn section(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        x: f64,
+        y: f64,
+        title: &str,
+    ) -> f64 {
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            title,
+            theme.tokens.typography.scale.lg,
+            TextWeight::Bold,
+            theme.tokens.colors.text_primary,
+            x,
+            y,
+            None,
+        );
         y + 30.0
     }
 
@@ -1664,7 +2240,17 @@ impl SoftwareStore {
         apps: &[&AppEntry],
     ) -> f64 {
         if apps.is_empty() {
-            draw::text(scene, tr, t, "No apps here yet.", theme.tokens.typography.scale.sm, theme.tokens.colors.text_dim, x0, y0, None);
+            draw::text(
+                scene,
+                tr,
+                t,
+                "No apps here yet.",
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_dim,
+                x0,
+                y0,
+                None,
+            );
             return y0 + 30.0;
         }
         let card_min = 280.0_f64;
@@ -1704,9 +2290,15 @@ impl SoftwareStore {
             let results = self.search_results();
             let result_refs: Vec<&AppEntry> = results.iter().collect();
             let searching = self.worker.is_live()
-                && self.worker.inflight().contains(&format!("search:{}", self.search_query.trim()));
+                && self
+                    .worker
+                    .inflight()
+                    .contains(&format!("search:{}", self.search_query.trim()));
             let header = if searching {
-                format!("Searching Flathub for \u{201c}{}\u{201d}…", self.search_query)
+                format!(
+                    "Searching Flathub for \u{201c}{}\u{201d}…",
+                    self.search_query
+                )
             } else {
                 format!(
                     "{} result{} for \u{201c}{}\u{201d}",
@@ -1745,8 +2337,7 @@ impl SoftwareStore {
         // Featured heroes: curated "Editor's Choice" only (offline sample has a
         // `featured` flag; live Flathub data carries no editorial curation, so
         // the heroes section is simply absent there).
-        let featured: Vec<&AppEntry> =
-            pool.iter().copied().filter(|a| a.featured).collect();
+        let featured: Vec<&AppEntry> = pool.iter().copied().filter(|a| a.featured).collect();
         if self.active_category.is_none() && !featured.is_empty() {
             y = self.section(scene, tr, t, theme, x0, y, "Editor's Choice");
             y += 4.0;
@@ -1767,8 +2358,7 @@ impl SoftwareStore {
             None => Category::ALL.to_vec(),
         };
         for cat in cats {
-            let apps: Vec<&AppEntry> =
-                pool.iter().copied().filter(|a| a.category == cat).collect();
+            let apps: Vec<&AppEntry> = pool.iter().copied().filter(|a| a.category == cat).collect();
             if apps.is_empty() {
                 continue;
             }
@@ -1806,19 +2396,90 @@ impl SoftwareStore {
         self.icon(scene, tr, t, theme, icon_r, app);
 
         let info_x = icon_r.x1 + 20.0;
-        draw::text_w(scene, tr, t, &app.name, ty.x2l, TextWeight::Bold, c.text_primary, info_x, top, None);
-        draw::text(scene, tr, t, &app.developer, ty.base, c.text_dim, info_x, top + 38.0, None);
-        draw::text(scene, tr, t, app.source.label(), ty.xs, c.text_dim, info_x, top + 60.0, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &app.name,
+            ty.x2l,
+            TextWeight::Bold,
+            c.text_primary,
+            info_x,
+            top,
+            None,
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            &app.developer,
+            ty.base,
+            c.text_dim,
+            info_x,
+            top + 38.0,
+            None,
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            app.source.label(),
+            ty.xs,
+            c.text_dim,
+            info_x,
+            top + 60.0,
+            None,
+        );
         // Rating.
-        let rw = draw::rating_stars(scene, t, info_x, top + 84.0, app.rating, 8.0, 3.0, c.semantic.warning, c.surface_white_20);
-        draw::text_w(scene, tr, t, &app.rating_label(), ty.sm, TextWeight::Semibold, c.text_primary, info_x + rw + 12.0, top + 78.0, None);
-        draw::text(scene, tr, t, &app.rating_count_label(), ty.xs, c.text_dim, info_x + rw + 12.0, top + 95.0, None);
+        let rw = draw::rating_stars(
+            scene,
+            t,
+            info_x,
+            top + 84.0,
+            app.rating,
+            8.0,
+            3.0,
+            c.semantic.warning,
+            c.surface_white_20,
+        );
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &app.rating_label(),
+            ty.sm,
+            TextWeight::Semibold,
+            c.text_primary,
+            info_x + rw + 12.0,
+            top + 78.0,
+            None,
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            &app.rating_count_label(),
+            ty.xs,
+            c.text_dim,
+            info_x + rw + 12.0,
+            top + 95.0,
+            None,
+        );
 
         // Primary action (top-right). qOS-native apps get the bespoke
         // "Open directly" / "Add" affordances instead of Install.
-        let btn_w = if app.is_qos_native() { 260.0_f64 } else { 200.0_f64 };
+        let btn_w = if app.is_qos_native() {
+            260.0_f64
+        } else {
+            200.0_f64
+        };
         let btn_h = 44.0_f64;
-        let btn = Rect::new(body.x1 - BODY_PAD_X - btn_w, top + 4.0, body.x1 - BODY_PAD_X, top + 4.0 + btn_h);
+        let btn = Rect::new(
+            body.x1 - BODY_PAD_X - btn_w,
+            top + 4.0,
+            body.x1 - BODY_PAD_X,
+            top + 4.0 + btn_h,
+        );
         if app.is_qos_native() {
             self.draw_qos_affordances(scene, tr, t, theme, targets, btn, app);
         } else {
@@ -1830,17 +2491,48 @@ impl SoftwareStore {
         let mut meta_y = btn.y1 + 8.0;
         let meta = format!("v{}  ·  {}", app.latest_version, app.size_label());
         let mw = draw::measure(tr, &meta, ty.xs).0;
-        draw::text(scene, tr, t, &meta, ty.xs, c.text_dim, btn.x1 - mw, meta_y, None);
+        draw::text(
+            scene,
+            tr,
+            t,
+            &meta,
+            ty.xs,
+            c.text_dim,
+            btn.x1 - mw,
+            meta_y,
+            None,
+        );
         meta_y += 16.0;
         if let Some(dl) = app.download_label() {
             let dw = draw::measure(tr, &dl, ty.xs).0;
-            draw::text(scene, tr, t, &dl, ty.xs, c.text_dim, btn.x1 - dw, meta_y, None);
+            draw::text(
+                scene,
+                tr,
+                t,
+                &dl,
+                ty.xs,
+                c.text_dim,
+                btn.x1 - dw,
+                meta_y,
+                None,
+            );
             meta_y += 16.0;
         }
         if let InstallState::UpdateAvailable(from) = self.live_state(app) {
             let upd = format!("Update available: {} → {}", from, app.latest_version);
             let uw = draw::measure(tr, &upd, ty.xs).0;
-            draw::text_w(scene, tr, t, &upd, ty.xs, TextWeight::Medium, c.semantic.warning, btn.x1 - uw, meta_y, None);
+            draw::text_w(
+                scene,
+                tr,
+                t,
+                &upd,
+                ty.xs,
+                TextWeight::Medium,
+                c.semantic.warning,
+                btn.x1 - uw,
+                meta_y,
+                None,
+            );
         }
 
         let mut y = top + icon_sz + 30.0;
@@ -1857,7 +2549,18 @@ impl SoftwareStore {
                 let r = Rect::new(sx, y, sx + shot_w, y + shot_h);
                 let tone_a = c.accent[sh.tone_a.min(10)];
                 let tone_b = mix(c.neutral[sh.tone_b.min(10)], c.surfaces.base, 0.2);
-                draw::screenshot_thumb(scene, tr, t, r, tone_a, tone_b, c.border_standard, &sh.caption, c.text_dim, ty.xs);
+                draw::screenshot_thumb(
+                    scene,
+                    tr,
+                    t,
+                    r,
+                    tone_a,
+                    tone_b,
+                    c.border_standard,
+                    &sh.caption,
+                    c.text_dim,
+                    ty.xs,
+                );
             }
             y += shot_h + 30.0;
         }
@@ -1875,7 +2578,17 @@ impl SoftwareStore {
         y += 4.0;
         for para in app.description.split("\n\n") {
             let (_, h) = tr.measure(para, ty.sm, Some(width as f32));
-            draw::text(scene, tr, t, para, ty.sm, mix(c.text_primary, c.text_dim, 0.25), x0, y, Some(width as f32));
+            draw::text(
+                scene,
+                tr,
+                t,
+                para,
+                ty.sm,
+                mix(c.text_primary, c.text_dim, 0.25),
+                x0,
+                y,
+                Some(width as f32),
+            );
             y += h as f64 + 12.0;
         }
         y += 14.0;
@@ -1893,7 +2606,9 @@ impl SoftwareStore {
         // Reviews come from the sample catalog; live (Flathub) entries have
         // none, so we surface the download-count-derived rating note instead.
         let rating_note = if app.reviews.is_empty() && app.download_count.is_some() {
-            Some("Rating estimated from Flathub download counts — Flathub exposes no written reviews.")
+            Some(
+                "Rating estimated from Flathub download counts — Flathub exposes no written reviews.",
+            )
         } else {
             None
         };
@@ -1913,9 +2628,25 @@ impl SoftwareStore {
         ];
         for (k, v) in rows {
             draw::text(scene, tr, t, k, ty.sm, c.text_dim, x0, y, None);
-            draw::text_w(scene, tr, t, &v, ty.sm, TextWeight::Medium, c.text_primary, x0 + 160.0, y, None);
+            draw::text_w(
+                scene,
+                tr,
+                t,
+                &v,
+                ty.sm,
+                TextWeight::Medium,
+                c.text_primary,
+                x0 + 160.0,
+                y,
+                None,
+            );
             // Divider.
-            draw::fill_rect(scene, t, Rect::new(x0, y + 22.0, x0 + width, y + 23.0), alpha(c.border_standard, 0.5));
+            draw::fill_rect(
+                scene,
+                t,
+                Rect::new(x0, y + 22.0, x0 + width, y + 23.0),
+                alpha(c.border_standard, 0.5),
+            );
             y += 32.0;
         }
 
@@ -1935,16 +2666,47 @@ impl SoftwareStore {
     ) {
         let c = &theme.tokens.colors;
         let ty = &theme.tokens.typography.scale;
-        let dot_c = if perm.sensitive { c.semantic.warning } else { c.semantic.success };
+        let dot_c = if perm.sensitive {
+            c.semantic.warning
+        } else {
+            c.semantic.success
+        };
         let dot = Circle::new(Point::new(x + 5.0, y + 9.0), 4.0);
         scene.fill(vello::peniko::Fill::NonZero, t, dot_c, None, &dot);
-        draw::text(scene, tr, t, &perm.label, ty.sm, c.text_primary, x + 18.0, y, Some((width - 120.0) as f32));
+        draw::text(
+            scene,
+            tr,
+            t,
+            &perm.label,
+            ty.sm,
+            c.text_primary,
+            x + 18.0,
+            y,
+            Some((width - 120.0) as f32),
+        );
         if perm.sensitive {
             let tag = "sensitive";
             let tw = draw::measure(tr, tag, ty.xs).0;
             let r = Rect::new(x + width - tw - 16.0, y - 1.0, x + width, y + 17.0);
-            draw::fill_round(scene, t, r, theme.tokens.radii.full, alpha(c.semantic.warning, 0.18));
-            draw::text_w(scene, tr, t, tag, ty.xs, TextWeight::Medium, c.semantic.warning, r.x0 + 8.0, y + 1.0, None);
+            draw::fill_round(
+                scene,
+                t,
+                r,
+                theme.tokens.radii.full,
+                alpha(c.semantic.warning, 0.18),
+            );
+            draw::text_w(
+                scene,
+                tr,
+                t,
+                tag,
+                ty.xs,
+                TextWeight::Medium,
+                c.semantic.warning,
+                r.x0 + 8.0,
+                y + 1.0,
+                None,
+            );
         }
     }
 
@@ -1965,35 +2727,102 @@ impl SoftwareStore {
         let ty = &theme.tokens.typography.scale;
         let hov = rect.contains(self.mouse);
         draw::fill_round(scene, t, rect, theme.tokens.radii.lg, c.surfaces.raised);
-        draw::stroke_round(scene, t, rect, theme.tokens.radii.lg, if hov { c.border_focus } else { c.border_standard }, 1.0);
+        draw::stroke_round(
+            scene,
+            t,
+            rect,
+            theme.tokens.radii.lg,
+            if hov {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+            1.0,
+        );
 
         let pad = 14.0;
         let icon_sz = rect.height() - pad * 2.0;
-        let icon_r = Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x0 + pad + icon_sz, rect.y1 - pad);
+        let icon_r = Rect::new(
+            rect.x0 + pad,
+            rect.y0 + pad,
+            rect.x0 + pad + icon_sz,
+            rect.y1 - pad,
+        );
         self.icon(scene, tr, t, theme, icon_r, app);
 
         let tx = icon_r.x1 + 14.0;
-        draw::text_w(scene, tr, t, &app.name, ty.base, TextWeight::Bold, c.text_primary, tx, rect.y0 + pad + 2.0, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &app.name,
+            ty.base,
+            TextWeight::Bold,
+            c.text_primary,
+            tx,
+            rect.y0 + pad + 2.0,
+            None,
+        );
         let sub = if show_update_arrow {
             if let InstallState::UpdateAvailable(from) = self.live_state(app) {
-                format!("{}  →  {}   ·   {}", from, app.latest_version, app.size_label())
+                format!(
+                    "{}  →  {}   ·   {}",
+                    from,
+                    app.latest_version,
+                    app.size_label()
+                )
             } else {
                 format!("v{}   ·   {}", app.latest_version, app.size_label())
             }
         } else {
-            let installed_v = self.snapshot.installed.get(&app.id).cloned().unwrap_or_else(|| app.latest_version.clone());
-            format!("v{}   ·   {}   ·   {}", installed_v, app.size_label(), app.category.label())
+            let installed_v = self
+                .snapshot
+                .installed
+                .get(&app.id)
+                .cloned()
+                .unwrap_or_else(|| app.latest_version.clone());
+            format!(
+                "v{}   ·   {}   ·   {}",
+                installed_v,
+                app.size_label(),
+                app.category.label()
+            )
         };
-        let sub_color = if show_update_arrow { mix(c.text_dim, c.semantic.warning, 0.5) } else { c.text_dim };
-        draw::text(scene, tr, t, &sub, ty.sm, sub_color, tx, rect.center().y + 2.0, None);
+        let sub_color = if show_update_arrow {
+            mix(c.text_dim, c.semantic.warning, 0.5)
+        } else {
+            c.text_dim
+        };
+        draw::text(
+            scene,
+            tr,
+            t,
+            &sub,
+            ty.sm,
+            sub_color,
+            tx,
+            rect.center().y + 2.0,
+            None,
+        );
 
         // Action(s) at the right.
         let btn_w = if allow_remove { 200.0_f64 } else { 130.0_f64 };
         let btn_h = 34.0_f64;
-        let btn = Rect::new(rect.x1 - pad - btn_w, rect.center().y - btn_h / 2.0, rect.x1 - pad, rect.center().y + btn_h / 2.0);
+        let btn = Rect::new(
+            rect.x1 - pad - btn_w,
+            rect.center().y - btn_h / 2.0,
+            rect.x1 - pad,
+            rect.center().y + btn_h / 2.0,
+        );
         self.action_control(scene, tr, t, theme, targets, btn, app, allow_remove);
 
-        targets.insert(0, HitTarget { rect, action: Action::OpenDetail(app.id.clone()) });
+        targets.insert(
+            0,
+            HitTarget {
+                rect,
+                action: Action::OpenDetail(app.id.clone()),
+            },
+        );
     }
 
     fn draw_installed(
@@ -2010,11 +2839,29 @@ impl SoftwareStore {
         let mut y = body.y0 + BODY_PAD_TOP - self.scroll;
 
         let installed = self.catalog.installed(&self.snapshot);
-        y = self.section(scene, tr, t, theme, x0, y, &format!("Installed apps · {}", installed.len()));
+        y = self.section(
+            scene,
+            tr,
+            t,
+            theme,
+            x0,
+            y,
+            &format!("Installed apps · {}", installed.len()),
+        );
         y += 12.0;
 
         if installed.is_empty() {
-            y = self.empty_state(scene, tr, t, theme, x0, y, width, "Nothing installed yet", "Browse the store and install your first app.");
+            y = self.empty_state(
+                scene,
+                tr,
+                t,
+                theme,
+                x0,
+                y,
+                width,
+                "Nothing installed yet",
+                "Browse the store and install your first app.",
+            );
         } else {
             let row_h = 72.0;
             for app in &installed {
@@ -2046,18 +2893,54 @@ impl SoftwareStore {
         // instant an update completes.
         let rows = self.updates_view_apps();
         let progress = self.update_progress();
-        let pending = rows.iter().filter(|a| self.batch_status(&a.id).is_none()).count();
+        let pending = rows
+            .iter()
+            .filter(|a| self.batch_status(&a.id).is_none())
+            .count();
 
         // Title + Update All / Updating affordance.
-        draw::text_w(scene, tr, t, &format!("Updates · {}", rows.len()), ty.lg, TextWeight::Bold, c.text_primary, x0, y, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &format!("Updates · {}", rows.len()),
+            ty.lg,
+            TextWeight::Bold,
+            c.text_primary,
+            x0,
+            y,
+            None,
+        );
         if !rows.is_empty() {
             let btn_w = 150.0_f64;
             let btn = Rect::new(x0 + width - btn_w, y - 6.0, x0 + width, y + 28.0);
             if progress.in_flight() {
                 // Non-actionable status pill while a batch runs.
-                Self::pill_button(scene, tr, t, theme, targets, btn, "Updating…", BtnStyle::Ghost, false, Action::SetTab(Tab::Updates));
+                Self::pill_button(
+                    scene,
+                    tr,
+                    t,
+                    theme,
+                    targets,
+                    btn,
+                    "Updating…",
+                    BtnStyle::Ghost,
+                    false,
+                    Action::SetTab(Tab::Updates),
+                );
             } else if pending > 0 {
-                Self::pill_button(scene, tr, t, theme, targets, btn, "Update All", BtnStyle::Primary, btn.contains(self.mouse), Action::UpdateAll);
+                Self::pill_button(
+                    scene,
+                    tr,
+                    t,
+                    theme,
+                    targets,
+                    btn,
+                    "Update All",
+                    BtnStyle::Primary,
+                    btn.contains(self.mouse),
+                    Action::UpdateAll,
+                );
             }
         }
         y += 36.0;
@@ -2070,7 +2953,17 @@ impl SoftwareStore {
         }
 
         if rows.is_empty() {
-            y = self.empty_state(scene, tr, t, theme, x0, y, width, "You're all up to date", "Every installed app is running its latest version.");
+            y = self.empty_state(
+                scene,
+                tr,
+                t,
+                theme,
+                x0,
+                y,
+                width,
+                "You're all up to date",
+                "Every installed app is running its latest version.",
+            );
         } else {
             let row_h = 76.0;
             for app in &rows {
@@ -2109,18 +3002,55 @@ impl SoftwareStore {
             alpha(c.semantic.success, 0.10)
         };
         draw::fill_round(scene, t, r, theme.tokens.radii.lg, wash);
-        draw::stroke_round(scene, t, r, theme.tokens.radii.lg, if in_flight { alpha(c.accent[5], 0.4) } else { alpha(c.semantic.success, 0.4) }, 1.0);
+        draw::stroke_round(
+            scene,
+            t,
+            r,
+            theme.tokens.radii.lg,
+            if in_flight {
+                alpha(c.accent[5], 0.4)
+            } else {
+                alpha(c.semantic.success, 0.4)
+            },
+            1.0,
+        );
 
         let pad = 16.0;
         // Spinner / check glyph.
         let glyph = if in_flight { "↻" } else { "✓" };
-        let gcol = if in_flight { c.accent[5] } else { c.semantic.success };
+        let gcol = if in_flight {
+            c.accent[5]
+        } else {
+            c.semantic.success
+        };
         let (gw, gh) = draw::measure(tr, glyph, ty.lg);
-        draw::text_w(scene, tr, t, glyph, ty.lg, TextWeight::Bold, gcol, r.x0 + pad, r.y0 + pad - gh * 0.1, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            glyph,
+            ty.lg,
+            TextWeight::Bold,
+            gcol,
+            r.x0 + pad,
+            r.y0 + pad - gh * 0.1,
+            None,
+        );
         let text_x = r.x0 + pad + gw + 12.0;
 
         // Status line.
-        draw::text_w(scene, tr, t, &progress.status_line(), ty.base, TextWeight::Bold, c.text_primary, text_x, r.y0 + pad, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &progress.status_line(),
+            ty.base,
+            TextWeight::Bold,
+            c.text_primary,
+            text_x,
+            r.y0 + pad,
+            None,
+        );
 
         // Sub-line: queued / installing / done counters.
         let mut parts: Vec<String> = Vec::new();
@@ -2134,23 +3064,68 @@ impl SoftwareStore {
             parts.push(format!("{} done", progress.done));
         }
         let sub = parts.join("   ·   ");
-        draw::text(scene, tr, t, &sub, ty.sm, c.text_dim, text_x, r.y0 + pad + 22.0, None);
+        draw::text(
+            scene,
+            tr,
+            t,
+            &sub,
+            ty.sm,
+            c.text_dim,
+            text_x,
+            r.y0 + pad + 22.0,
+            None,
+        );
 
         // Overall percentage at the right.
         let pct = format!("{:.0}%", progress.overall * 100.0);
         let (pw, _) = draw::measure(tr, &pct, ty.lg);
-        draw::text_w(scene, tr, t, &pct, ty.lg, TextWeight::Bold, if in_flight { c.text_primary } else { c.semantic.success }, r.x1 - pad - pw, r.y0 + pad, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &pct,
+            ty.lg,
+            TextWeight::Bold,
+            if in_flight {
+                c.text_primary
+            } else {
+                c.semantic.success
+            },
+            r.x1 - pad - pw,
+            r.y0 + pad,
+            None,
+        );
 
         // Overall progress bar across the bottom of the card.
         let bar = Rect::new(r.x0 + pad, r.y1 - pad - 8.0, r.x1 - pad, r.y1 - pad);
-        let bar_fill = if in_flight { c.accent[5] } else { c.semantic.success };
-        Self::progress_bar(scene, t, theme, bar, progress.overall, c.surface_white_10, bar_fill);
+        let bar_fill = if in_flight {
+            c.accent[5]
+        } else {
+            c.semantic.success
+        };
+        Self::progress_bar(
+            scene,
+            t,
+            theme,
+            bar,
+            progress.overall,
+            c.surface_white_10,
+            bar_fill,
+        );
 
         r.y1
     }
 
     /// A rounded progress track + fill. `p` is 0.0..=1.0.
-    fn progress_bar(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, p: f64, track: Color, fill: Color) {
+    fn progress_bar(
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        rect: Rect,
+        p: f64,
+        track: Color,
+        fill: Color,
+    ) {
         let radius = theme.tokens.radii.full;
         draw::fill_round(scene, t, rect, radius, track);
         let p = p.clamp(0.0, 1.0);
@@ -2181,15 +3156,42 @@ impl SoftwareStore {
         let ty = &theme.tokens.typography.scale;
         let hov = rect.contains(self.mouse);
         draw::fill_round(scene, t, rect, theme.tokens.radii.lg, c.surfaces.raised);
-        draw::stroke_round(scene, t, rect, theme.tokens.radii.lg, if hov { c.border_focus } else { c.border_standard }, 1.0);
+        draw::stroke_round(
+            scene,
+            t,
+            rect,
+            theme.tokens.radii.lg,
+            if hov {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+            1.0,
+        );
 
         let pad = 14.0;
         let icon_sz = rect.height() - pad * 2.0;
-        let icon_r = Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x0 + pad + icon_sz, rect.y1 - pad);
+        let icon_r = Rect::new(
+            rect.x0 + pad,
+            rect.y0 + pad,
+            rect.x0 + pad + icon_sz,
+            rect.y1 - pad,
+        );
         self.icon(scene, tr, t, theme, icon_r, app);
 
         let tx = icon_r.x1 + 14.0;
-        draw::text_w(scene, tr, t, &app.name, ty.base, TextWeight::Bold, c.text_primary, tx, rect.y0 + pad + 2.0, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &app.name,
+            ty.base,
+            TextWeight::Bold,
+            c.text_primary,
+            tx,
+            rect.y0 + pad + 2.0,
+            None,
+        );
 
         // Reserve room for the right-hand control / progress region.
         let ctrl_w = 220.0_f64;
@@ -2202,70 +3204,241 @@ impl SoftwareStore {
                 // ("from") version; otherwise just the target + size.
                 let sub = match self.snapshot.installed.get(&app.id) {
                     Some(from) if !from.is_empty() => {
-                        format!("{}  →  {}   ·   {}", from, app.latest_version, app.size_label())
+                        format!(
+                            "{}  →  {}   ·   {}",
+                            from,
+                            app.latest_version,
+                            app.size_label()
+                        )
                     }
-                    _ => format!("Update to {}   ·   {}", app.latest_version, app.size_label()),
+                    _ => format!(
+                        "Update to {}   ·   {}",
+                        app.latest_version,
+                        app.size_label()
+                    ),
                 };
-                draw::text(scene, tr, t, &sub, ty.sm, c.text_dim, tx, rect.center().y + 2.0, None);
+                draw::text(
+                    scene,
+                    tr,
+                    t,
+                    &sub,
+                    ty.sm,
+                    c.text_dim,
+                    tx,
+                    rect.center().y + 2.0,
+                    None,
+                );
                 let badge_w = self.phase_badge_width(tr, theme, InstallPhase::Queued);
-                self.draw_phase_badge(scene, tr, t, theme, rect.x1 - pad - badge_w, rect.center().y, InstallPhase::Queued, None);
+                self.draw_phase_badge(
+                    scene,
+                    tr,
+                    t,
+                    theme,
+                    rect.x1 - pad - badge_w,
+                    rect.center().y,
+                    InstallPhase::Queued,
+                    None,
+                );
             }
             Some(BatchRowStatus::InProgress { progress, phase }) => {
                 // Sub-line shows the phase label + percent.
-                let sub = format!("{} · {:.0}%   ·   {}", phase.label(), progress * 100.0, app.size_label());
-                draw::text(scene, tr, t, &sub, ty.sm, mix(c.text_dim, c.accent[5], 0.5), tx, rect.center().y + 2.0, None);
+                let sub = format!(
+                    "{} · {:.0}%   ·   {}",
+                    phase.label(),
+                    progress * 100.0,
+                    app.size_label()
+                );
+                draw::text(
+                    scene,
+                    tr,
+                    t,
+                    &sub,
+                    ty.sm,
+                    mix(c.text_dim, c.accent[5], 0.5),
+                    tx,
+                    rect.center().y + 2.0,
+                    None,
+                );
 
                 // Right cluster: a round cancel button pinned to the right,
                 // the progress bar filling the space to its left, and the
                 // phase badge floating above the bar (right-aligned so it
                 // never collides with the cancel button).
                 let cancel_d = 28.0;
-                let cancel = Rect::new(rect.x1 - pad - cancel_d, rect.center().y - cancel_d / 2.0, rect.x1 - pad, rect.center().y + cancel_d / 2.0);
+                let cancel = Rect::new(
+                    rect.x1 - pad - cancel_d,
+                    rect.center().y - cancel_d / 2.0,
+                    rect.x1 - pad,
+                    rect.center().y + cancel_d / 2.0,
+                );
                 let chov = cancel.contains(self.mouse);
-                draw::fill_round(scene, t, cancel, theme.tokens.radii.full, if chov { c.surface_white_20 } else { c.surface_white_10 });
+                draw::fill_round(
+                    scene,
+                    t,
+                    cancel,
+                    theme.tokens.radii.full,
+                    if chov {
+                        c.surface_white_20
+                    } else {
+                        c.surface_white_10
+                    },
+                );
                 let (xw, xh) = draw::measure(tr, "✕", 12.0);
-                draw::text(scene, tr, t, "✕", 12.0, if chov { c.text_primary } else { c.text_dim }, cancel.center().x - xw / 2.0, cancel.center().y - xh / 2.0, None);
-                targets.push(HitTarget { rect: cancel, action: Action::Cancel(app.id.clone()) });
+                draw::text(
+                    scene,
+                    tr,
+                    t,
+                    "✕",
+                    12.0,
+                    if chov { c.text_primary } else { c.text_dim },
+                    cancel.center().x - xw / 2.0,
+                    cancel.center().y - xh / 2.0,
+                    None,
+                );
+                targets.push(HitTarget {
+                    rect: cancel,
+                    action: Action::Cancel(app.id.clone()),
+                });
 
                 // Progress bar spanning from ctrl_x up to just before the
                 // cancel button, centred on the lower half of the row.
                 let bar_right = cancel.x0 - 10.0;
-                let bar = Rect::new(ctrl_x, rect.center().y + 12.0, bar_right, rect.center().y + 20.0);
-                Self::progress_bar(scene, t, theme, bar, progress, c.surface_white_10, c.accent[5]);
+                let bar = Rect::new(
+                    ctrl_x,
+                    rect.center().y + 12.0,
+                    bar_right,
+                    rect.center().y + 20.0,
+                );
+                Self::progress_bar(
+                    scene,
+                    t,
+                    theme,
+                    bar,
+                    progress,
+                    c.surface_white_10,
+                    c.accent[5],
+                );
                 // Phase badge above the bar, right-aligned to the bar's end.
                 let badge_w = self.phase_badge_width(tr, theme, phase);
-                self.draw_phase_badge(scene, tr, t, theme, bar_right - badge_w, rect.y0 + pad + 9.0, phase, Some(progress));
+                self.draw_phase_badge(
+                    scene,
+                    tr,
+                    t,
+                    theme,
+                    bar_right - badge_w,
+                    rect.y0 + pad + 9.0,
+                    phase,
+                    Some(progress),
+                );
             }
             Some(BatchRowStatus::Done) => {
-                let sub = format!("Updated to {}   ·   {}", app.latest_version, app.size_label());
-                draw::text(scene, tr, t, &sub, ty.sm, mix(c.text_dim, c.semantic.success, 0.5), tx, rect.center().y + 2.0, None);
+                let sub = format!(
+                    "Updated to {}   ·   {}",
+                    app.latest_version,
+                    app.size_label()
+                );
+                draw::text(
+                    scene,
+                    tr,
+                    t,
+                    &sub,
+                    ty.sm,
+                    mix(c.text_dim, c.semantic.success, 0.5),
+                    tx,
+                    rect.center().y + 2.0,
+                    None,
+                );
                 // "Updated ✓" confirmation pill (non-actionable) + Open.
                 let btn_h = 34.0_f64;
                 let half = ctrl_w / 2.0 - 4.0;
-                let done_r = Rect::new(ctrl_x, rect.center().y - btn_h / 2.0, ctrl_x + half, rect.center().y + btn_h / 2.0);
-                draw::fill_round(scene, t, done_r, theme.tokens.radii.full, alpha(c.semantic.success, 0.18));
+                let done_r = Rect::new(
+                    ctrl_x,
+                    rect.center().y - btn_h / 2.0,
+                    ctrl_x + half,
+                    rect.center().y + btn_h / 2.0,
+                );
+                draw::fill_round(
+                    scene,
+                    t,
+                    done_r,
+                    theme.tokens.radii.full,
+                    alpha(c.semantic.success, 0.18),
+                );
                 let label = "Updated ✓";
                 let (lw, lh) = draw::measure(tr, label, ty.sm);
-                draw::text_w(scene, tr, t, label, ty.sm, TextWeight::Semibold, c.semantic.success, done_r.center().x - lw / 2.0, done_r.center().y - lh / 2.0, None);
-                let open_r = Rect::new(rect.x1 - pad - half, rect.center().y - btn_h / 2.0, rect.x1 - pad, rect.center().y + btn_h / 2.0);
-                Self::pill_button(scene, tr, t, theme, targets, open_r, "Open", BtnStyle::Neutral, open_r.contains(self.mouse), Action::Open(app.id.clone()));
+                draw::text_w(
+                    scene,
+                    tr,
+                    t,
+                    label,
+                    ty.sm,
+                    TextWeight::Semibold,
+                    c.semantic.success,
+                    done_r.center().x - lw / 2.0,
+                    done_r.center().y - lh / 2.0,
+                    None,
+                );
+                let open_r = Rect::new(
+                    rect.x1 - pad - half,
+                    rect.center().y - btn_h / 2.0,
+                    rect.x1 - pad,
+                    rect.center().y + btn_h / 2.0,
+                );
+                Self::pill_button(
+                    scene,
+                    tr,
+                    t,
+                    theme,
+                    targets,
+                    open_r,
+                    "Open",
+                    BtnStyle::Neutral,
+                    open_r.contains(self.mouse),
+                    Action::Open(app.id.clone()),
+                );
             }
             // Still pending (not in the batch): normal update-row controls.
             None => {
                 let sub = if let InstallState::UpdateAvailable(from) = self.live_state(app) {
-                    format!("{}  →  {}   ·   {}", from, app.latest_version, app.size_label())
+                    format!(
+                        "{}  →  {}   ·   {}",
+                        from,
+                        app.latest_version,
+                        app.size_label()
+                    )
                 } else {
                     format!("v{}   ·   {}", app.latest_version, app.size_label())
                 };
-                draw::text(scene, tr, t, &sub, ty.sm, mix(c.text_dim, c.semantic.warning, 0.5), tx, rect.center().y + 2.0, None);
+                draw::text(
+                    scene,
+                    tr,
+                    t,
+                    &sub,
+                    ty.sm,
+                    mix(c.text_dim, c.semantic.warning, 0.5),
+                    tx,
+                    rect.center().y + 2.0,
+                    None,
+                );
                 let btn_w = 130.0_f64;
                 let btn_h = 34.0_f64;
-                let btn = Rect::new(rect.x1 - pad - btn_w, rect.center().y - btn_h / 2.0, rect.x1 - pad, rect.center().y + btn_h / 2.0);
+                let btn = Rect::new(
+                    rect.x1 - pad - btn_w,
+                    rect.center().y - btn_h / 2.0,
+                    rect.x1 - pad,
+                    rect.center().y + btn_h / 2.0,
+                );
                 self.action_control(scene, tr, t, theme, targets, btn, app, false);
             }
         }
 
-        targets.insert(0, HitTarget { rect, action: Action::OpenDetail(app.id.clone()) });
+        targets.insert(
+            0,
+            HitTarget {
+                rect,
+                action: Action::OpenDetail(app.id.clone()),
+            },
+        );
     }
 
     /// The rendered width of a phase badge for `phase`, so callers can
@@ -2292,8 +3465,14 @@ impl SoftwareStore {
         let ty = &theme.tokens.typography.scale;
         let (tint, fg) = match phase {
             InstallPhase::Queued => (alpha(c.text_dim, 0.18), c.text_dim),
-            InstallPhase::Downloading => (alpha(c.accent[5], 0.18), mix(c.text_primary, c.accent[5], 0.5)),
-            InstallPhase::Installing => (alpha(c.accent[3], 0.20), mix(c.text_primary, c.accent[3], 0.5)),
+            InstallPhase::Downloading => (
+                alpha(c.accent[5], 0.18),
+                mix(c.text_primary, c.accent[5], 0.5),
+            ),
+            InstallPhase::Installing => (
+                alpha(c.accent[3], 0.20),
+                mix(c.text_primary, c.accent[3], 0.5),
+            ),
         };
         let label = phase.label();
         let lw = draw::measure(tr, label, ty.xs).0;
@@ -2302,21 +3481,70 @@ impl SoftwareStore {
         let r = Rect::new(x, y_center - bh / 2.0, x + bw, y_center + bh / 2.0);
         draw::fill_round(scene, t, r, theme.tokens.radii.full, tint);
         let (_, th) = draw::measure(tr, label, ty.xs);
-        draw::text_w(scene, tr, t, label, ty.xs, TextWeight::Semibold, fg, r.x0 + 9.0, r.center().y - th / 2.0, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            label,
+            ty.xs,
+            TextWeight::Semibold,
+            fg,
+            r.x0 + 9.0,
+            r.center().y - th / 2.0,
+            None,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn empty_state(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, x0: f64, y: f64, width: f64, title: &str, subtitle: &str) -> f64 {
+    fn empty_state(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        x0: f64,
+        y: f64,
+        width: f64,
+        title: &str,
+        subtitle: &str,
+    ) -> f64 {
         let c = &theme.tokens.colors;
         let ty = &theme.tokens.typography.scale;
         let box_h = 140.0;
         let r = Rect::new(x0, y, x0 + width, y + box_h);
-        draw::fill_round(scene, t, r, theme.tokens.radii.lg, alpha(c.surfaces.raised, 0.5));
+        draw::fill_round(
+            scene,
+            t,
+            r,
+            theme.tokens.radii.lg,
+            alpha(c.surfaces.raised, 0.5),
+        );
         draw::stroke_round(scene, t, r, theme.tokens.radii.lg, c.border_standard, 1.0);
         let (tw, _) = draw::measure(tr, title, ty.lg);
-        draw::text_w(scene, tr, t, title, ty.lg, TextWeight::Bold, c.text_primary, r.center().x - tw / 2.0, r.center().y - 18.0, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            title,
+            ty.lg,
+            TextWeight::Bold,
+            c.text_primary,
+            r.center().x - tw / 2.0,
+            r.center().y - 18.0,
+            None,
+        );
         let (sw, _) = draw::measure(tr, subtitle, ty.sm);
-        draw::text(scene, tr, t, subtitle, ty.sm, c.text_dim, r.center().x - sw / 2.0, r.center().y + 6.0, None);
+        draw::text(
+            scene,
+            tr,
+            t,
+            subtitle,
+            ty.sm,
+            c.text_dim,
+            r.center().x - sw / 2.0,
+            r.center().y + 6.0,
+            None,
+        );
         y + box_h
     }
 
@@ -2335,9 +3563,25 @@ impl SoftwareStore {
         let (tw, _) = draw::measure(tr, &msg, ty.sm);
         let w = tw + 40.0;
         let h = 40.0;
-        let r = Rect::new(self.rect.center().x - w / 2.0, self.rect.y1 - h - 24.0, self.rect.center().x + w / 2.0, self.rect.y1 - 24.0);
+        let r = Rect::new(
+            self.rect.center().x - w / 2.0,
+            self.rect.y1 - h - 24.0,
+            self.rect.center().x + w / 2.0,
+            self.rect.y1 - 24.0,
+        );
         draw::fill_round(scene, t, r, theme.tokens.radii.full, bg);
-        draw::text_w(scene, tr, t, &msg, ty.sm, TextWeight::Semibold, Color::WHITE, r.x0 + 20.0, r.center().y - ty.sm as f64 / 2.0 - 1.0, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &msg,
+            ty.sm,
+            TextWeight::Semibold,
+            Color::WHITE,
+            r.x0 + 20.0,
+            r.center().y - ty.sm as f64 / 2.0 - 1.0,
+            None,
+        );
     }
 
     /// The Remotes management screen: a header with "Add Flathub", then a
@@ -2367,39 +3611,136 @@ impl SoftwareStore {
             &self.remotes
         };
 
-        draw::text_w(scene, tr, t, &format!("Flatpak remotes · {}", remotes.len()), ty.lg, TextWeight::Bold, c.text_primary, x0, y, None);
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &format!("Flatpak remotes · {}", remotes.len()),
+            ty.lg,
+            TextWeight::Bold,
+            c.text_primary,
+            x0,
+            y,
+            None,
+        );
         // "Add Flathub" button on the right.
         let has_flathub = remotes.iter().any(|r| r.name == "flathub");
         if !has_flathub {
             let bw = 150.0_f64;
             let btn = Rect::new(x0 + width - bw, y - 6.0, x0 + width, y + 28.0);
-            Self::pill_button(scene, tr, t, theme, targets, btn, "Add Flathub", BtnStyle::Primary, btn.contains(self.mouse), Action::RemoteAddFlathub);
+            Self::pill_button(
+                scene,
+                tr,
+                t,
+                theme,
+                targets,
+                btn,
+                "Add Flathub",
+                BtnStyle::Primary,
+                btn.contains(self.mouse),
+                Action::RemoteAddFlathub,
+            );
         }
         y += 30.0;
-        draw::text(scene, tr, t, "Remotes are the sources apps install from. Adding one lets you browse and install its apps.", ty.sm, c.text_dim, x0, y, Some(width as f32));
+        draw::text(
+            scene,
+            tr,
+            t,
+            "Remotes are the sources apps install from. Adding one lets you browse and install its apps.",
+            ty.sm,
+            c.text_dim,
+            x0,
+            y,
+            Some(width as f32),
+        );
         y += 30.0;
 
         let row_h = 78.0;
         for r in remotes {
             let rect = Rect::new(x0, y, x0 + width, y + row_h);
             draw::fill_round(scene, t, rect, theme.tokens.radii.lg, c.surfaces.raised);
-            draw::stroke_round(scene, t, rect, theme.tokens.radii.lg, c.border_standard, 1.0);
+            draw::stroke_round(
+                scene,
+                t,
+                rect,
+                theme.tokens.radii.lg,
+                c.border_standard,
+                1.0,
+            );
             let pad = 16.0;
             // Name + disabled tag.
-            draw::text_w(scene, tr, t, &r.title, ty.base, TextWeight::Bold, c.text_primary, rect.x0 + pad, rect.y0 + pad, None);
+            draw::text_w(
+                scene,
+                tr,
+                t,
+                &r.title,
+                ty.base,
+                TextWeight::Bold,
+                c.text_primary,
+                rect.x0 + pad,
+                rect.y0 + pad,
+                None,
+            );
             if r.disabled {
                 let tag = "disabled";
                 let tw = draw::measure(tr, tag, ty.xs).0;
-                let tr_rect = Rect::new(rect.x0 + pad + draw::measure(tr, &r.title, ty.base).0 + 12.0, rect.y0 + pad, rect.x0 + pad + draw::measure(tr, &r.title, ty.base).0 + 12.0 + tw + 16.0, rect.y0 + pad + 18.0);
-                draw::fill_round(scene, t, tr_rect, theme.tokens.radii.full, alpha(c.text_dim, 0.2));
-                draw::text(scene, tr, t, tag, ty.xs, c.text_dim, tr_rect.x0 + 8.0, tr_rect.y0 + 1.0, None);
+                let tr_rect = Rect::new(
+                    rect.x0 + pad + draw::measure(tr, &r.title, ty.base).0 + 12.0,
+                    rect.y0 + pad,
+                    rect.x0 + pad + draw::measure(tr, &r.title, ty.base).0 + 12.0 + tw + 16.0,
+                    rect.y0 + pad + 18.0,
+                );
+                draw::fill_round(
+                    scene,
+                    t,
+                    tr_rect,
+                    theme.tokens.radii.full,
+                    alpha(c.text_dim, 0.2),
+                );
+                draw::text(
+                    scene,
+                    tr,
+                    t,
+                    tag,
+                    ty.xs,
+                    c.text_dim,
+                    tr_rect.x0 + 8.0,
+                    tr_rect.y0 + 1.0,
+                    None,
+                );
             }
             // Name (machine) + URL.
-            draw::text(scene, tr, t, &format!("{}  ·  {}", r.name, r.url), ty.sm, c.text_dim, rect.x0 + pad, rect.center().y + 6.0, Some((width - 160.0) as f32));
+            draw::text(
+                scene,
+                tr,
+                t,
+                &format!("{}  ·  {}", r.name, r.url),
+                ty.sm,
+                c.text_dim,
+                rect.x0 + pad,
+                rect.center().y + 6.0,
+                Some((width - 160.0) as f32),
+            );
             // Remove button (right).
             let bw = 110.0_f64;
-            let btn = Rect::new(rect.x1 - pad - bw, rect.center().y - 17.0, rect.x1 - pad, rect.center().y + 17.0);
-            Self::pill_button(scene, tr, t, theme, targets, btn, "Remove", BtnStyle::Danger, btn.contains(self.mouse), Action::RemoteRemove(r.name.clone()));
+            let btn = Rect::new(
+                rect.x1 - pad - bw,
+                rect.center().y - 17.0,
+                rect.x1 - pad,
+                rect.center().y + 17.0,
+            );
+            Self::pill_button(
+                scene,
+                tr,
+                t,
+                theme,
+                targets,
+                btn,
+                "Remove",
+                BtnStyle::Danger,
+                btn.contains(self.mouse),
+                Action::RemoteRemove(r.name.clone()),
+            );
             y += row_h + 12.0;
         }
         (y + self.scroll) - body.y0 + 12.0
@@ -2423,14 +3764,42 @@ impl SoftwareStore {
         let half = (rect.width() - gap) / 2.0;
         let open_r = Rect::new(rect.x0, rect.y0, rect.x0 + half, rect.y1);
         let add_r = Rect::new(rect.x1 - half, rect.y0, rect.x1, rect.y1);
-        Self::pill_button(scene, tr, t, theme, targets, open_r, QosAppModel::OpenDirect.label(), BtnStyle::Neutral, open_r.contains(self.mouse), Action::QosOpenDirect(app.id.clone()));
-        Self::pill_button(scene, tr, t, theme, targets, add_r, QosAppModel::Add.label(), BtnStyle::Primary, add_r.contains(self.mouse), Action::QosAdd(app.id.clone()));
+        Self::pill_button(
+            scene,
+            tr,
+            t,
+            theme,
+            targets,
+            open_r,
+            QosAppModel::OpenDirect.label(),
+            BtnStyle::Neutral,
+            open_r.contains(self.mouse),
+            Action::QosOpenDirect(app.id.clone()),
+        );
+        Self::pill_button(
+            scene,
+            tr,
+            t,
+            theme,
+            targets,
+            add_r,
+            QosAppModel::Add.label(),
+            BtnStyle::Primary,
+            add_r.contains(self.mouse),
+            Action::QosAdd(app.id.clone()),
+        );
         // Register tooltip hover targets ABOVE the buttons (so they win the
         // reverse hit-test for hover, but the buttons still take the click —
         // tooltips are recorded as a separate hover-only action that the
         // pointer-move handler reads, not the click handler).
-        targets.push(HitTarget { rect: open_r, action: Action::HoverTooltip(QosAppModel::OpenDirect.tooltip().into()) });
-        targets.push(HitTarget { rect: add_r, action: Action::HoverTooltip(QosAppModel::Add.tooltip().into()) });
+        targets.push(HitTarget {
+            rect: open_r,
+            action: Action::HoverTooltip(QosAppModel::OpenDirect.tooltip().into()),
+        });
+        targets.push(HitTarget {
+            rect: add_r,
+            action: Action::HoverTooltip(QosAppModel::Add.tooltip().into()),
+        });
     }
 
     /// Draw the compatibility-notice rows (detail page). Each is a pill with
@@ -2452,14 +3821,38 @@ impl SoftwareStore {
             let (tint, fg) = if notice.blocking {
                 (alpha(c.semantic.danger, 0.14), c.semantic.danger)
             } else {
-                (alpha(c.semantic.success, 0.12), mix(c.text_primary, c.semantic.success, 0.4))
+                (
+                    alpha(c.semantic.success, 0.12),
+                    mix(c.text_primary, c.semantic.success, 0.4),
+                )
             };
             let h = 30.0;
             let r = Rect::new(x0, y, x0 + width, y + h);
             draw::fill_round(scene, t, r, theme.tokens.radii.md, tint);
             let glyph = if notice.blocking { "▲" } else { "✓" };
-            draw::text_w(scene, tr, t, glyph, ty.sm, TextWeight::Bold, fg, r.x0 + 12.0, r.center().y - ty.sm as f64 / 2.0 - 1.0, None);
-            draw::text(scene, tr, t, &notice.label, ty.sm, fg, r.x0 + 34.0, r.center().y - ty.sm as f64 / 2.0 - 1.0, Some((width - 48.0) as f32));
+            draw::text_w(
+                scene,
+                tr,
+                t,
+                glyph,
+                ty.sm,
+                TextWeight::Bold,
+                fg,
+                r.x0 + 12.0,
+                r.center().y - ty.sm as f64 / 2.0 - 1.0,
+                None,
+            );
+            draw::text(
+                scene,
+                tr,
+                t,
+                &notice.label,
+                ty.sm,
+                fg,
+                r.x0 + 34.0,
+                r.center().y - ty.sm as f64 / 2.0 - 1.0,
+                Some((width - 48.0) as f32),
+            );
             y += h + 8.0;
         }
         y
@@ -2484,11 +3877,31 @@ impl SoftwareStore {
         y = self.section(scene, tr, t, theme, x0, y, "Ratings & reviews");
         y += 6.0;
         if let Some(note) = rating_note {
-            draw::text(scene, tr, t, note, ty.xs, c.text_dim, x0, y, Some(width as f32));
+            draw::text(
+                scene,
+                tr,
+                t,
+                note,
+                ty.xs,
+                c.text_dim,
+                x0,
+                y,
+                Some(width as f32),
+            );
             y += 22.0;
         }
         if reviews.is_empty() {
-            draw::text(scene, tr, t, "No written reviews yet.", ty.sm, c.text_dim, x0, y, None);
+            draw::text(
+                scene,
+                tr,
+                t,
+                "No written reviews yet.",
+                ty.sm,
+                c.text_dim,
+                x0,
+                y,
+                None,
+            );
             return y + 26.0;
         }
         for rv in reviews {
@@ -2496,12 +3909,49 @@ impl SoftwareStore {
             let (_, bh) = tr.measure(&rv.body, ty.sm, Some((width - 32.0) as f32));
             let card_h = 30.0 + bh as f64 + 22.0;
             let r = Rect::new(x0, y, x0 + width, y + card_h);
-            draw::fill_round(scene, t, r, theme.tokens.radii.lg, alpha(c.surfaces.raised, 0.7));
+            draw::fill_round(
+                scene,
+                t,
+                r,
+                theme.tokens.radii.lg,
+                alpha(c.surfaces.raised, 0.7),
+            );
             draw::stroke_round(scene, t, r, theme.tokens.radii.lg, c.border_standard, 1.0);
             let pad = 16.0;
-            draw::text_w(scene, tr, t, &rv.author, ty.sm, TextWeight::Semibold, c.text_primary, r.x0 + pad, r.y0 + 12.0, None);
-            draw::rating_stars(scene, t, r.x0 + pad + draw::measure(tr, &rv.author, ty.sm).0 + 14.0, r.y0 + 12.0 + ty.sm as f64 / 2.0, rv.stars, 5.0, 2.0, c.semantic.warning, c.surface_white_20);
-            draw::text(scene, tr, t, &rv.body, ty.sm, mix(c.text_primary, c.text_dim, 0.2), r.x0 + pad, r.y0 + 32.0, Some((width - pad * 2.0) as f32));
+            draw::text_w(
+                scene,
+                tr,
+                t,
+                &rv.author,
+                ty.sm,
+                TextWeight::Semibold,
+                c.text_primary,
+                r.x0 + pad,
+                r.y0 + 12.0,
+                None,
+            );
+            draw::rating_stars(
+                scene,
+                t,
+                r.x0 + pad + draw::measure(tr, &rv.author, ty.sm).0 + 14.0,
+                r.y0 + 12.0 + ty.sm as f64 / 2.0,
+                rv.stars,
+                5.0,
+                2.0,
+                c.semantic.warning,
+                c.surface_white_20,
+            );
+            draw::text(
+                scene,
+                tr,
+                t,
+                &rv.body,
+                ty.sm,
+                mix(c.text_primary, c.text_dim, 0.2),
+                r.x0 + pad,
+                r.y0 + 32.0,
+                Some((width - pad * 2.0) as f32),
+            );
             y += card_h + 12.0;
         }
         y
@@ -2529,7 +3979,11 @@ impl SoftwareStore {
                 let c = cancel.clone();
                 move || c.set(true)
             });
-        Some(RefDlg { dialog, install, cancel })
+        Some(RefDlg {
+            dialog,
+            install,
+            cancel,
+        })
     }
 
     fn ensure_ref_dialog(&mut self) {
@@ -2545,7 +3999,9 @@ impl SoftwareStore {
             return;
         }
         let rect = self.rect;
-        let Some(rd) = self.ref_dialog.as_mut() else { return };
+        let Some(rd) = self.ref_dialog.as_mut() else {
+            return;
+        };
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
@@ -2570,7 +4026,8 @@ impl SoftwareStore {
                 height: taffy::AvailableSpace::Definite(rect.height() as f32),
             },
         );
-        rd.dialog.apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+        rd.dialog
+            .apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
     }
 
     /// Route an event into the open install-confirm dialog, then apply the
@@ -2596,14 +4053,23 @@ impl SoftwareStore {
         self.ensure_ref_dialog();
         self.layout_ref_dialog();
         let (install, cancel) = {
-            let Some(rd) = self.ref_dialog.as_mut() else { return };
+            let Some(rd) = self.ref_dialog.as_mut() else {
+                return;
+            };
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
             let mut focus_target = None;
             let root = automerge::ROOT;
             rd.dialog.handle_event(
-                event, scale_factor, modifiers, state, &root, handled,
-                &mut focus_target, node, &taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                &root,
+                handled,
+                &mut focus_target,
+                node,
+                &taffy,
             );
             (rd.install.replace(false), rd.cancel.replace(false))
         };
@@ -2640,7 +4106,17 @@ impl SoftwareStore {
         let r = Rect::new(x, yt, x + w, yt + h);
         draw::fill_round(scene, t, r, theme.tokens.radii.md, c.surfaces.overlay);
         draw::stroke_round(scene, t, r, theme.tokens.radii.md, c.border_standard, 1.0);
-        draw::text(scene, tr, t, text, ty.xs, c.text_primary, r.x0 + pad, r.y0 + pad, Some(max_w as f32));
+        draw::text(
+            scene,
+            tr,
+            t,
+            text,
+            ty.xs,
+            c.text_primary,
+            r.x0 + pad,
+            r.y0 + pad,
+            Some(max_w as f32),
+        );
     }
 
     /// Vertical scrollbar indicator on the right edge of the body.
@@ -2657,7 +4133,13 @@ impl SoftwareStore {
         let thumb_y = body.y0 + 6.0 + (track_h - thumb_h) * frac;
         let x1 = body.x1 - 5.0;
         let r = Rect::new(x1 - 4.0, thumb_y, x1, thumb_y + thumb_h);
-        draw::fill_round(scene, t, r, theme.tokens.radii.full, alpha(theme.tokens.colors.text_dim, 0.5));
+        draw::fill_round(
+            scene,
+            t,
+            r,
+            theme.tokens.radii.full,
+            alpha(theme.tokens.colors.text_dim, 0.5),
+        );
     }
 }
 
@@ -2690,7 +4172,11 @@ impl RefBody {
     fn from_ref(r: &FlatpakRef) -> Self {
         let source = format!(
             "from {}",
-            if r.url.is_empty() { "a Flatpak remote".to_string() } else { r.url.clone() }
+            if r.url.is_empty() {
+                "a Flatpak remote".to_string()
+            } else {
+                r.url.clone()
+            }
         );
         let monogram = r
             .app_id
@@ -2754,13 +4240,63 @@ impl Widget for RefBody {
         let x = self.rect.x0;
         let icon_r = Rect::new(x, self.rect.y0, x + 56.0, self.rect.y0 + 56.0);
         let base = c.accent[5];
-        draw::icon_tile(scene, tr, t, icon_r, base, mix(base, Color::WHITE, 0.5), &self.monogram, Color::WHITE);
+        draw::icon_tile(
+            scene,
+            tr,
+            t,
+            icon_r,
+            base,
+            mix(base, Color::WHITE, 0.5),
+            &self.monogram,
+            Color::WHITE,
+        );
         let tx = icon_r.x1 + 14.0;
-        draw::text_w(scene, tr, t, &self.title, ty.xl, TextWeight::Bold, c.text_primary, tx, icon_r.y0, None);
-        draw::text(scene, tr, t, &self.app_id, ty.xs, c.text_dim, tx, icon_r.y0 + 26.0, None);
-        draw::text(scene, tr, t, &self.source, ty.xs, c.text_dim, tx, icon_r.y0 + 42.0, Some((self.rect.x1 - tx) as f32));
+        draw::text_w(
+            scene,
+            tr,
+            t,
+            &self.title,
+            ty.xl,
+            TextWeight::Bold,
+            c.text_primary,
+            tx,
+            icon_r.y0,
+            None,
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            &self.app_id,
+            ty.xs,
+            c.text_dim,
+            tx,
+            icon_r.y0 + 26.0,
+            None,
+        );
+        draw::text(
+            scene,
+            tr,
+            t,
+            &self.source,
+            ty.xs,
+            c.text_dim,
+            tx,
+            icon_r.y0 + 42.0,
+            Some((self.rect.x1 - tx) as f32),
+        );
         if !self.comment.is_empty() {
-            draw::text(scene, tr, t, &self.comment, ty.sm, mix(c.text_primary, c.text_dim, 0.2), x, icon_r.y1 + 16.0, Some(self.rect.width() as f32));
+            draw::text(
+                scene,
+                tr,
+                t,
+                &self.comment,
+                ty.sm,
+                mix(c.text_primary, c.text_dim, 0.2),
+                x,
+                icon_r.y1 + 16.0,
+                Some(self.rect.width() as f32),
+            );
         }
     }
 
@@ -2827,7 +4363,11 @@ impl Widget for SoftwareStore {
             if let Some(probe) = self.probe.clone() {
                 for (id, ver) in &probe.flatpak_versions {
                     if let Some(app) = self.catalog.get(id) {
-                        let v = if ver.is_empty() { app.latest_version.clone() } else { ver.clone() };
+                        let v = if ver.is_empty() {
+                            app.latest_version.clone()
+                        } else {
+                            ver.clone()
+                        };
                         StoreDoc::set_installed(state, id, &v);
                     }
                 }
@@ -3058,7 +4598,9 @@ impl Widget for SoftwareStore {
                     .hit_targets
                     .iter()
                     .rev()
-                    .find(|h| matches!(h.action, Action::HoverTooltip(_)) && h.rect.contains(self.mouse))
+                    .find(|h| {
+                        matches!(h.action, Action::HoverTooltip(_)) && h.rect.contains(self.mouse)
+                    })
                     .and_then(|h| match &h.action {
                         Action::HoverTooltip(s) => Some(s.clone()),
                         _ => None,
@@ -3066,7 +4608,11 @@ impl Widget for SoftwareStore {
                 // Repaint so hover states track the pointer.
                 self.dirty = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 // Reverse iterate so later-drawn (topmost) targets win.
                 // HoverTooltip targets are hover-only — never clickable — so
                 // the click falls through to the affordance button beneath.
@@ -3074,7 +4620,9 @@ impl Widget for SoftwareStore {
                     .hit_targets
                     .iter()
                     .rev()
-                    .find(|h| !matches!(h.action, Action::HoverTooltip(_)) && h.rect.contains(self.mouse))
+                    .find(|h| {
+                        !matches!(h.action, Action::HoverTooltip(_)) && h.rect.contains(self.mouse)
+                    })
                     .map(|h| h.action.clone());
                 if let Some(action) = hit {
                     // Clicking anywhere that isn't the search box unfocuses it.
@@ -3100,7 +4648,9 @@ impl Widget for SoftwareStore {
                 self.dirty = true;
                 *handled = true;
             }
-            WindowEvent::KeyboardInput { event: key_event, .. } => {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
                 if key_event.state != ElementState::Pressed {
                     return;
                 }
@@ -3130,7 +4680,11 @@ impl Widget for SoftwareStore {
                     }
                     Key::Named(NamedKey::Enter) if self.search_focused => {
                         // Open the first search result.
-                        if let Some(first) = self.catalog.search(&self.search_query, self.active_category).first() {
+                        if let Some(first) = self
+                            .catalog
+                            .search(&self.search_query, self.active_category)
+                            .first()
+                        {
                             let id = first.id.clone();
                             self.detail = Some(id);
                             self.reset_scroll();
@@ -3149,12 +4703,14 @@ impl Widget for SoftwareStore {
                         *handled = true;
                     }
                     Key::Named(NamedKey::PageDown) => {
-                        self.scroll = (self.scroll + self.body_rect().height() * 0.9).clamp(0.0, self.max_scroll());
+                        self.scroll = (self.scroll + self.body_rect().height() * 0.9)
+                            .clamp(0.0, self.max_scroll());
                         self.dirty = true;
                         *handled = true;
                     }
                     Key::Named(NamedKey::PageUp) => {
-                        self.scroll = (self.scroll - self.body_rect().height() * 0.9).clamp(0.0, self.max_scroll());
+                        self.scroll = (self.scroll - self.body_rect().height() * 0.9)
+                            .clamp(0.0, self.max_scroll());
                         self.dirty = true;
                         *handled = true;
                     }
@@ -3272,9 +4828,18 @@ mod tests {
         // With a live worker, Browse starts from real Flathub data only — never
         // the curated sample with its fabricated star ratings + descriptions.
         let store = SoftwareStore::with_worker(None, Worker::spawn());
-        assert!(store.catalog.is_empty(), "live catalog starts empty; real Flathub fills it");
-        assert!(store.live_apps.is_empty(), "no apps until the worker responds");
-        assert!(store.browse_apps().is_empty(), "Browse shows nothing fabricated on cold start");
+        assert!(
+            store.catalog.is_empty(),
+            "live catalog starts empty; real Flathub fills it"
+        );
+        assert!(
+            store.live_apps.is_empty(),
+            "no apps until the worker responds"
+        );
+        assert!(
+            store.browse_apps().is_empty(),
+            "Browse shows nothing fabricated on cold start"
+        );
     }
 
     #[test]
@@ -3282,8 +4847,14 @@ mod tests {
         // The --shots / test path keeps the curated sample so screenshots and
         // the rest of the suite stay populated without a network.
         let store = SoftwareStore::new(None);
-        assert!(!store.catalog.is_empty(), "offline keeps the sample catalog");
-        assert!(!store.browse_apps().is_empty(), "offline Browse renders the sample");
+        assert!(
+            !store.catalog.is_empty(),
+            "offline keeps the sample catalog"
+        );
+        assert!(
+            !store.browse_apps().is_empty(),
+            "offline Browse renders the sample"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -3306,7 +4877,10 @@ mod tests {
             let mut app = store();
             app.rect = Rect::new(0.0, 0.0, VW, VH);
             app.nav_flap.reconcile(app.nav_layout());
-            Driver { app, doc: AutoCommit::new() }
+            Driver {
+                app,
+                doc: AutoCommit::new(),
+            }
         }
 
         /// sync → draw (which rebuilds `hit_targets`), against a real
@@ -3317,7 +4891,13 @@ mod tests {
             let theme = Theme::dark();
             let mut tr = ui::text_render::TextRenderer::new();
             let mut scene = Scene::new();
-            self.app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty());
+            self.app.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
         }
 
         fn dispatch(&mut self, event: winit::event::WindowEvent) {
@@ -3381,8 +4961,9 @@ mod tests {
     fn char_press(ch: &str) -> winit::event::WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = winit::keyboard::Key::Character(ch.into());
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = winit::event::ElementState::Pressed;
         ev.repeat = false;
@@ -3397,8 +4978,9 @@ mod tests {
     fn esc_press() -> winit::event::WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = winit::event::ElementState::Pressed;
         ev.repeat = false;
@@ -3431,7 +5013,10 @@ mod tests {
         assert!(d.app.pending_ref.is_some());
         d.frame(); // builds + lays out the shared dialog
         d.dispatch(esc_press());
-        assert!(d.app.pending_ref.is_none(), "Escape dismissed the confirm without installing");
+        assert!(
+            d.app.pending_ref.is_none(),
+            "Escape dismissed the confirm without installing"
+        );
         assert!(d.app.ref_dialog.is_none());
 
         // Re-arm, then click the primary → the gated install runs.
@@ -3440,11 +5025,18 @@ mod tests {
         let primary = d.app.ref_dialog.as_ref().unwrap().dialog.primary_rect();
         d.dispatch(cursor_at(primary.center().x, primary.center().y));
         d.dispatch(left_press());
-        assert!(d.app.pending_ref.is_none(), "the primary click consumed the pending ref");
+        assert!(
+            d.app.pending_ref.is_none(),
+            "the primary click consumed the pending ref"
+        );
         assert!(d.app.ref_dialog.is_none());
         // The install was kicked off: the store navigated to the app's detail
         // and enqueued its install (observable side effects of the real path).
-        assert_eq!(d.app.detail.as_deref(), Some("org.gimp.GIMP"), "install navigates to the app");
+        assert_eq!(
+            d.app.detail.as_deref(),
+            Some("org.gimp.GIMP"),
+            "install navigates to the app"
+        );
     }
 
     #[test]
@@ -3461,7 +5053,10 @@ mod tests {
         }
         assert_eq!(d.app.search_query, "firefox");
         // The catalog query now resolves to exactly Firefox.
-        let results = d.app.catalog.search(&d.app.search_query, d.app.active_category);
+        let results = d
+            .app
+            .catalog
+            .search(&d.app.search_query, d.app.active_category);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "org.mozilla.firefox");
     }
@@ -3473,7 +5068,11 @@ mod tests {
         // Click a card that opens GIMP's detail page.
         let p = d.target_center(|a| matches!(a, Action::OpenDetail(id) if id == "org.gimp.GIMP"));
         d.click(p.x, p.y);
-        assert_eq!(d.app.detail.as_deref(), Some("org.gimp.GIMP"), "card click opens detail");
+        assert_eq!(
+            d.app.detail.as_deref(),
+            Some("org.gimp.GIMP"),
+            "card click opens detail"
+        );
         // Re-frame in the detail view, then click Back to return.
         d.frame();
         let back = d.target_center(|a| matches!(a, Action::Back));
@@ -3506,7 +5105,10 @@ mod tests {
             "GIMP renders in-progress after the update click"
         );
         assert!(
-            d.app.hit_targets.iter().any(|h| matches!(&h.action, Action::Cancel(id) if id == "org.gimp.GIMP")),
+            d.app
+                .hit_targets
+                .iter()
+                .any(|h| matches!(&h.action, Action::Cancel(id) if id == "org.gimp.GIMP")),
             "an in-progress update row exposes a Cancel affordance"
         );
         // The overall status card reflects an in-flight batch.
@@ -3522,10 +5124,15 @@ mod tests {
         // already running and "Update All" is (correctly) hidden. Cancel it
         // via the real pointer path so the batch clears and the actionable
         // "Update All" affordance appears.
-        let cancel = d.target_center(|a| matches!(a, Action::Cancel(id) if id == "org.libreoffice.LibreOffice"));
+        let cancel = d.target_center(
+            |a| matches!(a, Action::Cancel(id) if id == "org.libreoffice.LibreOffice"),
+        );
         d.click(cancel.x, cancel.y);
         d.frame();
-        assert!(!d.app.update_progress().in_flight(), "batch cleared after cancel");
+        assert!(
+            !d.app.update_progress().in_flight(),
+            "batch cleared after cancel"
+        );
 
         let pending = d.app.updatable_ids();
         assert!(pending.len() >= 2);
@@ -3537,7 +5144,10 @@ mod tests {
         // first slots run (in-progress) and any overflow queues — both are
         // valid batch states; none stays a plain pending row.
         for id in &pending {
-            assert!(d.app.update_batch.iter().any(|x| x == id), "{id} enqueued by Update All");
+            assert!(
+                d.app.update_batch.iter().any(|x| x == id),
+                "{id} enqueued by Update All"
+            );
             assert!(
                 matches!(
                     d.app.batch_status(id),
@@ -3550,9 +5160,17 @@ mod tests {
         // At least the concurrency limit are actively in progress.
         let active = pending
             .iter()
-            .filter(|id| matches!(d.app.batch_status(id), Some(BatchRowStatus::InProgress { .. })))
+            .filter(|id| {
+                matches!(
+                    d.app.batch_status(id),
+                    Some(BatchRowStatus::InProgress { .. })
+                )
+            })
             .count();
-        assert!(active >= UPDATE_CONCURRENCY.min(pending.len()), "at least the concurrency window runs");
+        assert!(
+            active >= UPDATE_CONCURRENCY.min(pending.len()),
+            "at least the concurrency window runs"
+        );
     }
 
     #[test]
@@ -3561,8 +5179,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         s.sync(&mut doc, &automerge::ROOT);
         // Seeded: at least the four "current" installs + two behind.
-        assert!(s.snapshot.installed.len() >= 6, "seed installed: {:?}", s.snapshot.installed);
-        assert!(s.snapshot.installing.contains_key("org.libreoffice.LibreOffice"));
+        assert!(
+            s.snapshot.installed.len() >= 6,
+            "seed installed: {:?}",
+            s.snapshot.installed
+        );
+        assert!(
+            s.snapshot
+                .installing
+                .contains_key("org.libreoffice.LibreOffice")
+        );
     }
 
     #[test]
@@ -3571,7 +5197,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         s.sync(&mut doc, &automerge::ROOT);
         let ups = s.catalog.updatable(&s.snapshot);
-        assert!(ups.len() >= 2, "expected >=2 updatable after seed, got {}", ups.len());
+        assert!(
+            ups.len() >= 2,
+            "expected >=2 updatable after seed, got {}",
+            ups.len()
+        );
     }
 
     #[test]
@@ -3581,15 +5211,27 @@ mod tests {
         s.sync(&mut doc, &automerge::ROOT);
         // PCSX2 starts not installed.
         let id = "net.pcsx2.PCSX2";
-        assert_eq!(s.catalog.state_of(s.catalog.get(id).unwrap(), &s.snapshot), InstallState::Available);
+        assert_eq!(
+            s.catalog.state_of(s.catalog.get(id).unwrap(), &s.snapshot),
+            InstallState::Available
+        );
         s.apply(Action::Install(id.into()), &mut doc);
         s.sync(&mut doc, &automerge::ROOT);
         // Mid-install it should be Installing (progress < 1 right away).
-        assert!(matches!(s.live_state(s.catalog.get(id).unwrap()), InstallState::Installing(_)));
+        assert!(matches!(
+            s.live_state(s.catalog.get(id).unwrap()),
+            InstallState::Installing(_)
+        ));
         // Force completion: backdate the start instant beyond the duration.
-        s.install_start.insert(id.into(), Instant::now() - INSTALL_DURATION - Duration::from_secs(1));
+        s.install_start.insert(
+            id.into(),
+            Instant::now() - INSTALL_DURATION - Duration::from_secs(1),
+        );
         s.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(s.catalog.state_of(s.catalog.get(id).unwrap(), &s.snapshot), InstallState::Installed);
+        assert_eq!(
+            s.catalog.state_of(s.catalog.get(id).unwrap(), &s.snapshot),
+            InstallState::Installed
+        );
     }
 
     #[test]
@@ -3598,9 +5240,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         s.sync(&mut doc, &automerge::ROOT);
         let id = "org.mozilla.firefox";
-        assert!(s.catalog.state_of(s.catalog.get(id).unwrap(), &s.snapshot).is_installed_or_update());
+        assert!(
+            s.catalog
+                .state_of(s.catalog.get(id).unwrap(), &s.snapshot)
+                .is_installed_or_update()
+        );
         s.apply(Action::Remove(id.into()), &mut doc);
-        assert_eq!(s.catalog.state_of(s.catalog.get(id).unwrap(), &s.snapshot), InstallState::Available);
+        assert_eq!(
+            s.catalog.state_of(s.catalog.get(id).unwrap(), &s.snapshot),
+            InstallState::Available
+        );
     }
 
     #[test]
@@ -3631,7 +5280,10 @@ mod tests {
         // `install_start`).
         for id in &updatable {
             assert!(s.install_start.contains_key(id), "{id} should be in flight");
-            assert!(s.update_batch.iter().any(|x| x == id), "{id} should be in the update batch");
+            assert!(
+                s.update_batch.iter().any(|x| x == id),
+                "{id} should be in the update batch"
+            );
             assert!(
                 matches!(s.batch_status(id), Some(BatchRowStatus::InProgress { .. })),
                 "{id} should render as in-progress, got {:?}",
@@ -3652,8 +5304,12 @@ mod tests {
         let vscode = "com.visualstudio.code";
         s.apply(Action::Update(gimp.into()), &mut doc);
         s.apply(Action::Update(vscode.into()), &mut doc);
-        s.install_start.insert(gimp.into(), Instant::now() - INSTALL_DURATION.mul_f64(0.30));
-        s.install_start.insert(vscode.into(), Instant::now() - INSTALL_DURATION.mul_f64(0.80));
+        s.install_start
+            .insert(gimp.into(), Instant::now() - INSTALL_DURATION.mul_f64(0.30));
+        s.install_start.insert(
+            vscode.into(),
+            Instant::now() - INSTALL_DURATION.mul_f64(0.80),
+        );
         s.sync(&mut doc, &automerge::ROOT);
 
         // Both apps are part of the batch, and stay visible in the Updates
@@ -3671,17 +5327,27 @@ mod tests {
             }
             other => panic!("GIMP should be downloading, got {other:?}"),
         }
-        assert!(matches!(
-            s.batch_status(vscode),
-            Some(BatchRowStatus::InProgress { phase: InstallPhase::Installing, .. })
-        ), "VS Code at 80% should be installing");
+        assert!(
+            matches!(
+                s.batch_status(vscode),
+                Some(BatchRowStatus::InProgress {
+                    phase: InstallPhase::Installing,
+                    ..
+                })
+            ),
+            "VS Code at 80% should be installing"
+        );
 
         // The overall status rolls up as in-flight with both active.
         let p = s.update_progress();
         assert!(p.in_flight(), "batch should be in flight");
         assert!(p.active >= 2, "both apps active, got {}", p.active);
         assert!(p.overall > 0.0 && p.overall < 1.0, "overall {}", p.overall);
-        assert!(p.status_line().starts_with("Updating"), "status: {}", p.status_line());
+        assert!(
+            p.status_line().starts_with("Updating"),
+            "status: {}",
+            p.status_line()
+        );
 
         // The view renders without panicking and reports a positive content
         // height (the in-progress status card + rows actually paint).
@@ -3695,7 +5361,9 @@ mod tests {
         assert!(h > 0.0, "updates view should produce content height");
         // A cancel target exists for an in-progress row (the ✕ affordance).
         assert!(
-            targets.iter().any(|t| matches!(&t.action, Action::Cancel(id) if id == gimp)),
+            targets
+                .iter()
+                .any(|t| matches!(&t.action, Action::Cancel(id) if id == gimp)),
             "in-progress row must expose a Cancel affordance"
         );
     }
@@ -3713,7 +5381,11 @@ mod tests {
         StoreDoc::set_installed(&mut doc, "org.libreoffice.LibreOffice", "24.0.0");
         s.snapshot = StoreDoc::read_snapshot(&doc);
         let updatable = s.updatable_ids();
-        assert!(updatable.len() >= 3, "need >=3 updatable, got {}", updatable.len());
+        assert!(
+            updatable.len() >= 3,
+            "need >=3 updatable, got {}",
+            updatable.len()
+        );
 
         s.apply(Action::UpdateAll, &mut doc);
         s.sync(&mut doc, &automerge::ROOT);
@@ -3731,7 +5403,11 @@ mod tests {
                 .count()
         };
         // Exactly the concurrency window runs; the rest queue.
-        assert_eq!(active(&s), UPDATE_CONCURRENCY, "only the window runs at once");
+        assert_eq!(
+            active(&s),
+            UPDATE_CONCURRENCY,
+            "only the window runs at once"
+        );
         assert!(queued(&s) >= 1, "overflow apps queue");
 
         // Free a slot: force one active app to completion, then sync so the
@@ -3742,12 +5418,19 @@ mod tests {
             .find(|id| matches!(s.batch_status(id), Some(BatchRowStatus::InProgress { .. })))
             .cloned()
             .unwrap();
-        s.install_start.insert(running.clone(), Instant::now() - INSTALL_DURATION - Duration::from_secs(1));
+        s.install_start.insert(
+            running.clone(),
+            Instant::now() - INSTALL_DURATION - Duration::from_secs(1),
+        );
         s.sync(&mut doc, &automerge::ROOT);
         // Still at most the window active, and a previously-queued app moved
         // into a running slot (queue shrank).
         assert!(active(&s) <= UPDATE_CONCURRENCY);
-        assert_eq!(s.batch_status(&running), Some(BatchRowStatus::Done), "finished app reads Done");
+        assert_eq!(
+            s.batch_status(&running),
+            Some(BatchRowStatus::Done),
+            "finished app reads Done"
+        );
     }
 
     #[test]
@@ -3758,7 +5441,10 @@ mod tests {
         let gimp = "org.gimp.GIMP";
         s.apply(Action::Update(gimp.into()), &mut doc);
         // Force completion: backdate beyond the duration, then sync to finalize.
-        s.install_start.insert(gimp.into(), Instant::now() - INSTALL_DURATION - Duration::from_secs(1));
+        s.install_start.insert(
+            gimp.into(),
+            Instant::now() - INSTALL_DURATION - Duration::from_secs(1),
+        );
         s.sync(&mut doc, &automerge::ROOT);
         // It finalised to Installed, but because the batch still holds it (a
         // single-app batch settles, so re-add to model a multi-app batch by
@@ -3796,7 +5482,10 @@ mod tests {
 
         // Boundary is inclusive → docked.
         assert_eq!(at_width(NAV_BREAKPOINT).nav_layout(), SplitLayout::Docked);
-        assert_eq!(at_width(NAV_BREAKPOINT - 1.0).nav_layout(), SplitLayout::Overlay);
+        assert_eq!(
+            at_width(NAV_BREAKPOINT - 1.0).nav_layout(),
+            SplitLayout::Overlay
+        );
     }
 
     #[test]
@@ -3805,13 +5494,22 @@ mod tests {
         let mut doc = AutoCommit::new();
         s.sync(&mut doc, &automerge::ROOT);
         // Closed by default on a narrow window.
-        assert!(!s.nav_flap.is_open(s.nav_layout()), "narrow drawer starts closed");
+        assert!(
+            !s.nav_flap.is_open(s.nav_layout()),
+            "narrow drawer starts closed"
+        );
         // Hamburger toggles it open.
         s.apply(Action::ToggleNav, &mut doc);
-        assert!(s.nav_flap.is_open(s.nav_layout()), "ToggleNav opens the drawer");
+        assert!(
+            s.nav_flap.is_open(s.nav_layout()),
+            "ToggleNav opens the drawer"
+        );
         // Scrim tap / DismissNav closes it.
         s.apply(Action::DismissNav, &mut doc);
-        assert!(!s.nav_flap.is_open(s.nav_layout()), "DismissNav closes the drawer");
+        assert!(
+            !s.nav_flap.is_open(s.nav_layout()),
+            "DismissNav closes the drawer"
+        );
     }
 
     #[test]
@@ -3824,7 +5522,10 @@ mod tests {
         // Choosing a tab from the drawer navigates AND closes it.
         s.apply(Action::SetTab(Tab::Updates), &mut doc);
         assert_eq!(s.tab, Tab::Updates);
-        assert!(!s.nav_flap.is_open(s.nav_layout()), "selection dismisses the overlay drawer");
+        assert!(
+            !s.nav_flap.is_open(s.nav_layout()),
+            "selection dismisses the overlay drawer"
+        );
     }
 
     #[test]
@@ -3845,6 +5546,9 @@ mod tests {
         let mut s = at_width(720.0);
         s.nav_flap.snap(true);
         assert!(s.nav_flap.is_open(s.nav_layout()));
-        assert!(s.nav_flap.reveal() >= 0.999, "snap settles reveal to fully open");
+        assert!(
+            s.nav_flap.reveal() >= 0.999,
+            "snap settles reveal to fully open"
+        );
     }
 }

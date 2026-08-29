@@ -77,10 +77,7 @@ pub fn write_app_payload(dir: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn write_app_payload_with_bulk(
-    dir: &std::path::Path,
-    bulk_kib: usize,
-) -> std::io::Result<()> {
+pub fn write_app_payload_with_bulk(dir: &std::path::Path, bulk_kib: usize) -> std::io::Result<()> {
     write_app_payload(dir)?;
     // Make the payload measurably-sized without stalling on IO —
     // fill a single "data" blob deterministically. Content is

@@ -36,7 +36,10 @@ fn sweep_evicts_tried_and_preserves_pinned() {
     let report = gc::sweep(&store, 10 * 1024).unwrap();
 
     // Some Tried must have been evicted.
-    assert!(report.touched(), "sweep should have evicted at least one Tried");
+    assert!(
+        report.touched(),
+        "sweep should have evicted at least one Tried"
+    );
     // Pinned must be untouched.
     assert!(
         store.resolve(pinned_id).is_ok(),

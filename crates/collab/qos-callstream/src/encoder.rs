@@ -197,7 +197,9 @@ mod tests {
         assert_eq!(frame.rgba.len(), original.len());
 
         let strip_alpha = |buf: &[u8]| -> Vec<u8> {
-            buf.chunks_exact(4).flat_map(|c| [c[0], c[1], c[2]]).collect()
+            buf.chunks_exact(4)
+                .flat_map(|c| [c[0], c[1], c[2]])
+                .collect()
         };
         let orig_rgb = strip_alpha(&original);
         let decoded_rgb = strip_alpha(&frame.rgba);

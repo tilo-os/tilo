@@ -168,7 +168,9 @@ impl<T> TreeView<T> {
     }
 
     fn visible_index_of(&self, id: NodeId) -> Option<usize> {
-        self.visible_rows().iter().position(|(nid, _, _)| *nid == id)
+        self.visible_rows()
+            .iter()
+            .position(|(nid, _, _)| *nid == id)
     }
 }
 
@@ -196,12 +198,7 @@ impl<T: 'static> Widget for TreeView<T> {
         node
     }
 
-    fn apply_layout(
-        &mut self,
-        taffy: &TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: Point,
-    ) {
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + layout.location.x as f64,
@@ -339,7 +336,9 @@ impl<T: 'static> Widget for TreeView<T> {
                 let snapshots: Vec<(NodeId, usize)> =
                     rows.iter().map(|(id, _, depth)| (*id, *depth)).collect();
                 for (i, (id, depth)) in snapshots.iter().enumerate() {
-                    let Some((_, row_rect)) = self.row_rects.get(i) else { continue };
+                    let Some((_, row_rect)) = self.row_rects.get(i) else {
+                        continue;
+                    };
                     if !row_rect.contains(pt) {
                         continue;
                     }
@@ -360,70 +359,83 @@ impl<T: 'static> Widget for TreeView<T> {
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
-            } => {
-                match logical_key {
-                    Key::Named(NamedKey::ArrowRight) => {
-                        if let Some(fid) = self.focused {
-                            let is_branch = Self::find_node(&self.root, fid)
-                                .map(TreeNode::is_branch)
-                                .unwrap_or(false);
-                            if is_branch && !self.expanded.contains(&fid) {
-                                self.expanded.insert(fid);
-                                *handled = true;
-                            }
+            } => match logical_key {
+                Key::Named(NamedKey::ArrowRight) => {
+                    if let Some(fid) = self.focused {
+                        let is_branch = Self::find_node(&self.root, fid)
+                            .map(TreeNode::is_branch)
+                            .unwrap_or(false);
+                        if is_branch && !self.expanded.contains(&fid) {
+                            self.expanded.insert(fid);
+                            *handled = true;
                         }
                     }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        if let Some(fid) = self.focused {
-                            let is_branch = Self::find_node(&self.root, fid)
-                                .map(TreeNode::is_branch)
-                                .unwrap_or(false);
-                            if is_branch && self.expanded.contains(&fid) {
-                                self.expanded.remove(&fid);
-                                *handled = true;
-                            }
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        let rows = self.visible_rows();
-                        if rows.is_empty() {
-                            return;
-                        }
-                        let next_idx = match self.focused.and_then(|f| self.visible_index_of(f)) {
-                            Some(i) => (i + 1).min(rows.len() - 1),
-                            None => 0,
-                        };
-                        self.focused = Some(rows[next_idx].0);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        let rows = self.visible_rows();
-                        if rows.is_empty() {
-                            return;
-                        }
-                        let prev_idx = match self.focused.and_then(|f| self.visible_index_of(f)) {
-                            Some(i) => i.saturating_sub(1),
-                            None => 0,
-                        };
-                        self.focused = Some(rows[prev_idx].0);
-                        *handled = true;
-                    }
-                    _ => {}
                 }
-            }
+                Key::Named(NamedKey::ArrowLeft) => {
+                    if let Some(fid) = self.focused {
+                        let is_branch = Self::find_node(&self.root, fid)
+                            .map(TreeNode::is_branch)
+                            .unwrap_or(false);
+                        if is_branch && self.expanded.contains(&fid) {
+                            self.expanded.remove(&fid);
+                            *handled = true;
+                        }
+                    }
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    let rows = self.visible_rows();
+                    if rows.is_empty() {
+                        return;
+                    }
+                    let next_idx = match self.focused.and_then(|f| self.visible_index_of(f)) {
+                        Some(i) => (i + 1).min(rows.len() - 1),
+                        None => 0,
+                    };
+                    self.focused = Some(rows[next_idx].0);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    let rows = self.visible_rows();
+                    if rows.is_empty() {
+                        return;
+                    }
+                    let prev_idx = match self.focused.and_then(|f| self.visible_index_of(f)) {
+                        Some(i) => i.saturating_sub(1),
+                        None => 0,
+                    };
+                    self.focused = Some(rows[prev_idx].0);
+                    *handled = true;
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
 
-    fn name(&self) -> &str { "TreeView" }
+    fn name(&self) -> &str {
+        "TreeView"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -456,12 +468,12 @@ impl<T: 'static> Widget for TreeView<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use taffy::TaffyTree;
     use taffy::prelude::TaffyMaxContent;
     use winit::event::{KeyEvent, Modifiers};
     use winit::keyboard::{KeyLocation, PhysicalKey};
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
     fn sample_tree() -> TreeNode<()> {
         TreeNode::branch(
@@ -496,8 +508,7 @@ mod tests {
         // inspects `logical_key` + `state`.
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -539,8 +550,14 @@ mod tests {
         view.toggle_expand(1);
         let rows = view.visible_rows();
         let ids: Vec<NodeId> = rows.iter().map(|(id, _, _)| *id).collect();
-        assert!(ids.contains(&2), "child1 must be visible after expanding root");
-        assert!(ids.contains(&3), "child2 must be visible after expanding root");
+        assert!(
+            ids.contains(&2),
+            "child1 must be visible after expanding root"
+        );
+        assert!(
+            ids.contains(&3),
+            "child2 must be visible after expanding root"
+        );
         assert_eq!(rows.len(), 3);
     }
 
@@ -576,7 +593,12 @@ mod tests {
             .compute_layout(root_taffy, taffy::Size::MAX_CONTENT)
             .unwrap();
         view.apply_layout(&taffy, node, Point::ZERO);
-        view.rect = Rect::new(0.0, 0.0, 200.0, view.visible_rows().len() as f64 * ROW_HEIGHT);
+        view.rect = Rect::new(
+            0.0,
+            0.0,
+            200.0,
+            view.visible_rows().len() as f64 * ROW_HEIGHT,
+        );
         view.row_rects = view
             .visible_rows()
             .iter()
@@ -613,7 +635,10 @@ mod tests {
 
         dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowRight)));
 
-        assert!(view.is_expanded(1), "ArrowRight must expand the focused branch");
+        assert!(
+            view.is_expanded(1),
+            "ArrowRight must expand the focused branch"
+        );
     }
 
     #[test]
@@ -664,6 +689,9 @@ mod tests {
         let mut view = TreeView::new(sample_tree());
         view.set_focus(true);
         let node = Widget::accessibility(&view).unwrap();
-        assert!(node.state.focused, "widget focus surfaces in the access node");
+        assert!(
+            node.state.focused,
+            "widget focus surfaces in the access node"
+        );
     }
 }

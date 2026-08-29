@@ -38,11 +38,9 @@ fn build_peer_swarm() -> Swarm<PeerBehaviour> {
                 .validation_mode(gossipsub::ValidationMode::Strict)
                 .build()
                 .expect("gossipsub config");
-            let gossipsub = gossipsub::Behaviour::new(
-                gossipsub::MessageAuthenticity::Signed(key.clone()),
-                cfg,
-            )
-            .expect("gossipsub behaviour");
+            let gossipsub =
+                gossipsub::Behaviour::new(gossipsub::MessageAuthenticity::Signed(key.clone()), cfg)
+                    .expect("gossipsub behaviour");
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(PeerBehaviour { gossipsub })
         })
         .expect("with_behaviour")
@@ -56,7 +54,10 @@ async fn first_listen_addr<B: NetworkBehaviour>(swarm: &mut Swarm<B>) -> Multiad
         loop {
             if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
                 // Filter to TCP — QUIC adds another addr we don't need.
-                if address.iter().any(|p| matches!(p, libp2p::multiaddr::Protocol::Tcp(_))) {
+                if address
+                    .iter()
+                    .any(|p| matches!(p, libp2p::multiaddr::Protocol::Tcp(_)))
+                {
                     return address;
                 }
             }

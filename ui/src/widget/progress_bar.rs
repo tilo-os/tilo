@@ -119,7 +119,11 @@ impl ProgressBar {
     /// Current clamped progress value. `0.0` while the bar is in
     /// indeterminate mode, regardless of any prior `set_progress` call.
     pub fn progress(&self) -> f32 {
-        if self.indeterminate { 0.0 } else { self.progress }
+        if self.indeterminate {
+            0.0
+        } else {
+            self.progress
+        }
     }
 
     /// Whether the bar is in indeterminate mode.
@@ -213,8 +217,7 @@ impl Widget for ProgressBar {
             let clipped_x0 = segment_x0.max(self.rect.x0);
             let clipped_x1 = segment_x1.min(self.rect.x1);
             if clipped_x1 > clipped_x0 {
-                let segment_rect =
-                    Rect::new(clipped_x0, self.rect.y0, clipped_x1, self.rect.y1);
+                let segment_rect = Rect::new(clipped_x0, self.rect.y0, clipped_x1, self.rect.y1);
                 let segment_shape = RoundedRect::from_rect(segment_rect, radius);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -261,9 +264,13 @@ impl Widget for ProgressBar {
     ) {
     }
 
-    fn name(&self) -> &str { "ProgressBar" }
+    fn name(&self) -> &str {
+        "ProgressBar"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Politeness, Role};
@@ -297,13 +304,17 @@ impl Widget for ProgressBar {
     /// change their segment fill every frame but keep the same
     /// outer rect. Either way, layout stays clean after the
     /// initial `apply_layout` writes a non-zero rect.
-    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
 
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -320,14 +331,22 @@ impl Widget for ProgressBar {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(scope) = self.permission_scope()
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
         if let Some(key) = self.presence_key()

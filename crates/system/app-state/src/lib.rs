@@ -158,10 +158,7 @@ fn validate_package_id(id: &str) -> Result<(), StoreError> {
 /// records share one file.
 fn validate_record_key(key: &str) -> Result<(), StoreError> {
     if key.is_empty() {
-        return Err(StoreError::RecordKey(
-            key.to_string(),
-            "must not be empty",
-        ));
+        return Err(StoreError::RecordKey(key.to_string(), "must not be empty"));
     }
     if Path::new(key).is_absolute() || key.contains('/') || key.contains('\\') {
         return Err(StoreError::RecordKey(
@@ -324,10 +321,7 @@ impl DocStore {
             Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => {
-                return Err(io_err(
-                    format!("reading {}", self.document.display()),
-                    e,
-                ));
+                return Err(io_err(format!("reading {}", self.document.display()), e));
             }
         };
         if bytes.is_empty() {
@@ -565,7 +559,10 @@ fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         // A real failure inspecting the path (e.g. a non-directory parent).
         Err(e) => {
-            return Err(io_err(format!("inspecting state path {}", dir.display()), e));
+            return Err(io_err(
+                format!("inspecting state path {}", dir.display()),
+                e,
+            ));
         }
     }
     fs::create_dir_all(dir)
@@ -867,7 +864,8 @@ mod tests {
         let _tmp = scratch_home();
         let mut store = DocStore::open_for("dev.qos.atomic").unwrap();
         let mut doc = store.new_document();
-        doc.put(&ROOT, "v", ScalarValue::Str("first".into())).unwrap();
+        doc.put(&ROOT, "v", ScalarValue::Str("first".into()))
+            .unwrap();
         store.save(&mut doc).unwrap();
 
         // The write half of an interrupted save: temp file exists, rename never happened.
@@ -972,7 +970,8 @@ mod tests {
 
         // Written the way the crate used to: a bare AutoCommit, no stamp.
         let mut old = AutoCommit::new();
-        old.put(&ROOT, "note", ScalarValue::Str("kept".into())).unwrap();
+        old.put(&ROOT, "note", ScalarValue::Str("kept".into()))
+            .unwrap();
         assert!(
             old.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_none(),
             "the fixture must actually be unversioned"
@@ -981,7 +980,10 @@ mod tests {
         fs::write(store.document_path(), old.save()).unwrap();
 
         let mut doc = store.load_or_new();
-        assert!(store.refusal().is_none(), "an unversioned document is not refused");
+        assert!(
+            store.refusal().is_none(),
+            "an unversioned document is not refused"
+        );
         assert_eq!(
             text_of(&doc, "note").as_deref(),
             Some("kept"),
@@ -1010,7 +1012,11 @@ mod tests {
 
         let mut future = AutoCommit::new();
         future
-            .put(&ROOT, "irreplaceable", ScalarValue::Str("please keep".into()))
+            .put(
+                &ROOT,
+                "irreplaceable",
+                ScalarValue::Str("please keep".into()),
+            )
             .unwrap();
         future
             .put(&ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION) + 1)
@@ -1045,7 +1051,8 @@ mod tests {
         );
 
         // And every write path refuses, so the bytes survive an app that carries on regardless.
-        doc.put(&ROOT, "scribble", ScalarValue::Str("no".into())).unwrap();
+        doc.put(&ROOT, "scribble", ScalarValue::Str("no".into()))
+            .unwrap();
         assert!(
             matches!(store.save(&mut doc), Err(StoreError::NewerSchema { .. })),
             "save over a refused document must fail, not succeed quietly"
@@ -1074,17 +1081,22 @@ mod tests {
 
         let dir = cli::standalone_state_dir(pkg);
         fs::create_dir_all(&dir).unwrap();
-        assert!(dir.is_dir(), "the state directory pre-exists for both opens");
+        assert!(
+            dir.is_dir(),
+            "the state directory pre-exists for both opens"
+        );
 
         // `seed` runs on the freshly loaded document, exactly as
         // `ui::persist::open` sequences it, so the later edit reads as a change.
-        let mut run1 = DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
+        let mut run1 =
+            DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
         let mut doc = run1.load_or_new();
         assert!(run1.refusal().is_none(), "a fresh store is not refused");
         let mut autosave1 = Autosave::spawn(run1, DEFAULT_DEBOUNCE);
         assert!(autosave1.is_enabled(), "run 1 must persist, not fall back");
         autosave1.seed(&mut doc);
-        doc.put(&ROOT, "note", ScalarValue::Str("survives".into())).unwrap();
+        doc.put(&ROOT, "note", ScalarValue::Str("survives".into()))
+            .unwrap();
         autosave1.request(&mut doc);
         autosave1.flush();
         assert_eq!(autosave1.last_error(), None, "no write may have failed");
@@ -1109,7 +1121,8 @@ mod tests {
             "the SECOND run must persist too — this is the bug: a non-idempotent \
              directory create disabled persistence for every launch after the first"
         );
-        doc2.put(&ROOT, "note", ScalarValue::Str("again".into())).unwrap();
+        doc2.put(&ROOT, "note", ScalarValue::Str("again".into()))
+            .unwrap();
         autosave2.flush();
     }
 
@@ -1135,7 +1148,8 @@ mod tests {
             "recovering from a stale file must enable persistence, not fall back"
         );
         autosave1.seed(&mut doc);
-        doc.put(&ROOT, "note", ScalarValue::Str("recovered".into())).unwrap();
+        doc.put(&ROOT, "note", ScalarValue::Str("recovered".into()))
+            .unwrap();
         autosave1.request(&mut doc);
         autosave1.flush();
         assert_eq!(autosave1.last_error(), None, "no write may have failed");
@@ -1162,12 +1176,16 @@ mod tests {
 
         // The old layout wrote a real Automerge document straight to the path.
         let mut old = AutoCommit::new();
-        old.put(&ROOT, "note", ScalarValue::Str("from-old-layout".into())).unwrap();
+        old.put(&ROOT, "note", ScalarValue::Str("from-old-layout".into()))
+            .unwrap();
         let original = old.save();
         fs::write(&path, &original).unwrap();
 
         let mut store = DocStore::open_for(pkg).expect("open must recover from a stale document");
-        assert!(path.is_dir(), "the stale document must have become a directory");
+        assert!(
+            path.is_dir(),
+            "the stale document must have become a directory"
+        );
 
         // The old bytes are preserved beside the directory, never deleted.
         let aside = PathBuf::from({
@@ -1175,8 +1193,16 @@ mod tests {
             s.push(".stale");
             s
         });
-        assert!(aside.exists(), "the old document must be preserved at {}", aside.display());
-        assert_eq!(fs::read(&aside).unwrap(), original, "preserved bytes must be intact");
+        assert!(
+            aside.exists(),
+            "the old document must be preserved at {}",
+            aside.display()
+        );
+        assert_eq!(
+            fs::read(&aside).unwrap(),
+            original,
+            "preserved bytes must be intact"
+        );
 
         // And, being a genuine document, it migrated in and loads.
         let doc = store.load_or_new();
@@ -1186,7 +1212,10 @@ mod tests {
             "an old-format document must migrate into the recovered store"
         );
         let autosave = Autosave::spawn(store, DEFAULT_DEBOUNCE);
-        assert!(autosave.is_enabled(), "persistence must be enabled after migration");
+        assert!(
+            autosave.is_enabled(),
+            "persistence must be enabled after migration"
+        );
     }
 
     /// A state directory that genuinely cannot be created must still surface as
@@ -1209,9 +1238,9 @@ mod tests {
 
         match result {
             Err(StoreError::Io { .. }) => {}
-            Err(other) => panic!(
-                "expected an Io error from an uncreatable state directory, got {other:?}"
-            ),
+            Err(other) => {
+                panic!("expected an Io error from an uncreatable state directory, got {other:?}")
+            }
             Ok(_) => panic!(
                 "an uncreatable state directory must surface as an error, not be \
                  masked by the idempotent create"

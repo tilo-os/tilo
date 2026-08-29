@@ -54,10 +54,10 @@ mod incremental_render_regressions;
 mod large_frame_reassembly;
 #[path = "link_popover_renders.rs"]
 mod link_popover_renders;
-#[path = "local_identity_is_a_person.rs"]
-mod local_identity_is_a_person;
 #[path = "live_text_sync.rs"]
 mod live_text_sync;
+#[path = "local_identity_is_a_person.rs"]
+mod local_identity_is_a_person;
 #[path = "multi_user_session.rs"]
 mod multi_user_session;
 #[path = "overlay_test.rs"]

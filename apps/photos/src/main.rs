@@ -36,7 +36,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, photos::app_root(), "dev.qos.photos"));
+        std::process::exit(ui::headless::run(
+            spec,
+            photos::app_root(),
+            "dev.qos.photos",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.photos");
@@ -141,7 +145,10 @@ fn render_shot(
 
     // The generated pattern is written beside the output, so a shot run
     // leaves no file anywhere the live app would ever look.
-    let staging = out.parent().unwrap_or(std::path::Path::new(".")).join("photos-shots");
+    let staging = out
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("photos-shots");
     let mut state = ui::State::new();
     let mut app = photos::PhotosApp::new();
     photos::seed_scenario(&mut app, &mut state.doc, scenario, &staging);

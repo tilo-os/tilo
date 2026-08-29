@@ -110,20 +110,25 @@ impl RelayClient {
             cert: own_cert.clone(),
             client_nonce,
         };
-        let hello_bytes = postcard::to_allocvec(&hello)
-            .map_err(|e| ClientError::Codec(e.to_string()))?;
+        let hello_bytes =
+            postcard::to_allocvec(&hello).map_err(|e| ClientError::Codec(e.to_string()))?;
         write_frame(&mut send, &hello_bytes).await?;
 
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
-        let ack: HelloAck = postcard::from_bytes(&ack_bytes)
-            .map_err(|e| ClientError::Codec(e.to_string()))?;
+        let ack: HelloAck =
+            postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
         let now_ns = crate::peer::now_ns();
-        let relay_peer =
-            auth::verify_hello_ack(&ack, &own_user_public_key, &revocations, now_ns, &client_nonce)?;
+        let relay_peer = auth::verify_hello_ack(
+            &ack,
+            &own_user_public_key,
+            &revocations,
+            now_ns,
+            &client_nonce,
+        )?;
 
         let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
-        let ack2_bytes = postcard::to_allocvec(&ack2)
-            .map_err(|e| ClientError::Codec(e.to_string()))?;
+        let ack2_bytes =
+            postcard::to_allocvec(&ack2).map_err(|e| ClientError::Codec(e.to_string()))?;
         write_frame(&mut send, &ack2_bytes).await?;
 
         // Split into pump halves.

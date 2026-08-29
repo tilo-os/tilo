@@ -238,7 +238,10 @@ mod tests {
     fn starter_snippets_expose_placeholders() {
         let lib = starter_library();
         let with_vars = lib.iter().filter(|s| s.has_placeholders()).count();
-        assert!(with_vars >= 8, "most starter snippets should have variables");
+        assert!(
+            with_vars >= 8,
+            "most starter snippets should have variables"
+        );
     }
 
     #[test]

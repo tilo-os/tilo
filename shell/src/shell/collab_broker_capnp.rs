@@ -1473,9 +1473,7 @@ mod tests {
         // `peer_count` as a proxy plus a grace sleep.
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            let has_sub = {
-                handle.peer_count() >= 1
-            };
+            let has_sub = { handle.peer_count() >= 1 };
             if has_sub {
                 break;
             }
@@ -1796,9 +1794,7 @@ mod tests {
                 .expect("build runtime");
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
-                let (client, _driver) = dial_capnp_for_test(capnp_path)
-                    .await
-                    .expect("dial capnp");
+                let (client, _driver) = dial_capnp_for_test(capnp_path).await.expect("dial capnp");
                 body(runtime_collab::CollabClient::from_raw(client)).await;
             });
         });
@@ -1991,8 +1987,8 @@ mod tests {
             .expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
-        let channel_id = CrdtRoute::record("dev.qos.words", cluster.to_string(), "/notes/a.md")
-            .channel_key();
+        let channel_id =
+            CrdtRoute::record("dev.qos.words", cluster.to_string(), "/notes/a.md").channel_key();
 
         net_for_arrival.note_snapshot_request(&cluster.to_string());
 
@@ -2063,8 +2059,8 @@ mod tests {
         .expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
-        let channel_id = CrdtRoute::record("dev.qos.words", cluster.to_string(), "/notes/a.md")
-            .channel_key();
+        let channel_id =
+            CrdtRoute::record("dev.qos.words", cluster.to_string(), "/notes/a.md").channel_key();
 
         let capnp_path_clone = capnp_path.clone();
         let joined = channel_id.clone();
@@ -2108,7 +2104,11 @@ mod tests {
                 data,
                 ..
             }) => {
-                assert_eq!(data, b"a-change-blob".to_vec(), "the payload crosses verbatim");
+                assert_eq!(
+                    data,
+                    b"a-change-blob".to_vec(),
+                    "the payload crosses verbatim"
+                );
                 assert_eq!(
                     cluster_id,
                     cluster.to_string(),
@@ -2147,9 +2147,12 @@ mod tests {
         )
         .expect("spawn broker");
 
-        let channel_id =
-            CrdtRoute::record("dev.qos.words", uuid::Uuid::nil().to_string(), "/notes/a.md")
-                .channel_key();
+        let channel_id = CrdtRoute::record(
+            "dev.qos.words",
+            uuid::Uuid::nil().to_string(),
+            "/notes/a.md",
+        )
+        .channel_key();
 
         let capnp_path_clone = capnp_path.clone();
         std::thread::spawn(move || {
@@ -2303,7 +2306,10 @@ mod tests {
                     .join_channel(&words, b"words-reader")
                     .await
                     .expect("join word-processor");
-                let words_sub = words_chan.subscribe().await.expect("subscribe word-processor");
+                let words_sub = words_chan
+                    .subscribe()
+                    .await
+                    .expect("subscribe word-processor");
 
                 let (fc, _fd) = dial_capnp_for_test(capnp_path_clone.clone())
                     .await
@@ -2313,7 +2319,10 @@ mod tests {
                     .join_channel(&files, b"files-reader")
                     .await
                     .expect("join file-explorer");
-                let files_sub = files_chan.subscribe().await.expect("subscribe file-explorer");
+                let files_sub = files_chan
+                    .subscribe()
+                    .await
+                    .expect("subscribe file-explorer");
 
                 let (rc, _rd) = dial_capnp_for_test(capnp_path_clone.clone())
                     .await

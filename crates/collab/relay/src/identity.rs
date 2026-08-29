@@ -48,9 +48,7 @@ fn generate_and_write(path: &Path) -> std::io::Result<Keypair> {
         std::fs::create_dir_all(parent)?;
     }
     let kp = Keypair::generate_ed25519();
-    let bytes = kp
-        .to_protobuf_encoding()
-        .map_err(std::io::Error::other)?;
+    let bytes = kp.to_protobuf_encoding().map_err(std::io::Error::other)?;
     std::fs::write(path, bytes)?;
     {
         use std::os::unix::fs::PermissionsExt;
@@ -114,6 +112,9 @@ mod tests {
         let err = load_or_create_keypair(&path).expect_err("must fail");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         let msg = err.to_string();
-        assert!(msg.contains("unreadable"), "expected clear message, got: {msg}");
+        assert!(
+            msg.contains("unreadable"),
+            "expected clear message, got: {msg}"
+        );
     }
 }

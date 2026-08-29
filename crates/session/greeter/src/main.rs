@@ -16,8 +16,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use greeter::greeter_app::AuthScenario;
 use greeter::GreeterApp;
+use greeter::greeter_app::AuthScenario;
+use taffy::prelude::*;
 use ui::app::UserEvent;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
@@ -25,10 +26,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 use winit::event_loop::EventLoopProxy;
 
 /// Default offscreen viewport for `--shots`.
@@ -127,9 +127,7 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         AuthScenario::Hint => Some(("ada", "")),
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
-        AuthScenario::LongName => {
-            Some(("bartholomew.featherstonehaugh-worthington", "hunter2"))
-        }
+        AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
         _ => Some(("ada", "hunter2")),
     }
 }
@@ -149,7 +147,7 @@ fn render_shot_to_png(
     out: &std::path::Path,
     seed: Option<(&str, &str)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use automerge::{transaction::Transactable, ObjType};
+    use automerge::{ObjType, transaction::Transactable};
 
     let (w, h) = viewport;
     let theme = Theme::dark();

@@ -208,7 +208,13 @@ pub fn paint_image_cover(
     let clip = RoundedRect::from_rect(rect, radius);
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
     let brush = ImageBrush::new(img.clone());
-    scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &rect);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        &rect,
+    );
     scene.pop_layer();
 }
 
@@ -266,7 +272,13 @@ mod tests {
 
         // Painting the cached image must not panic.
         let mut scene = Scene::new();
-        paint_image_cover(&mut scene, Affine::IDENTITY, Rect::new(0.0, 0.0, 40.0, 40.0), &img, 8.0);
+        paint_image_cover(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            &img,
+            8.0,
+        );
     }
 
     #[test]

@@ -107,21 +107,12 @@ pub fn nv(
     op: Operation,
 ) -> Digest256 {
     // args = H(operandB.buffer || offset || operation)
-    let args = h(&[
-        operand,
-        &offset.to_be_bytes(),
-        &(op as u16).to_be_bytes(),
-    ]);
+    let args = h(&[operand, &offset.to_be_bytes(), &(op as u16).to_be_bytes()]);
     h(&[&prev, &CC_POLICY_NV.to_be_bytes(), &args, nv_name])
 }
 
 /// `TPM2_PolicyNV` against a `u64` counter value.
-pub fn nv_counter(
-    prev: Digest256,
-    nv_name: &[u8],
-    value: u64,
-    op: Operation,
-) -> Digest256 {
+pub fn nv_counter(prev: Digest256, nv_name: &[u8], value: u64, op: Operation) -> Digest256 {
     nv(prev, nv_name, &value.to_be_bytes(), 0, op)
 }
 
@@ -131,11 +122,7 @@ pub fn nv_counter(
 /// to (see crate-level notes). The two-step extend is the spec's `PolicyUpdate` helper:
 /// command code + key Name, then the policy reference.
 pub fn authorize(key_name: &[u8], policy_ref: &[u8]) -> Digest256 {
-    let d1 = h(&[
-        &ZERO,
-        &CC_POLICY_AUTHORIZE.to_be_bytes(),
-        key_name,
-    ]);
+    let d1 = h(&[&ZERO, &CC_POLICY_AUTHORIZE.to_be_bytes(), key_name]);
     h(&[&d1, policy_ref])
 }
 
@@ -181,12 +168,7 @@ pub const ALG_SHA256: u16 = 0x000B;
 /// attributes ‖ authPolicy (as a TPM2B) ‖ dataSize`. Computing this rather than only reading
 /// it back from the TPM lets a mismatch be reported as "this is not the index your tokens
 /// were sealed against" instead of surfacing later as an unexplained failure to unseal.
-pub fn nv_index_name(
-    index: u32,
-    attributes: u32,
-    auth_policy: &[u8],
-    data_size: u16,
-) -> Vec<u8> {
+pub fn nv_index_name(index: u32, attributes: u32, auth_policy: &[u8], data_size: u16) -> Vec<u8> {
     let mut marshalled = Vec::new();
     marshalled.extend_from_slice(&index.to_be_bytes());
     marshalled.extend_from_slice(&ALG_SHA256.to_be_bytes());

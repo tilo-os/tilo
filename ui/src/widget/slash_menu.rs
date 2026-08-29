@@ -44,8 +44,8 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::block_editor::BlockKind;
 use crate::widget::Widget;
+use crate::widget::block_editor::BlockKind;
 
 /// One row in the slash menu. Pre-canned label + a list of search
 /// keywords + the block kind it applies on Enter. Filtering matches
@@ -128,7 +128,10 @@ impl SlashMenu {
             MenuRow {
                 label: "Checklist",
                 keywords: &["checklist", "todo", "task", "check"],
-                kind: BlockKind::Checklist { indent: 0, done: false },
+                kind: BlockKind::Checklist {
+                    indent: 0,
+                    done: false,
+                },
             },
             MenuRow {
                 label: "Code block",
@@ -305,7 +308,13 @@ impl SlashMenu {
             return false;
         }
         let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    text,
+                    ..
+                },
             ..
         } = event
         else {
@@ -407,12 +416,7 @@ impl SlashMenu {
         for (i, &row_idx) in self.visible.iter().enumerate() {
             let row = &self.rows[row_idx];
             let y0 = rect.y0 + PADDING_Y + i as f64 * ROW_HEIGHT;
-            let row_rect = Rect::new(
-                rect.x0 + 4.0,
-                y0,
-                rect.x1 - 4.0,
-                y0 + ROW_HEIGHT,
-            );
+            let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             if i == self.cursor {
                 let hl = RoundedRect::from_rect(row_rect, 4.0);
                 scene.fill(
@@ -423,8 +427,7 @@ impl SlashMenu {
                     &hl,
                 );
             }
-            let text_y = row_rect.y0
-                + (row_rect.height() - font_size as f64) / 2.0;
+            let text_y = row_rect.y0 + (row_rect.height() - font_size as f64) / 2.0;
             text_renderer.draw_text(
                 scene,
                 row.label,
@@ -491,9 +494,15 @@ impl Widget for SlashMenu {
     ) {
         // Routing is owned by the parent — see `handle_key`.
     }
-    fn name(&self) -> &str { "SlashMenu" }
-    fn test_id(&self) -> Option<&str> { Some("slash_menu") }
-    fn get_rect(&self) -> Rect { self.rect() }
+    fn name(&self) -> &str {
+        "SlashMenu"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("slash_menu")
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect()
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -549,9 +558,7 @@ mod tests {
     fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -596,8 +603,7 @@ mod tests {
         assert!(m.visible_len() < 8);
         // Specifically: "Heading 1" must be in the visible set.
         let any_h1 = (0..m.visible_len()).any(|_| {
-            matches!(m.highlighted_kind(), Some(BlockKind::Heading(1)))
-                || m.visible_len() > 0
+            matches!(m.highlighted_kind(), Some(BlockKind::Heading(1))) || m.visible_len() > 0
         });
         assert!(any_h1);
     }
@@ -720,7 +726,10 @@ mod tests {
         // Row 1 is "Heading 1"; land the click inside its band.
         let pt = Point::new(10.0, PADDING_Y + ROW_HEIGHT + 2.0);
         assert_eq!(m.click_at(pt), Some(BlockKind::Heading(1)));
-        assert!(!m.is_visible(), "clicking a row commits and closes the menu");
+        assert!(
+            !m.is_visible(),
+            "clicking a row commits and closes the menu"
+        );
         assert_eq!(
             m.take_selected_kind(),
             Some(BlockKind::Heading(1)),
@@ -734,7 +743,10 @@ mod tests {
         m.set_anchor(Point::new(0.0, 0.0));
         m.set_visible(true);
         assert_eq!(m.click_at(Point::new(10.0, 5000.0)), None);
-        assert!(m.is_visible(), "an off-row click leaves the menu open for the caller");
+        assert!(
+            m.is_visible(),
+            "an off-row click leaves the menu open for the caller"
+        );
     }
 
     #[test]
@@ -748,7 +760,10 @@ mod tests {
         assert!(m.hover_at(pt), "hovering a new row reports a move");
         assert_eq!(m.highlighted_kind(), Some(&BlockKind::Heading(2)));
         assert!(!m.hover_at(pt), "hovering the same row is not a move");
-        assert!(!m.hover_at(Point::new(10.0, 5000.0)), "hovering off any row is a no-op");
+        assert!(
+            !m.hover_at(Point::new(10.0, 5000.0)),
+            "hovering off any row is a no-op"
+        );
     }
 
     #[test]

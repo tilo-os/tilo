@@ -93,7 +93,8 @@ fn cmd_init(path: &PathBuf) -> anyhow::Result<()> {
         return Ok(());
     }
     let cfg = RelayConfig::default();
-    cfg.save(path).with_context(|| format!("save {}", path.display()))?;
+    cfg.save(path)
+        .with_context(|| format!("save {}", path.display()))?;
     println!("wrote default config: {}", path.display());
     Ok(())
 }
@@ -124,7 +125,11 @@ fn cmd_unbind(path: &PathBuf, id: u64) -> anyhow::Result<()> {
 
 fn cmd_status(path: &PathBuf) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
-    println!("qos-relay {} (config: {})", qos_relay::VERSION, path.display());
+    println!(
+        "qos-relay {} (config: {})",
+        qos_relay::VERSION,
+        path.display()
+    );
     println!("identity_root: {}", cfg.identity_root.display());
     println!("state_root:    {}", cfg.state_root.display());
     println!("iroh_listen:   {}", cfg.iroh_listen);

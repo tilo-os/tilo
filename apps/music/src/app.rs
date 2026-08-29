@@ -9,8 +9,8 @@
 //! library + play-state replicate across devices.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
@@ -19,17 +19,17 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
+use std::cell::Cell;
+use std::rc::Rc;
+use ui::ImageStore;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, SplitLayout, TextInput, Widget};
-use std::cell::Cell;
-use std::rc::Rc;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
-use ui::ImageStore;
 
 use crate::art;
 use crate::audio::AudioEngine;
@@ -40,9 +40,11 @@ use crate::backend::{
 use crate::doc::{self, LiveTrack};
 use crate::icon::{self, Icon};
 use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
+use crate::model::{
+    Album, Artist, CacheState, Library, Playback, RepeatMode, SearchResults, Track,
+};
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
 use crate::portal::{self, CoverOutcome};
-use crate::model::{Album, Artist, CacheState, Library, Playback, RepeatMode, SearchResults, Track};
 use crate::seed;
 use crate::source::Source;
 use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
@@ -129,7 +131,10 @@ enum Action {
     /// chips route here so a tap actually navigates + filters.
     BrowseGenre(String),
     /// Play `queue[index]` after replacing the queue.
-    Play { queue: Vec<String>, index: usize },
+    Play {
+        queue: Vec<String>,
+        index: usize,
+    },
     TogglePlay,
     Next,
     Prev,
@@ -155,7 +160,10 @@ enum Action {
     /// Remove the queue entry at this absolute index.
     RemoveFromQueue(usize),
     /// Move the queue entry at `from` to `to` (reorder).
-    MoveQueueItem { from: usize, to: usize },
+    MoveQueueItem {
+        from: usize,
+        to: usize,
+    },
     /// Toggle a track's "Liked Songs" membership.
     ToggleLike(String),
     /// Toggle an album's saved-to-library state.
@@ -165,11 +173,21 @@ enum Action {
     /// Switch the active search filter tab (All / Songs / Albums / …).
     SelectSearchTab(SearchTab),
     /// Append a track to a named playlist (from the context menu).
-    AddToPlaylist { playlist: String, track: String },
+    AddToPlaylist {
+        playlist: String,
+        track: String,
+    },
     /// Remove a track from a playlist (playlist detail row affordance).
-    RemoveFromPlaylist { playlist: String, track: String },
+    RemoveFromPlaylist {
+        playlist: String,
+        track: String,
+    },
     /// Reorder a track within a playlist.
-    MovePlaylistItem { playlist: String, from: usize, to: usize },
+    MovePlaylistItem {
+        playlist: String,
+        from: usize,
+        to: usize,
+    },
     /// Create a new (empty) playlist with the pending name and open it.
     CreatePlaylist,
     /// Begin editing a new-playlist name (opens the name input overlay).
@@ -185,7 +203,11 @@ enum Action {
     DeletePlaylist(String),
     /// Open the track context menu at the cursor for this track, captured in
     /// the named originating list (so "remove from playlist" can target it).
-    OpenTrackMenu { track: String, in_playlist: Option<String>, queue_index: Option<usize> },
+    OpenTrackMenu {
+        track: String,
+        in_playlist: Option<String>,
+        queue_index: Option<usize>,
+    },
     /// Open the "Add to playlist…" picker for the menu's target track.
     OpenAddToPlaylist(String),
     /// Dismiss the inline name-input overlay without committing.
@@ -681,7 +703,10 @@ impl MusicApp {
 
     /// Whether a live search has returned results.
     pub fn shot_has_results(&self) -> bool {
-        self.live_results.as_ref().map(|(_, ids)| !ids.is_empty()).unwrap_or(false)
+        self.live_results
+            .as_ref()
+            .map(|(_, ids)| !ids.is_empty())
+            .unwrap_or(false)
     }
 
     /// Whether lyrics for the current track have settled (loaded or confirmed
@@ -693,10 +718,20 @@ impl MusicApp {
     /// After results land, play the top live hit — for a live lyrics/now-playing
     /// shot. No-op if there are no results yet.
     pub fn shot_play_top_result(&mut self, state: &mut AutoCommit) -> bool {
-        let Some((_, ids)) = self.live_results.clone() else { return false };
-        let Some(first) = ids.first().cloned() else { return false };
+        let Some((_, ids)) = self.live_results.clone() else {
+            return false;
+        };
+        let Some(first) = ids.first().cloned() else {
+            return false;
+        };
         self.inject_live_hits();
-        self.dispatch(Action::Play { queue: vec![first], index: 0 }, state);
+        self.dispatch(
+            Action::Play {
+                queue: vec![first],
+                index: 0,
+            },
+            state,
+        );
         true
     }
 
@@ -713,7 +748,13 @@ impl MusicApp {
         };
         match dl {
             crate::search_type::DeepLink::Track(id) => {
-                self.dispatch(Action::Play { queue: vec![id], index: 0 }, state);
+                self.dispatch(
+                    Action::Play {
+                        queue: vec![id],
+                        index: 0,
+                    },
+                    state,
+                );
             }
             crate::search_type::DeepLink::Album(id) => {
                 self.dispatch(Action::Nav(View::Album(id)), state);
@@ -809,15 +850,24 @@ impl MusicApp {
             } else {
                 // Overlay the live progress on the reloaded library (the doc
                 // holds only Streamed/Cached, never a per-frame Downloading).
-                self.lib.cache.insert(id.clone(), CacheState::Downloading(frac));
+                self.lib
+                    .cache
+                    .insert(id.clone(), CacheState::Downloading(frac));
             }
         }
         for id in done {
             self.downloads.remove(&id);
             doc::set_cache(state, &id, CacheState::Cached);
             self.lib.cache.insert(id.clone(), CacheState::Cached);
-            let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
-            self.toast = Some((format!("\u{201c}{label}\u{201d} saved for offline"), Instant::now()));
+            let label = self
+                .lib
+                .track(&id)
+                .map(|t| t.title.clone())
+                .unwrap_or_default();
+            self.toast = Some((
+                format!("\u{201c}{label}\u{201d} saved for offline"),
+                Instant::now(),
+            ));
         }
     }
 
@@ -1066,7 +1116,9 @@ impl MusicApp {
         let playlist_id = self.cover_pick_for.take();
         match outcome {
             CoverOutcome::Opened(path) => {
-                let Some(playlist_id) = playlist_id else { return };
+                let Some(playlist_id) = playlist_id else {
+                    return;
+                };
                 // Store as a `file://` URL so the image cache (shared with http
                 // covers) can fetch it off disk.
                 let url = format!("file://{}", path.display());
@@ -1082,7 +1134,10 @@ impl MusicApp {
             }
             CoverOutcome::Cancelled => {}
             CoverOutcome::Failed(reason) => {
-                self.toast = Some((format!("Couldn\u{2019}t set cover: {reason}"), Instant::now()));
+                self.toast = Some((
+                    format!("Couldn\u{2019}t set cover: {reason}"),
+                    Instant::now(),
+                ));
             }
         }
     }
@@ -1374,7 +1429,9 @@ impl MusicApp {
         if self.name_dialog.is_some() {
             return;
         }
-        let Some(kind) = self.name_prompt.clone() else { return };
+        let Some(kind) = self.name_prompt.clone() else {
+            return;
+        };
         let (title, primary) = match kind {
             NamePrompt::NewPlaylist => ("New playlist", "Create"),
             NamePrompt::Rename(_) => ("Rename playlist", "Save"),
@@ -1397,7 +1454,11 @@ impl MusicApp {
                 let c = cancel.clone();
                 move || c.set(true)
             });
-        self.name_dialog = Some(NameDlg { dialog, submit, cancel });
+        self.name_dialog = Some(NameDlg {
+            dialog,
+            submit,
+            cancel,
+        });
     }
 
     /// Lay the name-prompt dialog out against the app rect so its box + footer
@@ -1407,7 +1468,9 @@ impl MusicApp {
             return;
         }
         let rect = self.rect;
-        let Some(nd) = self.name_dialog.as_mut() else { return };
+        let Some(nd) = self.name_dialog.as_mut() else {
+            return;
+        };
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1431,7 +1494,8 @@ impl MusicApp {
                 height: taffy::AvailableSpace::Definite(rect.height() as f32),
             },
         );
-        nd.dialog.apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+        nd.dialog
+            .apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
     }
 
     /// Route an event into the open name-prompt dialog, then apply the flags its
@@ -1459,12 +1523,23 @@ impl MusicApp {
         self.ensure_name_dialog();
         self.layout_name_dialog();
         let (submit, cancel) = {
-            let Some(nd) = self.name_dialog.as_mut() else { return };
+            let Some(nd) = self.name_dialog.as_mut() else {
+                return;
+            };
             let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).expect("a leaf on a fresh taffy tree");
+            let node = taffy
+                .new_leaf(Style::default())
+                .expect("a leaf on a fresh taffy tree");
             let mut ft = None;
             nd.dialog.handle_event(
-                event, scale_factor, modifiers, state, &automerge::ROOT, handled, &mut ft, node,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                &automerge::ROOT,
+                handled,
+                &mut ft,
+                node,
                 &taffy,
             );
             (nd.submit.replace(false), nd.cancel.replace(false))
@@ -1626,7 +1701,11 @@ impl MusicApp {
                 self.persist_playback(state);
             }
             Action::ToggleDownload(id) => {
-                let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
+                let label = self
+                    .lib
+                    .track(&id)
+                    .map(|t| t.title.clone())
+                    .unwrap_or_default();
                 let toast = match self.lib.cache_state(&id) {
                     CacheState::Cached => {
                         // Already offline → drop it.
@@ -1648,7 +1727,9 @@ impl MusicApp {
                         self.downloads.insert(id.clone(), Instant::now());
                         // Reflect the in-flight state immediately (the doc keeps
                         // only terminal states; see `advance_downloads`).
-                        self.lib.cache.insert(id.clone(), CacheState::Downloading(0.0));
+                        self.lib
+                            .cache
+                            .insert(id.clone(), CacheState::Downloading(0.0));
                         format!("Downloading \u{201c}{label}\u{201d} for offline")
                     }
                 };
@@ -1684,14 +1765,28 @@ impl MusicApp {
             }
             Action::AddToQueue(id) => {
                 self.pb.queue.push(id.clone());
-                let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
-                self.toast = Some((format!("Added \u{201c}{label}\u{201d} to queue"), Instant::now()));
+                let label = self
+                    .lib
+                    .track(&id)
+                    .map(|t| t.title.clone())
+                    .unwrap_or_default();
+                self.toast = Some((
+                    format!("Added \u{201c}{label}\u{201d} to queue"),
+                    Instant::now(),
+                ));
                 self.persist_playback(state);
             }
             Action::PlayNext(id) => {
                 self.queue_play_next(id.clone());
-                let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
-                self.toast = Some((format!("Playing \u{201c}{label}\u{201d} next"), Instant::now()));
+                let label = self
+                    .lib
+                    .track(&id)
+                    .map(|t| t.title.clone())
+                    .unwrap_or_default();
+                self.toast = Some((
+                    format!("Playing \u{201c}{label}\u{201d} next"),
+                    Instant::now(),
+                ));
                 if self.pb.current.as_deref() == Some(id.as_str()) {
                     self.start_stream(id);
                 }
@@ -1709,7 +1804,11 @@ impl MusicApp {
                 self.perform_action(state, crate::actions::toggle_liked_action(&id));
                 self.reload_library(state);
                 let now = self.lib.is_liked(&id);
-                let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
+                let label = self
+                    .lib
+                    .track(&id)
+                    .map(|t| t.title.clone())
+                    .unwrap_or_default();
                 self.toast = Some((
                     if now {
                         format!("Liked \u{201c}{label}\u{201d}")
@@ -1763,15 +1862,25 @@ impl MusicApp {
             Action::AddToPlaylist { playlist, track } => {
                 self.perform_action(state, crate::actions::add_track_action(&playlist, &track));
                 self.reload_library(state);
-                let pl = self.lib.playlist(&playlist).map(|p| p.name.clone()).unwrap_or_default();
+                let pl = self
+                    .lib
+                    .playlist(&playlist)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
                 self.toast = Some((format!("Added to \u{201c}{pl}\u{201d}"), Instant::now()));
             }
             Action::RemoveFromPlaylist { playlist, track } => {
-                self.perform_action(state, crate::actions::remove_track_action(&playlist, &track));
+                self.perform_action(
+                    state,
+                    crate::actions::remove_track_action(&playlist, &track),
+                );
                 self.reload_library(state);
             }
             Action::MovePlaylistItem { playlist, from, to } => {
-                self.perform_action(state, crate::actions::move_track_action(&playlist, from, to));
+                self.perform_action(
+                    state,
+                    crate::actions::move_track_action(&playlist, from, to),
+                );
                 self.reload_library(state);
             }
             Action::BeginNewPlaylist => {
@@ -1822,8 +1931,11 @@ impl MusicApp {
                 ));
             }
             Action::BeginRenamePlaylist(id) => {
-                self.name_input =
-                    self.lib.playlist(&id).map(|p| p.name.clone()).unwrap_or_default();
+                self.name_input = self
+                    .lib
+                    .playlist(&id)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
                 self.name_prompt = Some(NamePrompt::Rename(id));
                 self.name_dialog = None;
                 self.search_input.set_focus(false);
@@ -1848,7 +1960,11 @@ impl MusicApp {
                 }
                 self.toast = Some(("Playlist deleted".into(), Instant::now()));
             }
-            Action::OpenTrackMenu { track, in_playlist, queue_index } => {
+            Action::OpenTrackMenu {
+                track,
+                in_playlist,
+                queue_index,
+            } => {
                 self.open_track_menu(track, in_playlist, queue_index);
             }
             Action::OpenAddToPlaylist(track) => {
@@ -1909,7 +2025,9 @@ impl MusicApp {
     /// builds without the `live` feature) fall back to the legacy Piped
     /// resolver, or stay silent with the local playhead advancing offline.
     fn start_stream(&mut self, track_id: String) {
-        let Some(t) = self.lib.track(&track_id) else { return };
+        let Some(t) = self.lib.track(&track_id) else {
+            return;
+        };
         let yt_id = t.yt_id.clone();
 
         if is_live_track(&track_id) {
@@ -1996,7 +2114,11 @@ impl MusicApp {
                 StreamUpdate::SearchResults { query, bundle } => {
                     self.ingest_search_results(query, *bundle);
                 }
-                StreamUpdate::SearchMore { query, kind, bundle } => {
+                StreamUpdate::SearchMore {
+                    query,
+                    kind,
+                    bundle,
+                } => {
                     self.merge_search_more(&query, kind, *bundle);
                 }
                 StreamUpdate::Home { content } => {
@@ -2047,7 +2169,8 @@ impl MusicApp {
                         // Resolution failed outright (offline, geo-blocked, no
                         // playable stream). Don't leave the transport stuck on a
                         // frozen "playing" state — stop and tell the user why.
-                        self.toast = Some((format!("Can\u{2019}t stream: {error}"), Instant::now()));
+                        self.toast =
+                            Some((format!("Can\u{2019}t stream: {error}"), Instant::now()));
                         self.pb.playing = false;
                         self.audio.stop();
                     }
@@ -2102,7 +2225,9 @@ impl MusicApp {
         if id.is_empty() || url.is_empty() {
             return;
         }
-        self.art_urls.entry(id.to_string()).or_insert_with(|| url.to_string());
+        self.art_urls
+            .entry(id.to_string())
+            .or_insert_with(|| url.to_string());
     }
 
     /// Fold a batch of real track hits into the playable library (as live
@@ -2207,7 +2332,11 @@ impl MusicApp {
         self.live_results = Some((query.clone(), ordered));
         // A brand-new query resets the tab to the curated mix; re-running the
         // same query (debounce/Enter) keeps the user's chosen tab.
-        let same_query = self.live_bundle.as_ref().map(|(q, _)| q == &query).unwrap_or(false);
+        let same_query = self
+            .live_bundle
+            .as_ref()
+            .map(|(q, _)| q == &query)
+            .unwrap_or(false);
         if !same_query {
             self.search_tab = SearchTab::All;
         }
@@ -2215,7 +2344,11 @@ impl MusicApp {
         self.toast = Some((
             format!(
                 "Results for \u{201c}{query}\u{201d}{}",
-                if n_types > 1 { " across songs, albums, artists & playlists" } else { "" }
+                if n_types > 1 {
+                    " across songs, albums, artists & playlists"
+                } else {
+                    ""
+                }
             ),
             Instant::now(),
         ));
@@ -2225,7 +2358,9 @@ impl MusicApp {
     /// bucket (only if it's still the same query).
     fn merge_search_more(&mut self, query: &str, kind: SearchKind, more: SearchBundle) {
         self.absorb_bundle(&more);
-        let Some((q, bundle)) = self.live_bundle.as_mut() else { return };
+        let Some((q, bundle)) = self.live_bundle.as_mut() else {
+            return;
+        };
         if q != query {
             return;
         }
@@ -2280,7 +2415,9 @@ impl MusicApp {
         if !self.allow_network {
             return;
         }
-        let Some((query, _)) = self.live_bundle.clone() else { return };
+        let Some((query, _)) = self.live_bundle.clone() else {
+            return;
+        };
         let key = format!("{query}|{kind:?}");
         if self.search_more_sent.contains(&key) {
             return;
@@ -2369,7 +2506,11 @@ impl MusicApp {
 
     /// Topmost right-click target containing `p` (later-drawn = on top).
     fn row_menu_at(&self, p: Point) -> Option<Action> {
-        self.row_menu_hits.iter().rev().find(|h| h.rect.contains(p)).map(|h| h.action.clone())
+        self.row_menu_hits
+            .iter()
+            .rev()
+            .find(|h| h.rect.contains(p))
+            .map(|h| h.action.clone())
     }
 
     // ---- adaptive sidebar geometry (delegated to `SidebarDrawer`) --------
@@ -2401,7 +2542,12 @@ impl MusicApp {
     /// where the floating sidebar draws above it) and spans to the right edge.
     fn nowplaying_rect(&self) -> Rect {
         let r = self.rect;
-        Rect::new(self.drawer.content_rect().x0, r.y1 - NOWPLAYING_H, r.x1, r.y1)
+        Rect::new(
+            self.drawer.content_rect().x0,
+            r.y1 - NOWPLAYING_H,
+            r.x1,
+            r.y1,
+        )
     }
 
     /// Whether the hamburger toggle is currently shown — whenever the sidebar
@@ -2481,14 +2627,22 @@ impl MusicApp {
     /// progress, alongside the idle download affordance on the rest.
     pub fn snap_downloading(&mut self) {
         self.view = View::Songs;
-        let ids: Vec<String> = self.lib.tracks_sorted().iter().map(|t| t.id.clone()).collect();
+        let ids: Vec<String> = self
+            .lib
+            .tracks_sorted()
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
         // Backdate each start so this single frame captures a mid-progress
         // spinner (the per-frame `advance_downloads` recomputes the same frac).
         for (i, frac) in [0.25_f64, 0.55, 0.85].iter().enumerate() {
             if let Some(id) = ids.get(i) {
-                let start = Instant::now() - std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac);
+                let start =
+                    Instant::now() - std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac);
                 self.downloads.insert(id.clone(), start);
-                self.lib.cache.insert(id.clone(), CacheState::Downloading(*frac as f32));
+                self.lib
+                    .cache
+                    .insert(id.clone(), CacheState::Downloading(*frac as f32));
             }
         }
     }
@@ -2506,24 +2660,101 @@ impl MusicApp {
                 avatar_url: String::new(),
             })),
             tracks: vec![
-                sample_hit("aur_g1", "Glasslight", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 215),
-                sample_hit("aur_p1", "Paper Boats", "Aurora Skies", "ar_aurora", "al_paperboats", "Paper Boats", 221),
-                sample_hit("aur_g5", "Halcyon", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 263),
-                sample_hit("aur_g3", "Slow Tide", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 242),
+                sample_hit(
+                    "aur_g1",
+                    "Glasslight",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    215,
+                ),
+                sample_hit(
+                    "aur_p1",
+                    "Paper Boats",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_paperboats",
+                    "Paper Boats",
+                    221,
+                ),
+                sample_hit(
+                    "aur_g5",
+                    "Halcyon",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    263,
+                ),
+                sample_hit(
+                    "aur_g3",
+                    "Slow Tide",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    242,
+                ),
             ],
             albums: vec![
-                sample_album_hit("al_glasslight", "Glasslight", "Aurora Skies", "ar_aurora", 2023),
-                sample_album_hit("al_paperboats", "Paper Boats", "Aurora Skies", "ar_aurora", 2021),
-                sample_album_hit("al_afterhours", "After Hours Drive", "Midnight Transit", "ar_midnight", 2022),
+                sample_album_hit(
+                    "al_glasslight",
+                    "Glasslight",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    2023,
+                ),
+                sample_album_hit(
+                    "al_paperboats",
+                    "Paper Boats",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    2021,
+                ),
+                sample_album_hit(
+                    "al_afterhours",
+                    "After Hours Drive",
+                    "Midnight Transit",
+                    "ar_midnight",
+                    2022,
+                ),
             ],
             artists: vec![
-                ArtistHit { id: "ar_aurora".into(), name: "Aurora Skies".into(), subscriber_count: 2_140_553, avatar_url: String::new() },
-                ArtistHit { id: "ar_lumen".into(), name: "Lumen Theory".into(), subscriber_count: 3_771_440, avatar_url: String::new() },
-                ArtistHit { id: "ar_neon".into(), name: "Neon Harbor".into(), subscriber_count: 1_009_330, avatar_url: String::new() },
+                ArtistHit {
+                    id: "ar_aurora".into(),
+                    name: "Aurora Skies".into(),
+                    subscriber_count: 2_140_553,
+                    avatar_url: String::new(),
+                },
+                ArtistHit {
+                    id: "ar_lumen".into(),
+                    name: "Lumen Theory".into(),
+                    subscriber_count: 3_771_440,
+                    avatar_url: String::new(),
+                },
+                ArtistHit {
+                    id: "ar_neon".into(),
+                    name: "Neon Harbor".into(),
+                    subscriber_count: 1_009_330,
+                    avatar_url: String::new(),
+                },
             ],
             playlists: vec![
-                PlaylistHit { id: "PLaurora_essentials".into(), title: "Aurora Skies Essentials".into(), subtitle: "YouTube Music".into(), track_count: 40, cover_url: String::new() },
-                PlaylistHit { id: "PLdreampop".into(), title: "Dream Pop Dreaming".into(), subtitle: "YouTube Music".into(), track_count: 80, cover_url: String::new() },
+                PlaylistHit {
+                    id: "PLaurora_essentials".into(),
+                    title: "Aurora Skies Essentials".into(),
+                    subtitle: "YouTube Music".into(),
+                    track_count: 40,
+                    cover_url: String::new(),
+                },
+                PlaylistHit {
+                    id: "PLdreampop".into(),
+                    title: "Dream Pop Dreaming".into(),
+                    subtitle: "YouTube Music".into(),
+                    track_count: 80,
+                    cover_url: String::new(),
+                },
             ],
         };
         self.ingest_search_results("aurora".into(), bundle);
@@ -2547,23 +2778,107 @@ impl MusicApp {
             wikipedia_url: "https://en.wikipedia.org/wiki/Aurora_Skies".into(),
             header_url: String::new(),
             tracks: vec![
-                sample_hit("aur_g1", "Glasslight", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 215),
-                sample_hit("aur_p1", "Paper Boats", "Aurora Skies", "ar_aurora", "al_paperboats", "Paper Boats", 221),
-                sample_hit("aur_g5", "Halcyon", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 263),
-                sample_hit("aur_g3", "Slow Tide", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 242),
-                sample_hit("aur_p3", "Lighthouse", "Aurora Skies", "ar_aurora", "al_paperboats", "Paper Boats", 234),
+                sample_hit(
+                    "aur_g1",
+                    "Glasslight",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    215,
+                ),
+                sample_hit(
+                    "aur_p1",
+                    "Paper Boats",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_paperboats",
+                    "Paper Boats",
+                    221,
+                ),
+                sample_hit(
+                    "aur_g5",
+                    "Halcyon",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    263,
+                ),
+                sample_hit(
+                    "aur_g3",
+                    "Slow Tide",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    242,
+                ),
+                sample_hit(
+                    "aur_p3",
+                    "Lighthouse",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_paperboats",
+                    "Paper Boats",
+                    234,
+                ),
             ],
             albums: vec![
-                crate::backend::ArtistAlbum { id: "al_glasslight".into(), title: "Glasslight".into(), year: 2023, kind: crate::backend::AlbumKind::Album, cover_url: String::new() },
-                crate::backend::ArtistAlbum { id: "al_paperboats".into(), title: "Paper Boats".into(), year: 2021, kind: crate::backend::AlbumKind::Album, cover_url: String::new() },
-                crate::backend::ArtistAlbum { id: "al_halcyon_single".into(), title: "Halcyon".into(), year: 2024, kind: crate::backend::AlbumKind::Single, cover_url: String::new() },
-                crate::backend::ArtistAlbum { id: "al_tides_ep".into(), title: "Tides EP".into(), year: 2022, kind: crate::backend::AlbumKind::Ep, cover_url: String::new() },
+                crate::backend::ArtistAlbum {
+                    id: "al_glasslight".into(),
+                    title: "Glasslight".into(),
+                    year: 2023,
+                    kind: crate::backend::AlbumKind::Album,
+                    cover_url: String::new(),
+                },
+                crate::backend::ArtistAlbum {
+                    id: "al_paperboats".into(),
+                    title: "Paper Boats".into(),
+                    year: 2021,
+                    kind: crate::backend::AlbumKind::Album,
+                    cover_url: String::new(),
+                },
+                crate::backend::ArtistAlbum {
+                    id: "al_halcyon_single".into(),
+                    title: "Halcyon".into(),
+                    year: 2024,
+                    kind: crate::backend::AlbumKind::Single,
+                    cover_url: String::new(),
+                },
+                crate::backend::ArtistAlbum {
+                    id: "al_tides_ep".into(),
+                    title: "Tides EP".into(),
+                    year: 2022,
+                    kind: crate::backend::AlbumKind::Ep,
+                    cover_url: String::new(),
+                },
             ],
             similar: vec![
-                ArtistHit { id: "ar_midnight".into(), name: "Midnight Transit".into(), subscriber_count: 884_201, avatar_url: String::new() },
-                ArtistHit { id: "ar_lumen".into(), name: "Lumen Theory".into(), subscriber_count: 3_771_440, avatar_url: String::new() },
-                ArtistHit { id: "ar_neon".into(), name: "Neon Harbor".into(), subscriber_count: 1_009_330, avatar_url: String::new() },
-                ArtistHit { id: "ar_kavi".into(), name: "Kavi & The Tide".into(), subscriber_count: 1_502_998, avatar_url: String::new() },
+                ArtistHit {
+                    id: "ar_midnight".into(),
+                    name: "Midnight Transit".into(),
+                    subscriber_count: 884_201,
+                    avatar_url: String::new(),
+                },
+                ArtistHit {
+                    id: "ar_lumen".into(),
+                    name: "Lumen Theory".into(),
+                    subscriber_count: 3_771_440,
+                    avatar_url: String::new(),
+                },
+                ArtistHit {
+                    id: "ar_neon".into(),
+                    name: "Neon Harbor".into(),
+                    subscriber_count: 1_009_330,
+                    avatar_url: String::new(),
+                },
+                ArtistHit {
+                    id: "ar_kavi".into(),
+                    name: "Kavi & The Tide".into(),
+                    subscriber_count: 1_502_998,
+                    avatar_url: String::new(),
+                },
             ],
         };
         self.absorb_artist(&page);
@@ -2582,11 +2897,51 @@ impl MusicApp {
             year: 2023,
             cover_url: String::new(),
             tracks: vec![
-                sample_hit("aur_g1", "Glasslight", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 215),
-                sample_hit("aur_g2", "Paper Lanterns", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 198),
-                sample_hit("aur_g3", "Slow Tide", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 242),
-                sample_hit("aur_g4", "Ghost in the Frame", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 187),
-                sample_hit("aur_g5", "Halcyon", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 263),
+                sample_hit(
+                    "aur_g1",
+                    "Glasslight",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    215,
+                ),
+                sample_hit(
+                    "aur_g2",
+                    "Paper Lanterns",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    198,
+                ),
+                sample_hit(
+                    "aur_g3",
+                    "Slow Tide",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    242,
+                ),
+                sample_hit(
+                    "aur_g4",
+                    "Ghost in the Frame",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    187,
+                ),
+                sample_hit(
+                    "aur_g5",
+                    "Halcyon",
+                    "Aurora Skies",
+                    "ar_aurora",
+                    "al_glasslight",
+                    "Glasslight",
+                    263,
+                ),
             ],
         };
         self.absorb_album(&page);
@@ -2597,7 +2952,12 @@ impl MusicApp {
     /// Start a bundled track playing at `pos_ms` for a deterministic shot.
     /// Prefers `tk_g1` (it carries bundled synced lyrics).
     fn stage_play_bundled(&mut self, pos_ms: f64) {
-        let ids: Vec<String> = self.lib.tracks_sorted().iter().map(|t| t.id.clone()).collect();
+        let ids: Vec<String> = self
+            .lib
+            .tracks_sorted()
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
         if ids.is_empty() {
             return;
         }
@@ -2613,14 +2973,20 @@ impl MusicApp {
     /// Apply a deferred `--shots` staging action now that the library is
     /// loaded. Runs once; clears itself.
     fn apply_shot_stage(&mut self) {
-        let Some(stage) = self.shot_stage.take() else { return };
+        let Some(stage) = self.shot_stage.take() else {
+            return;
+        };
         match stage {
             ShotStage::TrackMenu => {
                 // Target the 3rd sorted track and anchor the cursor on its row
                 // (rows start at HEADER_H + ~9, 52px tall) so the highlighted
                 // row and the menu's target track line up in the frame.
                 let tracks = self.lib.tracks_sorted();
-                let track = tracks.get(2).or_else(|| tracks.first()).map(|t| t.id.clone()).unwrap_or_default();
+                let track = tracks
+                    .get(2)
+                    .or_else(|| tracks.first())
+                    .map(|t| t.id.clone())
+                    .unwrap_or_default();
                 if !track.is_empty() {
                     let row_y = self.rect.y0 + HEADER_H + 2.0 * 52.0 + 26.0;
                     self.mouse = Point::new(self.rect.x0 + 360.0, row_y);
@@ -2654,8 +3020,9 @@ impl MusicApp {
     fn push_menu(&mut self, label: impl Into<String>, action: Action) {
         let idx = self.menu_actions.len() as i64;
         let pending = self.pending.clone();
-        self.context
-            .push(MenuItem::action(label, move || pending.store(idx, Ordering::SeqCst)));
+        self.context.push(MenuItem::action(label, move || {
+            pending.store(idx, Ordering::SeqCst)
+        }));
         self.menu_actions.push(action);
     }
 
@@ -2676,16 +3043,28 @@ impl MusicApp {
         let album_id = self.lib.track(&track).map(|t| t.album_id.clone());
         let artist_id = self.lib.track(&track).map(|t| t.artist_id.clone());
 
-        self.push_menu("Play", Action::Play { queue: vec![track.clone()], index: 0 });
+        self.push_menu(
+            "Play",
+            Action::Play {
+                queue: vec![track.clone()],
+                index: 0,
+            },
+        );
         self.push_menu("Play next", Action::PlayNext(track.clone()));
         self.push_menu("Add to queue", Action::AddToQueue(track.clone()));
         self.context.push(MenuItem::separator());
         self.menu_actions.push(Action::Back); // separator placeholder, never fired
-        self.push_menu("Add to playlist\u{2026}", Action::OpenAddToPlaylist(track.clone()));
+        self.push_menu(
+            "Add to playlist\u{2026}",
+            Action::OpenAddToPlaylist(track.clone()),
+        );
         if let Some(pl) = &in_playlist {
             self.push_menu(
                 "Remove from this playlist",
-                Action::RemoveFromPlaylist { playlist: pl.clone(), track: track.clone() },
+                Action::RemoveFromPlaylist {
+                    playlist: pl.clone(),
+                    track: track.clone(),
+                },
             );
         }
         if let Some(qi) = queue_index {
@@ -2716,7 +3095,10 @@ impl MusicApp {
         self.menu_actions.clear();
         self.ctx_track = Some(track.clone());
 
-        self.push_menu("New playlist\u{2026}", Action::BeginNewPlaylistFor(track.clone()));
+        self.push_menu(
+            "New playlist\u{2026}",
+            Action::BeginNewPlaylistFor(track.clone()),
+        );
         if !self.lib.playlists.is_empty() {
             self.context.push(MenuItem::separator());
             self.menu_actions.push(Action::Back);
@@ -2730,7 +3112,10 @@ impl MusicApp {
         for (id, name) in playlists {
             self.push_menu(
                 name,
-                Action::AddToPlaylist { playlist: id, track: track.clone() },
+                Action::AddToPlaylist {
+                    playlist: id,
+                    track: track.clone(),
+                },
             );
         }
 
@@ -2804,10 +3189,13 @@ impl MusicApp {
             self.lyrics_synced = *synced;
             return;
         }
-        let Some(track) = self.lib.track(&id).cloned() else { return };
+        let Some(track) = self.lib.track(&id).cloned() else {
+            return;
+        };
         // Bundled sample lyrics (seed tracks) resolve instantly + offline.
         if let Some(l) = lyrics::bundled::for_track(&id) {
-            self.lyrics_cache.insert(id.clone(), (l.lines.clone(), l.synced));
+            self.lyrics_cache
+                .insert(id.clone(), (l.lines.clone(), l.synced));
             self.lyrics = l.lines;
             self.lyrics_synced = l.synced;
             return;
@@ -2838,7 +3226,8 @@ impl MusicApp {
         }
         for (id, l) in got {
             // Cache every resolved result (current OR prefetched next track).
-            self.lyrics_cache.insert(id.clone(), (l.lines.clone(), l.synced));
+            self.lyrics_cache
+                .insert(id.clone(), (l.lines.clone(), l.synced));
             if self.pb.current.as_deref() == Some(id.as_str()) {
                 self.lyrics = l.lines;
                 self.lyrics_synced = l.synced;
@@ -2857,7 +3246,10 @@ impl MusicApp {
             return None;
         }
         if self.pb.shuffle && !self.shuffle_order.is_empty() {
-            let pos = self.shuffle_order.iter().position(|&i| i == self.pb.queue_index)?;
+            let pos = self
+                .shuffle_order
+                .iter()
+                .position(|&i| i == self.pb.queue_index)?;
             let ni = *self.shuffle_order.get(pos + 1)?;
             return self.pb.queue.get(ni).cloned();
         }
@@ -2869,17 +3261,24 @@ impl MusicApp {
     /// most once per current-track change and never on a metered link (or with
     /// networking disabled for a headless render). Returns whether it ran.
     fn maybe_prefetch(&mut self) -> bool {
-        let stable = self.force_metered.map(|m| !m).unwrap_or_else(crate::net::connection_is_stable);
+        let stable = self
+            .force_metered
+            .map(|m| !m)
+            .unwrap_or_else(crate::net::connection_is_stable);
         if !self.allow_network || !stable {
             return false;
         }
-        let Some(cur) = self.pb.current.clone() else { return false };
+        let Some(cur) = self.pb.current.clone() else {
+            return false;
+        };
         if self.prefetched_for.as_deref() == Some(cur.as_str()) {
             return false;
         }
         self.prefetched_for = Some(cur);
 
-        let Some(next) = self.next_queued_track() else { return false };
+        let Some(next) = self.next_queued_track() else {
+            return false;
+        };
         // Prefetch lyrics for the next track (into the shared cache) unless we
         // already have them.
         if !self.lyrics_cache.contains_key(&next)
@@ -2896,7 +3295,9 @@ impl MusicApp {
                     album: self.lib.album_title(&track.album_id).to_string(),
                     duration_s: track.duration_s,
                 };
-                self.lyrics_worker.get_or_insert_with(LyricsWorker::new).request(meta);
+                self.lyrics_worker
+                    .get_or_insert_with(LyricsWorker::new)
+                    .request(meta);
             }
             // Warm the next track's album metadata + cover.
             let album_id = track.album_id.clone();
@@ -2915,8 +3316,11 @@ impl MusicApp {
         // Read once (not per frame).
         use std::sync::OnceLock;
         static NOCACHE: OnceLock<bool> = OnceLock::new();
-        let nocache = *NOCACHE
-            .get_or_init(|| std::env::var("QOS_MUSIC_NOCACHE").map(|v| !v.is_empty()).unwrap_or(false));
+        let nocache = *NOCACHE.get_or_init(|| {
+            std::env::var("QOS_MUSIC_NOCACHE")
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+        });
         if !nocache
             && let Some((cached_q, res)) = &self.search_cache
             && cached_q == q
@@ -2933,7 +3337,9 @@ impl MusicApp {
     /// API. Enter still fires immediately (via [`Self::request_live_search`]).
     fn maybe_dispatch_live_search(&mut self) {
         const DEBOUNCE_MS: u128 = 350;
-        let Some(edited) = self.search_edit_at else { return };
+        let Some(edited) = self.search_edit_at else {
+            return;
+        };
         if edited.elapsed().as_millis() < DEBOUNCE_MS {
             return;
         }
@@ -2978,7 +3384,15 @@ fn draw_text(
     weight: TextWeight,
     max_w: Option<f32>,
 ) {
-    tr.draw_text_weighted(scene, text, size, color, t * Affine::translate((x, y)), max_w, weight);
+    tr.draw_text_weighted(
+        scene,
+        text,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        max_w,
+        weight,
+    );
 }
 
 /// Truncate `text` to fit `max_w` px at `size`, appending an ellipsis.
@@ -3038,7 +3452,15 @@ fn is_live_playlist_id(id: &str) -> bool {
 }
 
 /// Build a [`TrackHit`] for a hermetic shot from sample-library-shaped fields.
-fn sample_hit(video_id: &str, title: &str, artist: &str, artist_id: &str, album_id: &str, album: &str, dur: u32) -> TrackHit {
+fn sample_hit(
+    video_id: &str,
+    title: &str,
+    artist: &str,
+    artist_id: &str,
+    album_id: &str,
+    album: &str,
+    dur: u32,
+) -> TrackHit {
     TrackHit {
         video_id: video_id.into(),
         title: title.into(),
@@ -3052,7 +3474,13 @@ fn sample_hit(video_id: &str, title: &str, artist: &str, artist_id: &str, album_
 }
 
 /// Build an [`AlbumHit`] for a hermetic shot from sample-library-shaped fields.
-fn sample_album_hit(id: &str, title: &str, artist: &str, artist_id: &str, year: u32) -> crate::backend::AlbumHit {
+fn sample_album_hit(
+    id: &str,
+    title: &str,
+    artist: &str,
+    artist_id: &str,
+    year: u32,
+) -> crate::backend::AlbumHit {
     crate::backend::AlbumHit {
         id: id.into(),
         title: title.into(),
@@ -3223,7 +3651,11 @@ mod tests {
         }
     }
     fn press(button: MouseButton) -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Pressed, button }
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button,
+        }
     }
     /// Drive one event through the production `handle_event` path.
     fn send(app: &mut MusicApp, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
@@ -3242,12 +3674,26 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         let root = automerge::ROOT;
-        app.handle_event(ev, 1.0, mods, doc, &root, &mut handled, &mut focus, node, &taffy);
+        app.handle_event(
+            ev,
+            1.0,
+            mods,
+            doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
         handled
     }
 
     fn released(button: MouseButton) -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Released, button }
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Released,
+            button,
+        }
     }
 
     fn wheel(lines_y: f32) -> WindowEvent {
@@ -3271,7 +3717,11 @@ mod tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = Some(c.into());
-        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     /// A named keypress event (Enter, Escape, Space, arrows …).
@@ -3284,7 +3734,11 @@ mod tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
-        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     fn shift_mods() -> winit::event::Modifiers {
@@ -3298,7 +3752,10 @@ mod tests {
     /// The captured click rect (center) for the first hit matching `action`,
     /// so tests can click a control the real draw pass registered.
     fn hit_center(app: &MusicApp, action: &Action) -> Option<Point> {
-        app.hits.iter().find(|h| &h.action == action).map(|h| h.rect.center())
+        app.hits
+            .iter()
+            .find(|h| &h.action == action)
+            .map(|h| h.rect.center())
     }
 
     #[test]
@@ -3306,7 +3763,10 @@ mod tests {
         let (app, _doc) = app_with_doc();
         assert!(app.lib.total_tracks() >= 20);
         // A fresh launch is idle: nothing is playing until the user starts it.
-        assert!(app.pb.current.is_none(), "no fabricated now-playing track on startup");
+        assert!(
+            app.pb.current.is_none(),
+            "no fabricated now-playing track on startup"
+        );
         assert!(!app.pb.playing, "transport is not playing on startup");
     }
 
@@ -3318,12 +3778,25 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
         app.reload(&doc);
-        assert_eq!(app.lib.total_tracks(), 0, "no fabricated tracks on a fresh launch");
-        assert!(app.lib.playlists.is_empty(), "no fabricated playlists on a fresh launch");
-        assert!(app.pb.current.is_none(), "nothing playing on a fresh launch");
+        assert_eq!(
+            app.lib.total_tracks(),
+            0,
+            "no fabricated tracks on a fresh launch"
+        );
+        assert!(
+            app.lib.playlists.is_empty(),
+            "no fabricated playlists on a fresh launch"
+        );
+        assert!(
+            app.pb.current.is_none(),
+            "nothing playing on a fresh launch"
+        );
         // The document is still initialised (so persistence + sync work), just
         // empty — a second launch adopts it without re-seeding.
-        assert!(doc::is_seeded(&doc), "the empty library still initialises the doc structure");
+        assert!(
+            doc::is_seeded(&doc),
+            "the empty library still initialises the doc structure"
+        );
     }
 
     #[test]
@@ -3358,7 +3831,13 @@ mod tests {
     fn play_action_sets_queue_and_current() {
         let (mut app, mut doc) = app_with_doc();
         let queue: Vec<String> = vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()];
-        app.dispatch(Action::Play { queue: queue.clone(), index: 1 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: queue.clone(),
+                index: 1,
+            },
+            &mut doc,
+        );
         assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
         assert_eq!(app.pb.queue, queue);
         assert!(app.pb.playing);
@@ -3368,7 +3847,10 @@ mod tests {
     fn next_advances_and_wraps_with_repeat_all() {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
-            Action::Play { queue: vec!["a".into(), "b".into()], index: 1 },
+            Action::Play {
+                queue: vec!["a".into(), "b".into()],
+                index: 1,
+            },
             &mut doc,
         );
         app.pb.repeat = RepeatMode::All;
@@ -3418,7 +3900,10 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         // It flipped to the done/offline state and persisted to the document.
         assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Cached);
-        assert_eq!(doc::load_library(&doc).cache_state("tk_g2"), CacheState::Cached);
+        assert_eq!(
+            doc::load_library(&doc).cache_state("tk_g2"),
+            CacheState::Cached
+        );
         assert!(
             !app.downloads.contains_key("tk_g2"),
             "the finished download is retired from the in-flight set",
@@ -3438,7 +3923,10 @@ mod tests {
         assert_eq!(app.lib.cache_state("tk_g1"), CacheState::Streamed);
         // Start the download through the real action path.
         app.dispatch(Action::ToggleDownload("tk_g1".into()), &mut doc);
-        assert!(matches!(app.lib.cache_state("tk_g1"), CacheState::Downloading(_)));
+        assert!(matches!(
+            app.lib.cache_state("tk_g1"),
+            CacheState::Downloading(_)
+        ));
         // A working download keeps frames flowing so the spinner spins — prove
         // it's the download driving it (not a lingering toast).
         app.toast = None;
@@ -3484,16 +3972,40 @@ mod tests {
         let mut tr = TextRenderer::new();
         // A width far too narrow for any character + ellipsis: render nothing,
         // never a stray "…" that would overflow into the next column.
-        let out = elide(&mut tr, "Some Long Album Title", 13.0, TextWeight::Regular, 2.0);
-        assert!(out.is_empty(), "too-narrow column renders no text, got {out:?}");
-        assert!(!out.contains('\u{2026}'), "no lone ellipsis when nothing fits");
+        let out = elide(
+            &mut tr,
+            "Some Long Album Title",
+            13.0,
+            TextWeight::Regular,
+            2.0,
+        );
+        assert!(
+            out.is_empty(),
+            "too-narrow column renders no text, got {out:?}"
+        );
+        assert!(
+            !out.contains('\u{2026}'),
+            "no lone ellipsis when nothing fits"
+        );
 
         // A genuinely truncating (but non-degenerate) width keeps some glyphs
         // and appends the ellipsis, and the result stays within the budget.
         let mid_w = 90.0;
-        let mid = elide(&mut tr, "Some Long Album Title", 13.0, TextWeight::Regular, mid_w);
-        assert!(mid.ends_with('\u{2026}'), "a truncation still shows the ellipsis: {mid:?}");
-        assert!(mid.chars().count() > 1, "at least one real glyph precedes it: {mid:?}");
+        let mid = elide(
+            &mut tr,
+            "Some Long Album Title",
+            13.0,
+            TextWeight::Regular,
+            mid_w,
+        );
+        assert!(
+            mid.ends_with('\u{2026}'),
+            "a truncation still shows the ellipsis: {mid:?}"
+        );
+        assert!(
+            mid.chars().count() > 1,
+            "at least one real glyph precedes it: {mid:?}"
+        );
         assert!(
             tr.measure_weighted(&mid, 13.0, None, TextWeight::Regular).0 as f64 <= mid_w,
             "the elided string fits inside the column budget",
@@ -3527,7 +4039,10 @@ mod tests {
         let (rect, genre) = chip;
         // Clicking it (real hit-test path) activates the filter.
         app.mouse = rect.center();
-        assert_eq!(app.hit_test(app.mouse), Some(Action::BrowseGenre(genre.clone())));
+        assert_eq!(
+            app.hit_test(app.mouse),
+            Some(Action::BrowseGenre(genre.clone()))
+        );
         app.dispatch(Action::BrowseGenre(genre.clone()), &mut doc);
         // The query is now that genre and the results filter to it (non-empty:
         // at least the genre's own artist matches).
@@ -3568,7 +4083,10 @@ mod tests {
         let mut app = MusicApp::new();
         sized(&mut app, 1280.0);
         assert!(app.drawer.is_open(), "wide: docked + open");
-        assert!(app.content_inset() > 0.0, "wide content is inset by the sidebar");
+        assert!(
+            app.content_inset() > 0.0,
+            "wide content is inset by the sidebar"
+        );
 
         sized(&mut app, 480.0);
         assert!(!app.drawer.is_open(), "narrow: overlay + closed");
@@ -3626,7 +4144,10 @@ mod tests {
         app.dispatch(Action::ToggleSidebar, &mut doc);
         assert!(!app.drawer.is_open(), "docked sidebar collapses");
         // Once collapsed, the hamburger reappears so it can be re-expanded.
-        assert!(app.show_hamburger(), "collapsed docked rail offers a re-expand affordance");
+        assert!(
+            app.show_hamburger(),
+            "collapsed docked rail offers a re-expand affordance"
+        );
         app.dispatch(Action::ToggleSidebar, &mut doc);
         assert!(app.drawer.is_open(), "toggling again re-expands it");
     }
@@ -3638,13 +4159,23 @@ mod tests {
     fn collapsed_docked_sidebar_clears_to_zero_width() {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 1280.0);
-        assert!(app.sidebar_rect().width() > 100.0, "open docked sidebar has width");
+        assert!(
+            app.sidebar_rect().width() > 100.0,
+            "open docked sidebar has width"
+        );
         app.dispatch(Action::ToggleSidebar, &mut doc);
         // Settle the collapse animation.
         app.drawer.snap(false);
         app.drawer.resolve(app.rect);
-        assert!(app.sidebar_rect().width() < 0.5, "collapsed sidebar clears to zero width");
-        assert_eq!(app.content_inset(), 0.0, "collapsed content reclaims the full width");
+        assert!(
+            app.sidebar_rect().width() < 0.5,
+            "collapsed sidebar clears to zero width"
+        );
+        assert_eq!(
+            app.content_inset(),
+            0.0,
+            "collapsed content reclaims the full width"
+        );
     }
 
     // ---- 2. context menu --------------------------------------------------
@@ -3652,7 +4183,11 @@ mod tests {
     /// Open a track's context menu, returning the action index for a label.
     fn menu_index(app: &MusicApp, label: &str) -> Option<usize> {
         app.context.items().iter().enumerate().find_map(|(i, it)| {
-            if it.label() == Some(label) { Some(i) } else { None }
+            if it.label() == Some(label) {
+                Some(i)
+            } else {
+                None
+            }
         })
     }
 
@@ -3663,10 +4198,21 @@ mod tests {
         // tk_g2 is not liked in the seed, so the toggle row reads "Like".
         app.open_track_menu("tk_g2".into(), None, None);
         assert!(app.context.is_open());
-        for label in ["Play", "Play next", "Add to queue", "Add to playlist\u{2026}", "Go to album", "Go to artist", "Like"] {
+        for label in [
+            "Play",
+            "Play next",
+            "Add to queue",
+            "Add to playlist\u{2026}",
+            "Go to album",
+            "Go to artist",
+            "Like",
+        ] {
             assert!(menu_index(&app, label).is_some(), "menu has {label}");
         }
-        assert!(menu_index(&app, "Add to library").is_none(), "no duplicate library row");
+        assert!(
+            menu_index(&app, "Add to library").is_none(),
+            "no duplicate library row"
+        );
     }
 
     #[test]
@@ -3679,7 +4225,11 @@ mod tests {
         // Simulate the menu callback firing for that row.
         app.pending.store(idx, Ordering::SeqCst);
         app.drain_menu_selection(&mut doc);
-        assert_eq!(app.pb.queue.len(), before + 1, "Add to queue grows the queue");
+        assert_eq!(
+            app.pb.queue.len(),
+            before + 1,
+            "Add to queue grows the queue"
+        );
         assert_eq!(app.pb.queue.last().map(|s| s.as_str()), Some("tk_s2"));
     }
 
@@ -3721,8 +4271,14 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         assert!(!app.lib.is_liked("tk_g2"));
         app.dispatch(Action::ToggleLike("tk_g2".into()), &mut doc);
-        assert!(app.lib.is_liked("tk_g2"), "like is reflected in the snapshot");
-        assert!(doc::load_library(&doc).is_liked("tk_g2"), "like persists to the doc");
+        assert!(
+            app.lib.is_liked("tk_g2"),
+            "like is reflected in the snapshot"
+        );
+        assert!(
+            doc::load_library(&doc).is_liked("tk_g2"),
+            "like persists to the doc"
+        );
         // Liked view surfaces it.
         assert!(app.lib.liked_ids().contains(&"tk_g2".to_string()));
         app.dispatch(Action::ToggleLike("tk_g2".into()), &mut doc);
@@ -3734,16 +4290,32 @@ mod tests {
     #[test]
     fn play_next_inserts_after_current() {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::Play { queue: vec!["a".into(), "b".into(), "c".into()], index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec!["a".into(), "b".into(), "c".into()],
+                index: 0,
+            },
+            &mut doc,
+        );
         assert_eq!(app.pb.queue_index, 0);
         app.dispatch(Action::PlayNext("x".into()), &mut doc);
-        assert_eq!(app.pb.queue, vec!["a", "x", "b", "c"], "play-next sits right after current");
+        assert_eq!(
+            app.pb.queue,
+            vec!["a", "x", "b", "c"],
+            "play-next sits right after current"
+        );
     }
 
     #[test]
     fn remove_from_queue_drops_entry() {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::Play { queue: vec!["a".into(), "b".into(), "c".into()], index: 1 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec!["a".into(), "b".into(), "c".into()],
+                index: 1,
+            },
+            &mut doc,
+        );
         // Remove the entry before current → index shifts down, current stays "b".
         app.dispatch(Action::RemoveFromQueue(0), &mut doc);
         assert_eq!(app.pb.queue, vec!["b", "c"]);
@@ -3754,10 +4326,20 @@ mod tests {
     #[test]
     fn move_queue_item_reorders_and_keeps_current() {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::Play { queue: vec!["a".into(), "b".into(), "c".into()], index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec!["a".into(), "b".into(), "c".into()],
+                index: 0,
+            },
+            &mut doc,
+        );
         app.dispatch(Action::MoveQueueItem { from: 2, to: 1 }, &mut doc);
         assert_eq!(app.pb.queue, vec!["a", "c", "b"]);
-        assert_eq!(app.pb.current.as_deref(), Some("a"), "current track unchanged by a reorder below it");
+        assert_eq!(
+            app.pb.current.as_deref(),
+            Some("a"),
+            "current track unchanged by a reorder below it"
+        );
     }
 
     // ---- 6. playlist management -------------------------------------------
@@ -3769,7 +4351,10 @@ mod tests {
         let before = app.lib.playlists.len();
         app.dispatch(Action::CreatePlaylist, &mut doc);
         assert_eq!(app.lib.playlists.len(), before + 1);
-        assert!(matches!(app.view, View::Playlist(_)), "creating opens the new playlist");
+        assert!(
+            matches!(app.view, View::Playlist(_)),
+            "creating opens the new playlist"
+        );
         let created = app.lib.playlists.iter().any(|p| p.name == "Roadtrip");
         assert!(created);
     }
@@ -3784,12 +4369,18 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
         app.reload(&doc);
-        assert!(app.lib.tracks.is_empty(), "default startup has an empty library");
+        assert!(
+            app.lib.tracks.is_empty(),
+            "default startup has an empty library"
+        );
 
         // Kick the real Home fetch through the worker + backend.
         app.ensure_home();
         assert!(app.home_requested);
-        assert!(app.home_is_loading(), "a Home request in flight reads as loading");
+        assert!(
+            app.home_is_loading(),
+            "a Home request in flight reads as loading"
+        );
 
         // Pump the worker until it reports Home unavailable (the offline backend
         // errors on `home()`), exercising stream.rs → drain end to end.
@@ -3803,8 +4394,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(settled, "the offline Home fetch reports unavailable");
-        assert!(!app.home_is_loading(), "Home stops loading — no endless skeleton / frame spin");
-        assert!(!app.needs_animation_frame(), "an unavailable, idle Home requests no more frames");
+        assert!(
+            !app.home_is_loading(),
+            "Home stops loading — no endless skeleton / frame spin"
+        );
+        assert!(
+            !app.needs_animation_frame(),
+            "an unavailable, idle Home requests no more frames"
+        );
     }
 
     #[test]
@@ -3856,7 +4453,11 @@ mod tests {
         for p in Widget::search_providers(&app) {
             registry.register(p);
         }
-        assert_eq!(registry.provider_count(), 1, "music contributes its library provider");
+        assert_eq!(
+            registry.provider_count(),
+            1,
+            "music contributes its library provider"
+        );
 
         // A real song row activated through the Widget method plays the track.
         let track = app.lib.tracks.values().next().unwrap().clone();
@@ -3883,20 +4484,53 @@ mod tests {
             .expect("the artist is findable via the registered provider");
         assert_eq!(arow.kind, "Artists");
         Widget::activate_search_result(&mut app, &arow.action_id, &mut doc, &automerge::ROOT);
-        assert_eq!(app.view, View::Artist(artist.id.clone()), "activation opens the artist page");
+        assert_eq!(
+            app.view,
+            View::Artist(artist.id.clone()),
+            "activation opens the artist page"
+        );
     }
 
     #[test]
     fn add_remove_reorder_playlist_tracks() {
         let (mut app, mut doc) = app_with_doc();
         // pl_morning seeds [tk_p1, tk_r1, tk_g2, tk_r3].
-        app.dispatch(Action::AddToPlaylist { playlist: "pl_morning".into(), track: "tk_h2".into() }, &mut doc);
+        app.dispatch(
+            Action::AddToPlaylist {
+                playlist: "pl_morning".into(),
+                track: "tk_h2".into(),
+            },
+            &mut doc,
+        );
         let pl = app.lib.playlist("pl_morning").unwrap().clone();
         assert_eq!(pl.track_ids.last().map(|s| s.as_str()), Some("tk_h2"));
-        app.dispatch(Action::RemoveFromPlaylist { playlist: "pl_morning".into(), track: "tk_g2".into() }, &mut doc);
-        assert!(!app.lib.playlist("pl_morning").unwrap().track_ids.iter().any(|t| t == "tk_g2"));
-        app.dispatch(Action::MovePlaylistItem { playlist: "pl_morning".into(), from: 0, to: 1 }, &mut doc);
-        assert_eq!(app.lib.playlist("pl_morning").unwrap().track_ids[1], "tk_p1");
+        app.dispatch(
+            Action::RemoveFromPlaylist {
+                playlist: "pl_morning".into(),
+                track: "tk_g2".into(),
+            },
+            &mut doc,
+        );
+        assert!(
+            !app.lib
+                .playlist("pl_morning")
+                .unwrap()
+                .track_ids
+                .iter()
+                .any(|t| t == "tk_g2")
+        );
+        app.dispatch(
+            Action::MovePlaylistItem {
+                playlist: "pl_morning".into(),
+                from: 0,
+                to: 1,
+            },
+            &mut doc,
+        );
+        assert_eq!(
+            app.lib.playlist("pl_morning").unwrap().track_ids[1],
+            "tk_p1"
+        );
     }
 
     #[test]
@@ -3914,7 +4548,13 @@ mod tests {
     #[test]
     fn play_drives_the_audio_pipeline_path() {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::Play { queue: vec!["tk_g1".into()], index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec!["tk_g1".into()],
+                index: 0,
+            },
+            &mut doc,
+        );
         // The transport started the stream: the engine recorded a load (the
         // stub records the resolved/intended URI; the live backend set the
         // playbin uri). Offline the source resolver returns an error so no URI
@@ -3923,7 +4563,10 @@ mod tests {
         assert!(app.pb.playing);
         // Volume changes hit the engine.
         app.dispatch(Action::VolumeFrac(0.5), &mut doc);
-        assert!((app.audio.volume() - 0.5).abs() < 1e-6, "volume reaches the audio engine");
+        assert!(
+            (app.audio.volume() - 0.5).abs() < 1e-6,
+            "volume reaches the audio engine"
+        );
     }
 
     // ---- 8. real live streaming (network; `--features live` only) ---------
@@ -3957,18 +4600,36 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(!ids.is_empty(), "live search returned real tracks into the app");
+        assert!(
+            !ids.is_empty(),
+            "live search returned real tracks into the app"
+        );
 
         // The top result is a real, injected, streamable library track.
         let first = ids[0].clone();
         app.inject_live_hits();
-        assert!(super::is_live_track(&first), "live track keyed `yt:<videoId>`");
-        assert!(app.lib.track(&first).is_some(), "live track merged into the library");
+        assert!(
+            super::is_live_track(&first),
+            "live track keyed `yt:<videoId>`"
+        );
+        assert!(
+            app.lib.track(&first).is_some(),
+            "live track merged into the library"
+        );
 
         // Play it → the app requests a stream resolution on the worker.
-        app.dispatch(Action::Play { queue: vec![first.clone()], index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec![first.clone()],
+                index: 0,
+            },
+            &mut doc,
+        );
         assert_eq!(app.pb.current.as_deref(), Some(first.as_str()));
-        assert!(app.resolve_in_flight >= 1, "play requested a stream resolve");
+        assert!(
+            app.resolve_in_flight >= 1,
+            "play requested a stream resolve"
+        );
 
         // Pump until the resolved URL is loaded into the audio engine.
         let mut loaded_url = None;
@@ -3993,7 +4654,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let url = loaded_url.expect("app resolved + loaded a rangeable audio URL");
-        assert!(is_streamable(&url), "resolved a rangeable, itag-bearing audio URL: {url}");
+        assert!(
+            is_streamable(&url),
+            "resolved a rangeable, itag-bearing audio URL: {url}"
+        );
 
         // …and, when this build can actually reach a sound sink, prove the real
         // stream *renders* — decoded PCM buffers reach a real audio sink and the
@@ -4016,13 +4680,19 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            assert!(frames > 0, "real resolved stream rendered PCM buffers to the sink");
+            assert!(
+                frames > 0,
+                "real resolved stream rendered PCM buffers to the sink"
+            );
             assert_eq!(
                 app.audio.audio_sink_is_real(),
                 Some(true),
                 "the rendered stream reached a real audio sink, not a fakesink"
             );
-            assert!(app.playhead_ms > 0.0, "the playhead advanced with real playback");
+            assert!(
+                app.playhead_ms > 0.0,
+                "the playhead advanced with real playback"
+            );
             eprintln!(
                 "[live audio] PLAYING: sink={:?} frames={frames} playhead={:.0}ms url={}",
                 app.audio.actual_audio_sink_name(),
@@ -4068,7 +4738,9 @@ mod tests {
                 "the real playhead kept advancing (from {p0:.0}ms) while frames kept flowing"
             );
         } else {
-            eprintln!("[live audio test] no audio server / decode plugins — skipped the render-proof");
+            eprintln!(
+                "[live audio test] no audio server / decode plugins — skipped the render-proof"
+            );
         }
     }
 
@@ -4090,8 +4762,16 @@ mod tests {
     #[cfg(all(feature = "live", feature = "audio"))]
     fn decode_plugins_present() -> bool {
         let _ = gstreamer::init();
-        let base = ["filesrc", "qtdemux", "audioconvert", "audioresample", "autoaudiosink"];
-        let have_base = base.iter().all(|n| gstreamer::ElementFactory::find(n).is_some());
+        let base = [
+            "filesrc",
+            "qtdemux",
+            "audioconvert",
+            "audioresample",
+            "autoaudiosink",
+        ];
+        let have_base = base
+            .iter()
+            .all(|n| gstreamer::ElementFactory::find(n).is_some());
         let have_aac = gstreamer::ElementFactory::find("avdec_aac").is_some()
             || gstreamer::ElementFactory::find("faad").is_some();
         have_base && have_aac
@@ -4141,7 +4821,8 @@ mod tests {
 
         let (mut app, mut doc) = app_with_doc();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.search_input.set_text("rick astley never gonna give you up");
+        app.search_input
+            .set_text("rick astley never gonna give you up");
         app.request_live_search();
         let mut ids = Vec::new();
         for _ in 0..1000 {
@@ -4157,7 +4838,13 @@ mod tests {
         assert!(!ids.is_empty(), "live search returned real tracks");
         let first = ids[0].clone();
         app.inject_live_hits();
-        app.dispatch(Action::Play { queue: vec![first], index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec![first],
+                index: 0,
+            },
+            &mut doc,
+        );
 
         // Wait until the resolved stream renders AND the *whole* file has staged
         // (a fully-rangeable yt-dlp URL fetches the entire song in a few seconds).
@@ -4240,7 +4927,10 @@ mod tests {
         app.pb.current = Some("tk_g1".into());
         app.lyrics_for = None;
         app.ensure_lyrics();
-        assert!(!app.lyrics.is_empty(), "bundled lyrics load for the current track");
+        assert!(
+            !app.lyrics.is_empty(),
+            "bundled lyrics load for the current track"
+        );
         assert!(app.lyrics_synced, "tk_g1 has synced lyrics");
     }
 
@@ -4265,17 +4955,22 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
         draw_once(&mut app, &mut doc);
-        assert!(!app.row_menu_hits.is_empty(), "the songs table registers per-row right-click targets");
+        assert!(
+            !app.row_menu_hits.is_empty(),
+            "the songs table registers per-row right-click targets"
+        );
     }
 
     // ---- 10. shuffle actually reorders playback ----------------------------
 
     /// Build a longer play queue of real seeded tracks (index 0 = current).
     fn shuffle_queue() -> Vec<String> {
-        ["tk_g1", "tk_g2", "tk_g3", "tk_g4", "tk_g5", "tk_p1", "tk_p2", "tk_p3"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        [
+            "tk_g1", "tk_g2", "tk_g3", "tk_g4", "tk_g5", "tk_p1", "tk_p2", "tk_p3",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     }
 
     #[test]
@@ -4283,15 +4978,31 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.shuffle_rng = 0xD1CE_5EED_1234_5678; // deterministic order for the assert
         let q = shuffle_queue();
-        app.dispatch(Action::Play { queue: q.clone(), index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: q.clone(),
+                index: 0,
+            },
+            &mut doc,
+        );
         app.dispatch(Action::ToggleShuffle, &mut doc);
         assert!(app.pb.shuffle);
-        assert!(doc::load_playback(&doc).shuffle, "shuffle flag persists to the doc");
+        assert!(
+            doc::load_playback(&doc).shuffle,
+            "shuffle flag persists to the doc"
+        );
         assert_eq!(app.shuffle_order.len(), q.len());
         let mut sorted = app.shuffle_order.clone();
         sorted.sort();
-        assert_eq!(sorted, (0..q.len()).collect::<Vec<usize>>(), "shuffle order is a permutation of the queue");
-        assert_eq!(app.shuffle_order[0], 0, "the currently-playing track stays first");
+        assert_eq!(
+            sorted,
+            (0..q.len()).collect::<Vec<usize>>(),
+            "shuffle order is a permutation of the queue"
+        );
+        assert_eq!(
+            app.shuffle_order[0], 0,
+            "the currently-playing track stays first"
+        );
         assert_ne!(
             app.shuffle_order,
             (0..q.len()).collect::<Vec<usize>>(),
@@ -4303,8 +5014,17 @@ mod tests {
     fn shuffled_advance_visits_every_track_then_stops() {
         let (mut app, mut doc) = app_with_doc();
         app.shuffle_rng = 0xABCD_1234_9876_5432;
-        let q: Vec<String> = ["a", "b", "c", "d", "e", "f"].iter().map(|s| s.to_string()).collect();
-        app.dispatch(Action::Play { queue: q.clone(), index: 0 }, &mut doc);
+        let q: Vec<String> = ["a", "b", "c", "d", "e", "f"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        app.dispatch(
+            Action::Play {
+                queue: q.clone(),
+                index: 0,
+            },
+            &mut doc,
+        );
         app.dispatch(Action::ToggleShuffle, &mut doc);
         app.pb.repeat = RepeatMode::Off;
         let order = app.shuffle_order.clone();
@@ -4318,10 +5038,17 @@ mod tests {
         assert_eq!(visited, order, "Next follows the shuffled permutation");
         let mut vs = visited.clone();
         vs.sort();
-        assert_eq!(vs, (0..q.len()).collect::<Vec<usize>>(), "every queued track is visited exactly once");
+        assert_eq!(
+            vs,
+            (0..q.len()).collect::<Vec<usize>>(),
+            "every queued track is visited exactly once"
+        );
         let last = app.pb.current.clone();
         app.dispatch(Action::Next, &mut doc);
-        assert!(!app.pb.playing, "advancing past the final shuffled track stops (repeat off)");
+        assert!(
+            !app.pb.playing,
+            "advancing past the final shuffled track stops (repeat off)"
+        );
         assert_eq!(app.pb.current, last, "playback stays on the final track");
     }
 
@@ -4330,13 +5057,22 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.shuffle_rng = 0x0F0F_1234_5678_9ABC;
         let q: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
-        app.dispatch(Action::Play { queue: q.clone(), index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: q.clone(),
+                index: 0,
+            },
+            &mut doc,
+        );
         app.dispatch(Action::ToggleShuffle, &mut doc);
         app.pb.repeat = RepeatMode::All;
         for _ in 0..q.len() {
             app.dispatch(Action::Next, &mut doc);
         }
-        assert!(app.pb.playing, "a repeating shuffled queue laps instead of stopping");
+        assert!(
+            app.pb.playing,
+            "a repeating shuffled queue laps instead of stopping"
+        );
     }
 
     #[test]
@@ -4344,14 +5080,26 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.shuffle_rng = 0x5;
         let q: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
-        app.dispatch(Action::Play { queue: q.clone(), index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: q.clone(),
+                index: 0,
+            },
+            &mut doc,
+        );
         app.dispatch(Action::ToggleShuffle, &mut doc); // on
         assert!(!app.shuffle_order.is_empty());
         app.dispatch(Action::ToggleShuffle, &mut doc); // off
         assert!(!app.pb.shuffle);
-        assert!(app.shuffle_order.is_empty(), "disabling shuffle drops the shuffled order");
+        assert!(
+            app.shuffle_order.is_empty(),
+            "disabling shuffle drops the shuffled order"
+        );
         app.dispatch(Action::Next, &mut doc);
-        assert_eq!(app.pb.queue_index, 1, "linear advance resumes after disabling shuffle");
+        assert_eq!(
+            app.pb.queue_index, 1,
+            "linear advance resumes after disabling shuffle"
+        );
         assert_eq!(app.pb.current.as_deref(), Some("b"));
     }
 
@@ -4360,7 +5108,13 @@ mod tests {
     #[test]
     fn s_key_toggles_shuffle_via_event_path() {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::Play { queue: vec!["a".into(), "b".into(), "c".into()], index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec!["a".into(), "b".into(), "c".into()],
+                index: 0,
+            },
+            &mut doc,
+        );
         assert!(!app.pb.shuffle);
         assert!(send(&mut app, &char_key("s"), &mut doc), "'s' is consumed");
         assert!(app.pb.shuffle, "'s' enables shuffle");
@@ -4372,7 +5126,13 @@ mod tests {
     #[test]
     fn space_key_toggles_play_via_event_path() {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::Play { queue: vec!["a".into()], index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec!["a".into()],
+                index: 0,
+            },
+            &mut doc,
+        );
         assert!(app.pb.playing);
         send(&mut app, &named_key(NamedKey::Space), &mut doc);
         assert!(!app.pb.playing, "space pauses");
@@ -4383,7 +5143,13 @@ mod tests {
     #[test]
     fn n_and_p_keys_change_track() {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::Play { queue: vec!["a".into(), "b".into(), "c".into()], index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec!["a".into(), "b".into(), "c".into()],
+                index: 0,
+            },
+            &mut doc,
+        );
         send(&mut app, &char_key("n"), &mut doc);
         assert_eq!(app.pb.queue_index, 1, "'n' plays the next track");
         send(&mut app, &char_key("p"), &mut doc);
@@ -4393,16 +5159,41 @@ mod tests {
     #[test]
     fn arrow_keys_seek_and_shift_skips() {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::Play { queue: vec!["tk_g1".into(), "tk_g2".into()], index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: vec!["tk_g1".into(), "tk_g2".into()],
+                index: 0,
+            },
+            &mut doc,
+        );
         app.playhead_ms = 10_000.0; // tk_g1 is 215s long
         send(&mut app, &named_key(NamedKey::ArrowRight), &mut doc);
-        assert!((app.playhead_ms - 15_000.0).abs() < 1.0, "right arrow seeks +5s");
+        assert!(
+            (app.playhead_ms - 15_000.0).abs() < 1.0,
+            "right arrow seeks +5s"
+        );
         send(&mut app, &named_key(NamedKey::ArrowLeft), &mut doc);
-        assert!((app.playhead_ms - 10_000.0).abs() < 1.0, "left arrow seeks -5s");
-        send_with(&mut app, &named_key(NamedKey::ArrowRight), &shift_mods(), &mut doc);
+        assert!(
+            (app.playhead_ms - 10_000.0).abs() < 1.0,
+            "left arrow seeks -5s"
+        );
+        send_with(
+            &mut app,
+            &named_key(NamedKey::ArrowRight),
+            &shift_mods(),
+            &mut doc,
+        );
         assert_eq!(app.pb.queue_index, 1, "shift+right skips to the next track");
-        send_with(&mut app, &named_key(NamedKey::ArrowLeft), &shift_mods(), &mut doc);
-        assert_eq!(app.pb.queue_index, 0, "shift+left skips to the previous track");
+        send_with(
+            &mut app,
+            &named_key(NamedKey::ArrowLeft),
+            &shift_mods(),
+            &mut doc,
+        );
+        assert_eq!(
+            app.pb.queue_index, 0,
+            "shift+left skips to the previous track"
+        );
     }
 
     #[test]
@@ -4426,16 +5217,35 @@ mod tests {
         draw_once(&mut app, &mut doc); // registers the scrubber rect at real geometry
         let sr = app.scrubber_rect;
         assert!(sr.width() > 10.0, "the full transport drew a scrubber bar");
-        send(&mut app, &cursor_at(Point::new(sr.x0 + 4.0, sr.center().y)), &mut doc);
+        send(
+            &mut app,
+            &cursor_at(Point::new(sr.x0 + 4.0, sr.center().y)),
+            &mut doc,
+        );
         send(&mut app, &press(MouseButton::Left), &mut doc);
-        assert_eq!(app.drag, Some(Drag::Scrubber), "pressing the bar begins a scrub drag");
+        assert_eq!(
+            app.drag,
+            Some(Drag::Scrubber),
+            "pressing the bar begins a scrub drag"
+        );
         let near_start = app.playhead_ms;
-        send(&mut app, &cursor_at(Point::new(sr.x1 - 4.0, sr.center().y)), &mut doc);
+        send(
+            &mut app,
+            &cursor_at(Point::new(sr.x1 - 4.0, sr.center().y)),
+            &mut doc,
+        );
         let near_end = app.playhead_ms;
         send(&mut app, &released(MouseButton::Left), &mut doc);
         assert!(app.drag.is_none(), "releasing ends the drag");
-        assert!(near_end > near_start + 100_000.0, "dragging right seeks forward ({near_start} -> {near_end})");
-        assert_eq!(doc::load_playback(&doc).position_ms, app.playhead_ms as u64, "the sought position persists");
+        assert!(
+            near_end > near_start + 100_000.0,
+            "dragging right seeks forward ({near_start} -> {near_end})"
+        );
+        assert_eq!(
+            doc::load_playback(&doc).position_ms,
+            app.playhead_ms as u64,
+            "the sought position persists"
+        );
     }
 
     #[test]
@@ -4445,14 +5255,25 @@ mod tests {
         draw_once(&mut app, &mut doc);
         let vr = app.volume_rect;
         assert!(vr.width() > 10.0, "the full transport drew a volume bar");
-        send(&mut app, &cursor_at(Point::new(vr.x0 + 2.0, vr.center().y)), &mut doc);
+        send(
+            &mut app,
+            &cursor_at(Point::new(vr.x0 + 2.0, vr.center().y)),
+            &mut doc,
+        );
         send(&mut app, &press(MouseButton::Left), &mut doc);
         assert_eq!(app.drag, Some(Drag::Volume));
         let low = app.pb.volume;
-        send(&mut app, &cursor_at(Point::new(vr.x1 - 2.0, vr.center().y)), &mut doc);
+        send(
+            &mut app,
+            &cursor_at(Point::new(vr.x1 - 2.0, vr.center().y)),
+            &mut doc,
+        );
         let high = app.pb.volume;
         send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert!(high > low, "dragging the volume bar right raises volume ({low} -> {high})");
+        assert!(
+            high > low,
+            "dragging the volume bar right raises volume ({low} -> {high})"
+        );
         assert!(high >= 95, "the far right is near max volume");
         assert!(
             (app.audio.volume() - app.pb.volume as f32 / 100.0).abs() < 1e-6,
@@ -4468,7 +5289,10 @@ mod tests {
         app.view = View::Songs;
         draw_once(&mut app, &mut doc);
         let max = (app.content_height - app.body_rect.height()).max(0.0);
-        assert!(max > 0.0, "the songs list overflows, so there is room to scroll");
+        assert!(
+            max > 0.0,
+            "the songs list overflows, so there is room to scroll"
+        );
         send(&mut app, &wheel(-3.0), &mut doc);
         assert!(app.scroll > 0.0, "wheel down scrolls the content");
         assert!(app.scroll <= max);
@@ -4487,8 +5311,15 @@ mod tests {
         app.audio.set_volume(0.76);
         app.dispatch(Action::ToggleMute, &mut doc);
         assert_eq!(app.pb.volume, 0, "mute drops the volume to zero");
-        assert!(app.audio.volume().abs() < 1e-6, "the audio engine is silenced");
-        assert_eq!(doc::load_playback(&doc).volume, 0, "mute persists to the doc");
+        assert!(
+            app.audio.volume().abs() < 1e-6,
+            "the audio engine is silenced"
+        );
+        assert_eq!(
+            doc::load_playback(&doc).volume,
+            0,
+            "mute persists to the doc"
+        );
         app.dispatch(Action::ToggleMute, &mut doc);
         assert_eq!(app.pb.volume, 76, "unmute restores the pre-mute level");
         assert!((app.audio.volume() - 0.76).abs() < 1e-6);
@@ -4499,7 +5330,8 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         draw_once(&mut app, &mut doc);
         assert!(app.pb.volume > 0);
-        let c = hit_center(&app, &Action::ToggleMute).expect("the speaker icon is a wired mute toggle");
+        let c =
+            hit_center(&app, &Action::ToggleMute).expect("the speaker icon is a wired mute toggle");
         send(&mut app, &cursor_at(c), &mut doc);
         send(&mut app, &press(MouseButton::Left), &mut doc);
         assert_eq!(app.pb.volume, 0, "clicking the speaker mutes");
@@ -4516,12 +5348,23 @@ mod tests {
         for ch in ["g", "l", "a", "s", "s"] {
             send(&mut app, &char_key(ch), &mut doc);
         }
-        assert_eq!(app.search_input.value(), "glass", "typing builds the query through the event path");
+        assert_eq!(
+            app.search_input.value(),
+            "glass",
+            "typing builds the query through the event path"
+        );
         // The Search view renders local hits from this exact cache.
         let res = app.local_search_cached("glass");
-        assert!(res.tracks.contains(&"tk_g1".to_string()), "local search surfaces the matching track (Glasslight)");
+        assert!(
+            res.tracks.contains(&"tk_g1".to_string()),
+            "local search surfaces the matching track (Glasslight)"
+        );
         send(&mut app, &named_key(NamedKey::Backspace), &mut doc);
-        assert_eq!(app.search_input.value(), "glas", "backspace edits the query");
+        assert_eq!(
+            app.search_input.value(),
+            "glas",
+            "backspace edits the query"
+        );
     }
 
     /// The header search field is a real `ui::TextInput`, so Ctrl+A selects the
@@ -4565,7 +5408,10 @@ mod tests {
 
         send(&mut app, &cursor_at(Point::new(x_for(2), y)), &mut doc); // hover → is_hovered
         send(&mut app, &press(MouseButton::Left), &mut doc); // focus + start drag
-        assert!(app.search_input.is_dragging(), "the press began a selection drag");
+        assert!(
+            app.search_input.is_dragging(),
+            "the press began a selection drag"
+        );
         send(&mut app, &cursor_at(Point::new(x_for(9), y)), &mut doc); // extend
         let sel = app
             .search_input
@@ -4589,7 +5435,11 @@ mod tests {
         assert_eq!(app.scroll, 0.0, "the queue view starts at the top");
 
         app.dispatch(Action::ToggleQueue, &mut doc);
-        assert_eq!(app.view, View::Albums, "toggling off returns to the prior view");
+        assert_eq!(
+            app.view,
+            View::Albums,
+            "toggling off returns to the prior view"
+        );
         assert_eq!(app.scroll, 137.0, "and restores the prior scroll position");
     }
 
@@ -4601,23 +5451,38 @@ mod tests {
         // Keep the in-memory queue authoritative across the draw's `sync` (which
         // would otherwise re-adopt the seeded playback snapshot).
         app.playback_loaded = true;
-        app.pb.queue = vec!["tk_g1".into(), "tk_a1".into(), "tk_h1".into(), "tk_p1".into()];
+        app.pb.queue = vec![
+            "tk_g1".into(),
+            "tk_a1".into(),
+            "tk_h1".into(),
+            "tk_p1".into(),
+        ];
         app.pb.current = Some("tk_g1".into());
         app.pb.queue_index = 0;
         draw_once(&mut app, &mut doc); // registers the queue button rect
-        assert!(app.queue_btn_rect.width() > 0.0, "the wide transport drew a queue button");
+        assert!(
+            app.queue_btn_rect.width() > 0.0,
+            "the wide transport drew a queue button"
+        );
 
         // The preview lists the upcoming (not-current) tracks.
         assert_eq!(
             app.queue_preview_tracks(),
-            vec!["tk_a1".to_string(), "tk_h1".to_string(), "tk_p1".to_string()],
+            vec![
+                "tk_a1".to_string(),
+                "tk_h1".to_string(),
+                "tk_p1".to_string()
+            ],
         );
 
         // Not hovering yet → closed; hovering the button → open.
         app.mouse = Point::new(-10.0, -10.0);
         assert!(!app.queue_preview_active(), "no preview when not hovering");
         app.mouse = app.queue_btn_rect.center();
-        assert!(app.queue_preview_active(), "hovering the queue button opens the preview");
+        assert!(
+            app.queue_preview_active(),
+            "hovering the queue button opens the preview"
+        );
     }
 
     #[test]
@@ -4638,15 +5503,24 @@ mod tests {
             "keystrokes land in the dialog's embedded TextInput",
         );
         send(&mut app, &named_key(NamedKey::Enter), &mut doc);
-        assert!(app.name_prompt.is_none(), "Enter commits and closes the prompt");
-        assert!(app.name_dialog.is_none(), "the dialog is torn down after commit");
+        assert!(
+            app.name_prompt.is_none(),
+            "Enter commits and closes the prompt"
+        );
+        assert!(
+            app.name_dialog.is_none(),
+            "the dialog is torn down after commit"
+        );
         let pl = app
             .lib
             .playlists
             .iter()
             .find(|p| p.name == "Jazz")
             .expect("Enter on the name prompt created the playlist");
-        assert!(matches!(&app.view, View::Playlist(id) if id == &pl.id), "opens the freshly-created playlist");
+        assert!(
+            matches!(&app.view, View::Playlist(id) if id == &pl.id),
+            "opens the freshly-created playlist"
+        );
     }
 
     // ---- 16. "Add to playlist… → New playlist…" keeps the target track -----
@@ -4656,11 +5530,19 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.open_add_to_playlist_menu("tk_s2".into());
-        let idx = menu_index(&app, "New playlist\u{2026}").expect("picker offers a New playlist row") as i64;
+        let idx = menu_index(&app, "New playlist\u{2026}")
+            .expect("picker offers a New playlist row") as i64;
         app.pending.store(idx, Ordering::SeqCst);
         app.drain_menu_selection(&mut doc);
-        assert!(matches!(app.name_prompt, Some(NamePrompt::NewPlaylist)), "opens the name prompt");
-        assert_eq!(app.new_playlist_track.as_deref(), Some("tk_s2"), "remembers the track being added");
+        assert!(
+            matches!(app.name_prompt, Some(NamePrompt::NewPlaylist)),
+            "opens the name prompt"
+        );
+        assert_eq!(
+            app.new_playlist_track.as_deref(),
+            Some("tk_s2"),
+            "remembers the track being added"
+        );
         app.name_input = "Late Night".into();
         app.dispatch(Action::CreatePlaylist, &mut doc);
         let pl = app
@@ -4669,11 +5551,21 @@ mod tests {
             .iter()
             .find(|p| p.name == "Late Night")
             .expect("the playlist was created");
-        assert!(pl.track_ids.contains(&"tk_s2".to_string()), "the target track was added to the new playlist");
+        assert!(
+            pl.track_ids.contains(&"tk_s2".to_string()),
+            "the target track was added to the new playlist"
+        );
         // And it round-trips through the document, not just the snapshot.
         let saved = doc::load_library(&doc);
-        let spl = saved.playlists.iter().find(|p| p.name == "Late Night").unwrap();
-        assert!(spl.track_ids.contains(&"tk_s2".to_string()), "the add persists to the doc");
+        let spl = saved
+            .playlists
+            .iter()
+            .find(|p| p.name == "Late Night")
+            .unwrap();
+        assert!(
+            spl.track_ids.contains(&"tk_s2".to_string()),
+            "the add persists to the doc"
+        );
     }
 
     #[test]
@@ -4682,8 +5574,16 @@ mod tests {
         app.dispatch(Action::BeginNewPlaylist, &mut doc);
         app.name_input = "Blank".into();
         app.dispatch(Action::CreatePlaylist, &mut doc);
-        let pl = app.lib.playlists.iter().find(|p| p.name == "Blank").unwrap();
-        assert!(pl.track_ids.is_empty(), "a plain create (no target track) makes an empty playlist");
+        let pl = app
+            .lib
+            .playlists
+            .iter()
+            .find(|p| p.name == "Blank")
+            .unwrap();
+        assert!(
+            pl.track_ids.is_empty(),
+            "a plain create (no target track) makes an empty playlist"
+        );
     }
 
     // ---- 17. downloads are honest (no fabricated data) ---------------------
@@ -4693,15 +5593,23 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(Action::ToggleDownload("tk_g2".into()), &mut doc);
         let (msg, _) = app.toast.clone().expect("toggling download shows a toast");
-        assert!(msg.contains("offline"), "the toast describes the real keep-offline action: {msg}");
-        assert!(!msg.contains("Downloaded"), "no fabricated completed-download claim: {msg}");
+        assert!(
+            msg.contains("offline"),
+            "the toast describes the real keep-offline action: {msg}"
+        );
+        assert!(
+            !msg.contains("Downloaded"),
+            "no fabricated completed-download claim: {msg}"
+        );
     }
 
     #[test]
     fn seed_has_no_fabricated_in_progress_download() {
         let lib = seed::sample_library();
         assert!(
-            lib.cache.values().all(|s| !matches!(s, CacheState::Downloading(_))),
+            lib.cache
+                .values()
+                .all(|s| !matches!(s, CacheState::Downloading(_))),
             "the seed no longer parks a track at a perpetual fake download progress",
         );
     }
@@ -4760,10 +5668,16 @@ mod tests {
         let (mut app, _doc) = app_with_doc();
         // An album-track hit often omits per-track art; only the album cover is
         // known — the now-playing bar must use it, not a procedural placeholder.
-        app.art_urls.insert("al_x".into(), "http://cover/al_x.jpg".into());
-        assert_eq!(app.best_cover_id("tk_x", "al_x"), "al_x", "falls back to album art");
+        app.art_urls
+            .insert("al_x".into(), "http://cover/al_x.jpg".into());
+        assert_eq!(
+            app.best_cover_id("tk_x", "al_x"),
+            "al_x",
+            "falls back to album art"
+        );
         // Track art wins when present.
-        app.art_urls.insert("tk_x".into(), "http://cover/tk_x.jpg".into());
+        app.art_urls
+            .insert("tk_x".into(), "http://cover/tk_x.jpg".into());
         assert_eq!(app.best_cover_id("tk_x", "al_x"), "tk_x");
         // With neither, the (procedural) track id is used.
         assert_eq!(app.best_cover_id("tk_none", "al_none"), "tk_none");
@@ -4781,13 +5695,22 @@ mod tests {
         app.view = View::Lyrics;
         app.playhead_ms = 40_000.0;
         draw_at(&mut app, &mut doc, 1000.0, 800.0);
-        assert!(!app.lyrics.is_empty(), "synced lyrics loaded for the current track");
+        assert!(
+            !app.lyrics.is_empty(),
+            "synced lyrics loaded for the current track"
+        );
         assert!(app.lyrics_synced, "tk_g1 lyrics are time-synced");
         // The highlighted line (last timestamp <= playhead) advances with time.
-        let l = crate::lyrics::Lyrics { lines: app.lyrics.clone(), synced: true };
+        let l = crate::lyrics::Lyrics {
+            lines: app.lyrics.clone(),
+            synced: true,
+        };
         let early = l.current_line(10_000).expect("a line at 10s");
         let late = l.current_line(50_000).expect("a line at 50s");
-        assert!(late > early, "the highlighted current line moves forward in time");
+        assert!(
+            late > early,
+            "the highlighted current line moves forward in time"
+        );
     }
 
     // ---- 21. favourites sync via the CRDT document ------------------------
@@ -4862,7 +5785,10 @@ mod tests {
         let before = doc::load_library(&doc).is_album_saved("al_glasslight");
         app.dispatch(Action::ToggleSaveAlbum("al_glasslight".into()), &mut doc);
         let after = doc::load_library(&doc).is_album_saved("al_glasslight");
-        assert_ne!(before, after, "toggling flips the saved-album state in the synced doc");
+        assert_ne!(
+            before, after,
+            "toggling flips the saved-album state in the synced doc"
+        );
         let mut peer = AutoCommit::new();
         crate::sync::converge(&mut doc, &mut peer);
         assert_eq!(
@@ -4883,12 +5809,26 @@ mod tests {
         app.pb.queue = vec!["tk_g1".into()];
         // Wide bar (docked sidebar, ~1044px content): inline slider.
         draw_at(&mut app, &mut doc, 1280.0, 800.0);
-        assert!(app.volume_rect.width() > 0.0, "wide bar shows an inline volume slider");
-        assert_eq!(app.volume_btn_rect, Rect::ZERO, "wide bar has no collapsed button");
+        assert!(
+            app.volume_rect.width() > 0.0,
+            "wide bar shows an inline volume slider"
+        );
+        assert_eq!(
+            app.volume_btn_rect,
+            Rect::ZERO,
+            "wide bar has no collapsed button"
+        );
         // Mid bar (~764px content): slider collapses to a button.
         draw_at(&mut app, &mut doc, 1000.0, 800.0);
-        assert_eq!(app.volume_rect, Rect::ZERO, "mid bar drops the inline slider");
-        assert!(app.volume_btn_rect.width() > 0.0, "mid bar shows a volume button");
+        assert_eq!(
+            app.volume_rect,
+            Rect::ZERO,
+            "mid bar drops the inline slider"
+        );
+        assert!(
+            app.volume_btn_rect.width() > 0.0,
+            "mid bar shows a volume button"
+        );
         // Very small (compact bar): volume hidden entirely.
         draw_at(&mut app, &mut doc, 520.0, 800.0);
         assert_eq!(app.volume_rect, Rect::ZERO);
@@ -4906,8 +5846,14 @@ mod tests {
         assert!(app.volume_btn_rect.width() > 0.0);
         app.dispatch(Action::ToggleVolumePopover, &mut doc);
         draw_at(&mut app, &mut doc, 1000.0, 800.0);
-        assert!(app.volume_popover_open, "the volume button opens the popover");
-        assert!(app.volume_popover_slider.width() > 0.0, "the popover hosts a volume slider");
+        assert!(
+            app.volume_popover_open,
+            "the volume button opens the popover"
+        );
+        assert!(
+            app.volume_popover_slider.width() > 0.0,
+            "the popover hosts a volume slider"
+        );
         assert_eq!(
             app.volume_rect, app.volume_popover_slider,
             "the popover slider is the active volume drag target"
@@ -4926,7 +5872,10 @@ mod tests {
             app.scrubber_rect.y1 >= app.rect.y1 - 1.0,
             "the progress bar sits below the whole status bar (its bottom edge)"
         );
-        assert!(app.scrubber_rect.width() > 300.0, "the progress spans the bar width");
+        assert!(
+            app.scrubber_rect.width() > 300.0,
+            "the progress spans the bar width"
+        );
     }
 
     #[test]
@@ -4947,7 +5896,10 @@ mod tests {
         );
         assert!(sr.width() > 300.0, "the scrub bar spans the bar width");
         // The hit strip still reaches the window's bottom edge (edge press seeks)…
-        assert!(sr.y1 >= app.rect.y1 - 1.0, "the scrub hit strip reaches the bottom edge");
+        assert!(
+            sr.y1 >= app.rect.y1 - 1.0,
+            "the scrub hit strip reaches the bottom edge"
+        );
         // …but its top clears the transport row, so a play/pause press never seeks.
         assert!(
             sr.y0 > app.rect.y1 - NOWPLAYING_H / 2.0,
@@ -5002,13 +5954,22 @@ mod tests {
         let art = layout.art.expect("wide layout shows cover art on the left");
         let body_mid = (body.x0 + body.x1) / 2.0;
         assert!(art.center().x < body_mid, "cover art sits in the left half");
-        assert!(art.width() >= 180.0, "the cover art is a substantial square");
+        assert!(
+            art.width() >= 180.0,
+            "the cover art is a substantial square"
+        );
         assert!(
             layout.lyrics.center().x > body_mid,
             "the lyrics column shifts right to balance the art"
         );
-        assert!(layout.lyrics.x1 <= body.x1, "the lyrics column stays within the body");
-        assert!(art.x1 < layout.lyrics.x0, "art and lyrics columns don't overlap");
+        assert!(
+            layout.lyrics.x1 <= body.x1,
+            "the lyrics column stays within the body"
+        );
+        assert!(
+            art.x1 < layout.lyrics.x0,
+            "art and lyrics columns don't overlap"
+        );
 
         // Narrow: a single full-width centred column, no side art.
         let narrow = Rect::new(0.0, 72.0, 700.0, 708.0);
@@ -5024,7 +5985,10 @@ mod tests {
     fn swiping_the_bar_left_plays_next() {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
-            Action::Play { queue: vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()], index: 0 },
+            Action::Play {
+                queue: vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()],
+                index: 0,
+            },
             &mut doc,
         );
         app.set_offline_for_shot();
@@ -5037,7 +6001,10 @@ mod tests {
         send(&mut app, &press(MouseButton::Left), &mut doc);
         send(&mut app, &cursor_at(endp), &mut doc);
         send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert_eq!(app.pb.queue_index, 1, "a leftward swipe skips to the next track");
+        assert_eq!(
+            app.pb.queue_index, 1,
+            "a leftward swipe skips to the next track"
+        );
         assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
     }
 
@@ -5052,7 +6019,10 @@ mod tests {
         app.pb.current = Some("tk_g1".into());
         // Metered → suppressed.
         app.force_metered = Some(true);
-        assert!(!app.maybe_prefetch(), "prefetch is suppressed on a metered link");
+        assert!(
+            !app.maybe_prefetch(),
+            "prefetch is suppressed on a metered link"
+        );
         assert!(app.prefetched_for.is_none());
         assert!(!app.lyrics_cache.contains_key("tk_a1"));
         // Stable → runs, warming the next queued track's lyrics into the cache.
@@ -5064,7 +6034,10 @@ mod tests {
             "the next queued track's lyrics are prefetched into the shared cache"
         );
         // Idempotent within the same current track.
-        assert!(!app.maybe_prefetch(), "prefetch fires once per track change");
+        assert!(
+            !app.maybe_prefetch(),
+            "prefetch fires once per track change"
+        );
     }
 
     // ---- 24. multi-type search, filter tabs, artist + album pages ---------
@@ -5094,7 +6067,10 @@ mod tests {
                 subscriber_count: 5_000_000,
                 avatar_url: String::new(),
             })),
-            tracks: vec![th("vid_one", "One More Time"), th("vid_two", "Digital Love")],
+            tracks: vec![
+                th("vid_one", "One More Time"),
+                th("vid_two", "Digital Love"),
+            ],
             albums: vec![AlbumHit {
                 id: "MPREdiscovery".into(),
                 title: "Discovery".into(),
@@ -5133,7 +6109,9 @@ mod tests {
     }
 
     fn has_play_of(app: &MusicApp, id: &str) -> bool {
-        app.hits.iter().any(|h| matches!(&h.action, Action::Play { queue, .. } if queue.iter().any(|q| q == id)))
+        app.hits.iter().any(
+            |h| matches!(&h.action, Action::Play { queue, .. } if queue.iter().any(|q| q == id)),
+        )
     }
     fn has_nav(app: &MusicApp, view: View) -> bool {
         let want = Action::Nav(view);
@@ -5144,18 +6122,33 @@ mod tests {
     fn search_returns_songs_albums_artists_and_playlists() {
         let (mut app, mut doc) = search_showing_bundle();
         // One search populates every result type.
-        let (_, b) = app.live_bundle.as_ref().expect("bundle stored for the query");
+        let (_, b) = app
+            .live_bundle
+            .as_ref()
+            .expect("bundle stored for the query");
         assert!(
-            !b.tracks.is_empty() && !b.albums.is_empty() && !b.artists.is_empty() && !b.playlists.is_empty(),
+            !b.tracks.is_empty()
+                && !b.albums.is_empty()
+                && !b.artists.is_empty()
+                && !b.playlists.is_empty(),
             "a single search returns songs, albums, artists AND playlists",
         );
         // On the All tab the real render surfaces each type as a click target.
         app.search_tab = SearchTab::All;
         draw_once(&mut app, &mut doc);
         assert!(has_play_of(&app, "yt:vid_one"), "a song is a playable row");
-        assert!(has_nav(&app, View::Album("MPREdiscovery".into())), "an album is navigable");
-        assert!(has_nav(&app, View::Artist("UCdaftpunk".into())), "an artist is navigable");
-        assert!(has_nav(&app, View::Playlist("PLdaftmix".into())), "a playlist is navigable");
+        assert!(
+            has_nav(&app, View::Album("MPREdiscovery".into())),
+            "an album is navigable"
+        );
+        assert!(
+            has_nav(&app, View::Artist("UCdaftpunk".into())),
+            "an artist is navigable"
+        );
+        assert!(
+            has_nav(&app, View::Playlist("PLdaftmix".into())),
+            "a playlist is navigable"
+        );
     }
 
     #[test]
@@ -5166,7 +6159,9 @@ mod tests {
         // All five Spotify-style filter tabs are real, registered click targets.
         for tab in SearchTab::ALL {
             assert!(
-                app.hits.iter().any(|h| h.action == Action::SelectSearchTab(tab)),
+                app.hits
+                    .iter()
+                    .any(|h| h.action == Action::SelectSearchTab(tab)),
                 "the {:?} filter tab is a clickable target",
                 tab,
             );
@@ -5174,10 +6169,20 @@ mod tests {
         // Clicking Albums switches instantly (synchronously): the view now shows
         // albums and drops the song rows — no async wait on the network.
         app.dispatch(Action::SelectSearchTab(SearchTab::Albums), &mut doc);
-        assert_eq!(app.search_tab, SearchTab::Albums, "the tab switches immediately");
+        assert_eq!(
+            app.search_tab,
+            SearchTab::Albums,
+            "the tab switches immediately"
+        );
         draw_once(&mut app, &mut doc);
-        assert!(has_nav(&app, View::Album("MPREdiscovery".into())), "Albums tab shows the albums");
-        assert!(!has_play_of(&app, "yt:vid_one"), "Albums tab does not render the song list");
+        assert!(
+            has_nav(&app, View::Album("MPREdiscovery".into())),
+            "Albums tab shows the albums"
+        );
+        assert!(
+            !has_play_of(&app, "yt:vid_one"),
+            "Albums tab does not render the song list"
+        );
         // Songs tab is a clean, flat track list (the album-less listening flow).
         app.dispatch(Action::SelectSearchTab(SearchTab::Songs), &mut doc);
         assert_eq!(app.search_tab, SearchTab::Songs);
@@ -5209,10 +6214,27 @@ mod tests {
             header_url: String::new(),
             tracks: vec![th("top_track", "Harder Better Faster Stronger")],
             albums: vec![
-                ArtistAlbum { id: "MPREdiscovery".into(), title: "Discovery".into(), year: 2001, kind: AlbumKind::Album, cover_url: String::new() },
-                ArtistAlbum { id: "MPREsingle".into(), title: "Da Funk".into(), year: 1995, kind: AlbumKind::Single, cover_url: String::new() },
+                ArtistAlbum {
+                    id: "MPREdiscovery".into(),
+                    title: "Discovery".into(),
+                    year: 2001,
+                    kind: AlbumKind::Album,
+                    cover_url: String::new(),
+                },
+                ArtistAlbum {
+                    id: "MPREsingle".into(),
+                    title: "Da Funk".into(),
+                    year: 1995,
+                    kind: AlbumKind::Single,
+                    cover_url: String::new(),
+                },
             ],
-            similar: vec![ArtistHit { id: "UCjustice".into(), name: "Justice".into(), subscriber_count: 1_000_000, avatar_url: String::new() }],
+            similar: vec![ArtistHit {
+                id: "UCjustice".into(),
+                name: "Justice".into(),
+                subscriber_count: 1_000_000,
+                avatar_url: String::new(),
+            }],
         };
         app.absorb_artist(&page);
         app.artist_pages.insert("UCdaftpunk".into(), page);
@@ -5220,23 +6242,37 @@ mod tests {
         // The full artist page surfaces a Follow control, related artists, and the
         // album + single as separate discography entries.
         assert!(
-            app.hits.iter().any(|h| h.action == Action::ToggleFollow("UCdaftpunk".into())),
+            app.hits
+                .iter()
+                .any(|h| h.action == Action::ToggleFollow("UCdaftpunk".into())),
             "the artist page has a Follow control",
         );
-        assert!(has_nav(&app, View::Artist("UCjustice".into())), "related artists are navigable");
-        assert!(has_nav(&app, View::Album("MPREsingle".into())), "the single appears in the discography");
+        assert!(
+            has_nav(&app, View::Artist("UCjustice".into())),
+            "related artists are navigable"
+        );
+        assert!(
+            has_nav(&app, View::Album("MPREsingle".into())),
+            "the single appears in the discography"
+        );
         // Click a top track → it plays.
         let top_id = "yt:top_track".to_string();
         let play = app
             .hits
             .iter()
             .find_map(|h| match &h.action {
-                Action::Play { queue, .. } if queue.iter().any(|q| q == &top_id) => Some(h.action.clone()),
+                Action::Play { queue, .. } if queue.iter().any(|q| q == &top_id) => {
+                    Some(h.action.clone())
+                }
                 _ => None,
             })
             .expect("a top track is a playable row on the artist page");
         app.dispatch(play, &mut doc);
-        assert_eq!(app.pb.current.as_deref(), Some("yt:top_track"), "clicking a top track plays it");
+        assert_eq!(
+            app.pb.current.as_deref(),
+            Some("yt:top_track"),
+            "clicking a top track plays it"
+        );
         assert!(app.pb.queue.contains(&top_id));
     }
 
@@ -5252,7 +6288,11 @@ mod tests {
             artist_name: "Daft Punk".into(),
             year: 2001,
             cover_url: String::new(),
-            tracks: vec![th("al_one", "One More Time"), th("al_two", "Aerodynamic"), th("al_three", "Digital Love")],
+            tracks: vec![
+                th("al_one", "One More Time"),
+                th("al_two", "Aerodynamic"),
+                th("al_three", "Digital Love"),
+            ],
         };
         app.absorb_album(&page);
         app.album_pages.insert("MPREdiscovery".into(), page);
@@ -5260,14 +6300,19 @@ mod tests {
         draw_once(&mut app, &mut doc);
         // The album's full ordered track list renders — every track is playable.
         for vid in ["al_one", "al_two", "al_three"] {
-            assert!(has_play_of(&app, &format!("yt:{vid}")), "album track {vid} is a playable row");
+            assert!(
+                has_play_of(&app, &format!("yt:{vid}")),
+                "album track {vid} is a playable row"
+            );
         }
         // The album header plays the whole album in track order.
-        let header = app.hits.iter().any(|h| matches!(
-            &h.action,
-            Action::Play { queue, index: 0 }
-                if queue.len() == 3 && queue[0] == "yt:al_one" && queue[2] == "yt:al_three"
-        ));
+        let header = app.hits.iter().any(|h| {
+            matches!(
+                &h.action,
+                Action::Play { queue, index: 0 }
+                    if queue.len() == 3 && queue[0] == "yt:al_one" && queue[2] == "yt:al_three"
+            )
+        });
         assert!(header, "the album header plays the whole album in order");
     }
 
@@ -5276,13 +6321,21 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         assert!(!app.lib.is_artist_followed("UCdaftpunk"));
         app.dispatch(Action::ToggleFollow("UCdaftpunk".into()), &mut doc);
-        assert!(app.lib.is_artist_followed("UCdaftpunk"), "Follow adds the artist");
+        assert!(
+            app.lib.is_artist_followed("UCdaftpunk"),
+            "Follow adds the artist"
+        );
         // Persisted to the CRDT — a fresh load from the document sees it.
         assert!(
-            doc::load_library(&doc).followed_artists.contains("UCdaftpunk"),
+            doc::load_library(&doc)
+                .followed_artists
+                .contains("UCdaftpunk"),
             "follow round-trips through the document",
         );
         app.dispatch(Action::ToggleFollow("UCdaftpunk".into()), &mut doc);
-        assert!(!app.lib.is_artist_followed("UCdaftpunk"), "toggling again unfollows");
+        assert!(
+            !app.lib.is_artist_followed("UCdaftpunk"),
+            "toggling again unfollows"
+        );
     }
 }

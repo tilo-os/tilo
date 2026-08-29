@@ -21,17 +21,17 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::prefs::{AppearancePrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row_described, value_row};
+use crate::widgets::{caption, card, choice_row, rows, setting_row_described, value_row};
 
 pub const THEME_KEY: &str = "appearance.theme";
 pub const HIGH_CONTRAST_KEY: &str = "appearance.high_contrast";
@@ -135,8 +135,10 @@ impl AppearancePane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let theme_opts: Vec<String> =
-            AppearancePrefs::THEMES.iter().map(|t| t.to_string()).collect();
+        let theme_opts: Vec<String> = AppearancePrefs::THEMES
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
         let theme = Dropdown::new(theme_opts, THEME_KEY)
             .with_id("appearance.theme")
             .with_placeholder(&self.prefs.theme);
@@ -197,7 +199,10 @@ impl AppearancePane {
                     "Text scale",
                     &format!("{:.0}%", resolved.text_scale as f64 * 100.0),
                 ),
-                value_row("Reduced motion", if resolved.reduce_motion { "On" } else { "Off" }),
+                value_row(
+                    "Reduced motion",
+                    if resolved.reduce_motion { "On" } else { "Off" },
+                ),
             ]),
         );
 
@@ -384,7 +389,15 @@ impl Widget for AppearancePane {
             && let Some(&cn) = children.first()
         {
             c.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
             );
         }
     }
@@ -504,7 +517,10 @@ mod tests {
         });
         let intent = ui::widget::Widget::appearance_intent(&pane)
             .expect("the appearance pane always expresses an intent");
-        assert_eq!(intent.base_theme.name, "Nord", "base theme is handed back unscaled");
+        assert_eq!(
+            intent.base_theme.name, "Nord",
+            "base theme is handed back unscaled"
+        );
         assert_eq!(intent.ui_scale, 1.25);
         assert_eq!(intent.text_scale, 1.15);
         assert!(intent.reduce_motion);
@@ -534,8 +550,16 @@ mod tests {
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, TEXT_SIZE_KEY, "Larger");
-        let _ = doc.put(&root, HIGH_CONTRAST_KEY, automerge::ScalarValue::Boolean(true));
-        let _ = doc.put(&root, REDUCE_MOTION_KEY, automerge::ScalarValue::Boolean(true));
+        let _ = doc.put(
+            &root,
+            HIGH_CONTRAST_KEY,
+            automerge::ScalarValue::Boolean(true),
+        );
+        let _ = doc.put(
+            &root,
+            REDUCE_MOTION_KEY,
+            automerge::ScalarValue::Boolean(true),
+        );
         pane.sync(&mut doc, &root);
         assert_eq!(pane.prefs().text_scale, 1.30);
         assert!(pane.prefs().high_contrast);

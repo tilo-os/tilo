@@ -54,10 +54,7 @@ fn payload_root_of(payload_dir: &std::path::Path, publisher_sk: &SigningKey) -> 
     let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
     let mut throwaway = MemoryBlobStore::new();
     let id = pack(payload_dir, &manifest, &identity, &mut throwaway).expect("throwaway pack");
-    let signed_bytes = throwaway
-        .get(&BlobHash(*id.as_bytes()))
-        .unwrap()
-        .unwrap();
+    let signed_bytes = throwaway.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
     SignedRoot::decode(&signed_bytes).unwrap().payload_root_hash
 }
 
@@ -75,7 +72,10 @@ fn pack_with_attestation(
     let payload_root = payload_root_of(payload_dir, publisher_sk);
     let publisher_pk = publisher_sk.verifying_key().to_bytes();
     let sig = attest(&payload_root, &publisher_pk, attestor_sk);
-    manifest.trust.attested_by.retain(|a| a.attestor != attestor_id);
+    manifest
+        .trust
+        .attested_by
+        .retain(|a| a.attestor != attestor_id);
     manifest.trust.attested_by.push(TrustAttestation {
         attestor: attestor_id.into(),
         claim_hex: "".into(),
@@ -243,7 +243,10 @@ fn attestor_scope_mismatch_falls_back_to_untrusted() {
     }];
 
     let v = verify_with_trust(id, &store, &[], &trusted, &RevocationList::empty());
-    assert!(matches!(v, Verification::UntrustedPublisher { .. }), "got {v:?}");
+    assert!(
+        matches!(v, Verification::UntrustedPublisher { .. }),
+        "got {v:?}"
+    );
 }
 
 #[test]
@@ -275,7 +278,10 @@ fn tampered_attestation_signature_falls_back_to_untrusted() {
     }];
 
     let v = verify_with_trust(id, &store, &[], &trusted, &RevocationList::empty());
-    assert!(matches!(v, Verification::UntrustedPublisher { .. }), "got {v:?}");
+    assert!(
+        matches!(v, Verification::UntrustedPublisher { .. }),
+        "got {v:?}"
+    );
 }
 
 #[test]

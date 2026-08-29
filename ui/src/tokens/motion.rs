@@ -51,11 +51,31 @@ pub struct SpringPresets {
 impl Default for SpringPresets {
     fn default() -> Self {
         Self {
-            subtle: SpringParams { stiffness: 120.0, damping: 22.0, mass: 1.0 },
-            snappy: SpringParams { stiffness: 260.0, damping: 28.0, mass: 1.0 },
-            bouncy: SpringParams { stiffness: 180.0, damping: 12.0, mass: 1.0 },
-            heavy: SpringParams { stiffness: 2048.0, damping: 128.0, mass: 2.0 },
-            tracking: SpringParams { stiffness: 1600.0, damping: 80.0, mass: 1.0 },
+            subtle: SpringParams {
+                stiffness: 120.0,
+                damping: 22.0,
+                mass: 1.0,
+            },
+            snappy: SpringParams {
+                stiffness: 260.0,
+                damping: 28.0,
+                mass: 1.0,
+            },
+            bouncy: SpringParams {
+                stiffness: 180.0,
+                damping: 12.0,
+                mass: 1.0,
+            },
+            heavy: SpringParams {
+                stiffness: 2048.0,
+                damping: 128.0,
+                mass: 2.0,
+            },
+            tracking: SpringParams {
+                stiffness: 1600.0,
+                damping: 80.0,
+                mass: 1.0,
+            },
         }
     }
 }
@@ -74,7 +94,11 @@ pub struct Durations {
 
 impl Default for Durations {
     fn default() -> Self {
-        Self { fast_ms: 130, base_ms: 210, slow_ms: 400 }
+        Self {
+            fast_ms: 130,
+            base_ms: 210,
+            slow_ms: 400,
+        }
     }
 }
 
@@ -137,14 +161,12 @@ impl Default for Gesture {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Motion {
     pub springs: SpringPresets,
     pub durations: Durations,
     pub gesture: Gesture,
 }
-
 
 /// iOS-style overscroll resistance.
 ///

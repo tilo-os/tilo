@@ -100,7 +100,9 @@ pub fn build_mime(from: &Addr, draft: &Draft) -> std::io::Result<Vec<u8>> {
     // the genuine file — never a fabricated placeholder. A path that can't be
     // read is skipped rather than sending fake content.
     for path in &draft.attachments {
-        let Ok(bytes) = std::fs::read(path) else { continue };
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
         let name = crate::model::attachment_display_name(path).to_string();
         let mime = mime_from_filename(&name);
         builder = builder.attachment(mime, name, bytes);
@@ -110,7 +112,10 @@ pub fn build_mime(from: &Addr, draft: &Draft) -> std::io::Result<Vec<u8>> {
 }
 
 fn addr_tuples(addrs: &[Addr]) -> Vec<(String, String)> {
-    addrs.iter().map(|a| (a.display(), a.email.clone())).collect()
+    addrs
+        .iter()
+        .map(|a| (a.display(), a.email.clone()))
+        .collect()
 }
 
 /// Parse a raw RFC 5322 message into our model via `mail-parser`. The
@@ -222,7 +227,10 @@ pub fn stable_message_id(message_id: &str) -> Uuid {
         }
         hash
     }
-    let norm = message_id.trim().trim_start_matches('<').trim_end_matches('>');
+    let norm = message_id
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>');
     let hi = fnv1a(norm.as_bytes(), 0xcbf2_9ce4_8422_2325);
     let lo = fnv1a(norm.as_bytes(), 0x0102_0304_0506_0708);
     Uuid::from_u128(((hi as u128) << 64) | lo as u128)
@@ -245,7 +253,9 @@ pub fn parse_fetched(
     let header_date_min = MessageParser::default()
         .parse(raw)
         .and_then(|p| p.date().map(|d| d.to_timestamp() / 60));
-    let ts = internal_date_min.or(header_date_min).unwrap_or(fallback_min);
+    let ts = internal_date_min
+        .or(header_date_min)
+        .unwrap_or(fallback_min);
     let mut msg = parse_eml(raw, ts, folder)?;
     msg.read = seen;
     msg.starred = flagged;
@@ -294,7 +304,9 @@ pub fn mime_from_filename(name: &str) -> &'static str {
 pub enum SendOutcome {
     /// Bytes were built and (in the live app) submitted. Carries the wire
     /// size so the UI can confirm "sent (N KB)".
-    Sent { wire_bytes: usize },
+    Sent {
+        wire_bytes: usize,
+    },
     Failed(String),
 }
 
@@ -420,8 +432,14 @@ Content-Type: text/html; charset=utf-8\r\n\
         let bytes = build_mime(&from, &draft).unwrap();
         let parsed = parse_eml(&bytes, 0, Folder::Inbox).unwrap();
         assert_eq!(parsed.attachments.len(), 1);
-        assert_eq!(parsed.attachments[0].filename, path.file_name().unwrap().to_string_lossy());
-        assert_eq!(parsed.attachments[0].content, b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02");
+        assert_eq!(
+            parsed.attachments[0].filename,
+            path.file_name().unwrap().to_string_lossy()
+        );
+        assert_eq!(
+            parsed.attachments[0].content,
+            b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02"
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -437,7 +455,10 @@ Content-Type: text/html; charset=utf-8\r\n\
         };
         let bytes = build_mime(&Addr::new("Me", "me@x.example"), &draft).unwrap();
         let parsed = parse_eml(&bytes, 0, Folder::Inbox).unwrap();
-        assert!(parsed.attachments.is_empty(), "unreadable path must not emit an attachment");
+        assert!(
+            parsed.attachments.is_empty(),
+            "unreadable path must not emit an attachment"
+        );
     }
 
     #[test]
@@ -460,7 +481,10 @@ Content-Disposition: attachment; filename=\"spec.pdf\"\r\n\
 --BOUND--\r\n";
         let msg = parse_eml(raw, 42, Folder::Inbox).unwrap();
         let att = &msg.attachments[0];
-        assert!(att.is_downloadable(), "parsed attachment should carry its bytes");
+        assert!(
+            att.is_downloadable(),
+            "parsed attachment should carry its bytes"
+        );
         assert!(att.content.starts_with(b"%PDF-1.4 real body"));
         assert_eq!(att.size, att.content.len() as u64);
     }
@@ -478,7 +502,10 @@ Hello from the server.\r\n";
         let msg = parse_fetched(raw, Folder::Inbox, true, true, None, 999).unwrap();
         assert!(msg.read, "\\Seen maps to read");
         assert!(msg.starred, "\\Flagged maps to starred");
-        assert_eq!(msg.timestamp_min, 30, "Date header (00:30 UTC) → 30 minutes");
+        assert_eq!(
+            msg.timestamp_min, 30,
+            "Date header (00:30 UTC) → 30 minutes"
+        );
         assert_eq!(msg.subject, "Fetched");
     }
 

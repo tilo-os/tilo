@@ -31,8 +31,6 @@ pub mod app;
 // only under `live-media`; the default build carries no GStreamer/openh264/iroh.
 #[cfg(feature = "live-media")]
 pub mod audio;
-#[cfg(feature = "live-media")]
-pub mod video;
 pub mod call;
 pub mod doc;
 pub mod emoji;
@@ -51,6 +49,8 @@ pub mod render_chat;
 pub mod responsive;
 pub mod search_provider;
 pub mod storage;
+#[cfg(feature = "live-media")]
+pub mod video;
 
 pub use app::ChatApp;
 

@@ -357,7 +357,9 @@ mod tests {
         );
         let lapsed = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
         assert!(
-            !lapsed.handle().permits(&ALICE, "/w/docs/a.md", Access::Read),
+            !lapsed
+                .handle()
+                .permits(&ALICE, "/w/docs/a.md", Access::Read),
             "an expiry in the past must not permit"
         );
     }

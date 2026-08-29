@@ -8,13 +8,13 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -46,8 +46,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             //   QOS_CALC_HISTORY=open|closed  — force the history sidebar state
             let mut app = calculator::CalculatorApp::seeded();
             match std::env::var("QOS_CALC_MODE").ok().as_deref() {
-                Some("2d") | Some("graph2d") => app.shots_set_mode(calculator::model::Mode::Graph2d),
-                Some("3d") | Some("graph3d") => app.shots_set_mode(calculator::model::Mode::Graph3d),
+                Some("2d") | Some("graph2d") => {
+                    app.shots_set_mode(calculator::model::Mode::Graph2d)
+                }
+                Some("3d") | Some("graph3d") => {
+                    app.shots_set_mode(calculator::model::Mode::Graph3d)
+                }
                 _ => {}
             }
             match std::env::var("QOS_CALC_HISTORY").ok().as_deref() {
@@ -65,7 +69,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, calculator::app_root(), "dev.qos.calculator"));
+        std::process::exit(ui::headless::run(
+            spec,
+            calculator::app_root(),
+            "dev.qos.calculator",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.calculator");
@@ -206,28 +214,82 @@ fn run_clicks_bench(viewport: (u32, u32), n: usize) -> Result<(), Box<dyn std::e
         let mut focus = None;
         let t = Instant::now();
         app.handle_event(
-            ev, 1.0, &modifiers, &mut state.doc, &state.root, &mut handled, &mut focus, child, taffy,
+            ev,
+            1.0,
+            &modifiers,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            child,
+            taffy,
         );
         t.elapsed().as_secs_f64() * 1e6
     };
 
     // Warm caches.
     for _ in 0..3 {
-        let _ = bench_frame(&mut app, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h);
+        let _ = bench_frame(
+            &mut app,
+            &mut state,
+            &mut text_renderer,
+            &theme,
+            &presence,
+            &permission,
+            w,
+            h,
+        );
     }
 
     // Switch to Calc mode by clicking its header segment (production path).
-    let (mut taffy, mut child, _) =
-        bench_frame(&mut app, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h);
+    let (mut taffy, mut child, _) = bench_frame(
+        &mut app,
+        &mut state,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+        w,
+        h,
+    );
     let seg = app.bench_seg_center(0);
-    dispatch(&mut app, &mut state, &taffy, child, &synth_cursor(seg.x, seg.y));
-    dispatch(&mut app, &mut state, &taffy, child, &synth_click(ElementState::Pressed));
-    dispatch(&mut app, &mut state, &taffy, child, &synth_click(ElementState::Released));
-    let (t2, c2, _) =
-        bench_frame(&mut app, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h);
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &synth_cursor(seg.x, seg.y),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &synth_click(ElementState::Pressed),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &synth_click(ElementState::Released),
+    );
+    let (t2, c2, _) = bench_frame(
+        &mut app,
+        &mut state,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+        w,
+        h,
+    );
     taffy = t2;
     child = c2;
-    assert!(app.bench_mode_is_calc(), "bench should have switched to Calc mode");
+    assert!(
+        app.bench_mode_is_calc(),
+        "bench should have switched to Calc mode"
+    );
 
     // A never-ending expression: digits + operators, no `=`, so it grows
     // exactly like the user "1 2 3 + 4 5 6 * 7 ..." mashing report.
@@ -247,11 +309,35 @@ fn run_clicks_bench(viewport: (u32, u32), n: usize) -> Result<(), Box<dyn std::e
             eprintln!("click {idx}: key {label:?} not found in layout");
             continue;
         };
-        let handle_us = dispatch(&mut app, &mut state, &taffy, child, &synth_cursor(pt.x, pt.y))
-            + dispatch(&mut app, &mut state, &taffy, child, &synth_click(ElementState::Pressed))
-            + dispatch(&mut app, &mut state, &taffy, child, &synth_click(ElementState::Released));
-        let (t2, c2, frame_us) =
-            bench_frame(&mut app, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h);
+        let handle_us = dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &synth_cursor(pt.x, pt.y),
+        ) + dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &synth_click(ElementState::Pressed),
+        ) + dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &synth_click(ElementState::Released),
+        );
+        let (t2, c2, frame_us) = bench_frame(
+            &mut app,
+            &mut state,
+            &mut text_renderer,
+            &theme,
+            &presence,
+            &permission,
+            w,
+            h,
+        );
         taffy = t2;
         child = c2;
         max_handle = max_handle.max(handle_us);

@@ -299,7 +299,11 @@ mod tests {
         assert!(encoded.is_ascii());
         assert!(encoded.len() < 400);
         // No lowercase (Crockford is upper-case output).
-        assert!(encoded.chars().all(|c| !c.is_ascii_lowercase() || c == '=' || c.is_ascii_digit()));
+        assert!(
+            encoded
+                .chars()
+                .all(|c| !c.is_ascii_lowercase() || c == '=' || c.is_ascii_digit())
+        );
 
         let back = decode_enrollment_token(&encoded).unwrap();
         assert_eq!(token, back);

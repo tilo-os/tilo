@@ -169,7 +169,8 @@ fn put_map(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
     if let Some(id) = map_at(doc, obj, key) {
         id
     } else {
-        doc.put_object(obj, key, ObjType::Map).expect("put_object map")
+        doc.put_object(obj, key, ObjType::Map)
+            .expect("put_object map")
     }
 }
 
@@ -299,7 +300,10 @@ mod tests {
         assert_eq!(loaded.expr, m.expr);
         assert_eq!(loaded.funcs.len(), m.funcs.len());
         assert_eq!(loaded.surfaces.len(), m.surfaces.len());
-        assert_eq!(loaded.surfaces, m.surfaces, "surfaces round-trip byte-identically");
+        assert_eq!(
+            loaded.surfaces, m.surfaces,
+            "surfaces round-trip byte-identically"
+        );
         assert_eq!(loaded.history.len(), m.history.len());
         assert_eq!(loaded.memory, m.memory);
         assert!((loaded.view2d.scale - m.view2d.scale).abs() < 1e-9);
@@ -370,7 +374,10 @@ mod tests {
                 _ => panic!("{key} row 0 missing"),
             };
             assert!(
-                matches!(doc.get(&row, "expr"), Ok(Some((Value::Object(ObjType::Text), _)))),
+                matches!(
+                    doc.get(&row, "expr"),
+                    Ok(Some((Value::Object(ObjType::Text), _)))
+                ),
                 "each {key} row's expr must be a CRDT Text object"
             );
         }
@@ -383,7 +390,10 @@ mod tests {
         // funcs list — the old wholesale delete+reinsert did the latter.
         let mut doc = AutoCommit::new();
         let mut m = CalcModel::default();
-        m.funcs = vec![PlotFn { expr: "123456789012345678901234567890".into(), visible: true }];
+        m.funcs = vec![PlotFn {
+            expr: "123456789012345678901234567890".into(),
+            visible: true,
+        }];
         store(&mut doc, &m);
         let before = doc.save().len();
         m.funcs[0].expr.push('7');
@@ -410,6 +420,9 @@ mod tests {
         store(&mut doc, &m);
         let grew = doc.save().len() - before;
         assert_eq!(load(&doc).unwrap().expr, m.expr);
-        assert!(grew < 40, "appending one char grew the doc by {grew} bytes (expected a single-char splice)");
+        assert!(
+            grew < 40,
+            "appending one char grew the doc by {grew} bytes (expected a single-char splice)"
+        );
     }
 }

@@ -36,7 +36,10 @@ fn build_fixture(out_dir: &Path) -> PathBuf {
         .arg(&bin)
         .status()
         .expect("invoke rustc");
-    assert!(status.success(), "rustc failed to build the roomtest fixture");
+    assert!(
+        status.success(),
+        "rustc failed to build the roomtest fixture"
+    );
     bin
 }
 
@@ -123,7 +126,11 @@ impl DataHome {
         let previous = std::env::var_os("XDG_DATA_HOME");
         // SAFETY: every caller is in the `process_env` serial group.
         unsafe { std::env::set_var("XDG_DATA_HOME", &path) };
-        Self { _dir: dir, path, previous }
+        Self {
+            _dir: dir,
+            path,
+            previous,
+        }
     }
 }
 
@@ -153,7 +160,11 @@ fn an_app_cannot_read_across_rooms() {
     let payload = tempfile::tempdir().unwrap();
     build_fixture(payload.path());
 
-    let wrote = run_in_room(payload.path(), Some("room-a"), &["write", "record.txt", "room-A-secret"]);
+    let wrote = run_in_room(
+        payload.path(),
+        Some("room-a"),
+        &["write", "record.txt", "room-A-secret"],
+    );
     assert!(
         wrote.starts_with("WROTE "),
         "the app must be able to write in its own directory: {wrote}"
@@ -329,7 +340,11 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
     }
 
     // Inside the profile: readable.
-    let read = run_in_room(payload.path(), Some("room-a"), &["readdir", "/usr/share/fonts"]);
+    let read = run_in_room(
+        payload.path(),
+        Some("room-a"),
+        &["readdir", "/usr/share/fonts"],
+    );
     assert!(
         read.starts_with("OK "),
         "the profile must actually deliver fonts: {read}"

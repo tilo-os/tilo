@@ -32,8 +32,14 @@ fn rgba_capture_pipeline(desc: &str) -> Option<(gst::Pipeline, gst_app::AppSink)
     if !ensure_init() {
         return None;
     }
-    let pipeline = gst::parse::launch(desc).ok()?.downcast::<gst::Pipeline>().ok()?;
-    let sink = pipeline.by_name("sink")?.downcast::<gst_app::AppSink>().ok()?;
+    let pipeline = gst::parse::launch(desc)
+        .ok()?
+        .downcast::<gst::Pipeline>()
+        .ok()?;
+    let sink = pipeline
+        .by_name("sink")?
+        .downcast::<gst_app::AppSink>()
+        .ok()?;
     if pipeline.set_state(gst::State::Playing).is_err() {
         return None;
     }
@@ -56,7 +62,12 @@ impl CameraCapture {
              ! appsink name=sink sync=false max-buffers=2 drop=true"
         );
         let (pipeline, sink) = rgba_capture_pipeline(&desc)?;
-        Some(Self { pipeline, sink, width, height })
+        Some(Self {
+            pipeline,
+            sink,
+            width,
+            height,
+        })
     }
 
     /// Non-blocking: the most recent captured RGBA frame, if any (older queued
@@ -103,7 +114,12 @@ impl ScreenCapture {
              ! appsink name=sink sync=false max-buffers=2 drop=true"
         );
         let (pipeline, sink) = rgba_capture_pipeline(&desc)?;
-        Some(Self { pipeline, sink, width, height })
+        Some(Self {
+            pipeline,
+            sink,
+            width,
+            height,
+        })
     }
 
     pub fn poll(&mut self) -> Option<Vec<u8>> {

@@ -175,7 +175,10 @@ pub fn list_tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, Rollb
             Err(e) => {
                 // A malformed token of our own type is worth surfacing, but it must not stop the machine
                 // from using the good ones.
-                eprintln!("qos-rollback: ignoring token {id} on {}: {e:#}", device.display());
+                eprintln!(
+                    "qos-rollback: ignoring token {id} on {}: {e:#}",
+                    device.display()
+                );
             }
         }
     }
@@ -193,7 +196,16 @@ pub fn primary(runner: &dyn Runner, ws: &Workspace) -> Result<std::path::PathBuf
     require(
         runner,
         "tpm2_createprimary",
-        &argv!["-C", "o", "-g", "sha256", "-G", "ecc", "-c", ctx.as_os_str()],
+        &argv![
+            "-C",
+            "o",
+            "-g",
+            "sha256",
+            "-G",
+            "ecc",
+            "-c",
+            ctx.as_os_str()
+        ],
         "creating the TPM sealing parent",
     )?;
     Ok(ctx)
@@ -218,13 +230,20 @@ pub fn seal(
     let priv_out = ws.path("sealed.priv");
 
     let mut args = argv![
-        "-C", parent.as_os_str(),
-        "-g", "sha256",
-        "-u", pub_out.as_os_str(),
-        "-r", priv_out.as_os_str(),
-        "-L", pol.as_os_str(),
-        "-i", sec.as_os_str(),
-        "-a", "fixedtpm|fixedparent|adminwithpolicy",
+        "-C",
+        parent.as_os_str(),
+        "-g",
+        "sha256",
+        "-u",
+        pub_out.as_os_str(),
+        "-r",
+        priv_out.as_os_str(),
+        "-L",
+        pol.as_os_str(),
+        "-i",
+        sec.as_os_str(),
+        "-a",
+        "fixedtpm|fixedparent|adminwithpolicy",
     ];
     // tpm2-tools accepts `file:<path>` for an auth value, so the PIN goes through a scratch file
     // — passing it literally would put it in /proc/<pid>/cmdline for every process to read.
@@ -235,7 +254,12 @@ pub fn seal(
         args.push(OsStr::new("-p"));
         args.push(OsStr::new(&pin_spec));
     }
-    let r = require(runner, "tpm2_create", &args, "sealing the generation secret");
+    let r = require(
+        runner,
+        "tpm2_create",
+        &args,
+        "sealing the generation secret",
+    );
     let _ = std::fs::remove_file(ws.path("seal.secret"));
     let _ = std::fs::remove_file(ws.path("seal.pin"));
     r?;
@@ -294,10 +318,14 @@ pub fn unseal(
             runner,
             "tpm2_load",
             &argv![
-                "-C", parent.as_os_str(),
-                "-u", pub_file.as_os_str(),
-                "-r", priv_file.as_os_str(),
-                "-c", obj.as_os_str(),
+                "-C",
+                parent.as_os_str(),
+                "-u",
+                pub_file.as_os_str(),
+                "-r",
+                priv_file.as_os_str(),
+                "-c",
+                obj.as_os_str(),
             ],
             "loading the sealed generation secret",
         )?;
@@ -316,10 +344,21 @@ pub fn unseal(
         };
         let out = runner.run(
             "tpm2_unseal",
-            &argv!["-c", obj.as_os_str(), "-p", &auth, "-o", out_file.as_os_str()],
+            &argv![
+                "-c",
+                obj.as_os_str(),
+                "-p",
+                &auth,
+                "-o",
+                out_file.as_os_str()
+            ],
             None,
         )?;
-        let _ = runner.run("tpm2_flushcontext", &argv![session.context.as_os_str()], None);
+        let _ = runner.run(
+            "tpm2_flushcontext",
+            &argv![session.context.as_os_str()],
+            None,
+        );
         if !out.ok() {
             let msg = out.last_error_line();
             policy::flush(runner);
@@ -361,8 +400,10 @@ pub fn add_generation_slot(
     let auth_file = ws.put("auth.key", authorising)?;
     let new_file = ws.put("new.key", passphrase)?;
     let mut args = argv![
-        "luksAddKey", "--batch-mode",
-        "--key-file", auth_file.as_os_str(),
+        "luksAddKey",
+        "--batch-mode",
+        "--key-file",
+        auth_file.as_os_str(),
     ];
     let iters;
     if let Some(p) = pbkdf {
@@ -398,8 +439,10 @@ pub fn add_generation_slot(
         let _ = runner.run(
             "cryptsetup",
             &argv![
-                "luksKillSlot", "--batch-mode",
-                "--key-file", kf.as_os_str(),
+                "luksKillSlot",
+                "--batch-mode",
+                "--key-file",
+                kf.as_os_str(),
                 device.as_os_str(),
                 &slot_s,
             ],
@@ -471,9 +514,12 @@ pub fn import_token(
         runner,
         "cryptsetup",
         &argv![
-            "token", "import",
-            "--token-id", &id_s,
-            "--json-file", json.as_os_str(),
+            "token",
+            "import",
+            "--token-id",
+            &id_s,
+            "--json-file",
+            json.as_os_str(),
             device.as_os_str(),
         ],
         "importing the rollback token",
@@ -495,7 +541,10 @@ pub fn free_token_id(runner: &dyn Runner, device: &Path) -> Result<u32> {
             return Ok(id);
         }
     }
-    bail!("all 32 LUKS2 token slots are occupied on {}", device.display())
+    bail!(
+        "all 32 LUKS2 token slots are occupied on {}",
+        device.display()
+    )
 }
 
 /// SAFETY-CRITICAL: remove one generation's token and keyslot. `proof` must carry a
@@ -529,11 +578,7 @@ pub fn kill_generation_slot(
     require(
         runner,
         "cryptsetup",
-        &argv![
-            "token", "remove",
-            "--token-id", &id_s,
-            device.as_os_str(),
-        ],
+        &argv!["token", "remove", "--token-id", &id_s, device.as_os_str(),],
         "removing the rollback token",
     )?;
     let kf = ws.put("kill.key", proof)?;
@@ -542,8 +587,10 @@ pub fn kill_generation_slot(
         runner,
         "cryptsetup",
         &argv![
-            "luksKillSlot", "--batch-mode",
-            "--key-file", kf.as_os_str(),
+            "luksKillSlot",
+            "--batch-mode",
+            "--key-file",
+            kf.as_os_str(),
             device.as_os_str(),
             &slot_s,
         ],
@@ -648,7 +695,10 @@ Digests:
     fn token_and_digest_sections_are_not_mistaken_for_keyslots() {
         // The Tokens section also uses "  N: name"; the parser must stop at it.
         let ks = parse_keyslots(DUMP);
-        assert!(!ks.contains(&1), "token id 1 leaked into the keyslot list: {ks:?}");
+        assert!(
+            !ks.contains(&1),
+            "token id 1 leaked into the keyslot list: {ks:?}"
+        );
     }
 
     #[test]

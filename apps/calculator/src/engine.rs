@@ -88,16 +88,12 @@ fn tokenize(input: &str) -> Result<Vec<Tok>, String> {
                     }
                 }
                 let s: String = chars[start..i].iter().collect();
-                let v: f64 = s
-                    .parse()
-                    .map_err(|_| format!("bad number `{s}`"))?;
+                let v: f64 = s.parse().map_err(|_| format!("bad number `{s}`"))?;
                 out.push(Tok::Num(v));
             }
             'a'..='z' | 'A'..='Z' | '_' => {
                 let start = i;
-                while i < chars.len()
-                    && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
-                {
+                while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
                     i += 1;
                 }
                 let s: String = chars[start..i].iter().collect();
@@ -417,12 +413,21 @@ pub struct Compiled {
 impl Compiled {
     /// Sample with a single free variable `x`.
     pub fn eval1(&self, x: f64) -> f64 {
-        let ctx = Ctx { deg: self.deg, x, ..Default::default() };
+        let ctx = Ctx {
+            deg: self.deg,
+            x,
+            ..Default::default()
+        };
         eval_node(&self.ast, &ctx).unwrap_or(f64::NAN)
     }
     /// Sample with two free variables `x`, `y`.
     pub fn eval2(&self, x: f64, y: f64) -> f64 {
-        let ctx = Ctx { deg: self.deg, x, y, ..Default::default() };
+        let ctx = Ctx {
+            deg: self.deg,
+            x,
+            y,
+            ..Default::default()
+        };
         eval_node(&self.ast, &ctx).unwrap_or(f64::NAN)
     }
 }
@@ -433,7 +438,12 @@ impl Compiled {
 /// `1/x` compiles fine.
 pub fn compile(input: &str, deg: bool, two_var: bool) -> Result<Compiled, String> {
     let ast = parse(input)?;
-    let probe = Ctx { deg, x: 0.7, y: 0.3, ..Default::default() };
+    let probe = Ctx {
+        deg,
+        x: 0.7,
+        y: 0.3,
+        ..Default::default()
+    };
     // Walk once to catch unknown names regardless of NaN domain points.
     validate(&ast, two_var)?;
     let _ = eval_node(&ast, &probe)?;
@@ -569,7 +579,14 @@ mod tests {
         evaluate(s, &Ctx::default()).unwrap()
     }
     fn evd(s: &str) -> f64 {
-        evaluate(s, &Ctx { deg: true, ..Default::default() }).unwrap()
+        evaluate(
+            s,
+            &Ctx {
+                deg: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
     }
 
     #[test]

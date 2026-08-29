@@ -158,7 +158,11 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         return FrameSummary::default();
     }
     // The first sample has no predecessor, so its `period_us` is 0 and would drag every percentile down — drop it from the cadence series (not the phase series, which are self-contained).
-    let cadence: Vec<u32> = samples.iter().filter(|s| s.period_us > 0).map(|s| s.period_us).collect();
+    let cadence: Vec<u32> = samples
+        .iter()
+        .filter(|s| s.period_us > 0)
+        .map(|s| s.period_us)
+        .collect();
     let paint_cadence: Vec<u32> = {
         // Interval between consecutive *painted* frames, not the tick period, since the loop idles between paints.
         let mut out = Vec::new();
@@ -415,8 +419,11 @@ impl FrameRecorder {
         self.cur.painted = true;
         self.cur.present_async = async_present;
         if let Some(input_at) = self.pending_input.take() {
-            self.cur.input_latency_us =
-                Some(done.saturating_duration_since(input_at).as_micros().min(u32::MAX as u128) as u32);
+            self.cur.input_latency_us = Some(
+                done.saturating_duration_since(input_at)
+                    .as_micros()
+                    .min(u32::MAX as u128) as u32,
+            );
         }
     }
 
@@ -733,7 +740,10 @@ mod tests {
         r.end_tick();
         let s = r.samples();
         assert_eq!(s.len(), 3);
-        assert_eq!(s[0].input_latency_us, None, "unpainted ticks carry no latency");
+        assert_eq!(
+            s[0].input_latency_us, None,
+            "unpainted ticks carry no latency"
+        );
         assert_eq!(s[1].input_latency_us, None);
         assert_eq!(
             s[2].input_latency_us,
@@ -752,9 +762,20 @@ mod tests {
             super::parse_run_seconds(Some("2.5")),
             Some(Duration::from_millis(2500))
         );
-        assert_eq!(super::parse_run_seconds(Some(" 10 ")), Some(Duration::from_secs(10)));
+        assert_eq!(
+            super::parse_run_seconds(Some(" 10 ")),
+            Some(Duration::from_secs(10))
+        );
         // Anything that isn't a positive finite number means "run forever" — never "exit immediately", which would hand a harness an empty trace it could mistake for a real result.
-        for bad in [None, Some(""), Some("0"), Some("-1"), Some("nan"), Some("inf"), Some("abc")] {
+        for bad in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("-1"),
+            Some("nan"),
+            Some("inf"),
+            Some("abc"),
+        ] {
             assert_eq!(
                 super::parse_run_seconds(bad),
                 None,

@@ -60,7 +60,10 @@ fn main() -> ExitCode {
     let doc = match Automerge::load(&bytes) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("{path} is {} bytes and not an Automerge document: {e}", bytes.len());
+            eprintln!(
+                "{path} is {} bytes and not an Automerge document: {e}",
+                bytes.len()
+            );
             return ExitCode::from(2);
         }
     };
@@ -103,7 +106,13 @@ fn read_input(path: &str) -> std::io::Result<Vec<u8>> {
 }
 
 /// Walk `obj` and push every text/string it holds onto `out` as `(path, text)`.
-fn collect(doc: &Automerge, obj: &ObjId, path: &str, depth: usize, out: &mut Vec<(String, String)>) {
+fn collect(
+    doc: &Automerge,
+    obj: &ObjId,
+    path: &str,
+    depth: usize,
+    out: &mut Vec<(String, String)>,
+) {
     if depth > MAX_DEPTH {
         return;
     }
@@ -158,8 +167,8 @@ fn push_scalar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
     use automerge::AutoCommit;
+    use automerge::transaction::Transactable;
 
     const TYPED: &str = "the same document on both machines";
 
@@ -218,7 +227,11 @@ mod tests {
         );
         // Confirms this isn't simply finding nothing: the surrounding content is still there.
         assert!(found.iter().any(|(p, _)| p == "schema"));
-        assert!(found.iter().any(|(p, t)| p == "styles.quote.name" && t == "quote"));
+        assert!(
+            found
+                .iter()
+                .any(|(p, t)| p == "styles.quote.name" && t == "quote")
+        );
     }
 
     /// The document a real word processor answered with, captured byte-for-byte from a running
@@ -260,28 +273,40 @@ mod tests {
             "the untouched document must not report the phrase",
         );
         assert!(
-            found.iter().any(|(p, t)| p == "schema" && t == "qos.richtext"),
+            found
+                .iter()
+                .any(|(p, t)| p == "schema" && t == "qos.richtext"),
             "and it is a word-processor document all the same, so the negative \
              above is an answer and not an empty walk",
         );
     }
 
     fn contains_bytes(haystack: &[u8], needle: &str) -> bool {
-        haystack.windows(needle.len()).any(|w| w == needle.as_bytes())
+        haystack
+            .windows(needle.len())
+            .any(|w| w == needle.as_bytes())
     }
 
     /// A table, built through the model's own API and `save()`d (the form a late joiner is handed):
     /// the two rows the assertions read by name, plus enough further rows to carry the text column
     /// past Automerge's compression threshold — below it a plain byte search would find the cell text and the test would prove nothing.
     fn table_document() -> Vec<u8> {
-        const NAMED: [[&str; 3]; 2] =
-            [["alpha one", "alpha two", "alpha three"], ["beta one", "beta two", "beta three"]];
+        const NAMED: [[&str; 3]; 2] = [
+            ["alpha one", "alpha two", "alpha three"],
+            ["beta one", "beta two", "beta three"],
+        ];
         const PADDING_ROWS: usize = 12;
 
-        let mut rows: Vec<Vec<String>> =
-            NAMED.iter().map(|r| r.iter().map(|s| s.to_string()).collect()).collect();
+        let mut rows: Vec<Vec<String>> = NAMED
+            .iter()
+            .map(|r| r.iter().map(|s| s.to_string()).collect())
+            .collect();
         for row in NAMED.len()..NAMED.len() + PADDING_ROWS {
-            rows.push((0..3).map(|col| format!("row {row} column {col} of the same table")).collect());
+            rows.push(
+                (0..3)
+                    .map(|col| format!("row {row} column {col} of the same table"))
+                    .collect(),
+            );
         }
 
         let mut d = qdoc::Document::new();
@@ -351,7 +376,10 @@ mod tests {
         doc.splice_text(&t, 0, 0, "buried").unwrap();
         let found = strings(&doc.save());
         assert_eq!(
-            found.iter().find(|(_, t)| t == "buried").map(|(p, _)| p.as_str()),
+            found
+                .iter()
+                .find(|(_, t)| t == "buried")
+                .map(|(p, _)| p.as_str()),
             Some("a.b[0].deep"),
         );
     }

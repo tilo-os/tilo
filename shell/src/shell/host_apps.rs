@@ -49,7 +49,11 @@ impl HostApp {
     }
 
     pub fn is_flatpak(&self) -> bool {
-        self.source_label == EntrySource::Flatpak { app_id: String::new() }.label()
+        self.source_label
+            == EntrySource::Flatpak {
+                app_id: String::new(),
+            }
+            .label()
     }
 }
 
@@ -144,9 +148,11 @@ pub fn app_for_window_id(app_id: &str) -> Option<HostApp> {
     if needle.is_empty() {
         return None;
     }
-    host_apps()
-        .into_iter()
-        .find(|app| app.window_identities.iter().any(|id| id.eq_ignore_ascii_case(needle)))
+    host_apps().into_iter().find(|app| {
+        app.window_identities
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(needle))
+    })
 }
 
 pub fn search_path() -> Vec<PathBuf> {
@@ -200,7 +206,11 @@ mod tests {
 
     #[test]
     fn a_document_rides_across_as_open() {
-        let app = app("org.gnome.TextEditor", "Text Editor", &["org.gnome.TextEditor"]);
+        let app = app(
+            "org.gnome.TextEditor",
+            "Text Editor",
+            &["org.gnome.TextEditor"],
+        );
         let cmd = build_launch_command(
             &app,
             Path::new("/usr/libexec/qos-launcher"),

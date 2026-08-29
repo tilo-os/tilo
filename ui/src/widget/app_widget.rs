@@ -18,7 +18,8 @@ pub enum IconDescriptor {
 }
 
 /// An [`AppCommand::invoke`] handler.
-pub type AppCommandInvoke = Box<dyn Fn(&mut automerge::AutoCommit, &automerge::ObjId) + Send + Sync>;
+pub type AppCommandInvoke =
+    Box<dyn Fn(&mut automerge::AutoCommit, &automerge::ObjId) + Send + Sync>;
 
 /// A command palette entry contributed by an app. Invoked with a mutable
 /// CRDT handle and the app's root `ObjId` so the command can mutate state

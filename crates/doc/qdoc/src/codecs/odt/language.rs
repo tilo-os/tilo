@@ -4,7 +4,7 @@
 //! maps it onto the document-wide language setting, splitting/reassembling the BCP-47 tag
 //! (`de-DE` ⇄ `de`+`DE`) for spell-check locale and accessibility/screen-reader use.
 
-use crate::model::{language as model_language, DocMut, DocRef};
+use crate::model::{DocMut, DocRef, language as model_language};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
@@ -62,7 +62,11 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
 pub(super) fn export_default_language(doc: &DocRef, styles_xml: &[u8]) -> Option<Vec<u8>> {
     let code = model_language(doc.doc, doc.c)?;
     let (lang, country) = split_bcp47(&code);
-    Some(splice_default_language(styles_xml, &lang, country.as_deref()))
+    Some(splice_default_language(
+        styles_xml,
+        &lang,
+        country.as_deref(),
+    ))
 }
 
 /// Split a BCP-47 tag into `(language, optional country)` (`de-DE` → `("de", Some("DE"))`,
@@ -156,7 +160,10 @@ fn find_para_default_style(s: &str) -> Option<(usize, usize)> {
         let start = from + rel;
         let after_name = start + needle.len();
         // The char after the element name must be a delimiter, so `<style:default-style-x` doesn't match.
-        let is_delim = matches!(s.as_bytes().get(after_name), Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/'));
+        let is_delim = matches!(
+            s.as_bytes().get(after_name),
+            Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
+        );
         let gt = match s[start..].find('>') {
             Some(g) => start + g,
             None => return None,

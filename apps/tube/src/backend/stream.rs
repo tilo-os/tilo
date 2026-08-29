@@ -14,8 +14,8 @@
 
 use std::time::Duration;
 
-use crate::backend::mp4;
 use crate::backend::StreamHandle;
+use crate::backend::mp4;
 
 /// Outcome of downloading + demuxing a stream prefix.
 #[derive(Clone, Debug)]
@@ -94,7 +94,9 @@ pub fn fetch_h264(
     if !resp.status().is_success() {
         return Err(format!("stream GET returned HTTP {http_status}"));
     }
-    let bytes = resp.bytes().map_err(|e| format!("reading stream body: {e}"))?;
+    let bytes = resp
+        .bytes()
+        .map_err(|e| format!("reading stream body: {e}"))?;
     let downloaded = bytes.len();
     if downloaded == 0 {
         return Err("stream body was empty".to_string());
@@ -158,9 +160,14 @@ fn download_range(
         .send()
         .map_err(|e| format!("range GET failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("range GET returned HTTP {}", resp.status().as_u16()));
+        return Err(format!(
+            "range GET returned HTTP {}",
+            resp.status().as_u16()
+        ));
     }
-    let bytes = resp.bytes().map_err(|e| format!("reading range body: {e}"))?;
+    let bytes = resp
+        .bytes()
+        .map_err(|e| format!("reading range body: {e}"))?;
     Ok(bytes.to_vec())
 }
 
@@ -240,7 +247,10 @@ mod tests {
 
     #[test]
     fn with_range_appends_query_param() {
-        assert_eq!(with_range("https://x/vp?a=1", 0, 99), "https://x/vp?a=1&range=0-99");
+        assert_eq!(
+            with_range("https://x/vp?a=1", 0, 99),
+            "https://x/vp?a=1&range=0-99"
+        );
         assert_eq!(with_range("https://x/vp", 0, 99), "https://x/vp?range=0-99");
     }
 }

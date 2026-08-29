@@ -65,11 +65,7 @@ fn main() {
         .on_pick(|outcome| eprintln!("[picker] outcome: {:?}", outcome));
 
     let state = State::new();
-    let root_widget = Box::new(
-        Column::new()
-            .push(Box::new(banner))
-            .push(Box::new(picker)),
-    );
+    let root_widget = Box::new(Column::new().push(Box::new(banner)).push(Box::new(picker)));
 
     let app = App::new(state, root_widget);
     app.run();

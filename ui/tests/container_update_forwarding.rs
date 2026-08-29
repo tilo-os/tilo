@@ -139,9 +139,9 @@ fn container_forwards_update_to_child() {
 #[test]
 fn update_reaches_through_nested_containers() {
     let (child, updates) = probe();
-    let mut root: Box<dyn Widget> = Box::new(
-        Stack::new().push(Box::new(Column::new().push(Box::new(Row::new().push(child))))),
-    );
+    let mut root: Box<dyn Widget> = Box::new(Stack::new().push(Box::new(
+        Column::new().push(Box::new(Row::new().push(child))),
+    )));
     let mut doc = AutoCommit::new();
     assert!(root.update(&mut doc, &ROOT));
     assert_eq!(updates.get(), 1);

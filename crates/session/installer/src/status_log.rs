@@ -47,7 +47,6 @@ impl StatusLog {
             rect: Rect::ZERO,
         }
     }
-
 }
 
 impl Widget for StatusLog {
@@ -93,7 +92,13 @@ impl Widget for StatusLog {
     ) {
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
         scene.fill(Fill::NonZero, transform, theme.bg_app, None, &shape);
-        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &shape);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &shape,
+        );
 
         // Clip glyphs to the box so long lines never bleed out.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);

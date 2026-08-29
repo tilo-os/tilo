@@ -72,7 +72,9 @@ impl FlatpakRef {
             if !in_group {
                 continue;
             }
-            let Some((key, value)) = line.split_once('=') else { continue };
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
             let key = key.trim();
             let value = value.trim().to_string();
             match key {
@@ -86,8 +88,16 @@ impl FlatpakRef {
         }
 
         let app_id = app_id?;
-        let title = if title.is_empty() { app_id.clone() } else { title };
-        let branch = if branch.is_empty() { "stable".to_string() } else { branch };
+        let title = if title.is_empty() {
+            app_id.clone()
+        } else {
+            title
+        };
+        let branch = if branch.is_empty() {
+            "stable".to_string()
+        } else {
+            branch
+        };
         Some(FlatpakRef {
             app_id,
             title,
@@ -177,7 +187,11 @@ IsRuntime=false
 
     #[test]
     fn arg_scan_ignores_non_refs() {
-        let args = vec!["software_store".to_string(), "--shots".to_string(), "out.png".to_string()];
+        let args = vec![
+            "software_store".to_string(),
+            "--shots".to_string(),
+            "out.png".to_string(),
+        ];
         assert!(ref_path_from_args(&args).is_none());
     }
 }

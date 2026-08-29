@@ -36,7 +36,10 @@ pub enum Verification {
     Trusted { manifest: Manifest },
     /// All checks passed AND a trusted attestor signed the bundle — the
     /// strongest trust outcome. `attestor` is the id from the attestor registry that verified.
-    AttestedBy { attestor: String, manifest: Manifest },
+    AttestedBy {
+        attestor: String,
+        manifest: Manifest,
+    },
     /// The publisher's pubkey is in the caller-supplied revocation list —
     /// refuse to install/launch. The manifest may still parse and the
     /// signature may still verify; revocation is a policy override, not a crypto failure.
@@ -55,7 +58,10 @@ pub enum Verification {
     /// The signed-root blob is not in the store.
     MissingRoot,
     /// The signed-root decodes but `package_id != id`.
-    IdMismatch { expected: PackageId, found: PackageId },
+    IdMismatch {
+        expected: PackageId,
+        found: PackageId,
+    },
     /// The signed-root has no signature attached.
     NotSigned,
     /// The signature doesn't validate against the embedded key.
@@ -86,11 +92,7 @@ pub enum Verification {
 
 /// Backwards-compatible verify: no attestor registry, no revocation
 /// list; see [`verify_with_trust`] for the full API.
-pub fn verify<S: BlobStore>(
-    id: PackageId,
-    store: &S,
-    trusted_keys: &[[u8; 32]],
-) -> Verification {
+pub fn verify<S: BlobStore>(id: PackageId, store: &S, trusted_keys: &[[u8; 32]]) -> Verification {
     verify_with_trust(id, store, trusted_keys, &[], &RevocationList::empty())
 }
 
@@ -199,13 +201,13 @@ pub fn verify_with_trust<S: BlobStore>(
         &signed.publisher_identity,
         trusted_attestors,
     ) {
-        return Verification::AttestedBy { attestor: attestor_id, manifest };
+        return Verification::AttestedBy {
+            attestor: attestor_id,
+            manifest,
+        };
     }
 
-    if !trusted_keys
-        .iter()
-        .any(|k| k == &signed.publisher_identity)
-    {
+    if !trusted_keys.iter().any(|k| k == &signed.publisher_identity) {
         return Verification::UntrustedPublisher {
             identity: signed.publisher_identity,
             manifest,

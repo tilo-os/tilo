@@ -156,7 +156,6 @@ fn dispatch_to_host(host: &mut ShellOverlayHost, event: &WindowEvent) {
     );
 }
 
-
 /// A cursor move to seed `last_cursor`, then a left press that lands on
 /// the rect.
 fn click(host: &mut ShellOverlayHost, rect: vello::kurbo::Rect) {
@@ -365,7 +364,11 @@ fn clicking_grant_writes_a_capability_the_decision_function_honours() {
         .iter()
         .find(|c| matches!(&c.scope, Scope::Device(d) if d == "microphone"))
         .expect("the capability is on the workspace");
-    assert_eq!(written.expiry, Expiry::EndOfSession, "chosen expiry is kept");
+    assert_eq!(
+        written.expiry,
+        Expiry::EndOfSession,
+        "chosen expiry is kept"
+    );
     assert!(
         written.granted_by.is_some(),
         "grant_as records the grantor; a grant with no recorded author \

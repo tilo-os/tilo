@@ -11,11 +11,11 @@
 //! below the item count. See `tabs.rs` for the strip-of-rects precedent.
 
 use automerge::{AutoCommit, ObjId};
+use std::collections::HashMap;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use std::collections::HashMap;
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -201,7 +201,6 @@ impl Toolbar {
     pub fn is_overflow_open(&self) -> bool {
         self.overflow_open
     }
-
 }
 
 impl Widget for Toolbar {
@@ -215,15 +214,17 @@ impl Widget for Toolbar {
     ) -> NodeId {
         // Fixed cross-axis size, derived from the button padding + sm
         // typography slug so the strip reads as compact chrome.
-        let cross_axis_size =
-            theme.tokens.typography.scale.sm + 2.0 * theme.tokens.spacing.s2;
+        let cross_axis_size = theme.tokens.typography.scale.sm + 2.0 * theme.tokens.spacing.s2;
         let (w, h) = match self.orientation {
             Orientation::Horizontal => (Dimension::auto(), Dimension::length(cross_axis_size)),
             Orientation::Vertical => (Dimension::length(cross_axis_size), Dimension::auto()),
         };
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: w, height: h },
+                size: Size {
+                    width: w,
+                    height: h,
+                },
                 flex_shrink: 0.0,
                 ..Default::default()
             })
@@ -313,7 +314,9 @@ impl Widget for Toolbar {
         let mut spacer_count = 0usize;
         for (i, it) in self.items.iter().take(n_visible).enumerate() {
             match it {
-                ToolbarItem::Spacer => { spacer_count += 1; }
+                ToolbarItem::Spacer => {
+                    spacer_count += 1;
+                }
                 ToolbarItem::Separator => {
                     measured_axes[i] = SEPARATOR_LINE_PX + 8.0;
                 }
@@ -330,7 +333,11 @@ impl Widget for Toolbar {
         let used: f64 = measured_axes.iter().sum();
         let chip_reserve = if overflow { OVERFLOW_CHIP_AXIS_PX } else { 0.0 };
         let residual = (axis_total - used - chip_reserve).max(0.0);
-        let per_spacer = if spacer_count > 0 { residual / spacer_count as f64 } else { 0.0 };
+        let per_spacer = if spacer_count > 0 {
+            residual / spacer_count as f64
+        } else {
+            0.0
+        };
 
         let cross_start = match self.orientation {
             Orientation::Horizontal => self.rect.y0,
@@ -353,18 +360,12 @@ impl Widget for Toolbar {
                 measured_axes[i]
             };
             let r = match self.orientation {
-                Orientation::Horizontal => Rect::new(
-                    axis_cursor,
-                    cross_start,
-                    axis_cursor + extent,
-                    cross_end,
-                ),
-                Orientation::Vertical => Rect::new(
-                    cross_start,
-                    axis_cursor,
-                    cross_end,
-                    axis_cursor + extent,
-                ),
+                Orientation::Horizontal => {
+                    Rect::new(axis_cursor, cross_start, axis_cursor + extent, cross_end)
+                }
+                Orientation::Vertical => {
+                    Rect::new(cross_start, axis_cursor, cross_end, axis_cursor + extent)
+                }
             };
             self.item_rects[i] = r;
             axis_cursor += extent;
@@ -423,13 +424,7 @@ impl Widget for Toolbar {
                         tokens.colors.surfaces.raised
                     };
                     let shape = RoundedRect::from_rect(r, radius);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        bg,
-                        None,
-                        &shape,
-                    );
+                    scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
                     let (tw, th) = text_renderer.measure(label, font_size, None);
                     let tx = r.center().x - tw as f64 / 2.0;
                     let ty = r.center().y - th as f64 / 2.0;
@@ -534,8 +529,7 @@ impl Widget for Toolbar {
                         *handled = true;
                     }
                 }
-                let new_oh =
-                    self.has_overflow() && self.overflow_rect.contains(pos);
+                let new_oh = self.has_overflow() && self.overflow_rect.contains(pos);
                 if new_oh != self.overflow_hover {
                     self.overflow_hover = new_oh;
                     *handled = true;

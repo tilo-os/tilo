@@ -27,10 +27,10 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
 
-use super::screencast_pipewire::{PipewireStreamInfo, PipewireStreamRequest};
-use super::{CapabilityKind, PortalCaller, PortalContext, file_chooser::FileChooserBackend, flow};
 #[cfg(test)]
 use super::PromptOutcome;
+use super::screencast_pipewire::{PipewireStreamInfo, PipewireStreamRequest};
+use super::{CapabilityKind, PortalCaller, PortalContext, file_chooser::FileChooserBackend, flow};
 
 /// Source-type bitmask (`ScreenCast.AvailableSourceTypes`).
 pub mod source_type {
@@ -199,9 +199,7 @@ impl ScreenCastBackend {
         } else {
             let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
             let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-            let cap_template = Capability::Screencast {
-                scope: GRANT_ONCE,
-            };
+            let cap_template = Capability::Screencast { scope: GRANT_ONCE };
             flow::resolve(&self.ctx, caller, CapabilityKind::Screencast, cap_template)
                 .await
                 .is_allowed()
@@ -256,9 +254,7 @@ impl ScreenCastBackend {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
         if !session.restored {
-            let cap_template = Capability::Screencast {
-                scope: GRANT_ONCE,
-            };
+            let cap_template = Capability::Screencast { scope: GRANT_ONCE };
             let outcome = flow::resolve(
                 &self.ctx,
                 caller.clone(),
@@ -358,7 +354,11 @@ fn size_from_options(options: &HashMap<String, OwnedValue>) -> (u32, u32) {
 /// Always yields at least one (monitor); when `multiple` is false, only the first (monitor > window > virtual preference) is kept.
 fn selected_source_types(mask: u32, multiple: bool) -> Vec<u32> {
     let mut out = Vec::new();
-    for bit in [source_type::MONITOR, source_type::WINDOW, source_type::VIRTUAL] {
+    for bit in [
+        source_type::MONITOR,
+        source_type::WINDOW,
+        source_type::VIRTUAL,
+    ] {
         if mask & bit != 0 {
             out.push(bit);
         }
@@ -411,9 +411,7 @@ fn start_response(
 }
 
 #[cfg(test)]
-fn start_response_with_stream(
-    info: PipewireStreamInfo,
-) -> (u32, HashMap<String, OwnedValue>) {
+fn start_response_with_stream(info: PipewireStreamInfo) -> (u32, HashMap<String, OwnedValue>) {
     start_response(vec![info], None, 0)
 }
 

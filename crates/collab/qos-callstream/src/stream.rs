@@ -233,7 +233,10 @@ pub struct SurfaceStreamReceiver {
 pub enum ReceiverEvent {
     Frame(SurfaceFrame),
     /// A sequence gap was observed — frames dropped somewhere between sender and receiver.
-    SequenceGap { dropped: u64, next_sequence: u64 },
+    SequenceGap {
+        dropped: u64,
+        next_sequence: u64,
+    },
 }
 
 impl SurfaceStreamReceiver {
@@ -262,8 +265,7 @@ impl SurfaceStreamReceiver {
                         let expected = prev.wrapping_add(1);
                         if frame.sequence != expected {
                             let dropped = frame.sequence.wrapping_sub(expected);
-                            self.total_dropped_seq =
-                                self.total_dropped_seq.saturating_add(dropped);
+                            self.total_dropped_seq = self.total_dropped_seq.saturating_add(dropped);
                             out.push(ReceiverEvent::SequenceGap {
                                 dropped,
                                 next_sequence: frame.sequence,

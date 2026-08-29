@@ -87,7 +87,11 @@ pub fn edge_mist_for(viewport: Rect, target: Point) -> Option<EdgeMist> {
             MistEdge::Right
         };
         let along = ((target.y - y0) / h).clamp(0.0, 1.0);
-        Some(EdgeMist { edge, along, distance: horiz })
+        Some(EdgeMist {
+            edge,
+            along,
+            distance: horiz,
+        })
     } else {
         let edge = if over_top >= over_bottom {
             MistEdge::Top
@@ -95,7 +99,11 @@ pub fn edge_mist_for(viewport: Rect, target: Point) -> Option<EdgeMist> {
             MistEdge::Bottom
         };
         let along = ((target.x - x0) / w).clamp(0.0, 1.0);
-        Some(EdgeMist { edge, along, distance: vert })
+        Some(EdgeMist {
+            edge,
+            along,
+            distance: vert,
+        })
     }
 }
 

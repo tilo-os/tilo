@@ -8,7 +8,7 @@
 //! matching GeoGebra), so a selection is represented as a `(steps, a..b)`
 //! range over one row.
 
-use super::model::{node_slots, MathExpr, Node, Path, Row, Slot};
+use super::model::{MathExpr, Node, Path, Row, Slot, node_slots};
 
 /// A selection over a single row: the row's `steps` and an inclusive-start /
 /// exclusive-end index range, plus which end is the moving caret.
@@ -43,7 +43,11 @@ pub struct Editor {
 impl Editor {
     pub fn new(expr: MathExpr) -> Self {
         let off = expr.root.len();
-        Editor { expr, caret: Path::root(off), anchor: None }
+        Editor {
+            expr,
+            caret: Path::root(off),
+            anchor: None,
+        }
     }
 
     pub fn from_linear(s: &str) -> Self {
@@ -72,7 +76,9 @@ impl Editor {
     }
 
     fn row(&self) -> &Row {
-        self.expr.row_at(&self.caret.steps).unwrap_or(&self.expr.root)
+        self.expr
+            .row_at(&self.caret.steps)
+            .unwrap_or(&self.expr.root)
     }
 
     fn row_len(&self) -> usize {
@@ -175,8 +181,7 @@ impl Editor {
                             let new_slot = slots[tp];
                             let mut steps = parent_steps.to_vec();
                             steps.push((idx, new_slot));
-                            let new_len =
-                                self.expr.row_at(&steps).map(|r| r.len()).unwrap_or(0);
+                            let new_len = self.expr.row_at(&steps).map(|r| r.len()).unwrap_or(0);
                             self.caret.steps = steps;
                             self.caret.offset = self.caret.offset.min(new_len);
                             return;
@@ -420,13 +425,25 @@ impl Editor {
         self.delete_selection();
         let run = self.ident_run_before();
         if run == "sqrt" {
-            self.replace_run_before(4, vec![Node::Sqrt { index: None, radicand: Vec::new() }]);
+            self.replace_run_before(
+                4,
+                vec![Node::Sqrt {
+                    index: None,
+                    radicand: Vec::new(),
+                }],
+            );
             self.descend_into_last(Slot::Radicand);
             return;
         }
         if super::model::FUNCS.contains(&run.as_str()) && !run.is_empty() {
             let n = run.chars().count();
-            self.replace_run_before(n, vec![Node::Func { name: run, arg: Vec::new() }]);
+            self.replace_run_before(
+                n,
+                vec![Node::Func {
+                    name: run,
+                    arg: Vec::new(),
+                }],
+            );
             self.descend_into_last(Slot::Arg);
             return;
         }
@@ -456,7 +473,10 @@ impl Editor {
     /// / an IME / a paste builds a real radical rather than a literal character
     /// the engine can't parse.
     pub fn insert_sqrt(&mut self) {
-        self.insert_node(Node::Sqrt { index: None, radicand: Vec::new() });
+        self.insert_node(Node::Sqrt {
+            index: None,
+            radicand: Vec::new(),
+        });
         self.descend_into_last(Slot::Radicand);
     }
 
@@ -465,7 +485,10 @@ impl Editor {
     fn start_fraction(&mut self) {
         self.delete_selection();
         let num = self.take_left_operand();
-        self.insert_node(Node::Frac { num, den: Vec::new() });
+        self.insert_node(Node::Frac {
+            num,
+            den: Vec::new(),
+        });
         self.descend_into_last(Slot::Den);
     }
 
@@ -541,25 +564,24 @@ impl Editor {
     }
 
     fn run_before_is(&self, want: &str) -> bool {
-        self.ident_run_before().ends_with(want)
-            && {
-                // ensure exactly the run (not part of a longer ident)
-                let row = self.row();
-                let n = want.chars().count();
-                let off = self.caret.offset;
-                if off < n {
-                    return false;
-                }
-                // char before the run must not be a letter
-                if off > n {
-                    if let Node::Char(c) = &row[off - n - 1] {
-                        if c.is_ascii_alphabetic() {
-                            return false;
-                        }
+        self.ident_run_before().ends_with(want) && {
+            // ensure exactly the run (not part of a longer ident)
+            let row = self.row();
+            let n = want.chars().count();
+            let off = self.caret.offset;
+            if off < n {
+                return false;
+            }
+            // char before the run must not be a letter
+            if off > n {
+                if let Node::Char(c) = &row[off - n - 1] {
+                    if c.is_ascii_alphabetic() {
+                        return false;
                     }
                 }
-                true
             }
+            true
+        }
     }
 
     fn replace_run_before(&mut self, count: usize, with: Vec<Node>) {

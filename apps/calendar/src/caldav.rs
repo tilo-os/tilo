@@ -90,8 +90,15 @@ pub fn build_put_request(
 ) -> PutRequest {
     let collection = collection_url_for(config, calendar);
     let url = format!("{}/{}.ics", collection.trim_end_matches('/'), event.id);
-    let model = Model { projects: Vec::new(), events: vec![event.clone()], tasks: Vec::new() };
-    PutRequest { url, body: ics::export(&model) }
+    let model = Model {
+        projects: Vec::new(),
+        events: vec![event.clone()],
+        tasks: Vec::new(),
+    };
+    PutRequest {
+        url,
+        body: ics::export(&model),
+    }
 }
 
 /// The concrete CalDAV `DELETE` a queued deletion turns into: the URL of the
@@ -242,7 +249,13 @@ pub fn sample_pull_all(
         return (merged, SyncOutcome::Offline);
     }
     let events = merged.events.len();
-    (merged, SyncOutcome::Synced { calendars: count, events })
+    (
+        merged,
+        SyncOutcome::Synced {
+            calendars: count,
+            events,
+        },
+    )
 }
 
 /// A small, self-contained `.ics` payload representing what a given remote
@@ -316,7 +329,11 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
         }],
     };
 
-    let model = Model { projects: Vec::new(), events, tasks: Vec::new() };
+    let model = Model {
+        projects: Vec::new(),
+        events,
+        tasks: Vec::new(),
+    };
     ics::export(&model)
 }
 
@@ -371,7 +388,13 @@ mod live {
             return (merged, SyncOutcome::Offline);
         }
         let events = merged.events.len();
-        (merged, SyncOutcome::Synced { calendars: count, events })
+        (
+            merged,
+            SyncOutcome::Synced {
+                calendars: count,
+                events,
+            },
+        )
     }
 
     /// Pull one collection: a `REPORT` calendar-query for a window around
@@ -386,15 +409,17 @@ mod live {
         today: NaiveDate,
     ) -> Result<SyncResult, String> {
         let url = collection_url(config, cal);
-        let report = reqwest::Method::from_bytes(b"REPORT")
-            .map_err(|e| e.to_string())?;
+        let report = reqwest::Method::from_bytes(b"REPORT").map_err(|e| e.to_string())?;
         let body = calendar_query_body(today);
 
         let resp = client
             .request(report, &url)
             .basic_auth(&config.username, Some(&config.password))
             .header("Depth", "1")
-            .header(reqwest::header::CONTENT_TYPE, "application/xml; charset=utf-8")
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/xml; charset=utf-8",
+            )
             .body(body)
             .send();
 
@@ -443,7 +468,10 @@ mod live {
             let resp = client
                 .put(&req.url)
                 .basic_auth(&config.username, Some(&config.password))
-                .header(reqwest::header::CONTENT_TYPE, "text/calendar; charset=utf-8")
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    "text/calendar; charset=utf-8",
+                )
                 .body(req.body)
                 .send();
             if matches!(resp, Ok(r) if r.status().is_success()) {
@@ -475,7 +503,8 @@ mod live {
                 .basic_auth(&config.username, Some(&config.password))
                 .send();
             // 2xx, or a 404 (already gone), both mean the resource is absent.
-            let gone = matches!(resp, Ok(r) if r.status().is_success() || r.status().as_u16() == 404);
+            let gone =
+                matches!(resp, Ok(r) if r.status().is_success() || r.status().as_u16() == 404);
             if gone {
                 deleted.push(*uid);
             }
@@ -547,7 +576,9 @@ mod tests {
         let res = pull_calendar(&account.config, cal, today());
         assert!(!res.events.is_empty());
         assert!(
-            res.events.iter().all(|e| e.calendar_id.as_deref() == Some("work/default")),
+            res.events
+                .iter()
+                .all(|e| e.calendar_id.as_deref() == Some("work/default")),
             "every synced event is tagged with its source calendar id"
         );
     }
@@ -596,7 +627,11 @@ mod tests {
         };
         let req = build_put_request(&account.config, cal, &ev);
         // URL is the event resource under the collection.
-        assert!(req.url.starts_with(&account.config.server_url), "url = {}", req.url);
+        assert!(
+            req.url.starts_with(&account.config.server_url),
+            "url = {}",
+            req.url
+        );
         assert!(req.url.ends_with(&format!("{}.ics", ev.id)));
         // Body is a real one-event VCALENDAR carrying the title.
         assert!(req.body.contains("BEGIN:VEVENT"));
@@ -612,7 +647,11 @@ mod tests {
             .unwrap();
         let uid = uuid::Uuid::new_v4();
         let del = build_delete_request(&account.config, cal, uid);
-        assert!(del.url.starts_with(&account.config.server_url), "url = {}", del.url);
+        assert!(
+            del.url.starts_with(&account.config.server_url),
+            "url = {}",
+            del.url
+        );
         assert!(del.url.ends_with(&format!("{uid}.ics")));
     }
 
@@ -683,7 +722,11 @@ mod tests {
             .find(|(_, c)| c.id == "icloud/personal")
             .unwrap();
         let res = pull_calendar(&account.config, cal, today());
-        let dinner = res.events.iter().find(|e| e.title == "Family dinner").unwrap();
+        let dinner = res
+            .events
+            .iter()
+            .find(|e| e.title == "Family dinner")
+            .unwrap();
         assert_eq!(dinner.recurrence, crate::model::Recurrence::Weekly);
     }
 }

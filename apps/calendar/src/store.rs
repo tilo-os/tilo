@@ -89,7 +89,7 @@ pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ObjType, ReadDoc, ROOT};
+    use automerge::{ObjType, ROOT, ReadDoc};
 
     fn tmp_dir() -> PathBuf {
         let p = std::env::temp_dir().join(format!("cal-store-{}", uuid::Uuid::new_v4()));

@@ -390,8 +390,8 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
             .with_acl(acl.clone(), ALICE);
         let mut cfg_a = Config::default();
         cfg_a.mount_options = vec![MountOption::FSName("quickfs_acl_alice".into())];
-        let _sa = fuser::spawn_mount2(alice_fs, alice_dir.path(), &cfg_a)
-            .expect("spawn alice session");
+        let _sa =
+            fuser::spawn_mount2(alice_fs, alice_dir.path(), &cfg_a).expect("spawn alice session");
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         let alice_read = std::fs::read(alice_dir.path().join("secret.txt"));
@@ -414,8 +414,7 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
         let bob_fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_acl(acl, BOB);
         let mut cfg_b = Config::default();
         cfg_b.mount_options = vec![MountOption::FSName("quickfs_acl_bob".into())];
-        let _sb =
-            fuser::spawn_mount2(bob_fs, bob_dir.path(), &cfg_b).expect("spawn bob session");
+        let _sb = fuser::spawn_mount2(bob_fs, bob_dir.path(), &cfg_b).expect("spawn bob session");
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
@@ -467,8 +466,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
         let mut config = Config::default();
         config.mount_options = options;
 
-        let _session =
-            fuser::spawn_mount2(fs, &mount_path, &config).expect("spawn FUSE session");
+        let _session = fuser::spawn_mount2(fs, &mount_path, &config).expect("spawn FUSE session");
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Projection: the tree is visible.
@@ -510,8 +508,7 @@ async fn fuse_write_create_overwrite_rename_unlink() {
 
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_rw".to_string())];
-        let _session =
-            fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // create + write
@@ -585,14 +582,19 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
 
         // A file whose namespace entry carries a content hash the store
         // does NOT have — exactly what a freshly-joined peer projects before hydration.
-        let projected_hash =
-            iroh_blobs::Hash::from([3u8; 32]);
+        let projected_hash = iroh_blobs::Hash::from([3u8; 32]);
 
         let namespace = Arc::new(Mutex::new(Namespace::new("xattr-peer")));
         {
             let mut ns = namespace.lock().unwrap();
-            ns.create_file(ROOT_INO, "here.txt", Some(&local_hash), body.len() as u64, 1)
-                .unwrap();
+            ns.create_file(
+                ROOT_INO,
+                "here.txt",
+                Some(&local_hash),
+                body.len() as u64,
+                1,
+            )
+            .unwrap();
             ns.create_file(ROOT_INO, "remote.txt", Some(&projected_hash), 4096, 1)
                 .unwrap();
             ns.create_dir(ROOT_INO, "folder", 1).unwrap();
@@ -1027,8 +1029,12 @@ async fn a_hidden_path_answers_exactly_as_an_absent_one() {
             "mkdir distinguishes hidden {hidden} from absent {absent}"
         );
         assert_eq!(
-            std::fs::rename(&h, p.join("w/docs/stolen")).err().map(|e| e.raw_os_error()),
-            std::fs::rename(&a, p.join("w/docs/stolen")).err().map(|e| e.raw_os_error()),
+            std::fs::rename(&h, p.join("w/docs/stolen"))
+                .err()
+                .map(|e| e.raw_os_error()),
+            std::fs::rename(&a, p.join("w/docs/stolen"))
+                .err()
+                .map(|e| e.raw_os_error()),
             "rename distinguishes hidden {hidden} from absent {absent}"
         );
         assert_eq!(
@@ -1205,7 +1211,11 @@ async fn a_write_without_read_entry_refuses_rather_than_clobbering() {
 async fn document_fixture(
     acl: Option<(WorkspaceAcl, [u8; 32])>,
     name: &str,
-) -> (fuser::BackgroundSession, tempfile::TempDir, Arc<Mutex<Namespace>>) {
+) -> (
+    fuser::BackgroundSession,
+    tempfile::TempDir,
+    Arc<Mutex<Namespace>>,
+) {
     let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("doc-view-peer")));
@@ -1239,12 +1249,7 @@ async fn document_fixture(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_read_participant_reads_a_shared_document_and_cannot_author_it() {
     require_fuse!();
-    let acl = WorkspaceAcl::from_capabilities(
-        ALICE,
-        &[read_cap(ALICE, "/shared")],
-        &[],
-        None,
-    );
+    let acl = WorkspaceAcl::from_capabilities(ALICE, &[read_cap(ALICE, "/shared")], &[], None);
     let (_session, dir, namespace) = document_fixture(Some((acl, ALICE)), "quickfs_doc_ro").await;
     let doc = dir.path().join("shared/notes.md");
 
@@ -1340,8 +1345,11 @@ async fn a_read_participant_reads_a_shared_document_and_cannot_author_it() {
     );
     let (_s2, dir2, ns2) = document_fixture(Some((rw, BOB)), "quickfs_doc_rw").await;
     let heads2 = ns2.lock().unwrap().heads();
-    std::fs::write(dir2.path().join("shared/notes.md"), b"# Authored\n\nBy Bob\n")
-        .expect("an authoring participant may write the shared document");
+    std::fs::write(
+        dir2.path().join("shared/notes.md"),
+        b"# Authored\n\nBy Bob\n",
+    )
+    .expect("an authoring participant may write the shared document");
     assert_ne!(
         ns2.lock().unwrap().heads(),
         heads2,

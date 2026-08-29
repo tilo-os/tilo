@@ -112,9 +112,7 @@ pub enum ValidationError {
 
     /// Step 8b: the author has a `ClearedAt` claim but its issuer isn't in
     /// `accepted_trust_roots` — we refuse a self-signed clearance.
-    #[error(
-        "clearance claim was issued by {issuer:?}, which is not in the accepted trust roots"
-    )]
+    #[error("clearance claim was issued by {issuer:?}, which is not in the accepted trust roots")]
     UntrustedClearanceIssuer {
         /// The issuer key on the rejected `ClearedAt` claim.
         issuer: Ed25519PublicKey,
@@ -306,9 +304,7 @@ impl ChannelState {
         let mut prefix: Vec<SignedOp> = self
             .op_log
             .iter()
-            .filter(|op| {
-                op.artifact == checkpoint.artifact && op.seq <= checkpoint.up_to_seq
-            })
+            .filter(|op| op.artifact == checkpoint.artifact && op.seq <= checkpoint.up_to_seq)
             .map(|op| {
                 let id = OpId::from_op(op);
                 if self.redacted_ops.contains(&id)
@@ -526,10 +522,7 @@ pub fn validate_inbound_op(
     }
 
     // Step 7: monotonic seq.
-    let last = channel_state
-        .last_seq_per_author
-        .get(&op.author)
-        .copied();
+    let last = channel_state.last_seq_per_author.get(&op.author).copied();
     if let Some(prev) = last
         && op.seq <= prev
     {
@@ -596,9 +589,7 @@ pub fn validate_inbound_op(
     }
 
     // All checks passed. Bump replay sequence.
-    channel_state
-        .last_seq_per_author
-        .insert(op.author, op.seq);
+    channel_state.last_seq_per_author.insert(op.author, op.seq);
     Ok(())
 }
 

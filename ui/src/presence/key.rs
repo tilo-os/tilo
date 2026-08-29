@@ -8,20 +8,33 @@ pub enum PathSegment {
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PresenceKey {
-    Widget { path: Vec<PathSegment> },
-    Tab { id: String },
-    Workspace { id: String },
-    App { app: crate::permissions::AppKind, sub: String },
+    Widget {
+        path: Vec<PathSegment>,
+    },
+    Tab {
+        id: String,
+    },
+    Workspace {
+        id: String,
+    },
+    App {
+        app: crate::permissions::AppKind,
+        sub: String,
+    },
     /// A participant's broadcast [`ViewSubset`](crate::view::ViewSubset),
     /// carried as its postcard encoding. `PresencePayload` has no View
     /// variant of its own, so it rides the existing presence frame inside
     /// the routing key instead. Bytes rather than a live struct because the
     /// key must stay `Hash + Eq`, which `f64` viewport fields are not.
-    View { data: Vec<u8> },
+    View {
+        data: Vec<u8>,
+    },
     /// A pointer position, together with the coordinate space it was measured
     /// in. Every other variant is a scope; the scope of a pointer is the space
     /// its numbers mean something in. See [`PointerSpace`].
-    Pointer { space: PointerSpace },
+    Pointer {
+        space: PointerSpace,
+    },
 }
 
 /// The coordinate space a pointer position is measured in.
@@ -85,7 +98,9 @@ impl PresenceKey {
         if cluster.is_nil() {
             return None;
         }
-        Some(PresenceKey::Workspace { id: cluster.to_string() })
+        Some(PresenceKey::Workspace {
+            id: cluster.to_string(),
+        })
     }
 
     /// The key a pointer measured on `room`'s desktop is published under.
@@ -99,7 +114,9 @@ impl PresenceKey {
     /// under.
     pub fn surface_pointer(surface: impl Into<String>) -> Self {
         PresenceKey::Pointer {
-            space: PointerSpace::Surface { surface: surface.into() },
+            space: PointerSpace::Surface {
+                surface: surface.into(),
+            },
         }
     }
 
@@ -120,9 +137,9 @@ impl PresenceKey {
         match self {
             PresenceKey::Pointer { space } => Some(space.clone()),
             PresenceKey::Workspace { id } => Some(PointerSpace::Desktop { room: id.clone() }),
-            PresenceKey::Widget { path } if path.is_empty() => {
-                Some(PointerSpace::Desktop { room: String::new() })
-            }
+            PresenceKey::Widget { path } if path.is_empty() => Some(PointerSpace::Desktop {
+                room: String::new(),
+            }),
             _ => None,
         }
     }
@@ -179,13 +196,19 @@ mod view_key_tests {
         let subset = ViewSubset {
             scroll: vec![12.0, 34.0],
             open_resource: Some("file:/notes.md".into()),
-            viewport: ViewRect { x: 0.0, y: 0.0, width: 800.0, height: 600.0 },
+            viewport: ViewRect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
             view_mode: Some("list".into()),
         };
         let key = PresenceKey::view(&subset);
         assert!(matches!(key, PresenceKey::View { .. }));
         assert_eq!(
-            key.as_view().expect("a View key decodes back to its subset"),
+            key.as_view()
+                .expect("a View key decodes back to its subset"),
             subset
         );
     }
@@ -206,7 +229,9 @@ mod view_key_tests {
         }
         assert_eq!(
             PresenceKey::for_local_workspace(),
-            Some(PresenceKey::Workspace { id: room.to_string() })
+            Some(PresenceKey::Workspace {
+                id: room.to_string()
+            })
         );
         assert_eq!(
             crate::collaboration::local_cluster_id().to_string(),
@@ -309,8 +334,10 @@ mod view_key_tests {
         assert!(PresenceKey::pointer_default().scopes_a_desktop_pointer());
         // A position inside a document is not a position on a screen.
         assert!(
-            !PresenceKey::Widget { path: vec![PathSegment::Index(0)] }
-                .scopes_a_desktop_pointer()
+            !PresenceKey::Widget {
+                path: vec![PathSegment::Index(0)]
+            }
+            .scopes_a_desktop_pointer()
         );
         assert_eq!(
             PresenceKey::Tab { id: "t".into() }.pointer_space(),
@@ -322,9 +349,19 @@ mod view_key_tests {
     #[test]
     fn as_view_is_none_for_other_key_variants() {
         assert!(PresenceKey::Tab { id: "t".into() }.as_view().is_none());
-        assert!(PresenceKey::Workspace { id: "w".into() }.as_view().is_none());
+        assert!(
+            PresenceKey::Workspace { id: "w".into() }
+                .as_view()
+                .is_none()
+        );
         assert!(PresenceKey::pointer_default().as_view().is_none());
         // Garbage bytes in a View key decode to None rather than panicking.
-        assert!(PresenceKey::View { data: vec![0xff, 0x00, 0x13] }.as_view().is_none());
+        assert!(
+            PresenceKey::View {
+                data: vec![0xff, 0x00, 0x13]
+            }
+            .as_view()
+            .is_none()
+        );
     }
 }

@@ -159,7 +159,14 @@ enum Field {
 }
 
 impl Field {
-    const ALL: [Field; 6] = [Field::Search, Field::Name, Field::Host, Field::Port, Field::User, Field::Group];
+    const ALL: [Field; 6] = [
+        Field::Search,
+        Field::Name,
+        Field::Host,
+        Field::Port,
+        Field::User,
+        Field::Group,
+    ];
 
     /// The hint shown while the field is empty.
     fn placeholder(self) -> &'static str {
@@ -192,7 +199,9 @@ struct FieldInputs {
 impl FieldInputs {
     fn new() -> Self {
         let field = |f: Field| {
-            let mut t = TextInput::local().with_placeholder(f.placeholder()).with_font_size(14.0);
+            let mut t = TextInput::local()
+                .with_placeholder(f.placeholder())
+                .with_font_size(14.0);
             // The form paints the field box + focus ring itself; the widget
             // paints the text, selection and caret inside it.
             t.set_plain_chrome(true);
@@ -497,9 +506,7 @@ impl RemoteApp {
                 if k == ConnectionKind::Qos {
                     self.draft.port = String::new();
                     self.draft.auth = AuthMethod::DeviceIdentity;
-                } else if self.draft.port.trim().is_empty()
-                    || self.draft.port.trim() == "0"
-                {
+                } else if self.draft.port.trim().is_empty() || self.draft.port.trim() == "0" {
                     self.draft.port = k.default_port().to_string();
                 }
                 self.reload_inputs();
@@ -620,9 +627,10 @@ impl RemoteApp {
                 port: c.port,
                 password: std::env::var("REMOTE_VNC_PASSWORD").ok(),
             })),
-            other => {
-                LiveSession::Error(format!("{} transport is not implemented yet", other.label()))
-            }
+            other => LiveSession::Error(format!(
+                "{} transport is not implemented yet",
+                other.label()
+            )),
         }
     }
 
@@ -666,7 +674,10 @@ impl RemoteApp {
     /// Whether a live transport is currently connecting or connected — used
     /// to keep the host pumping animation frames so incoming data renders.
     fn live_active(&self) -> bool {
-        self.live.as_ref().map(|l| l.status().is_live()).unwrap_or(false)
+        self.live
+            .as_ref()
+            .map(|l| l.status().is_live())
+            .unwrap_or(false)
     }
 
     /// The connected VNC session, if that's the current live transport.
@@ -698,7 +709,11 @@ impl RemoteApp {
     /// live remote desktop, if the pointer is over its canvas.
     fn forward_vnc_pointer(&self, p: Point) {
         if let (Some(s), Some((x, y))) = (self.vnc_session(), self.vnc_pointer_target(p)) {
-            s.send_input(VncInput::Pointer { button_mask: self.vnc_buttons, x, y });
+            s.send_input(VncInput::Pointer {
+                button_mask: self.vnc_buttons,
+                x,
+                y,
+            });
         }
     }
 
@@ -830,7 +845,17 @@ impl RemoteApp {
         let input = self.inputs.get(f);
         input.set_focus(true);
         let (mut handled, mut focus_target) = (false, None);
-        input.handle_event(event, scale, modifiers, state, path, &mut handled, &mut focus_target, node_id, taffy);
+        input.handle_event(
+            event,
+            scale,
+            modifiers,
+            state,
+            path,
+            &mut handled,
+            &mut focus_target,
+            node_id,
+            taffy,
+        );
         if self.inputs.get(f).value() != before {
             self.commit_field(f);
         }
@@ -987,10 +1012,26 @@ fn seed_connections() -> Vec<Connection> {
 
 fn seed_qos_devices() -> Vec<QosDevice> {
     vec![
-        QosDevice { name: "Studio Node".into(), node: "studio-node".into(), online: true },
-        QosDevice { name: "Workshop Laptop".into(), node: "workshop-laptop".into(), online: true },
-        QosDevice { name: "Living Room TV".into(), node: "lr-display".into(), online: true },
-        QosDevice { name: "Garage Pi".into(), node: "garage-pi".into(), online: false },
+        QosDevice {
+            name: "Studio Node".into(),
+            node: "studio-node".into(),
+            online: true,
+        },
+        QosDevice {
+            name: "Workshop Laptop".into(),
+            node: "workshop-laptop".into(),
+            online: true,
+        },
+        QosDevice {
+            name: "Living Room TV".into(),
+            node: "lr-display".into(),
+            online: true,
+        },
+        QosDevice {
+            name: "Garage Pi".into(),
+            node: "garage-pi".into(),
+            online: false,
+        },
     ]
 }
 
@@ -1031,8 +1072,7 @@ impl Widget for RemoteApp {
                 // Adopt a peer's list wholesale.
                 self.workspace.connections = doc_conns;
                 if self.selected.and_then(|s| self.workspace.get(s)).is_none() {
-                    self.selected =
-                        self.workspace.filtered(&self.search).first().map(|c| c.id);
+                    self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
                 }
             }
             self.seeded = true;
@@ -1126,7 +1166,13 @@ impl Widget for RemoteApp {
         }
 
         // Whole-window background.
-        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
 
         // Fullscreen session hides the rail + header for an immersive view.
         let immersive = matches!(self.screen, Screen::Session { .. }) && self.fullscreen;
@@ -1143,22 +1189,44 @@ impl Widget for RemoteApp {
             // Reserve room at the content's top-left for the floating
             // hamburger so the header title / search box don't sit under it.
             let inset = 12.0 + HAMBURGER + 12.0;
-            Rect::new(self.rect.x0 + inset, self.rect.y0, self.rect.x1, self.rect.y1)
+            Rect::new(
+                self.rect.x0 + inset,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y1,
+            )
         } else {
             let inset = RAIL_W * reveal;
-            Rect::new(self.rect.x0 + inset, self.rect.y0, self.rect.x1, self.rect.y1)
+            Rect::new(
+                self.rect.x0 + inset,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y1,
+            )
         };
 
         match self.screen.clone() {
             Screen::List => {
                 self.draw_list(scene, transform, text_renderer, theme, presence, content)
             }
-            Screen::Form { editing } => {
-                self.draw_form(scene, transform, text_renderer, theme, presence, content, editing)
-            }
-            Screen::Session { id } => {
-                self.draw_session(scene, transform, text_renderer, theme, content, id, immersive)
-            }
+            Screen::Form { editing } => self.draw_form(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                content,
+                editing,
+            ),
+            Screen::Session { id } => self.draw_session(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                content,
+                id,
+                immersive,
+            ),
         }
 
         if immersive {
@@ -1210,7 +1278,15 @@ impl Widget for RemoteApp {
                 // A focused field tracks the pointer so a drag extends its
                 // selection past the edge of the box.
                 if self.focus.is_some() {
-                    self.route_to_focused_field(event, scale_factor, modifiers, state, path, node_id, taffy);
+                    self.route_to_focused_field(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        node_id,
+                        taffy,
+                    );
                 }
             }
             // A press/release over the live VNC canvas is injected into the
@@ -1276,7 +1352,15 @@ impl Widget for RemoteApp {
                     // here selects — rather than the click only meaning "focus".
                     if let Action::FocusField(f) = action {
                         self.focus_field(f);
-                        self.route_to_focused_field(event, scale_factor, modifiers, state, path, node_id, taffy);
+                        self.route_to_focused_field(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            node_id,
+                            taffy,
+                        );
                     } else {
                         self.apply(action, state);
                     }
@@ -1288,8 +1372,19 @@ impl Widget for RemoteApp {
             }
             // Ending a drag has to reach the field that started it, or the
             // selection keeps extending after the button is up.
-            WindowEvent::MouseInput { state: ElementState::Released, .. } if self.focus.is_some() => {
-                self.route_to_focused_field(event, scale_factor, modifiers, state, path, node_id, taffy);
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } if self.focus.is_some() => {
+                self.route_to_focused_field(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    node_id,
+                    taffy,
+                );
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1301,12 +1396,26 @@ impl Widget for RemoteApp {
                     },
                 ..
             } => {
-                self.handle_key(logical_key, text.as_ref().map(|s| s.as_str()), modifiers.state(), state, handled);
+                self.handle_key(
+                    logical_key,
+                    text.as_ref().map(|s| s.as_str()),
+                    modifiers.state(),
+                    state,
+                    handled,
+                );
                 // Anything the app's own shortcuts did not claim belongs to the
                 // focused field: typing, caret movement, selection, clipboard,
                 // IME — all of it the shared input's, not this app's.
                 if !*handled && self.focus.is_some() {
-                    *handled = self.route_to_focused_field(event, scale_factor, modifiers, state, path, node_id, taffy);
+                    *handled = self.route_to_focused_field(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        node_id,
+                        taffy,
+                    );
                 }
             }
             _ => {}
@@ -1363,9 +1472,7 @@ impl RemoteApp {
         let ctrl = mods.control_key() || mods.super_key();
 
         // --- Global shortcuts (work regardless of focus) ---
-        if ctrl
-            && let Key::Character(c) = key
-        {
+        if ctrl && let Key::Character(c) = key {
             match c.to_lowercase().as_str() {
                 "n" => {
                     self.apply(Action::NewConnection, state);
@@ -1394,8 +1501,7 @@ impl RemoteApp {
 
         // A connected session captures keyboard input for the remote — except
         // Escape while fullscreen, which exits fullscreen locally.
-        let esc_exits_fullscreen =
-            self.fullscreen && matches!(key, Key::Named(NamedKey::Escape));
+        let esc_exits_fullscreen = self.fullscreen && matches!(key, Key::Named(NamedKey::Escape));
         if !esc_exits_fullscreen && matches!(self.screen, Screen::Session { .. }) {
             match &self.live {
                 Some(LiveSession::Ssh(s)) if s.status() == SessionStatus::Connected => {
@@ -1408,8 +1514,14 @@ impl RemoteApp {
                 }
                 Some(LiveSession::Vnc(s)) if s.status() == SessionStatus::Connected => {
                     if let Some(sym) = Self::vnc_keysym(key, text) {
-                        s.send_input(VncInput::Key { down: true, key: sym });
-                        s.send_input(VncInput::Key { down: false, key: sym });
+                        s.send_input(VncInput::Key {
+                            down: true,
+                            key: sym,
+                        });
+                        s.send_input(VncInput::Key {
+                            down: false,
+                            key: sym,
+                        });
                         self.dirty = true;
                         *handled = true;
                         return;
@@ -1491,8 +1603,12 @@ impl RemoteApp {
 
     /// Move list selection up/down within the filtered view.
     fn move_selection(&mut self, down: bool) {
-        let filtered: Vec<ConnectionId> =
-            self.workspace.filtered(&self.search).iter().map(|c| c.id).collect();
+        let filtered: Vec<ConnectionId> = self
+            .workspace
+            .filtered(&self.search)
+            .iter()
+            .map(|c| c.id)
+            .collect();
         if filtered.is_empty() {
             return;
         }
@@ -1524,13 +1640,30 @@ impl RemoteApp {
     ) {
         let tokens = &theme.tokens;
         let rail = Rect::new(x0, self.rect.y0, x0 + RAIL_W, self.rect.y1);
-        scene.fill(Fill::NonZero, transform, tokens.colors.neutral[1], None, &rail);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.neutral[1],
+            None,
+            &rail,
+        );
         // Right hairline.
         let seam = Rect::new(rail.x1 - 1.0, rail.y0, rail.x1, rail.y1);
-        scene.fill(Fill::NonZero, transform, tokens.colors.border_standard, None, &seam);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &seam,
+        );
 
         // App glyph at the top — a stylized monitor in the accent colour.
-        let glyph = Rect::new(rail.x0 + 16.0, rail.y0 + 18.0, rail.x0 + 48.0, rail.y0 + 44.0);
+        let glyph = Rect::new(
+            rail.x0 + 16.0,
+            rail.y0 + 18.0,
+            rail.x0 + 48.0,
+            rail.y0 + 44.0,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1538,18 +1671,45 @@ impl RemoteApp {
             None,
             &RoundedRect::from_rect(glyph, 5.0),
         );
-        let stand = Rect::new(glyph.center().x - 6.0, glyph.y1, glyph.center().x + 6.0, glyph.y1 + 5.0);
-        scene.fill(Fill::NonZero, transform, tokens.colors.accent[5], None, &stand);
+        let stand = Rect::new(
+            glyph.center().x - 6.0,
+            glyph.y1,
+            glyph.center().x + 6.0,
+            glyph.y1 + 5.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.accent[5],
+            None,
+            &stand,
+        );
 
         // Rail buttons.
         let on_list = matches!(self.screen, Screen::List);
         let home_btn = self.draw_rail_button(
-            scene, transform, text_renderer, theme, rail, 0, "≡", "Connections", on_list,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rail,
+            0,
+            "≡",
+            "Connections",
+            on_list,
         );
         self.push_hit(home_btn, Action::GoList);
 
         let new_btn = self.draw_rail_button(
-            scene, transform, text_renderer, theme, rail, 1, "+", "Add", false,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rail,
+            1,
+            "+",
+            "Add",
+            false,
         );
         self.push_hit(new_btn, Action::NewConnection);
     }
@@ -1581,7 +1741,13 @@ impl RemoteApp {
             tokens.colors.neutral[1]
         };
         scene.fill(Fill::NonZero, transform, bg, None, &rr);
-        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &rr,
+        );
 
         // Three stacked bars (or a chevron when open) in the dim text colour.
         let color = tokens.colors.text_primary;
@@ -1594,8 +1760,7 @@ impl RemoteApp {
                 glyph,
                 22.0,
                 color,
-                transform
-                    * Affine::translate((btn.center().x - gw as f64 / 2.0, btn.y0 + 6.0)),
+                transform * Affine::translate((btn.center().x - gw as f64 / 2.0, btn.y0 + 6.0)),
                 None,
                 TextWeight::Bold,
             );
@@ -1651,7 +1816,11 @@ impl RemoteApp {
                 &RoundedRect::from_rect(btn, 8.0),
             );
         }
-        let color = if active { tokens.colors.accent[6] } else { tokens.colors.text_dim };
+        let color = if active {
+            tokens.colors.accent[6]
+        } else {
+            tokens.colors.text_dim
+        };
         let (gw, _) = text_renderer.measure(glyph, 22.0, None);
         text_renderer.draw_text(
             scene,
@@ -1701,8 +1870,21 @@ impl RemoteApp {
         );
 
         // New-connection button (top-right).
-        let add = Rect::new(content.x1 - pad - 150.0, header.y0 + 16.0, content.x1 - pad, header.y0 + 48.0);
-        self.draw_button(scene, transform, text_renderer, theme, add, "+ New connection", true);
+        let add = Rect::new(
+            content.x1 - pad - 150.0,
+            header.y0 + 16.0,
+            content.x1 - pad,
+            header.y0 + 48.0,
+        );
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            add,
+            "+ New connection",
+            true,
+        );
         self.push_hit(add, Action::NewConnection);
 
         // --- Search box ---
@@ -1712,14 +1894,26 @@ impl RemoteApp {
             content.x1 - pad,
             header.y1 + 40.0,
         );
-        self.draw_field(scene, transform, text_renderer, theme, presence, search, Field::Search);
+        self.draw_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            search,
+            Field::Search,
+        );
         self.push_hit(search, Action::FocusField(Field::Search));
 
         // --- Rows ---
         let list_top = search.y1 + 16.0;
         let mut y = list_top;
-        let rows: Vec<Connection> =
-            self.workspace.filtered(&self.search).into_iter().cloned().collect();
+        let rows: Vec<Connection> = self
+            .workspace
+            .filtered(&self.search)
+            .into_iter()
+            .cloned()
+            .collect();
 
         if rows.is_empty() {
             let region = Rect::new(content.x0, list_top, content.x1, content.y1);
@@ -1735,10 +1929,11 @@ impl RemoteApp {
                     msg,
                     14.0,
                     tokens.colors.text_dim,
-                    transform * Affine::translate((
-                        region.center().x - mw as f64 / 2.0,
-                        region.y0 + 48.0,
-                    )),
+                    transform
+                        * Affine::translate((
+                            region.center().x - mw as f64 / 2.0,
+                            region.y0 + 48.0,
+                        )),
                     None,
                 );
             }
@@ -1748,7 +1943,13 @@ impl RemoteApp {
         // Clip rows to the content area so a long list doesn't paint over
         // the header.
         let list_clip = Rect::new(content.x0, list_top, content.x1, content.y1);
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &list_clip);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &list_clip,
+        );
         for c in &rows {
             let row = Rect::new(content.x0 + pad, y, content.x1 - pad, y + ROW_H);
             self.draw_connection_row(scene, transform, text_renderer, theme, row, c);
@@ -1776,8 +1977,20 @@ impl RemoteApp {
         // Emblem: an accent-ringed disc with a plus glyph — "add a machine".
         let r = 36.0;
         let c = Point::new(mid, y + r);
-        scene.fill(Fill::NonZero, transform, accent.at_alpha(0.12), None, &Circle::new(c, r));
-        scene.stroke(&Stroke::new(2.0), transform, accent.at_alpha(0.8), None, &Circle::new(c, r));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            accent.at_alpha(0.12),
+            None,
+            &Circle::new(c, r),
+        );
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            accent.at_alpha(0.8),
+            None,
+            &Circle::new(c, r),
+        );
         let arm = 12.0;
         let thick = Stroke::new(2.6);
         scene.stroke(
@@ -1823,7 +2036,15 @@ impl RemoteApp {
 
         let bw = 168.0;
         let btn = Rect::new(mid - bw / 2.0, y, mid + bw / 2.0, y + 40.0);
-        self.draw_button(scene, transform, text_renderer, theme, btn, "+ New connection", true);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            btn,
+            "+ New connection",
+            true,
+        );
         self.push_hit(btn, Action::NewConnection);
     }
 
@@ -1850,8 +2071,18 @@ impl RemoteApp {
             tokens.colors.neutral[1]
         };
         scene.fill(Fill::NonZero, transform, bg, None, &rr);
-        let border = if selected { tokens.colors.accent[5] } else { tokens.colors.border_standard };
-        scene.stroke(&Stroke::new(if selected { 1.5 } else { 1.0 }), transform, border, None, &rr);
+        let border = if selected {
+            tokens.colors.accent[5]
+        } else {
+            tokens.colors.border_standard
+        };
+        scene.stroke(
+            &Stroke::new(if selected { 1.5 } else { 1.0 }),
+            transform,
+            border,
+            None,
+            &rr,
+        );
 
         // Clicking the body (not a button) selects the row.
         self.push_hit(row, Action::SelectRow(c.id));
@@ -1863,7 +2094,13 @@ impl RemoteApp {
             Presence::Unknown => tokens.colors.neutral[4],
         };
         let dot = Point::new(row.x0 + 22.0, row.center().y);
-        scene.fill(Fill::NonZero, transform, dot_c, None, &Circle::new(dot, 5.0));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            dot_c,
+            None,
+            &Circle::new(dot, 5.0),
+        );
         if c.presence == Presence::Online {
             // Soft halo.
             scene.fill(
@@ -1939,8 +2176,21 @@ impl RemoteApp {
         }
 
         // --- Right-aligned action buttons ---
-        let connect = Rect::new(row.x1 - 116.0, row.center().y - 16.0, row.x1 - 16.0, row.center().y + 16.0);
-        self.draw_button(scene, transform, text_renderer, theme, connect, "Connect", true);
+        let connect = Rect::new(
+            row.x1 - 116.0,
+            row.center().y - 16.0,
+            row.x1 - 16.0,
+            row.center().y + 16.0,
+        );
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            connect,
+            "Connect",
+            true,
+        );
         self.push_hit(connect, Action::Connect(c.id));
 
         let edit = Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1);
@@ -1988,7 +2238,8 @@ impl RemoteApp {
             label,
             size,
             accent,
-            transform * Affine::translate((badge.x0 + 8.0, badge.y0 + (h - size as f64) / 2.0 - 1.0)),
+            transform
+                * Affine::translate((badge.x0 + 8.0, badge.y0 + (h - size as f64) / 2.0 - 1.0)),
             None,
             TextWeight::Semibold,
         );
@@ -2011,16 +2262,34 @@ impl RemoteApp {
         let hovered = rect.contains(self.pointer);
         let rr = RoundedRect::from_rect(rect, 8.0);
         if primary {
-            let bg = if hovered { tokens.colors.accent[4] } else { tokens.colors.accent[5] };
+            let bg = if hovered {
+                tokens.colors.accent[4]
+            } else {
+                tokens.colors.accent[5]
+            };
             scene.fill(Fill::NonZero, transform, bg, None, &rr);
         } else {
-            let bg = if hovered { tokens.colors.surface_white_10 } else { Color::TRANSPARENT };
+            let bg = if hovered {
+                tokens.colors.surface_white_10
+            } else {
+                Color::TRANSPARENT
+            };
             if bg != Color::TRANSPARENT {
                 scene.fill(Fill::NonZero, transform, bg, None, &rr);
             }
-            scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                tokens.colors.border_standard,
+                None,
+                &rr,
+            );
         }
-        let color = if primary { Color::WHITE } else { tokens.colors.text_primary };
+        let color = if primary {
+            Color::WHITE
+        } else {
+            tokens.colors.text_primary
+        };
         let (tw, _) = text_renderer.measure_weighted(label, 13.0, None, TextWeight::Semibold);
         text_renderer.draw_text_weighted(
             scene,
@@ -2028,10 +2297,7 @@ impl RemoteApp {
             13.0,
             color,
             transform
-                * Affine::translate((
-                    rect.center().x - tw as f64 / 2.0,
-                    rect.center().y - 8.0,
-                )),
+                * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - 8.0)),
             None,
             TextWeight::Semibold,
         );
@@ -2061,9 +2327,25 @@ impl RemoteApp {
         let tokens = &theme.tokens;
         let focused = self.focus == Some(field);
         let rr = RoundedRect::from_rect(rect, 8.0);
-        scene.fill(Fill::NonZero, transform, tokens.colors.neutral[0], None, &rr);
-        let border = if focused { tokens.colors.border_focus } else { tokens.colors.border_standard };
-        scene.stroke(&Stroke::new(if focused { 2.0 } else { 1.0 }), transform, border, None, &rr);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.neutral[0],
+            None,
+            &rr,
+        );
+        let border = if focused {
+            tokens.colors.border_focus
+        } else {
+            tokens.colors.border_standard
+        };
+        scene.stroke(
+            &Stroke::new(if focused { 2.0 } else { 1.0 }),
+            transform,
+            border,
+            None,
+            &rr,
+        );
 
         let inner = Self::field_inner(rect);
         let input = self.inputs.get(field);
@@ -2087,7 +2369,11 @@ impl RemoteApp {
         let pad = 24.0;
 
         // Header.
-        let title = if editing.is_some() { "Edit connection" } else { "New connection" };
+        let title = if editing.is_some() {
+            "Edit connection"
+        } else {
+            "New connection"
+        };
         text_renderer.draw_text_weighted(
             scene,
             title,
@@ -2104,19 +2390,50 @@ impl RemoteApp {
         let mut y = content.y0 + HEADER_H + 8.0;
 
         // -- Protocol kind selector (segmented) --
-        y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Protocol");
+        y = self.draw_form_label(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            card_x,
+            y,
+            "Protocol",
+        );
         let seg_w = card_w / 4.0;
         for (i, k) in ConnectionKind::all().into_iter().enumerate() {
-            let seg = Rect::new(card_x + i as f64 * seg_w, y, card_x + (i + 1) as f64 * seg_w, y + 40.0);
+            let seg = Rect::new(
+                card_x + i as f64 * seg_w,
+                y,
+                card_x + (i + 1) as f64 * seg_w,
+                y + 40.0,
+            );
             let active = self.draft.kind == k;
-            self.draw_segment(scene, transform, text_renderer, theme, seg, k.tag(), active, i == 0, i == 3);
+            self.draw_segment(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                seg,
+                k.tag(),
+                active,
+                i == 0,
+                i == 3,
+            );
             self.push_hit(seg, Action::SetKind(k));
         }
         y += 56.0;
 
         // -- qOS device picker (only for qOS kind) --
         if self.draft.kind == ConnectionKind::Qos {
-            y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Discovered qOS devices");
+            y = self.draw_form_label(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                card_x,
+                y,
+                "Discovered qOS devices",
+            );
             for (i, d) in self.qos_devices.clone().into_iter().enumerate() {
                 let chip = Rect::new(card_x, y, card_x + card_w, y + 36.0);
                 let hovered = chip.contains(self.pointer);
@@ -2133,11 +2450,19 @@ impl RemoteApp {
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
-                    if picked { tokens.colors.accent[5] } else { tokens.colors.border_standard },
+                    if picked {
+                        tokens.colors.accent[5]
+                    } else {
+                        tokens.colors.border_standard
+                    },
                     None,
                     &rr,
                 );
-                let dot_c = if d.online { tokens.colors.semantic.success } else { tokens.colors.neutral[4] };
+                let dot_c = if d.online {
+                    tokens.colors.semantic.success
+                } else {
+                    tokens.colors.neutral[4]
+                };
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -2171,21 +2496,57 @@ impl RemoteApp {
         // -- Name --
         y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Name");
         let name = Rect::new(card_x, y, card_x + card_w, y + 40.0);
-        self.draw_field(scene, transform, text_renderer, theme, presence, name, Field::Name);
+        self.draw_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            name,
+            Field::Name,
+        );
         self.push_hit(name, Action::FocusField(Field::Name));
         y += 56.0;
 
         // -- Host + Port row --
-        let host_label = if self.draft.kind == ConnectionKind::Qos { "Device node" } else { "Host" };
-        y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, host_label);
+        let host_label = if self.draft.kind == ConnectionKind::Qos {
+            "Device node"
+        } else {
+            "Host"
+        };
+        y = self.draw_form_label(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            card_x,
+            y,
+            host_label,
+        );
         let qos = self.draft.kind == ConnectionKind::Qos;
         let host_w = if qos { card_w } else { card_w - 130.0 };
         let host = Rect::new(card_x, y, card_x + host_w, y + 40.0);
-        self.draw_field(scene, transform, text_renderer, theme, presence, host, Field::Host);
+        self.draw_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            host,
+            Field::Host,
+        );
         self.push_hit(host, Action::FocusField(Field::Host));
         if !qos {
             let port = Rect::new(card_x + host_w + 12.0, y, card_x + card_w, y + 40.0);
-            self.draw_field(scene, transform, text_renderer, theme, presence, port, Field::Port);
+            self.draw_field(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                port,
+                Field::Port,
+            );
             self.push_hit(port, Action::FocusField(Field::Port));
         }
         y += 56.0;
@@ -2195,26 +2556,73 @@ impl RemoteApp {
             y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "User");
             let half = (card_w - 12.0) / 2.0;
             let user = Rect::new(card_x, y, card_x + half, y + 40.0);
-            self.draw_field(scene, transform, text_renderer, theme, presence, user, Field::User);
+            self.draw_field(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                user,
+                Field::User,
+            );
             self.push_hit(user, Action::FocusField(Field::User));
             let group = Rect::new(card_x + half + 12.0, y, card_x + card_w, y + 40.0);
-            self.draw_field(scene, transform, text_renderer, theme, presence, group, Field::Group);
+            self.draw_field(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                group,
+                Field::Group,
+            );
             self.push_hit(group, Action::FocusField(Field::Group));
             y += 56.0;
 
             // -- Auth method selector --
-            y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Authentication");
+            y = self.draw_form_label(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                card_x,
+                y,
+                "Authentication",
+            );
             let aseg = card_w / 3.0;
             for (i, a) in AuthMethod::all().into_iter().enumerate() {
-                let seg = Rect::new(card_x + i as f64 * aseg, y, card_x + (i + 1) as f64 * aseg, y + 40.0);
+                let seg = Rect::new(
+                    card_x + i as f64 * aseg,
+                    y,
+                    card_x + (i + 1) as f64 * aseg,
+                    y + 40.0,
+                );
                 let active = self.draft.auth == a;
-                self.draw_segment(scene, transform, text_renderer, theme, seg, a.label(), active, i == 0, i == 2);
+                self.draw_segment(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    seg,
+                    a.label(),
+                    active,
+                    i == 0,
+                    i == 2,
+                );
                 self.push_hit(seg, Action::SetAuth(a));
             }
             y += 56.0;
         } else {
             // qOS: authentication is implicit via device identity.
-            y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Authentication");
+            y = self.draw_form_label(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                card_x,
+                y,
+                "Authentication",
+            );
             let info = Rect::new(card_x, y, card_x + card_w, y + 40.0);
             scene.fill(
                 Fill::NonZero,
@@ -2252,12 +2660,28 @@ impl RemoteApp {
         // -- Save + Cancel --
         let save = Rect::new(card_x + card_w - 120.0, y, card_x + card_w, y + 40.0);
         let can_save = problems.is_empty();
-        self.draw_button(scene, transform, text_renderer, theme, save, "Save", can_save);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            save,
+            "Save",
+            can_save,
+        );
         if can_save {
             self.push_hit(save, Action::SaveForm);
         }
         let cancel = Rect::new(save.x0 - 110.0, y, save.x0 - 12.0, y + 40.0);
-        self.draw_button(scene, transform, text_renderer, theme, cancel, "Cancel", false);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            cancel,
+            "Cancel",
+            false,
+        );
         self.push_hit(cancel, Action::Back);
 
         // Delete (edit mode only), bottom-left.
@@ -2266,16 +2690,30 @@ impl RemoteApp {
             let hovered = del.contains(self.pointer);
             let rr = RoundedRect::from_rect(del, 8.0);
             if hovered {
-                scene.fill(Fill::NonZero, transform, tokens.colors.semantic.danger.at_alpha(0.15), None, &rr);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    tokens.colors.semantic.danger.at_alpha(0.15),
+                    None,
+                    &rr,
+                );
             }
-            scene.stroke(&Stroke::new(1.0), transform, tokens.colors.semantic.danger, None, &rr);
-            let (tw, _) = text_renderer.measure_weighted("Delete", 13.0, None, TextWeight::Semibold);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                tokens.colors.semantic.danger,
+                None,
+                &rr,
+            );
+            let (tw, _) =
+                text_renderer.measure_weighted("Delete", 13.0, None, TextWeight::Semibold);
             text_renderer.draw_text_weighted(
                 scene,
                 "Delete",
                 13.0,
                 tokens.colors.semantic.danger,
-                transform * Affine::translate((del.center().x - tw as f64 / 2.0, del.center().y - 8.0)),
+                transform
+                    * Affine::translate((del.center().x - tw as f64 / 2.0, del.center().y - 8.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -2333,16 +2771,27 @@ impl RemoteApp {
         };
         scene.fill(Fill::NonZero, transform, bg, None, &rr);
         if !active {
-            scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                tokens.colors.border_standard,
+                None,
+                &rr,
+            );
         }
-        let color = if active { Color::WHITE } else { tokens.colors.text_primary };
+        let color = if active {
+            Color::WHITE
+        } else {
+            tokens.colors.text_primary
+        };
         let (tw, _) = text_renderer.measure_weighted(label, 13.0, None, TextWeight::Medium);
         text_renderer.draw_text_weighted(
             scene,
             label,
             13.0,
             color,
-            transform * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - 8.0)),
+            transform
+                * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - 8.0)),
             None,
             TextWeight::Medium,
         );
@@ -2422,7 +2871,10 @@ impl RemoteApp {
                     content,
                     &c,
                     "Connection failed",
-                    &[err, "This is the real error — nothing is simulated.".to_string()],
+                    &[
+                        err,
+                        "This is the real error — nothing is simulated.".to_string(),
+                    ],
                     StatusTone::Error,
                 );
             }
@@ -2451,7 +2903,14 @@ impl RemoteApp {
                 if is_ssh {
                     self.draw_terminal(scene, transform, text_renderer, theme, surface, &c);
                 } else {
-                    self.draw_framebuffer(scene, transform, text_renderer, theme, surface, immersive);
+                    self.draw_framebuffer(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        surface,
+                        immersive,
+                    );
                 }
             }
         }
@@ -2479,7 +2938,13 @@ impl RemoteApp {
         let tokens = &theme.tokens;
 
         // Full-surface backdrop.
-        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &content);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.base,
+            None,
+            &content,
+        );
 
         let accent = match tone {
             StatusTone::Neutral => tokens.colors.neutral[4],
@@ -2497,8 +2962,20 @@ impl RemoteApp {
         let cy = content.y0 + ((content.height() - ch) / 2.0).max(16.0);
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
         let rr = RoundedRect::from_rect(card, 16.0);
-        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &rr);
-        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_white_20, None, &rr);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &rr,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_white_20,
+            None,
+            &rr,
+        );
 
         let mid = card.center().x;
         let mut y = card.y0 + 34.0;
@@ -2507,7 +2984,13 @@ impl RemoteApp {
         // (ring colour) and identity (protocol) in one visible form.
         let r = 34.0;
         let emblem = Point::new(mid, y + r);
-        scene.fill(Fill::NonZero, transform, accent.at_alpha(0.14), None, &Circle::new(emblem, r));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            accent.at_alpha(0.14),
+            None,
+            &Circle::new(emblem, r),
+        );
         scene.stroke(
             &Stroke::new(2.0),
             transform,
@@ -2603,16 +3086,36 @@ impl RemoteApp {
         let back_w = 132.0;
         let retry_w = 104.0;
         let gap = 12.0;
-        let group_w = if can_retry { back_w + gap + retry_w } else { back_w };
+        let group_w = if can_retry {
+            back_w + gap + retry_w
+        } else {
+            back_w
+        };
         let mut bx = mid - group_w / 2.0;
         if can_retry {
             let retry = Rect::new(bx, y, bx + retry_w, y + btn_h);
-            self.draw_button(scene, transform, text_renderer, theme, retry, "Retry", false);
+            self.draw_button(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                retry,
+                "Retry",
+                false,
+            );
             self.push_hit(retry, Action::Connect(c.id));
             bx += retry_w + gap;
         }
         let back = Rect::new(bx, y, bx + back_w, y + btn_h);
-        self.draw_button(scene, transform, text_renderer, theme, back, "Back to list", true);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            back,
+            "Back to list",
+            true,
+        );
         self.push_hit(back, Action::Disconnect);
     }
 
@@ -2663,7 +3166,13 @@ impl RemoteApp {
         let brush_transform =
             Affine::translate((canvas.x0, canvas.y0)) * Affine::scale_non_uniform(sx, sy);
         let brush = ImageBrush::new(img);
-        scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &canvas);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &brush,
+            Some(brush_transform),
+            &canvas,
+        );
 
         if immersive {
             text_renderer.draw_text(
@@ -2690,13 +3199,31 @@ impl RemoteApp {
     ) {
         let tokens = &theme.tokens;
         let bar = Rect::new(content.x0, content.y0, content.x1, content.y0 + TOOLBAR_H);
-        scene.fill(Fill::NonZero, transform, tokens.colors.neutral[1], None, &bar);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.neutral[1],
+            None,
+            &bar,
+        );
         let seam = Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1);
-        scene.fill(Fill::NonZero, transform, tokens.colors.border_standard, None, &seam);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &seam,
+        );
 
         // Live status dot + name + address.
         let dot = Point::new(bar.x0 + 18.0, bar.center().y);
-        scene.fill(Fill::NonZero, transform, tokens.colors.semantic.success, None, &Circle::new(dot, 5.0));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.semantic.success,
+            None,
+            &Circle::new(dot, 5.0),
+        );
         text_renderer.draw_text_weighted(
             scene,
             &c.name,
@@ -2727,7 +3254,15 @@ impl RemoteApp {
         // Right-aligned tool buttons. Only the relevant ones per kind.
         let mut x = bar.x1 - 12.0;
         let disconnect = Rect::new(x - 110.0, bar.center().y - 16.0, x, bar.center().y + 16.0);
-        self.draw_button(scene, transform, text_renderer, theme, disconnect, "Disconnect", false);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            disconnect,
+            "Disconnect",
+            false,
+        );
         // Override the outlined style with a danger tint for disconnect.
         scene.stroke(
             &Stroke::new(1.0),
@@ -2745,7 +3280,11 @@ impl RemoteApp {
             self.push_hit(fs, Action::ToggleFullscreen);
             x = fs.x0 - 8.0;
 
-            let scale_label = if self.scale_to_fit { "Scale: Fit" } else { "Scale: 1:1" };
+            let scale_label = if self.scale_to_fit {
+                "Scale: Fit"
+            } else {
+                "Scale: 1:1"
+            };
             let sc = self.draw_tool(scene, transform, text_renderer, theme, x, bar, scale_label);
             self.push_hit(sc, Action::ToggleScale);
             x = sc.x0 - 8.0;
@@ -2774,12 +3313,27 @@ impl RemoteApp {
         let tokens = &theme.tokens;
         let (tw, _) = text_renderer.measure(label, 12.5, None);
         let w = tw as f64 + 24.0;
-        let rect = Rect::new(right_x - w, bar.center().y - 16.0, right_x, bar.center().y + 16.0);
+        let rect = Rect::new(
+            right_x - w,
+            bar.center().y - 16.0,
+            right_x,
+            bar.center().y + 16.0,
+        );
         let hovered = rect.contains(self.pointer);
         let rr = RoundedRect::from_rect(rect, 8.0);
-        let bg = if hovered { tokens.colors.surface_white_10 } else { tokens.colors.neutral[0] };
+        let bg = if hovered {
+            tokens.colors.surface_white_10
+        } else {
+            tokens.colors.neutral[0]
+        };
         scene.fill(Fill::NonZero, transform, bg, None, &rr);
-        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &rr,
+        );
         text_renderer.draw_text(
             scene,
             label,
@@ -2813,7 +3367,13 @@ impl RemoteApp {
             _ => return,
         };
 
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &surface);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &surface,
+        );
         let font_size = 14.0f32;
         let char_w = font_size as f64 * 0.6; // monospace advance approximation
         let line_h = font_size as f64 * 1.5;
@@ -2835,7 +3395,11 @@ impl RemoteApp {
                     Some(idx) => palette.ansi[idx.min(15)],
                     None => palette.fg_default,
                 };
-                let weight = if style.1 { TextWeight::Bold } else { TextWeight::Regular };
+                let weight = if style.1 {
+                    TextWeight::Bold
+                } else {
+                    TextWeight::Regular
+                };
                 text_renderer.draw_text_weighted(
                     scene,
                     &run,
@@ -2853,8 +3417,19 @@ impl RemoteApp {
         let (cx, cy) = cursor;
         let caret_x = surface.x0 + pad + cx as f64 * char_w;
         let caret_y = surface.y0 + pad + cy as f64 * line_h;
-        let caret = Rect::new(caret_x, caret_y, caret_x + char_w, caret_y + font_size as f64 * 1.2);
-        scene.fill(Fill::NonZero, transform, palette.fg_default.at_alpha(0.6), None, &caret);
+        let caret = Rect::new(
+            caret_x,
+            caret_y,
+            caret_x + char_w,
+            caret_y + font_size as f64 * 1.2,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            palette.fg_default.at_alpha(0.6),
+            None,
+            &caret,
+        );
 
         scene.pop_layer();
     }
@@ -2883,7 +3458,8 @@ impl RemoteApp {
                         return Some(vec![(up as u8) - 0x40]);
                     }
                 }
-                text.map(|t| t.as_bytes().to_vec()).or_else(|| Some(s.as_bytes().to_vec()))
+                text.map(|t| t.as_bytes().to_vec())
+                    .or_else(|| Some(s.as_bytes().to_vec()))
             }
             _ => text.map(|t| t.as_bytes().to_vec()),
         }
@@ -2911,7 +3487,14 @@ impl RemoteApp {
 /// Draw a five-pointed star centered at `center`. Filled when `filled`,
 /// otherwise just an outline — used for the favorite toggle so the marker
 /// renders as a vector shape (independent of font glyph coverage).
-fn draw_star(scene: &mut Scene, transform: Affine, center: Point, r: f64, color: Color, filled: bool) {
+fn draw_star(
+    scene: &mut Scene,
+    transform: Affine,
+    center: Point,
+    r: f64,
+    color: Color,
+    filled: bool,
+) {
     use vello::kurbo::BezPath;
     let inner = r * 0.42;
     let mut path = BezPath::new();
@@ -2919,7 +3502,10 @@ fn draw_star(scene: &mut Scene, transform: Affine, center: Point, r: f64, color:
         let radius = if i % 2 == 0 { r } else { inner };
         // Start at the top point (-90°) and step every 36°.
         let angle = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::PI / 5.0;
-        let p = Point::new(center.x + radius * angle.cos(), center.y + radius * angle.sin());
+        let p = Point::new(
+            center.x + radius * angle.cos(),
+            center.y + radius * angle.sin(),
+        );
         if i == 0 {
             path.move_to(p);
         } else {
@@ -2952,7 +3538,13 @@ fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
     let order: Vec<Field> = if kind == ConnectionKind::Qos {
         vec![Field::Name, Field::Host]
     } else {
-        vec![Field::Name, Field::Host, Field::Port, Field::User, Field::Group]
+        vec![
+            Field::Name,
+            Field::Host,
+            Field::Port,
+            Field::User,
+            Field::Group,
+        ]
     };
     match cur {
         Some(f) => {
@@ -2976,13 +3568,18 @@ mod tests {
         use winit::keyboard::SmolStr;
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(SmolStr::new(s));
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = Some(SmolStr::new(s));
-        WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     /// Feed one event through the real `Widget::handle_event` path, with the
@@ -2992,7 +3589,17 @@ mod tests {
         let taffy: TaffyTree<()> = TaffyTree::new();
         let node = NodeId::new(0);
         let (mut h, mut ft) = (false, None);
-        app.handle_event(ev, 1.0, &m, state, &automerge::ROOT, &mut h, &mut ft, node, &taffy);
+        app.handle_event(
+            ev,
+            1.0,
+            &m,
+            state,
+            &automerge::ROOT,
+            &mut h,
+            &mut ft,
+            node,
+            &taffy,
+        );
     }
 
     /// Drive the real layout passes (`build_layout` → taffy → `apply_layout`)
@@ -3020,7 +3627,10 @@ mod tests {
         let mut app = RemoteApp::new();
         lay_out(&mut app, 1280.0, 800.0);
         assert_eq!(app.rail_layout, SplitLayout::Docked);
-        assert!(app.rail_open(), "a wide window keeps the rail docked + open");
+        assert!(
+            app.rail_open(),
+            "a wide window keeps the rail docked + open"
+        );
     }
 
     #[test]
@@ -3038,10 +3648,18 @@ mod tests {
     fn breakpoint_boundary_is_inclusive_docked() {
         let mut app = RemoteApp::new();
         lay_out(&mut app, RAIL_BREAKPOINT, 800.0);
-        assert_eq!(app.rail_layout, SplitLayout::Docked, "at the breakpoint we dock");
+        assert_eq!(
+            app.rail_layout,
+            SplitLayout::Docked,
+            "at the breakpoint we dock"
+        );
         let mut app2 = RemoteApp::new();
         lay_out(&mut app2, RAIL_BREAKPOINT - 1.0, 800.0);
-        assert_eq!(app2.rail_layout, SplitLayout::Overlay, "just below we overlay");
+        assert_eq!(
+            app2.rail_layout,
+            SplitLayout::Overlay,
+            "just below we overlay"
+        );
     }
 
     #[test]
@@ -3087,8 +3705,14 @@ mod tests {
         // The honesty guard: the live constructor fabricates no machines, and
         // `sync` on a fresh document must not seed a fake fleet into the CRDT.
         let mut app = RemoteApp::new();
-        assert!(app.workspace.connections().is_empty(), "live app starts empty");
-        assert!(app.qos_devices.is_empty(), "no fabricated discovered devices");
+        assert!(
+            app.workspace.connections().is_empty(),
+            "live app starts empty"
+        );
+        assert!(
+            app.qos_devices.is_empty(),
+            "no fabricated discovered devices"
+        );
         assert!(app.selected.is_none());
         assert_eq!(app.screen, Screen::List);
         let mut state = AutoCommit::new();
@@ -3211,7 +3835,11 @@ mod tests {
         app.apply(Action::EditConnection(id), &mut doc());
         app.draft.name = "Renamed Host".into();
         app.apply(Action::SaveForm, &mut doc());
-        assert_eq!(app.workspace.connections().len(), count, "edit must not add");
+        assert_eq!(
+            app.workspace.connections().len(),
+            count,
+            "edit must not add"
+        );
         assert_eq!(app.workspace.get(id).unwrap().name, "Renamed Host");
     }
 
@@ -3257,7 +3885,10 @@ mod tests {
             .unwrap()
             .id;
         app.apply(Action::Connect(id), &mut doc());
-        assert!(app.live.is_none(), "gated build opens no framebuffer transport");
+        assert!(
+            app.live.is_none(),
+            "gated build opens no framebuffer transport"
+        );
     }
 
     #[test]
@@ -3286,8 +3917,7 @@ mod tests {
         app.search = "build".into();
         let rows = app.workspace.filtered(&app.search);
         assert!(rows.iter().all(|c| {
-            c.name.to_lowercase().contains("build")
-                || c.host.to_lowercase().contains("build")
+            c.name.to_lowercase().contains("build") || c.host.to_lowercase().contains("build")
         }));
     }
 
@@ -3354,7 +3984,9 @@ mod tests {
 
         app.apply(Action::ToggleFavorite(id), &mut state);
 
-        let dispatched = app.last_dispatched().expect("the star dispatched an action");
+        let dispatched = app
+            .last_dispatched()
+            .expect("the star dispatched an action");
         assert_eq!(
             dispatched,
             &crate::actions::encode(&crate::actions::set_favorite_action(id, target)),
@@ -3375,7 +4007,10 @@ mod tests {
 
         app.apply(Action::Delete(id), &mut state);
 
-        assert!(RemoteDoc::list(&state).iter().all(|c| c.id != id), "removed from the CRDT");
+        assert!(
+            RemoteDoc::list(&state).iter().all(|c| c.id != id),
+            "removed from the CRDT"
+        );
         let dispatched = app.last_dispatched().expect("delete dispatched an action");
         assert_eq!(
             dispatched,
@@ -3394,9 +4029,16 @@ mod tests {
         app.apply(Action::SaveForm, &mut state);
 
         let doc_list = RemoteDoc::list(&state);
-        assert_eq!(doc_list.len(), 1, "the saved connection reached the shared document");
+        assert_eq!(
+            doc_list.len(),
+            1,
+            "the saved connection reached the shared document"
+        );
         assert_eq!(doc_list[0].name, "Test");
-        assert!(app.last_dispatched().is_some(), "save routed through an action");
+        assert!(
+            app.last_dispatched().is_some(),
+            "save routed through an action"
+        );
     }
 
     #[test]

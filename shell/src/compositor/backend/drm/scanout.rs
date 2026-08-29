@@ -146,7 +146,11 @@ impl CardHandle {
     }
 
     /// Modeset one connector onto a crtc not in `used`; `None` (logged, not fatal) when no free crtc or the modeset failed, so other outputs keep working.
-    pub fn bring_up(&self, snapshot: &ConnectorSnapshot, used: &[crtc::Handle]) -> Option<ScanoutBuild> {
+    pub fn bring_up(
+        &self,
+        snapshot: &ConnectorSnapshot,
+        used: &[crtc::Handle],
+    ) -> Option<ScanoutBuild> {
         let res = self.card.resource_handles().ok()?;
         let info = self.card.get_connector(snapshot.handle, false).ok()?;
         let Some(crtc) = pick_crtc(&self.card, &res, &info, used) else {
@@ -246,7 +250,11 @@ impl CursorPlanes {
     }
 
     /// Constructor so the `rect` field stays private to this module.
-    pub fn output_cursor(id: OutputId, rect: (i32, i32, u32, u32), mover: HwCursor) -> OutputCursor {
+    pub fn output_cursor(
+        id: OutputId,
+        rect: (i32, i32, u32, u32),
+        mover: HwCursor,
+    ) -> OutputCursor {
         OutputCursor { id, rect, mover }
     }
 

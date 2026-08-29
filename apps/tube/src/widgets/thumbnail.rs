@@ -17,11 +17,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, Gradient, ImageData as PenikoImage};
 
+use ui::ImageStore;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::ImageStore;
 
 use crate::util::{duration_hms, seed_gradient};
 
@@ -119,7 +119,13 @@ impl Thumbnail {
         text: &str,
         spec: PillSpec,
     ) {
-        let PillSpec { size, bg, fg, anchor, right_align } = spec;
+        let PillSpec {
+            size,
+            bg,
+            fg,
+            anchor,
+            right_align,
+        } = spec;
         let (tw, _) = text_renderer.measure(text, size, None);
         let padx = 6.0;
         let pad_y = 3.0;
@@ -153,11 +159,9 @@ impl Thumbnail {
             // No image yet (loading / offline / sample): the deterministic
             // seed gradient + a faint geometric motif + a centre play glyph.
             let (top, bottom) = seed_gradient(&self.seed);
-            let grad = Gradient::new_linear(
-                (self.rect.x0, self.rect.y0),
-                (self.rect.x1, self.rect.y1),
-            )
-            .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
+            let grad =
+                Gradient::new_linear((self.rect.x0, self.rect.y0), (self.rect.x1, self.rect.y1))
+                    .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
             scene.fill(Fill::NonZero, transform, &grad, None, &shape);
 
             // Clip the decorative motif to the rounded tile so the offset
@@ -416,7 +420,10 @@ mod tests {
     #[test]
     fn thumbnail_with_image_emits_an_image_draw() {
         let mut t = Thumbnail::new("seed", 120).image(Some(tiny_image()));
-        assert!(paint_count_images(&mut t) >= 1, "expected an IMAGE draw for a real thumbnail");
+        assert!(
+            paint_count_images(&mut t) >= 1,
+            "expected an IMAGE draw for a real thumbnail"
+        );
     }
 
     /// Without an image the thumbnail paints the gradient poster (no IMAGE draw),
@@ -424,6 +431,10 @@ mod tests {
     #[test]
     fn thumbnail_without_image_paints_gradient_not_image() {
         let mut t = Thumbnail::new("seed", 120);
-        assert_eq!(paint_count_images(&mut t), 0, "no image → gradient poster, no IMAGE draw");
+        assert_eq!(
+            paint_count_images(&mut t),
+            0,
+            "no image → gradient poster, no IMAGE draw"
+        );
     }
 }

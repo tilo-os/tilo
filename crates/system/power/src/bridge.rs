@@ -65,7 +65,9 @@ impl Default for PowerBridge {
 
 impl PowerBridge {
     pub fn new() -> Self {
-        Self { inner: Arc::new(Mutex::new(BridgeInner::default())) }
+        Self {
+            inner: Arc::new(Mutex::new(BridgeInner::default())),
+        }
     }
 
     // ---- service → compositor ---------------------------------------

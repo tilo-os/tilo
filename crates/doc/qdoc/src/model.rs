@@ -6,7 +6,7 @@ use crate::schema::*;
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
@@ -120,12 +120,20 @@ pub struct IdGen {
 
 impl IdGen {
     pub fn new(actor_hex: String) -> Self {
-        Self { actor_hex, next: 0, order: OrderIndex::default() }
+        Self {
+            actor_hex,
+            next: 0,
+            order: OrderIndex::default(),
+        }
     }
     /// Start the counter at `next` — used to seed past ids that already exist in a loaded/opened
     /// document (otherwise a fresh generator re-mints existing ids and overwrites those blocks).
     pub fn with_counter(actor_hex: String, next: u64) -> Self {
-        Self { actor_hex, next, order: OrderIndex::default() }
+        Self {
+            actor_hex,
+            next,
+            order: OrderIndex::default(),
+        }
     }
     pub fn mint(&mut self) -> String {
         let id = format!("{}.{}", self.actor_hex, self.next);
@@ -338,7 +346,11 @@ const CONTAINER_KEYS: &[&str] = &[
 pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
     CONTAINER_KEYS
         .iter()
-        .filter(|key| doc.get_all(root, **key).map(|found| found.len() > 1).unwrap_or(false))
+        .filter(|key| {
+            doc.get_all(root, **key)
+                .map(|found| found.len() > 1)
+                .unwrap_or(false)
+        })
         .map(|key| (*key).to_string())
         .collect()
 }
@@ -390,8 +402,14 @@ fn blobs_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
 fn region_obj(doc: &AutoCommit, c: &Containers, region: Region) -> Option<ObjId> {
     match region {
         Region::Body => Some(c.blocks.clone()),
-        Region::Header => c.header.clone().or_else(|| opt_map_at(doc, &c.root, KEY_HEADER)),
-        Region::Footer => c.footer.clone().or_else(|| opt_map_at(doc, &c.root, KEY_FOOTER)),
+        Region::Header => c
+            .header
+            .clone()
+            .or_else(|| opt_map_at(doc, &c.root, KEY_HEADER)),
+        Region::Footer => c
+            .footer
+            .clone()
+            .or_else(|| opt_map_at(doc, &c.root, KEY_FOOTER)),
     }
 }
 
@@ -406,14 +424,19 @@ pub fn region_blocks_in_order(doc: &AutoCommit, c: &Containers, region: Region) 
 /// Materialize a region's blocks into [`BlockView`]s (empty when absent).
 pub fn materialize_region(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<BlockView> {
     match region_obj(doc, c, region) {
-        Some(obj) => ordered_keys(doc, &obj).into_iter().map(|id| materialize_block(doc, &obj, &id)).collect(),
+        Some(obj) => ordered_keys(doc, &obj)
+            .into_iter()
+            .map(|id| materialize_block(doc, &obj, &id))
+            .collect(),
         None => Vec::new(),
     }
 }
 
 /// Resolve the notes container object, preferring the cached id and falling back to a fresh root lookup.
 fn notes_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
-    c.notes.clone().or_else(|| opt_map_at(doc, &c.root, KEY_NOTES))
+    c.notes
+        .clone()
+        .or_else(|| opt_map_at(doc, &c.root, KEY_NOTES))
 }
 
 /// Resolve a single note's sub-map object by id.
@@ -441,7 +464,12 @@ pub fn note_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
         Some(notes) => {
             let mut ids: Vec<String> = doc
                 .keys(&notes)
-                .filter(|id| matches!(doc.get(&notes, id), Ok(Some((Value::Object(ObjType::Map), _)))))
+                .filter(|id| {
+                    matches!(
+                        doc.get(&notes, id),
+                        Ok(Some((Value::Object(ObjType::Map), _)))
+                    )
+                })
                 .collect();
             ids.sort();
             ids
@@ -462,7 +490,10 @@ pub fn note_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<NoteKind>
 /// Materialize a note's block sequence (empty if the note has no blocks / is unknown).
 pub fn materialize_note_blocks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<BlockView> {
     match note_blocks_obj(doc, c, id) {
-        Some(obj) => ordered_keys(doc, &obj).into_iter().map(|bid| materialize_block(doc, &obj, &bid)).collect(),
+        Some(obj) => ordered_keys(doc, &obj)
+            .into_iter()
+            .map(|bid| materialize_block(doc, &obj, &bid))
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -480,17 +511,21 @@ pub fn materialize_notes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapsho
     note_ids(doc, c)
         .into_iter()
         .map(|id| crate::snapshot::NoteView {
-            kind: note_kind(doc, c, &id).unwrap_or(NoteKind::Footnote).as_str().to_string(),
+            kind: note_kind(doc, c, &id)
+                .unwrap_or(NoteKind::Footnote)
+                .as_str()
+                .to_string(),
             blocks: materialize_note_blocks(doc, c, &id),
             id,
         })
         .collect()
 }
 
-
 /// Resolve the comments container object, preferring the cached id and falling back to a fresh root lookup.
 fn comments_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
-    c.comments.clone().or_else(|| opt_map_at(doc, &c.root, KEY_COMMENTS))
+    c.comments
+        .clone()
+        .or_else(|| opt_map_at(doc, &c.root, KEY_COMMENTS))
 }
 
 /// Resolve a single comment's sub-map object by id.
@@ -518,7 +553,12 @@ pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
         Some(comments) => {
             let mut ids: Vec<String> = doc
                 .keys(&comments)
-                .filter(|id| matches!(doc.get(&comments, id), Ok(Some((Value::Object(ObjType::Map), _)))))
+                .filter(|id| {
+                    matches!(
+                        doc.get(&comments, id),
+                        Ok(Some((Value::Object(ObjType::Map), _)))
+                    )
+                })
                 .collect();
             ids.sort();
             ids
@@ -556,7 +596,10 @@ pub fn comment_blocks_in_order(doc: &AutoCommit, c: &Containers, id: &str) -> Ve
 /// Materialize a comment's block sequence (empty if the comment has no blocks / is unknown).
 pub fn materialize_comment_blocks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<BlockView> {
     match comment_blocks_obj(doc, c, id) {
-        Some(obj) => ordered_keys(doc, &obj).into_iter().map(|bid| materialize_block(doc, &obj, &bid)).collect(),
+        Some(obj) => ordered_keys(doc, &obj)
+            .into_iter()
+            .map(|bid| materialize_block(doc, &obj, &bid))
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -566,7 +609,8 @@ pub fn materialize_comment_blocks(doc: &AutoCommit, c: &Containers, id: &str) ->
 pub fn comment_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(String, usize, usize)> {
     for bid in blocks_in_order(doc, c) {
         for m in marks(doc, c, &bid) {
-            if m.name == MARK_COMMENT && m.value == crate::document::MarkValue::Str(id.to_string()) {
+            if m.name == MARK_COMMENT && m.value == crate::document::MarkValue::Str(id.to_string())
+            {
                 return Some((bid, m.start, m.end));
             }
         }
@@ -588,7 +632,6 @@ pub fn materialize_comments(doc: &AutoCommit, c: &Containers) -> Vec<crate::snap
         .collect()
 }
 
-
 /// Every bookmark in the body, recovered from the `bookmark` marks. Sorted by `(name, block, start)`
 /// so replicas that merged in different orders materialize byte-identically; a name may repeat if the source document duplicated it.
 pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::BookmarkView> {
@@ -597,12 +640,18 @@ pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::Bookm
         for m in marks(doc, c, &bid) {
             if m.name == MARK_BOOKMARK {
                 if let crate::document::MarkValue::Str(name) = &m.value {
-                    out.push(crate::snapshot::BookmarkView { name: name.clone(), range: (bid.clone(), m.start, m.end) });
+                    out.push(crate::snapshot::BookmarkView {
+                        name: name.clone(),
+                        range: (bid.clone(), m.start, m.end),
+                    });
                 }
             }
         }
     }
-    out.sort_by(|a, b| (&a.name, &a.range.0, a.range.1, a.range.2).cmp(&(&b.name, &b.range.0, b.range.1, b.range.2)));
+    out.sort_by(|a, b| {
+        (&a.name, &a.range.0, a.range.1, a.range.2)
+            .cmp(&(&b.name, &b.range.0, b.range.1, b.range.2))
+    });
     out
 }
 
@@ -612,10 +661,11 @@ pub fn heading_ref_id(block_id: &str) -> String {
     format!("{HEADING_REF_PREFIX}{block_id}")
 }
 
-
 /// Resolve the changes container object, preferring the cached id and falling back to a fresh root lookup.
 fn changes_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
-    c.changes.clone().or_else(|| opt_map_at(doc, &c.root, KEY_CHANGES))
+    c.changes
+        .clone()
+        .or_else(|| opt_map_at(doc, &c.root, KEY_CHANGES))
 }
 
 /// Resolve a single change's sub-map object by id.
@@ -634,7 +684,12 @@ pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
         Some(changes) => {
             let mut ids: Vec<String> = doc
                 .keys(&changes)
-                .filter(|id| matches!(doc.get(&changes, id), Ok(Some((Value::Object(ObjType::Map), _)))))
+                .filter(|id| {
+                    matches!(
+                        doc.get(&changes, id),
+                        Ok(Some((Value::Object(ObjType::Map), _)))
+                    )
+                })
                 .collect();
             ids.sort();
             ids
@@ -662,7 +717,11 @@ pub fn change_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String>
 }
 
 /// A change's kind (`Ins`/`Del`), or `None` if the id is unknown.
-pub fn change_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<crate::snapshot::ChangeKind> {
+pub fn change_kind(
+    doc: &AutoCommit,
+    c: &Containers,
+    id: &str,
+) -> Option<crate::snapshot::ChangeKind> {
     let change = change_obj(doc, c, id)?;
     match doc.get(&change, CHANGE_KIND) {
         Ok(Some((v, _))) => v.to_str().map(crate::snapshot::ChangeKind::from_str),
@@ -712,7 +771,11 @@ pub fn materialize_changes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snaps
 
 /// A blob's descriptor — what the document holds *instead of* its bytes.
 /// `None` when the document doesn't reference that hash at all, distinct from referencing it without having the content yet.
-pub fn blob_meta(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<crate::blobstore::BlobMeta> {
+pub fn blob_meta(
+    doc: &AutoCommit,
+    c: &Containers,
+    hash: &str,
+) -> Option<crate::blobstore::BlobMeta> {
     let blobs = blobs_obj(doc, c)?;
     match doc.get(&blobs, hash) {
         Ok(Some((Value::Object(ObjType::Map), d))) => {
@@ -788,7 +851,6 @@ pub fn blobs(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, Vec<u8>> {
     }
     out
 }
-
 
 fn block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
     match doc.get(container, id) {
@@ -945,13 +1007,20 @@ fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
         .marks(&tid)
         .map(|ms| {
             ms.into_iter()
-                .map(|m| MarkSpan { start: m.start, end: m.end, name: m.name().to_string(), value: m.value().into() })
+                .map(|m| MarkSpan {
+                    start: m.start,
+                    end: m.end,
+                    name: m.name().to_string(),
+                    value: m.value().into(),
+                })
                 .collect()
         })
         .unwrap_or_default();
     // Canonical order so replicas that merged in different orders produce byte-identical materializations
     // (mark *set* is order-independent); value is part of the key so concurrent valued marks sort deterministically.
-    spans.sort_by(|a, b| (a.start, a.end, &a.name, &a.value).cmp(&(b.start, b.end, &b.name, &b.value)));
+    spans.sort_by(|a, b| {
+        (a.start, a.end, &a.name, &a.value).cmp(&(b.start, b.end, &b.name, &b.value))
+    });
     spans
 }
 
@@ -963,7 +1032,14 @@ pub fn marks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<MarkSpan> {
 }
 
 /// Whether a mark named `name` fully covers `[start, end)` of block `id`.
-pub fn has_mark_over(doc: &AutoCommit, c: &Containers, id: &str, start: usize, end: usize, name: &str) -> bool {
+pub fn has_mark_over(
+    doc: &AutoCommit,
+    c: &Containers,
+    id: &str,
+    start: usize,
+    end: usize,
+    name: &str,
+) -> bool {
     marks(doc, c, id)
         .iter()
         .any(|m| m.name == name && m.start <= start && m.end >= end)
@@ -1074,7 +1150,11 @@ pub fn split_preserved_atoms(bytes: &[u8]) -> Vec<Vec<u8>> {
     // else (images, the mimetype literal, binary settings) is one atom.
     let looks_xml = {
         let head: &[u8] = &bytes[..bytes.len().min(64)];
-        let trimmed = head.iter().position(|b| !b.is_ascii_whitespace()).map(|p| &head[p..]).unwrap_or(head);
+        let trimmed = head
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .map(|p| &head[p..])
+            .unwrap_or(head);
         trimmed.starts_with(b"<?xml") || trimmed.starts_with(b"<")
     };
     if !looks_xml {
@@ -1095,8 +1175,8 @@ struct ElemSpan {
 /// Parse the depth + start offset of every element in `bytes`. Returns `None` on any parse error or
 /// imbalance (caller then keeps the part as a single atom — never corrupts it).
 fn parse_elem_spans(bytes: &[u8]) -> Option<Vec<ElemSpan>> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
     let s = std::str::from_utf8(bytes).ok()?;
     // quick-xml 0.36 defaults `expand_empty_elements` to false, so a self-closing
     // `<x/>` arrives as one `Event::Empty` rather than a Start+End pair.
@@ -1108,11 +1188,17 @@ fn parse_elem_spans(bytes: &[u8]) -> Option<Vec<ElemSpan>> {
         match reader.read_event() {
             Ok(Event::Eof) => break,
             Ok(Event::Start(_)) => {
-                spans.push(ElemSpan { depth, start: before });
+                spans.push(ElemSpan {
+                    depth,
+                    start: before,
+                });
                 depth += 1;
             }
             Ok(Event::Empty(_)) => {
-                spans.push(ElemSpan { depth, start: before });
+                spans.push(ElemSpan {
+                    depth,
+                    start: before,
+                });
             }
             Ok(Event::End(_)) => {
                 depth = depth.checked_sub(1)?;
@@ -1254,12 +1340,16 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
                 }
             };
             if !meta.mime.is_empty() {
-                b.attrs.insert(ATTR_BLOB_MIME.to_string(), AttrVal::Str(meta.mime.clone()));
+                b.attrs
+                    .insert(ATTR_BLOB_MIME.to_string(), AttrVal::Str(meta.mime.clone()));
             }
-            b.attrs.insert(ATTR_BLOB_BYTES.to_string(), AttrVal::Int(meta.len as i64));
+            b.attrs
+                .insert(ATTR_BLOB_BYTES.to_string(), AttrVal::Int(meta.len as i64));
             if meta.w > 0 && meta.h > 0 {
-                b.attrs.insert(ATTR_BLOB_W.to_string(), AttrVal::Int(meta.w as i64));
-                b.attrs.insert(ATTR_BLOB_H.to_string(), AttrVal::Int(meta.h as i64));
+                b.attrs
+                    .insert(ATTR_BLOB_W.to_string(), AttrVal::Int(meta.w as i64));
+                b.attrs
+                    .insert(ATTR_BLOB_H.to_string(), AttrVal::Int(meta.h as i64));
             }
             walk(doc, c, cache, &mut b.children);
         }
@@ -1275,7 +1365,6 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
         walk(doc, c, &mut cache, &mut cm.blocks);
     }
 }
-
 
 /// Read a style sub-map's scalar properties into an [`AttrVal`] map.
 fn read_style_props(doc: &AutoCommit, style_obj: &ObjId) -> BTreeMap<String, AttrVal> {
@@ -1299,7 +1388,12 @@ fn read_style_props(doc: &AutoCommit, style_obj: &ObjId) -> BTreeMap<String, Att
 /// Style ids defined in the document's styles container (e.g. `body`, `heading1`, or an imported ODF named-style name).
 pub fn style_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     doc.keys(&c.styles)
-        .filter(|id| matches!(doc.get(&c.styles, id), Ok(Some((Value::Object(ObjType::Map), _)))))
+        .filter(|id| {
+            matches!(
+                doc.get(&c.styles, id),
+                Ok(Some((Value::Object(ObjType::Map), _)))
+            )
+        })
         .collect()
 }
 
@@ -1332,7 +1426,7 @@ fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView
                 marks: vec![],
                 attrs: BTreeMap::new(),
                 children: vec![],
-            }
+            };
         }
     };
     let kind = match doc.get(&obj, BLOCK_KIND) {
@@ -1352,9 +1446,15 @@ fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView
             .collect(),
         _ => vec![],
     };
-    BlockView { id: id.into(), kind, text, marks, attrs, children }
+    BlockView {
+        id: id.into(),
+        kind,
+        text,
+        marks,
+        attrs,
+        children,
+    }
 }
-
 
 /// A mutable view of a canonical document living in a borrowed `AutoCommit`; used by the editor (over `ui::State.doc`) and by codecs.
 pub struct DocMut<'a> {
@@ -1395,22 +1495,36 @@ impl<'a> DocMut<'a> {
         if let Some(obj) = opt_map_at(self.doc, &self.c.root, key) {
             return obj;
         }
-        self.doc.put_object(&self.c.root, key, ObjType::Map).unwrap()
+        self.doc
+            .put_object(&self.c.root, key, ObjType::Map)
+            .unwrap()
     }
 
     /// A fractional key ordered strictly after block `after` (or at the front when `after` is `None`) within
     /// `container`. Uses the in-memory order index so the lookup is O(log n), not an O(n log n) rescan.
     fn order_after_in(&mut self, container: &ObjId, after: Option<&str>) -> Vec<u8> {
         self.ensure_order_cache(container);
-        let co = self.ids.order.by_container.get(container).expect("order cache just built");
+        let co = self
+            .ids
+            .order
+            .by_container
+            .get(container)
+            .expect("order cache just built");
         let (lo, hi): (Option<Vec<u8>>, Option<Vec<u8>>) = match after {
             // Insert at the front: bounded above by the first block's key.
             None => (None, co.entries.iter().next().map(|k| k.key.clone())),
             Some(id) => match co.by_id.get(id) {
                 // `after` exists: lo is its key, hi is the next block's key.
                 Some(after_key) => {
-                    let probe = OrderKey { key: after_key.clone(), id: id.to_string() };
-                    let hi = co.entries.range((Bound::Excluded(probe), Bound::Unbounded)).next().map(|k| k.key.clone());
+                    let probe = OrderKey {
+                        key: after_key.clone(),
+                        id: id.to_string(),
+                    };
+                    let hi = co
+                        .entries
+                        .range((Bound::Excluded(probe), Bound::Unbounded))
+                        .next()
+                        .map(|k| k.key.clone());
                     (Some(after_key.clone()), hi)
                 }
                 // `after` unknown → append at the end (mirrors the old `unwrap_or(len)`).
@@ -1445,9 +1559,15 @@ impl<'a> DocMut<'a> {
     fn record_order(&mut self, container: &ObjId, id: &str, key: &[u8]) {
         if let Some(co) = self.ids.order.by_container.get_mut(container) {
             if let Some(old) = co.by_id.insert(id.to_string(), key.to_vec()) {
-                co.entries.remove(&OrderKey { key: old, id: id.to_string() });
+                co.entries.remove(&OrderKey {
+                    key: old,
+                    id: id.to_string(),
+                });
             }
-            co.entries.insert(OrderKey { key: key.to_vec(), id: id.to_string() });
+            co.entries.insert(OrderKey {
+                key: key.to_vec(),
+                id: id.to_string(),
+            });
         }
     }
 
@@ -1456,7 +1576,10 @@ impl<'a> DocMut<'a> {
     fn forget_order(&mut self, container: &ObjId, id: &str) {
         if let Some(co) = self.ids.order.by_container.get_mut(container) {
             if let Some(old) = co.by_id.remove(id) {
-                co.entries.remove(&OrderKey { key: old, id: id.to_string() });
+                co.entries.remove(&OrderKey {
+                    key: old,
+                    id: id.to_string(),
+                });
             }
         }
     }
@@ -1475,23 +1598,45 @@ impl<'a> DocMut<'a> {
         let container = self.region_container(region);
         let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
-        let obj = self.doc.put_object(&container, id.as_str(), ObjType::Map).unwrap();
-        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone())).unwrap();
+        let obj = self
+            .doc
+            .put_object(&container, id.as_str(), ObjType::Map)
+            .unwrap();
+        self.doc
+            .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone()))
+            .unwrap();
         self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
-        self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
+        self.doc
+            .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
+            .unwrap();
         self.record_order(&container, &id, &key);
         id
     }
 
     /// Splice text into a block living in `region`.
-    pub fn splice_text_in(&mut self, region: Region, block_id: &str, idx: usize, del: isize, ins: &str) {
+    pub fn splice_text_in(
+        &mut self,
+        region: Region,
+        block_id: &str,
+        idx: usize,
+        del: isize,
+        ins: &str,
+    ) {
         if let Some(tid) = self.region_text_obj(region, block_id) {
             let _ = self.doc.splice_text(&tid, idx, del, ins);
         }
     }
 
     /// Add an inline mark over a block living in `region`.
-    pub fn add_mark_in(&mut self, region: Region, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<ScalarValue>) {
+    pub fn add_mark_in(
+        &mut self,
+        region: Region,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+        value: impl Into<ScalarValue>,
+    ) {
         if let Some(tid) = self.region_text_obj(region, block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
@@ -1499,9 +1644,19 @@ impl<'a> DocMut<'a> {
     }
 
     /// Set a scalar attribute on a block living in `region`.
-    pub fn set_attr_in(&mut self, region: Region, block_id: &str, key: &str, value: impl Into<ScalarValue>) {
-        let Some(container) = region_obj(self.doc, self.c, region) else { return };
-        let Some(obj) = block_obj(self.doc, &container, block_id) else { return };
+    pub fn set_attr_in(
+        &mut self,
+        region: Region,
+        block_id: &str,
+        key: &str,
+        value: impl Into<ScalarValue>,
+    ) {
+        let Some(container) = region_obj(self.doc, self.c, region) else {
+            return;
+        };
+        let Some(obj) = block_obj(self.doc, &container, block_id) else {
+            return;
+        };
         let attrs = match self.doc.get(&obj, BLOCK_ATTRS) {
             Ok(Some((Value::Object(ObjType::Map), a))) => a,
             _ => return,
@@ -1515,9 +1670,15 @@ impl<'a> DocMut<'a> {
     /// round-trips through the codecs.
     pub fn insert_page_number_field(&mut self, region: Region, block_id: &str, idx: usize) {
         self.splice_text_in(region, block_id, idx, 0, &FIELD_PLACEHOLDER.to_string());
-        self.add_mark_in(region, block_id, idx, idx + 1, MARK_FIELD, FIELD_PAGE_NUMBER);
+        self.add_mark_in(
+            region,
+            block_id,
+            idx,
+            idx + 1,
+            MARK_FIELD,
+            FIELD_PAGE_NUMBER,
+        );
     }
-
 
     /// Resolve-or-create the `notes` root container (created lazily on the first note insert).
     fn notes_container(&mut self) -> ObjId {
@@ -1527,7 +1688,9 @@ impl<'a> DocMut<'a> {
         if let Some(obj) = opt_map_at(self.doc, &self.c.root, KEY_NOTES) {
             return obj;
         }
-        self.doc.put_object(&self.c.root, KEY_NOTES, ObjType::Map).unwrap()
+        self.doc
+            .put_object(&self.c.root, KEY_NOTES, ObjType::Map)
+            .unwrap()
     }
 
     /// Create a new note (footnote/endnote) with an empty block sequence and return its freshly-minted id
@@ -1535,9 +1698,14 @@ impl<'a> DocMut<'a> {
     pub fn insert_note(&mut self, kind: NoteKind) -> String {
         let notes = self.notes_container();
         let id = self.ids.mint();
-        let note = self.doc.put_object(&notes, id.as_str(), ObjType::Map).unwrap();
+        let note = self
+            .doc
+            .put_object(&notes, id.as_str(), ObjType::Map)
+            .unwrap();
         self.doc.put(&note, NOTE_KIND, kind.as_str()).unwrap();
-        self.doc.put_object(&note, NOTE_BLOCKS, ObjType::Map).unwrap();
+        self.doc
+            .put_object(&note, NOTE_BLOCKS, ObjType::Map)
+            .unwrap();
         id
     }
 
@@ -1572,14 +1740,26 @@ impl<'a> DocMut<'a> {
     }
 
     /// Insert a block into a note's content (created lazily); returns its id, or `None` if the note id is unknown.
-    pub fn insert_note_block(&mut self, note_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+    pub fn insert_note_block(
+        &mut self,
+        note_id: &str,
+        after: Option<&str>,
+        kind: &str,
+    ) -> Option<String> {
         let container = self.note_blocks_container(note_id)?;
         let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
-        let obj = self.doc.put_object(&container, id.as_str(), ObjType::Map).unwrap();
-        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone())).unwrap();
+        let obj = self
+            .doc
+            .put_object(&container, id.as_str(), ObjType::Map)
+            .unwrap();
+        self.doc
+            .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone()))
+            .unwrap();
         self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
-        self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
+        self.doc
+            .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
+            .unwrap();
         self.record_order(&container, &id, &key);
         Some(id)
     }
@@ -1599,20 +1779,34 @@ impl<'a> DocMut<'a> {
     }
 
     /// Splice text into a note's block.
-    pub fn splice_note_text(&mut self, note_id: &str, block_id: &str, idx: usize, del: isize, ins: &str) {
+    pub fn splice_note_text(
+        &mut self,
+        note_id: &str,
+        block_id: &str,
+        idx: usize,
+        del: isize,
+        ins: &str,
+    ) {
         if let Some(tid) = self.note_text_obj(note_id, block_id) {
             let _ = self.doc.splice_text(&tid, idx, del, ins);
         }
     }
 
     /// Add an inline mark over a note's block text.
-    pub fn add_note_mark(&mut self, note_id: &str, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<ScalarValue>) {
+    pub fn add_note_mark(
+        &mut self,
+        note_id: &str,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+        value: impl Into<ScalarValue>,
+    ) {
         if let Some(tid) = self.note_text_obj(note_id, block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
         }
     }
-
 
     /// Resolve-or-create the `comments` root container (created lazily on the first comment insert).
     fn comments_container(&mut self) -> ObjId {
@@ -1622,7 +1816,9 @@ impl<'a> DocMut<'a> {
         if let Some(obj) = opt_map_at(self.doc, &self.c.root, KEY_COMMENTS) {
             return obj;
         }
-        self.doc.put_object(&self.c.root, KEY_COMMENTS, ObjType::Map).unwrap()
+        self.doc
+            .put_object(&self.c.root, KEY_COMMENTS, ObjType::Map)
+            .unwrap()
     }
 
     /// Create a new comment with an `author`, a `date` string, and an empty block sequence; returns its
@@ -1631,10 +1827,15 @@ impl<'a> DocMut<'a> {
     pub fn insert_comment(&mut self, author: &str, date: &str) -> String {
         let comments = self.comments_container();
         let id = self.ids.mint();
-        let comment = self.doc.put_object(&comments, id.as_str(), ObjType::Map).unwrap();
+        let comment = self
+            .doc
+            .put_object(&comments, id.as_str(), ObjType::Map)
+            .unwrap();
         self.doc.put(&comment, COMMENT_AUTHOR, author).unwrap();
         self.doc.put(&comment, COMMENT_DATE, date).unwrap();
-        self.doc.put_object(&comment, COMMENT_BLOCKS, ObjType::Map).unwrap();
+        self.doc
+            .put_object(&comment, COMMENT_BLOCKS, ObjType::Map)
+            .unwrap();
         id
     }
 
@@ -1646,7 +1847,14 @@ impl<'a> DocMut<'a> {
 
     /// Convenience: create a comment authored by `author` with body `text` (a single paragraph), anchor it to
     /// `[start, end)` of `block_id`, and return the new comment id. For multi-paragraph content, use [`Self::insert_comment`] directly.
-    pub fn add_comment(&mut self, block_id: &str, start: usize, end: usize, author: &str, text: &str) -> String {
+    pub fn add_comment(
+        &mut self,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        author: &str,
+        text: &str,
+    ) -> String {
         let id = self.insert_comment(author, "");
         if let Some(b) = self.insert_comment_block(&id, None, "paragraph") {
             self.splice_comment_text(&id, &b, 0, 0, text);
@@ -1660,19 +1868,34 @@ impl<'a> DocMut<'a> {
         let comment = comment_obj(self.doc, self.c, comment_id)?;
         match self.doc.get(&comment, COMMENT_BLOCKS) {
             Ok(Some((Value::Object(ObjType::Map), bid))) => Some(bid),
-            _ => self.doc.put_object(&comment, COMMENT_BLOCKS, ObjType::Map).ok(),
+            _ => self
+                .doc
+                .put_object(&comment, COMMENT_BLOCKS, ObjType::Map)
+                .ok(),
         }
     }
 
     /// Insert a block into a comment's content (created lazily); returns its id, or `None` if the comment id is unknown.
-    pub fn insert_comment_block(&mut self, comment_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+    pub fn insert_comment_block(
+        &mut self,
+        comment_id: &str,
+        after: Option<&str>,
+        kind: &str,
+    ) -> Option<String> {
         let container = self.comment_blocks_container(comment_id)?;
         let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
-        let obj = self.doc.put_object(&container, id.as_str(), ObjType::Map).unwrap();
-        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone())).unwrap();
+        let obj = self
+            .doc
+            .put_object(&container, id.as_str(), ObjType::Map)
+            .unwrap();
+        self.doc
+            .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone()))
+            .unwrap();
         self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
-        self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
+        self.doc
+            .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
+            .unwrap();
         self.record_order(&container, &id, &key);
         Some(id)
     }
@@ -1692,12 +1915,18 @@ impl<'a> DocMut<'a> {
     }
 
     /// Splice text into a comment's block.
-    pub fn splice_comment_text(&mut self, comment_id: &str, block_id: &str, idx: usize, del: isize, ins: &str) {
+    pub fn splice_comment_text(
+        &mut self,
+        comment_id: &str,
+        block_id: &str,
+        idx: usize,
+        del: isize,
+        ins: &str,
+    ) {
         if let Some(tid) = self.comment_text_obj(comment_id, block_id) {
             let _ = self.doc.splice_text(&tid, idx, del, ins);
         }
     }
-
 
     /// Resolve-or-create the `changes` root container (created lazily on the first tracked change).
     fn changes_container(&mut self) -> ObjId {
@@ -1707,15 +1936,25 @@ impl<'a> DocMut<'a> {
         if let Some(obj) = opt_map_at(self.doc, &self.c.root, KEY_CHANGES) {
             return obj;
         }
-        self.doc.put_object(&self.c.root, KEY_CHANGES, ObjType::Map).unwrap()
+        self.doc
+            .put_object(&self.c.root, KEY_CHANGES, ObjType::Map)
+            .unwrap()
     }
 
     /// Create a tracked-change record of `kind` with an `author` + `date`; returns its freshly-minted id (shares
     /// the body's generator). The body anchor is placed separately via [`Self::add_change_mark`] — callers usually go through [`Self::track_insert`]/[`Self::track_delete`].
-    pub fn insert_change(&mut self, kind: crate::snapshot::ChangeKind, author: &str, date: &str) -> String {
+    pub fn insert_change(
+        &mut self,
+        kind: crate::snapshot::ChangeKind,
+        author: &str,
+        date: &str,
+    ) -> String {
         let changes = self.changes_container();
         let id = self.ids.mint();
-        let change = self.doc.put_object(&changes, id.as_str(), ObjType::Map).unwrap();
+        let change = self
+            .doc
+            .put_object(&changes, id.as_str(), ObjType::Map)
+            .unwrap();
         self.doc.put(&change, CHANGE_KIND, kind.as_str()).unwrap();
         self.doc.put(&change, CHANGE_AUTHOR, author).unwrap();
         self.doc.put(&change, CHANGE_DATE, date).unwrap();
@@ -1724,25 +1963,52 @@ impl<'a> DocMut<'a> {
 
     /// Anchor a tracked change to the body range `[start, end)` of `block_id`: cover it with the `ins`/`del`
     /// mark matching the change's kind, valued with the change id.
-    pub fn add_change_mark(&mut self, kind: crate::snapshot::ChangeKind, block_id: &str, start: usize, end: usize, change_id: &str) {
+    pub fn add_change_mark(
+        &mut self,
+        kind: crate::snapshot::ChangeKind,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        change_id: &str,
+    ) {
         self.add_mark(block_id, start, end, change_mark_name(kind), change_id);
     }
 
     /// Track an **insertion**: splice `text` into `block_id` at `char_idx`, then flag it with an `ins` mark
     /// valued with a fresh change id. The text is real content — accept keeps it, reject removes it.
-    pub fn track_insert(&mut self, block_id: &str, char_idx: usize, text: &str, author: &str, date: &str) -> String {
+    pub fn track_insert(
+        &mut self,
+        block_id: &str,
+        char_idx: usize,
+        text: &str,
+        author: &str,
+        date: &str,
+    ) -> String {
         let id = self.insert_change(crate::snapshot::ChangeKind::Ins, author, date);
         let n = text.chars().count();
         self.splice_text(block_id, char_idx, 0, text);
         if n > 0 {
-            self.add_change_mark(crate::snapshot::ChangeKind::Ins, block_id, char_idx, char_idx + n, &id);
+            self.add_change_mark(
+                crate::snapshot::ChangeKind::Ins,
+                block_id,
+                char_idx,
+                char_idx + n,
+                &id,
+            );
         }
         id
     }
 
     /// Track a **deletion**: flag the existing body range `[start, end)` with a `del` mark valued with a fresh
     /// change id. The text is *retained* (struck, not removed) so reviewers can see it; accept removes it, reject keeps it.
-    pub fn track_delete(&mut self, block_id: &str, start: usize, end: usize, author: &str, date: &str) -> String {
+    pub fn track_delete(
+        &mut self,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        author: &str,
+        date: &str,
+    ) -> String {
         let id = self.insert_change(crate::snapshot::ChangeKind::Del, author, date);
         if end > start {
             self.add_change_mark(crate::snapshot::ChangeKind::Del, block_id, start, end, &id);
@@ -1754,7 +2020,9 @@ impl<'a> DocMut<'a> {
     /// mark; a **deletion** removes the struck text (and its `del` mark). The change record is removed from
     /// the `changes` container either way. A no-op for an unknown id.
     pub fn accept_change(&mut self, change_id: &str) {
-        let Some(kind) = change_kind(self.doc, self.c, change_id) else { return };
+        let Some(kind) = change_kind(self.doc, self.c, change_id) else {
+            return;
+        };
         let range = change_range(self.doc, self.c, change_id);
         match kind {
             crate::snapshot::ChangeKind::Ins => {
@@ -1781,7 +2049,9 @@ impl<'a> DocMut<'a> {
     /// inserted text (and its `ins` mark); a **deletion** keeps the struck text and drops its `del` mark. The
     /// change record is removed from the `changes` container either way. A no-op for an unknown id.
     pub fn reject_change(&mut self, change_id: &str) {
-        let Some(kind) = change_kind(self.doc, self.c, change_id) else { return };
+        let Some(kind) = change_kind(self.doc, self.c, change_id) else {
+            return;
+        };
         let range = change_range(self.doc, self.c, change_id);
         match kind {
             crate::snapshot::ChangeKind::Ins => {
@@ -1820,7 +2090,9 @@ impl<'a> DocMut<'a> {
         let (mut s, mut e) = (start, end);
         if e <= s {
             // Widen a point bookmark to one character so the mark has somewhere to live.
-            let blen = crate::model::block_text(self.doc, self.c, block_id).map(|t| t.chars().count()).unwrap_or(0);
+            let blen = crate::model::block_text(self.doc, self.c, block_id)
+                .map(|t| t.chars().count())
+                .unwrap_or(0);
             if s < blen {
                 e = s + 1;
             } else if blen > 0 {
@@ -1851,7 +2123,9 @@ impl<'a> DocMut<'a> {
 
     /// Remove every block from a region (clearing a header/footer).
     pub fn clear_region(&mut self, region: Region) {
-        let Some(container) = region_obj(self.doc, self.c, region) else { return };
+        let Some(container) = region_obj(self.doc, self.c, region) else {
+            return;
+        };
         for id in ordered_keys(self.doc, &container) {
             let _ = self.doc.delete(&container, &id);
         }
@@ -1883,7 +2157,9 @@ impl<'a> DocMut<'a> {
         // Compute the target key with the block still at its old position (mirrors the pre-index behaviour).
         let key = self.order_after(after);
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, id) {
-            self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone())).unwrap();
+            self.doc
+                .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone()))
+                .unwrap();
             let container = self.c.blocks.clone();
             self.record_order(&container, id, &key); // re-keys the moved block in the index
         }
@@ -1907,7 +2183,14 @@ impl<'a> DocMut<'a> {
         }
     }
 
-    pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<ScalarValue>) {
+    pub fn add_mark(
+        &mut self,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+        value: impl Into<ScalarValue>,
+    ) {
         if let Some(tid) = self.text_obj(block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
@@ -1966,7 +2249,10 @@ impl<'a> DocMut<'a> {
     fn props_map(&mut self) -> ObjId {
         match self.doc.get(&self.c.meta, KEY_PROPS) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => self.doc.put_object(&self.c.meta, KEY_PROPS, ObjType::Map).unwrap(),
+            _ => self
+                .doc
+                .put_object(&self.c.meta, KEY_PROPS, ObjType::Map)
+                .unwrap(),
         }
     }
 
@@ -1982,7 +2268,10 @@ impl<'a> DocMut<'a> {
     pub fn set_style(&mut self, id: &str, props: &BTreeMap<String, AttrVal>) {
         let obj = match self.doc.get(&self.c.styles, id) {
             Ok(Some((Value::Object(ObjType::Map), o))) => o,
-            _ => self.doc.put_object(&self.c.styles, id, ObjType::Map).unwrap(),
+            _ => self
+                .doc
+                .put_object(&self.c.styles, id, ObjType::Map)
+                .unwrap(),
         };
         for (k, v) in props {
             let _ = match v {
@@ -2026,14 +2315,24 @@ impl<'a> DocMut<'a> {
     /// the whole part). Each atom becomes an independent automerge object keyed by a stable id, so distinct atoms merge across replicas. Replaces any existing part under `key`.
     pub fn set_preserved_atoms(&mut self, key: &str, atoms: Vec<Vec<u8>>) {
         // Replace the part wholesale: a fresh map keyed by per-atom stable ids.
-        let part = self.doc.put_object(&self.c.preserved, key, ObjType::Map).unwrap();
+        let part = self
+            .doc
+            .put_object(&self.c.preserved, key, ObjType::Map)
+            .unwrap();
         for (idx, atom) in atoms.iter().enumerate() {
             let id = preserved_atom_id(idx, atom);
-            let seg = self.doc.put_object(&part, id.as_str(), ObjType::Map).unwrap();
+            let seg = self
+                .doc
+                .put_object(&part, id.as_str(), ObjType::Map)
+                .unwrap();
             // Order key: the atom's source position, big-endian, so segments sort back into source order deterministically.
             let ord = (idx as u32).to_be_bytes().to_vec();
-            let _ = self.doc.put(&seg, PRESERVED_SEG_ORD, ScalarValue::Bytes(ord));
-            let _ = self.doc.put(&seg, PRESERVED_SEG_BYTES, ScalarValue::Bytes(atom.clone()));
+            let _ = self
+                .doc
+                .put(&seg, PRESERVED_SEG_ORD, ScalarValue::Bytes(ord));
+            let _ = self
+                .doc
+                .put(&seg, PRESERVED_SEG_BYTES, ScalarValue::Bytes(atom.clone()));
         }
     }
 
@@ -2045,7 +2344,11 @@ impl<'a> DocMut<'a> {
             _ => return,
         };
         if let Ok(Some((Value::Object(ObjType::Map), seg))) = self.doc.get(&part, segment_id) {
-            let _ = self.doc.put(&seg, PRESERVED_SEG_BYTES, ScalarValue::Bytes(bytes.to_vec()));
+            let _ = self.doc.put(
+                &seg,
+                PRESERVED_SEG_BYTES,
+                ScalarValue::Bytes(bytes.to_vec()),
+            );
         }
     }
 
@@ -2055,17 +2358,27 @@ impl<'a> DocMut<'a> {
         let hash = crate::blobstore::put(bytes);
         let blobs = match blobs_obj(self.doc, self.c) {
             Some(b) => b,
-            None => self.doc.put_object(&self.c.root, KEY_BLOBS, ObjType::Map).unwrap(),
+            None => self
+                .doc
+                .put_object(&self.c.root, KEY_BLOBS, ObjType::Map)
+                .unwrap(),
         };
         // Idempotent by construction: the key is the content hash, so identical bytes address the same descriptor
         // and re-putting it would be pure tombstone churn for no change in meaning.
-        if matches!(self.doc.get(&blobs, hash.as_str()), Ok(Some((Value::Object(ObjType::Map), _)))) {
+        if matches!(
+            self.doc.get(&blobs, hash.as_str()),
+            Ok(Some((Value::Object(ObjType::Map), _)))
+        ) {
             return hash;
         }
         let meta = crate::blobstore::sniff(bytes);
         if let Ok(d) = self.doc.put_object(&blobs, hash.as_str(), ObjType::Map) {
-            let _ = self.doc.put(&d, BLOB_MIME, ScalarValue::Str(meta.mime.as_str().into()));
-            let _ = self.doc.put(&d, BLOB_LEN, ScalarValue::Int(meta.len as i64));
+            let _ = self
+                .doc
+                .put(&d, BLOB_MIME, ScalarValue::Str(meta.mime.as_str().into()));
+            let _ = self
+                .doc
+                .put(&d, BLOB_LEN, ScalarValue::Int(meta.len as i64));
             let _ = self.doc.put(&d, BLOB_W, ScalarValue::Int(meta.w as i64));
             let _ = self.doc.put(&d, BLOB_H, ScalarValue::Int(meta.h as i64));
         }
@@ -2094,7 +2407,11 @@ mod style_tests {
         let c = init(&mut doc, &ROOT);
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.set_style("body", &props("Body", 16.5, false));
             dm.set_style("h1", &props("Heading 1", 30.0, true));
         }
@@ -2104,13 +2421,20 @@ mod style_tests {
         assert_eq!(got, vec!["body".to_string(), "h1".to_string()]);
 
         let bp = style_props(&doc, &c, "body");
-        assert_eq!(bp.get(STYLE_SIZE), Some(&AttrVal::Float(16.5)), "fractional size stored as F64");
+        assert_eq!(
+            bp.get(STYLE_SIZE),
+            Some(&AttrVal::Float(16.5)),
+            "fractional size stored as F64"
+        );
         assert_eq!(bp.get(STYLE_NAME), Some(&AttrVal::Str("Body".into())));
         assert_eq!(bp.get(STYLE_BOLD), Some(&AttrVal::Bool(false)));
 
         let snap = materialize(&doc, &c);
         assert_eq!(snap.styles.len(), 2);
-        assert_eq!(snap.styles["h1"].get(STYLE_BOLD), Some(&AttrVal::Bool(true)));
+        assert_eq!(
+            snap.styles["h1"].get(STYLE_BOLD),
+            Some(&AttrVal::Bool(true))
+        );
     }
 
     #[test]
@@ -2122,7 +2446,11 @@ mod style_tests {
         assert!(doc_props(&doc, &c).is_empty());
         assert_eq!(doc_prop(&doc, &c, PROP_TITLE), None);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.set_doc_prop(PROP_TITLE, "Hello");
             dm.set_doc_prop(PROP_AUTHOR, "Ada");
         }
@@ -2132,14 +2460,25 @@ mod style_tests {
         assert_eq!(all.get("title").map(String::as_str), Some("Hello"));
         assert_eq!(all.get("author").map(String::as_str), Some("Ada"));
         let snap = materialize(&doc, &c);
-        assert_eq!(snap.properties.get("title").map(String::as_str), Some("Hello"));
+        assert_eq!(
+            snap.properties.get("title").map(String::as_str),
+            Some("Hello")
+        );
         // Field-level upsert: setting one property leaves the other intact.
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.set_doc_prop(PROP_TITLE, "Changed");
         }
         assert_eq!(doc_prop(&doc, &c, PROP_TITLE).as_deref(), Some("Changed"));
-        assert_eq!(doc_prop(&doc, &c, PROP_AUTHOR).as_deref(), Some("Ada"), "untouched prop preserved");
+        assert_eq!(
+            doc_prop(&doc, &c, PROP_AUTHOR).as_deref(),
+            Some("Ada"),
+            "untouched prop preserved"
+        );
     }
 
     #[test]
@@ -2153,7 +2492,10 @@ mod style_tests {
         let bytes = doc.save();
         let reloaded = AutoCommit::load(&bytes).unwrap();
         let c2 = open(&reloaded, &ROOT).unwrap();
-        assert!(doc_props(&reloaded, &c2).is_empty(), "reload still opens with no props");
+        assert!(
+            doc_props(&reloaded, &c2).is_empty(),
+            "reload still opens with no props"
+        );
     }
 
     #[test]
@@ -2162,7 +2504,11 @@ mod style_tests {
         let c = init(&mut doc, &ROOT);
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.set_style("h1", &props("Heading 1", 30.0, true));
             // Touch only one property; the others must survive (field-level merge).
             let mut one = BTreeMap::new();
@@ -2170,12 +2516,24 @@ mod style_tests {
             dm.set_style("h1", &one);
         }
         let h1 = style_props(&doc, &c, "h1");
-        assert_eq!(h1.get(STYLE_SIZE), Some(&AttrVal::Float(40.0)), "updated property");
-        assert_eq!(h1.get(STYLE_BOLD), Some(&AttrVal::Bool(true)), "untouched property preserved");
+        assert_eq!(
+            h1.get(STYLE_SIZE),
+            Some(&AttrVal::Float(40.0)),
+            "updated property"
+        );
+        assert_eq!(
+            h1.get(STYLE_BOLD),
+            Some(&AttrVal::Bool(true)),
+            "untouched property preserved"
+        );
         assert_eq!(h1.get(STYLE_NAME), Some(&AttrVal::Str("Heading 1".into())));
 
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.remove_style("h1");
         }
         assert!(style_ids(&doc, &c).is_empty(), "style removed");
@@ -2199,13 +2557,23 @@ mod genesis_detection_tests {
         doc.commit();
 
         let changes = doc.get_changes(&[]);
-        let genesis: Vec<_> =
-            changes.iter().filter(|ch| is_schema_genesis_actor(ch.actor_id())).collect();
-        let authored: Vec<_> =
-            changes.iter().filter(|ch| !is_schema_genesis_actor(ch.actor_id())).collect();
+        let genesis: Vec<_> = changes
+            .iter()
+            .filter(|ch| is_schema_genesis_actor(ch.actor_id()))
+            .collect();
+        let authored: Vec<_> = changes
+            .iter()
+            .filter(|ch| !is_schema_genesis_actor(ch.actor_id()))
+            .collect();
 
-        assert!(!genesis.is_empty(), "the schema has to be written by the genesis actor");
-        assert!(!authored.is_empty(), "the edit has to be attributed to this replica");
+        assert!(
+            !genesis.is_empty(),
+            "the schema has to be written by the genesis actor"
+        );
+        assert!(
+            !authored.is_empty(),
+            "the edit has to be attributed to this replica"
+        );
         assert_eq!(
             genesis[0].actor_id().to_hex_string(),
             schema_genesis_actor_hex(),
@@ -2254,7 +2622,10 @@ mod region_tests {
         // The regions come with the schema rather than being minted on first
         // write, so two people who each add a page header cannot end up with two
         // `root.header` maps and lose one — see `GENESIS_ACTOR`.
-        assert!(c.header.is_some() && c.footer.is_some(), "regions come with the schema");
+        assert!(
+            c.header.is_some() && c.footer.is_some(),
+            "regions come with the schema"
+        );
         assert!(region_blocks_in_order(&doc, &c, Region::Header).is_empty());
         assert!(materialize_region(&doc, &c, Region::Footer).is_empty());
         let bytes = doc.save();
@@ -2271,11 +2642,18 @@ mod region_tests {
         old.commit();
         let mut reopened = AutoCommit::load(&old.save()).unwrap();
         let oc = open(&reopened, &ROOT).unwrap();
-        assert!(oc.header.is_none() && oc.footer.is_none(), "an older document has no regions");
+        assert!(
+            oc.header.is_none() && oc.footer.is_none(),
+            "an older document has no regions"
+        );
         assert!(region_blocks_in_order(&reopened, &oc, Region::Header).is_empty());
         let mut ids = IdGen::new(reopened.get_actor().to_hex_string());
         {
-            let mut dm = DocMut { doc: &mut reopened, c: &oc, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut reopened,
+                c: &oc,
+                ids: &mut ids,
+            };
             let b = dm.insert_block_in(Region::Header, None, "paragraph");
             dm.splice_text_in(Region::Header, &b, 0, 0, "migrated");
         }
@@ -2300,12 +2678,20 @@ mod region_tests {
             let cb = init(&mut b, &ROOT);
             let mut ids_b = IdGen::new(b.get_actor().to_hex_string());
             {
-                let mut dm = DocMut { doc: &mut a, c: &ca, ids: &mut ids_a };
+                let mut dm = DocMut {
+                    doc: &mut a,
+                    c: &ca,
+                    ids: &mut ids_a,
+                };
                 let x = dm.insert_block_in(Region::Header, None, "paragraph");
                 dm.splice_text_in(Region::Header, &x, 0, 0, "left");
             }
             {
-                let mut dm = DocMut { doc: &mut b, c: &cb, ids: &mut ids_b };
+                let mut dm = DocMut {
+                    doc: &mut b,
+                    c: &cb,
+                    ids: &mut ids_b,
+                };
                 let y = dm.insert_block_in(Region::Header, None, "paragraph");
                 dm.splice_text_in(Region::Header, &y, 0, 0, "right");
             }
@@ -2329,7 +2715,11 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (hid, fid);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             hid = dm.insert_block_in(Region::Header, None, "paragraph");
             dm.splice_text_in(Region::Header, &hid, 0, 0, "Title");
             fid = dm.insert_block_in(Region::Footer, None, "paragraph");
@@ -2344,9 +2734,20 @@ mod region_tests {
         let footer = materialize_region(&doc, &c, Region::Footer);
         assert_eq!(footer.len(), 1);
         assert_eq!(footer[0].text, format!("Page {}", FIELD_PLACEHOLDER));
-        let field = footer[0].marks.iter().find(|m| m.name == MARK_FIELD).expect("page-number field mark present");
-        assert_eq!((field.start, field.end), (5, 6), "field covers exactly the placeholder");
-        assert_eq!(field.value, crate::document::MarkValue::Str(FIELD_PAGE_NUMBER.into()));
+        let field = footer[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_FIELD)
+            .expect("page-number field mark present");
+        assert_eq!(
+            (field.start, field.end),
+            (5, 6),
+            "field covers exactly the placeholder"
+        );
+        assert_eq!(
+            field.value,
+            crate::document::MarkValue::Str(FIELD_PAGE_NUMBER.into())
+        );
 
         let snap = materialize(&doc, &c);
         assert_eq!(snap.header[0].text, "Title");
@@ -2372,7 +2773,10 @@ mod region_tests {
         let bytes = old.save();
         let reloaded = AutoCommit::load(&bytes).unwrap();
         let c2 = open(&reloaded, &ROOT).unwrap();
-        assert!(c2.notes.is_none(), "old-schema doc opens with no notes container");
+        assert!(
+            c2.notes.is_none(),
+            "old-schema doc opens with no notes container"
+        );
         assert!(note_ids(&reloaded, &c2).is_empty());
     }
 
@@ -2383,7 +2787,11 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (pid, nid, nb);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             pid = dm.insert_block(None, "paragraph");
             dm.splice_text(&pid, 0, 0, "see ref");
             nid = dm.insert_footnote(&pid, 4);
@@ -2391,8 +2799,16 @@ mod region_tests {
             dm.splice_note_text(&nid, &nb, 0, 0, "the note");
         }
         let p = materialize_block(&doc, &c.blocks, &pid);
-        assert_eq!(p.text, format!("see {}ref", FIELD_PLACEHOLDER), "placeholder spliced inline");
-        let nref = p.marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("note-ref mark present");
+        assert_eq!(
+            p.text,
+            format!("see {}ref", FIELD_PLACEHOLDER),
+            "placeholder spliced inline"
+        );
+        let nref = p
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_NOTE_REF)
+            .expect("note-ref mark present");
         assert_eq!((nref.start, nref.end), (4, 5));
         assert_eq!(nref.value, crate::document::MarkValue::Str(nid.clone()));
         assert_eq!(note_kind(&doc, &c, &nid), Some(NoteKind::Footnote));
@@ -2413,7 +2829,11 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (pid, nid);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             pid = dm.insert_block(None, "paragraph");
             dm.splice_text(&pid, 0, 0, "x");
             nid = dm.insert_footnote(&pid, 1);
@@ -2424,14 +2844,23 @@ mod region_tests {
         let mut ids2 = seeded_id_gen(&doc, &c);
         let nid2;
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids2 };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids2,
+            };
             nid2 = dm.insert_footnote(&pid, 0);
             let nb2 = dm.insert_note_block(&nid2, None, "paragraph").unwrap();
             dm.splice_note_text(&nid2, &nb2, 0, 0, "second");
         }
         assert_ne!(nid, nid2, "second note id must not collide with the first");
         let snap = materialize(&doc, &c);
-        assert_eq!(snap.notes.len(), 2, "both notes survive (no overwrite): {:?}", snap.notes);
+        assert_eq!(
+            snap.notes.len(),
+            2,
+            "both notes survive (no overwrite): {:?}",
+            snap.notes
+        );
     }
 
     #[test]
@@ -2440,7 +2869,10 @@ mod region_tests {
         // A fresh doc has an (empty) comments container — eager, so concurrent comment adds converge on one shared object.
         let mut doc = AutoCommit::new();
         let c = init(&mut doc, &ROOT);
-        assert!(c.comments.is_some(), "comments container present on a fresh doc");
+        assert!(
+            c.comments.is_some(),
+            "comments container present on a fresh doc"
+        );
         assert!(comment_ids(&doc, &c).is_empty(), "but empty");
         assert!(materialize_comments(&doc, &c).is_empty());
 
@@ -2452,7 +2884,10 @@ mod region_tests {
         let bytes = old.save();
         let reloaded = AutoCommit::load(&bytes).unwrap();
         let c2 = open(&reloaded, &ROOT).unwrap();
-        assert!(c2.comments.is_none(), "old-schema doc opens with no comments container");
+        assert!(
+            c2.comments.is_none(),
+            "old-schema doc opens with no comments container"
+        );
         assert!(comment_ids(&reloaded, &c2).is_empty());
     }
 
@@ -2463,13 +2898,21 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (pid, cid);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             pid = dm.insert_block(None, "paragraph");
             dm.splice_text(&pid, 0, 0, "please fix this word");
             cid = dm.add_comment(&pid, 11, 20, "Ada", "note: fix");
         }
         let p = materialize_block(&doc, &c.blocks, &pid);
-        let cm = p.marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment mark present");
+        let cm = p
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_COMMENT)
+            .expect("comment mark present");
         assert_eq!((cm.start, cm.end), (11, 20));
         assert_eq!(cm.value, crate::document::MarkValue::Str(cid.clone()));
         assert_eq!(comment_author(&doc, &c, &cid).as_deref(), Some("Ada"));
@@ -2491,7 +2934,11 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (pid, cid);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             pid = dm.insert_block(None, "paragraph");
             dm.splice_text(&pid, 0, 0, "abcdef");
             cid = dm.add_comment(&pid, 0, 3, "A", "first");
@@ -2499,12 +2946,24 @@ mod region_tests {
         let mut ids2 = seeded_id_gen(&doc, &c);
         let cid2;
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids2 };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids2,
+            };
             cid2 = dm.add_comment(&pid, 3, 6, "B", "second");
         }
-        assert_ne!(cid, cid2, "second comment id must not collide with the first");
+        assert_ne!(
+            cid, cid2,
+            "second comment id must not collide with the first"
+        );
         let snap = materialize(&doc, &c);
-        assert_eq!(snap.comments.len(), 2, "both comments survive (no overwrite): {:?}", snap.comments);
+        assert_eq!(
+            snap.comments.len(),
+            2,
+            "both comments survive (no overwrite): {:?}",
+            snap.comments
+        );
     }
 
     #[test]
@@ -2513,7 +2972,10 @@ mod region_tests {
         // A fresh doc has an (empty) changes container — eager, for the same convergence reason as comments/notes.
         let mut doc = AutoCommit::new();
         let c = init(&mut doc, &ROOT);
-        assert!(c.changes.is_some(), "changes container present on a fresh doc");
+        assert!(
+            c.changes.is_some(),
+            "changes container present on a fresh doc"
+        );
         assert!(change_ids(&doc, &c).is_empty(), "but empty");
         assert!(materialize_changes(&doc, &c).is_empty());
 
@@ -2525,7 +2987,10 @@ mod region_tests {
         let bytes = old.save();
         let reloaded = AutoCommit::load(&bytes).unwrap();
         let c2 = open(&reloaded, &ROOT).unwrap();
-        assert!(c2.changes.is_none(), "old-schema doc opens with no changes container");
+        assert!(
+            c2.changes.is_none(),
+            "old-schema doc opens with no changes container"
+        );
         assert!(change_ids(&reloaded, &c2).is_empty());
     }
 
@@ -2536,25 +3001,49 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (pid, ins_id, del_id);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             pid = dm.insert_block(None, "paragraph");
             dm.splice_text(&pid, 0, 0, "hello world");
             ins_id = dm.track_insert(&pid, 5, " there", "Ada", "2021-01-02");
             del_id = dm.track_delete(&pid, 12, 17, "Bob", "2021-03-04");
         }
         let p = materialize_block(&doc, &c.blocks, &pid);
-        assert_eq!(p.text, "hello there world", "inserted text is real content, deletion retained");
-        let im = p.marks.iter().find(|m| m.name == MARK_INS).expect("ins mark present");
+        assert_eq!(
+            p.text, "hello there world",
+            "inserted text is real content, deletion retained"
+        );
+        let im = p
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_INS)
+            .expect("ins mark present");
         assert_eq!((im.start, im.end), (5, 11), "ins covers ' there'");
         assert_eq!(im.value, crate::document::MarkValue::Str(ins_id.clone()));
-        let dmrk = p.marks.iter().find(|m| m.name == MARK_DEL).expect("del mark present");
+        let dmrk = p
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_DEL)
+            .expect("del mark present");
         assert_eq!((dmrk.start, dmrk.end), (12, 17), "del covers 'world'");
         assert_eq!(dmrk.value, crate::document::MarkValue::Str(del_id.clone()));
-        assert_eq!(change_kind(&doc, &c, &ins_id), Some(crate::snapshot::ChangeKind::Ins));
-        assert_eq!(change_kind(&doc, &c, &del_id), Some(crate::snapshot::ChangeKind::Del));
+        assert_eq!(
+            change_kind(&doc, &c, &ins_id),
+            Some(crate::snapshot::ChangeKind::Ins)
+        );
+        assert_eq!(
+            change_kind(&doc, &c, &del_id),
+            Some(crate::snapshot::ChangeKind::Del)
+        );
         assert_eq!(change_author(&doc, &c, &ins_id).as_deref(), Some("Ada"));
         assert_eq!(change_author(&doc, &c, &del_id).as_deref(), Some("Bob"));
-        assert_eq!(change_date(&doc, &c, &del_id).as_deref(), Some("2021-03-04"));
+        assert_eq!(
+            change_date(&doc, &c, &del_id).as_deref(),
+            Some("2021-03-04")
+        );
         let snap = materialize(&doc, &c);
         assert_eq!(snap.changes.len(), 2);
         let ins = snap.changes.iter().find(|ch| ch.id == ins_id).unwrap();
@@ -2572,7 +3061,11 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let pid;
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             pid = dm.insert_block(None, "paragraph");
             dm.splice_text(&pid, 0, 0, "ab");
             let id = dm.track_insert(&pid, 2, "cd", "A", "");
@@ -2580,8 +3073,14 @@ mod region_tests {
         }
         let p = materialize_block(&doc, &c.blocks, &pid);
         assert_eq!(p.text, "abcd", "accepted insertion keeps the text");
-        assert!(p.marks.iter().all(|m| m.name != MARK_INS), "ins mark dropped on accept");
-        assert!(materialize_changes(&doc, &c).is_empty(), "change record removed on accept");
+        assert!(
+            p.marks.iter().all(|m| m.name != MARK_INS),
+            "ins mark dropped on accept"
+        );
+        assert!(
+            materialize_changes(&doc, &c).is_empty(),
+            "change record removed on accept"
+        );
     }
 
     #[test]
@@ -2591,16 +3090,29 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let pid;
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             pid = dm.insert_block(None, "paragraph");
             dm.splice_text(&pid, 0, 0, "keep DROP end");
             let id = dm.track_delete(&pid, 5, 9, "A", "");
             dm.accept_change(&id);
         }
         let p = materialize_block(&doc, &c.blocks, &pid);
-        assert_eq!(p.text, "keep  end", "accepted deletion removes the struck text");
-        assert!(p.marks.iter().all(|m| m.name != MARK_DEL), "del mark gone with the text");
-        assert!(materialize_changes(&doc, &c).is_empty(), "change record removed on accept");
+        assert_eq!(
+            p.text, "keep  end",
+            "accepted deletion removes the struck text"
+        );
+        assert!(
+            p.marks.iter().all(|m| m.name != MARK_DEL),
+            "del mark gone with the text"
+        );
+        assert!(
+            materialize_changes(&doc, &c).is_empty(),
+            "change record removed on accept"
+        );
     }
 
     #[test]
@@ -2610,7 +3122,11 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let pid;
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             pid = dm.insert_block(None, "paragraph");
             dm.splice_text(&pid, 0, 0, "abYZ");
             let ins = dm.track_insert(&pid, 4, "QQ", "A", "");
@@ -2619,9 +3135,20 @@ mod region_tests {
             dm.reject_change(&del);
         }
         let p = materialize_block(&doc, &c.blocks, &pid);
-        assert_eq!(p.text, "abYZ", "reject-ins removed inserted text; reject-del kept struck text");
-        assert!(p.marks.iter().all(|m| m.name != MARK_INS && m.name != MARK_DEL), "both marks dropped");
-        assert!(materialize_changes(&doc, &c).is_empty(), "both records removed");
+        assert_eq!(
+            p.text, "abYZ",
+            "reject-ins removed inserted text; reject-del kept struck text"
+        );
+        assert!(
+            p.marks
+                .iter()
+                .all(|m| m.name != MARK_INS && m.name != MARK_DEL),
+            "both marks dropped"
+        );
+        assert!(
+            materialize_changes(&doc, &c).is_empty(),
+            "both records removed"
+        );
     }
 
     #[test]
@@ -2632,7 +3159,11 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (pid, chid);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             pid = dm.insert_block(None, "paragraph");
             dm.splice_text(&pid, 0, 0, "abcdef");
             chid = dm.track_delete(&pid, 0, 3, "A", "");
@@ -2640,12 +3171,24 @@ mod region_tests {
         let mut ids2 = seeded_id_gen(&doc, &c);
         let chid2;
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids2 };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids2,
+            };
             chid2 = dm.track_delete(&pid, 3, 6, "B", "");
         }
-        assert_ne!(chid, chid2, "second change id must not collide with the first");
+        assert_ne!(
+            chid, chid2,
+            "second change id must not collide with the first"
+        );
         let snap = materialize(&doc, &c);
-        assert_eq!(snap.changes.len(), 2, "both changes survive (no overwrite): {:?}", snap.changes);
+        assert_eq!(
+            snap.changes.len(),
+            2,
+            "both changes survive (no overwrite): {:?}",
+            snap.changes
+        );
     }
 
     #[test]
@@ -2655,7 +3198,11 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (target, src);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             target = dm.insert_block(None, "paragraph");
             dm.splice_text(&target, 0, 0, "the intro section");
             dm.add_bookmark(&target, 4, 9, "intro");
@@ -2664,11 +3211,19 @@ mod region_tests {
             dm.add_cross_ref(&src, 4, 9, "intro");
         }
         let tb = materialize_block(&doc, &c.blocks, &target);
-        let bm = tb.marks.iter().find(|m| m.name == MARK_BOOKMARK).expect("bookmark mark present");
+        let bm = tb
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_BOOKMARK)
+            .expect("bookmark mark present");
         assert_eq!((bm.start, bm.end), (4, 9));
         assert_eq!(bm.value, crate::document::MarkValue::Str("intro".into()));
         let sb = materialize_block(&doc, &c.blocks, &src);
-        let link = sb.marks.iter().find(|m| m.name == MARK_LINK).expect("cross-ref link mark present");
+        let link = sb
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_LINK)
+            .expect("cross-ref link mark present");
         assert_eq!((link.start, link.end), (4, 9));
         assert_eq!(link.value, crate::document::MarkValue::Str("#intro".into()));
         let snap = materialize(&doc, &c);
@@ -2684,7 +3239,11 @@ mod region_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (h, p);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             h = dm.insert_block(None, "heading");
             dm.set_attr(&h, "level", 1i64);
             dm.splice_text(&h, 0, 0, "Title");
@@ -2695,10 +3254,30 @@ mod region_tests {
             dm.add_cross_ref(&p, 0, 3, &heading_ref_id(&h));
         }
         let snap = materialize(&doc, &c);
-        let pt = snap.bookmarks.iter().find(|b| b.name == "pt").expect("point bookmark present");
-        assert_eq!((pt.range.1, pt.range.2), (1, 2), "point bookmark widened to one char");
-        let link = snap.blocks.iter().find(|b| b.text == "abc").unwrap().marks.iter().find(|m| m.name == MARK_LINK).unwrap().clone();
-        assert_eq!(link.value, crate::document::MarkValue::Str(format!("#{}{}", HEADING_REF_PREFIX, h)));
+        let pt = snap
+            .bookmarks
+            .iter()
+            .find(|b| b.name == "pt")
+            .expect("point bookmark present");
+        assert_eq!(
+            (pt.range.1, pt.range.2),
+            (1, 2),
+            "point bookmark widened to one char"
+        );
+        let link = snap
+            .blocks
+            .iter()
+            .find(|b| b.text == "abc")
+            .unwrap()
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_LINK)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            link.value,
+            crate::document::MarkValue::Str(format!("#{}{}", HEADING_REF_PREFIX, h))
+        );
     }
 
     #[test]
@@ -2712,8 +3291,16 @@ mod region_tests {
         b.add_bookmark(&p, 7, 11, "second");
         a.merge(&mut b);
         b.merge(&mut a);
-        assert_eq!(a.materialize(), b.materialize(), "replicas converge with bookmarks");
-        assert_eq!(a.materialize().bookmarks.len(), 2, "both bookmarks present after merge");
+        assert_eq!(
+            a.materialize(),
+            b.materialize(),
+            "replicas converge with bookmarks"
+        );
+        assert_eq!(
+            a.materialize().bookmarks.len(),
+            2,
+            "both bookmarks present after merge"
+        );
     }
 
     #[test]
@@ -2722,12 +3309,19 @@ mod region_tests {
         let c = init(&mut doc, &ROOT);
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             let a = dm.insert_block_in(Region::Header, None, "paragraph");
             dm.splice_text_in(Region::Header, &a, 0, 0, "one");
             dm.clear_region(Region::Header);
         }
-        assert!(materialize_region(&doc, &c, Region::Header).is_empty(), "header cleared");
+        assert!(
+            materialize_region(&doc, &c, Region::Header).is_empty(),
+            "header cleared"
+        );
     }
 }
 
@@ -2758,7 +3352,10 @@ mod preserved_tests {
         // (the first sibling rides with the leading material; each subsequent sibling opens a new atom).
         assert_eq!(atoms.len(), 2, "two style atoms: {atoms:?}");
         let joined: Vec<u8> = atoms.iter().flatten().copied().collect();
-        assert_eq!(joined, TWO_STYLE_PART, "atoms must concatenate to the source byte-for-byte");
+        assert_eq!(
+            joined, TWO_STYLE_PART,
+            "atoms must concatenate to the source byte-for-byte"
+        );
         let has_a = atoms.iter().any(|a| a.windows(5).any(|w| w == b"alpha"));
         let has_b = atoms.iter().any(|a| a.windows(5).any(|w| w == b"bravo"));
         assert!(has_a && has_b, "both style atoms present in the split");
@@ -2779,14 +3376,21 @@ mod preserved_tests {
     fn segmented_part_round_trips_verbatim() {
         let (mut doc, c, mut ids) = new_doc();
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.set_preserved("odt/part/styles.xml", TWO_STYLE_PART);
         }
         // Stored as a segmented Map, yet reconstructs byte-for-byte.
         let got = preserved_part(&doc, &c, "odt/part/styles.xml").unwrap();
         assert_eq!(got, TWO_STYLE_PART, "segmented part re-emits verbatim");
         let parts = preserved_parts(&doc, &c);
-        let p = parts.iter().find(|(k, _)| k == "odt/part/styles.xml").unwrap();
+        let p = parts
+            .iter()
+            .find(|(k, _)| k == "odt/part/styles.xml")
+            .unwrap();
         assert_eq!(p.1, TWO_STYLE_PART);
         assert!(preserved_atoms(&doc, &c, "odt/part/styles.xml").len() >= 2);
     }
@@ -2795,8 +3399,12 @@ mod preserved_tests {
     fn legacy_blob_form_still_reconstructs() {
         // Simulate a document written under the old single-`Bytes`-scalar schema.
         let (mut doc, c, _ids) = new_doc();
-        doc.put(&c.preserved, "odt/part/settings.xml", ScalarValue::Bytes(TWO_STYLE_PART.to_vec()))
-            .unwrap();
+        doc.put(
+            &c.preserved,
+            "odt/part/settings.xml",
+            ScalarValue::Bytes(TWO_STYLE_PART.to_vec()),
+        )
+        .unwrap();
         let got = preserved_part(&doc, &c, "odt/part/settings.xml").unwrap();
         assert_eq!(got, TWO_STYLE_PART, "legacy blob still re-emits verbatim");
         // Legacy form exposes no addressable atoms (it's one opaque blob).
@@ -2811,7 +3419,11 @@ mod preserved_tests {
     fn different_atom_edits_merge_not_clobber() {
         let (mut doc, c, mut ids) = new_doc();
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.set_preserved("odt/part/styles.xml", TWO_STYLE_PART);
         }
         doc.commit();
@@ -2834,27 +3446,48 @@ mod preserved_tests {
             .unwrap();
         let atoms_b = preserved_atoms(&doc_b, &c_b, "odt/part/styles.xml");
         assert!(
-            atoms_b.iter().any(|(id, _)| id == &id_alpha) && atoms_b.iter().any(|(id, _)| id == &id_bravo),
+            atoms_b.iter().any(|(id, _)| id == &id_alpha)
+                && atoms_b.iter().any(|(id, _)| id == &id_bravo),
             "fork shares the same stable atom ids: A={atoms_a:?} B={atoms_b:?}"
         );
 
         // Replica A rewrites ONLY the alpha atom; replica B rewrites ONLY bravo. Read-modify-write the atom (keeping
         // its framing), mirroring how a codec would re-model one region in place.
         let edit_atom = |bytes: &[u8], from: &str, to: &str| -> Vec<u8> {
-            String::from_utf8_lossy(bytes).replace(from, to).into_bytes()
+            String::from_utf8_lossy(bytes)
+                .replace(from, to)
+                .into_bytes()
         };
-        let cur_alpha = atoms_a.iter().find(|(id, _)| id == &id_alpha).unwrap().1.clone();
+        let cur_alpha = atoms_a
+            .iter()
+            .find(|(id, _)| id == &id_alpha)
+            .unwrap()
+            .1
+            .clone();
         let new_alpha = edit_atom(&cur_alpha, "alpha", "ALPHA-EDITED");
-        let cur_bravo = atoms_a.iter().find(|(id, _)| id == &id_bravo).unwrap().1.clone();
+        let cur_bravo = atoms_a
+            .iter()
+            .find(|(id, _)| id == &id_bravo)
+            .unwrap()
+            .1
+            .clone();
         let new_bravo = edit_atom(&cur_bravo, "bravo", "BRAVO-EDITED");
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.set_preserved_atom_bytes("odt/part/styles.xml", &id_alpha, &new_alpha);
         }
         doc.commit();
         {
             let mut ids_b = IdGen::new(doc_b.get_actor().to_hex_string());
-            let mut dm_b = DocMut { doc: &mut doc_b, c: &c_b, ids: &mut ids_b };
+            let mut dm_b = DocMut {
+                doc: &mut doc_b,
+                c: &c_b,
+                ids: &mut ids_b,
+            };
             dm_b.set_preserved_atom_bytes("odt/part/styles.xml", &id_bravo, &new_bravo);
         }
         doc_b.commit();
@@ -2878,13 +3511,22 @@ mod preserved_tests {
         for (d, cc, who) in [(&doc, &c, "A"), (&doc_b, &c_b, "B")] {
             let merged = preserved_part(d, cc, "odt/part/styles.xml").unwrap();
             let txt = String::from_utf8_lossy(&merged);
-            assert!(txt.contains("ALPHA-EDITED"), "replica {who} kept A's edit: {txt}");
-            assert!(txt.contains("BRAVO-EDITED"), "replica {who} kept B's edit: {txt}");
+            assert!(
+                txt.contains("ALPHA-EDITED"),
+                "replica {who} kept A's edit: {txt}"
+            );
+            assert!(
+                txt.contains("BRAVO-EDITED"),
+                "replica {who} kept B's edit: {txt}"
+            );
             // Source order is preserved (alpha before bravo) and the leading declaration/root-open atom survives untouched.
             let ai = txt.find("ALPHA-EDITED").unwrap();
             let bi = txt.find("BRAVO-EDITED").unwrap();
             assert!(ai < bi, "replica {who} kept atom order");
-            assert!(txt.contains("<office:styles"), "replica {who} kept the root open tag");
+            assert!(
+                txt.contains("<office:styles"),
+                "replica {who} kept the root open tag"
+            );
         }
         // Convergence: both replicas reconstruct identical bytes.
         assert_eq!(

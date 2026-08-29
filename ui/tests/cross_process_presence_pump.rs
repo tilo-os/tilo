@@ -38,13 +38,10 @@ fn write_frame(s: &mut UnixStream, bytes: &[u8]) {
 #[serial_test::serial(quick_collab_sock)]
 fn cross_process_pump_lands_remote_cursor_on_peer_b() {
     // Per-pid socket so parallel test runs don't collide.
-    let socket_path = std::env::temp_dir().join(format!(
-        "quick-collab-pump-{}.sock",
-        std::process::id()
-    ));
+    let socket_path =
+        std::env::temp_dir().join(format!("quick-collab-pump-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket_path);
-    let listener =
-        UnixListener::bind(&socket_path).expect("bind UnixListener for broker");
+    let listener = UnixListener::bind(&socket_path).expect("bind UnixListener for broker");
 
     // Broker: accept two peers, fan Presence requests from one to the other
     // tagged with `peer-0` / `peer-1`.
@@ -76,17 +73,13 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
             };
             let event = match req {
                 CollabRequest::Hello { .. } => continue,
-                CollabRequest::SyncIncremental { data } => {
-                    CollabEvent::CRDTIncremental { data }
-                }
+                CollabRequest::SyncIncremental { data } => CollabEvent::CRDTIncremental { data },
                 CollabRequest::SyncCRDT { data } => CollabEvent::CRDTUpdate { data },
-                CollabRequest::Presence { key, payload } => {
-                    CollabEvent::RemotePresenceUpdate {
-                        user_id: format!("peer-{src_idx}"),
-                        key,
-                        payload,
-                    }
-                }
+                CollabRequest::Presence { key, payload } => CollabEvent::RemotePresenceUpdate {
+                    user_id: format!("peer-{src_idx}"),
+                    key,
+                    payload,
+                },
                 // Signed-op sync + scrollback fetch aren't part of this
                 // presence-pump scenario — swallow them like `Hello`.
                 CollabRequest::SignedSyncIncremental { .. }

@@ -47,7 +47,9 @@ pub enum DocumentTarget {
 /// about one of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opened {
-    Launched { app: InstalledApp },
+    Launched {
+        app: InstalledApp,
+    },
     /// The document was already open; its window was focused instead of
     /// starting a second copy. `tab` is `None` when the first open's
     /// window hasn't arrived yet — still not a reason to launch again.
@@ -71,7 +73,10 @@ impl Opened {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
-    NoHandler { path: PathBuf, ext: Option<String> },
+    NoHandler {
+        path: PathBuf,
+        ext: Option<String>,
+    },
     Launch(LaunchError),
     /// No active workspace, so no sandbox and no room to open into.
     NoWorkspace,
@@ -141,11 +146,7 @@ pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Ope
     open(path, chrome, Some(Placement::TabIn(group)))
 }
 
-fn open(
-    path: &Path,
-    chrome: &Chrome,
-    placement: Option<Placement>,
-) -> Result<Opened, OpenError> {
+fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Opened, OpenError> {
     let app = match resolve(path) {
         DocumentTarget::App { app, .. } => app,
         DocumentTarget::NoAppForDocument { ext } => {
@@ -469,10 +470,7 @@ mod tests {
         let bin = dir.join("qos-launcher");
         std::fs::write(
             &bin,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
-                log.display()
-            ),
+            format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
         )
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -851,7 +849,11 @@ mod tests {
             "a document whose window is gone has to be launched again, got {reopened:?}"
         );
         let commands = launched_commands(&log, 2);
-        assert_eq!(commands.len(), 2, "one launch per activation: {commands:#?}");
+        assert_eq!(
+            commands.len(),
+            2,
+            "one launch per activation: {commands:#?}"
+        );
 
         clear_launch_env();
     }

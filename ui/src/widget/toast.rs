@@ -81,7 +81,9 @@ impl std::fmt::Debug for ToastStack {
 }
 
 impl Default for ToastStack {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ToastStack {
@@ -159,7 +161,11 @@ impl ToastStack {
         if rel - idx as f64 * stride > TOAST_HEIGHT {
             return None;
         }
-        if idx < self.toasts.len() { Some(idx) } else { None }
+        if idx < self.toasts.len() {
+            Some(idx)
+        } else {
+            None
+        }
     }
 
     /// Dismiss the toast at `idx` (no-op if out of range).
@@ -170,19 +176,29 @@ impl ToastStack {
     }
 
     /// Number of active (non-expired) toasts.
-    pub fn len(&self) -> usize { self.toasts.len() }
+    pub fn len(&self) -> usize {
+        self.toasts.len()
+    }
 
     /// `true` when no toasts are currently visible.
-    pub fn is_empty(&self) -> bool { self.toasts.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.toasts.is_empty()
+    }
 
     /// Iterate the active toasts in push order (oldest first).
-    pub fn iter(&self) -> std::slice::Iter<'_, Toast> { self.toasts.iter() }
+    pub fn iter(&self) -> std::slice::Iter<'_, Toast> {
+        self.toasts.iter()
+    }
 
     /// Maximum simultaneous toasts.
-    pub fn max(&self) -> usize { self.max }
+    pub fn max(&self) -> usize {
+        self.max
+    }
 
     /// Current default TTL applied to subsequent [`Self::push`] calls.
-    pub fn default_ttl(&self) -> Duration { self.default_ttl }
+    pub fn default_ttl(&self) -> Duration {
+        self.default_ttl
+    }
 }
 
 const TOAST_WIDTH: f64 = 320.0;
@@ -399,7 +415,11 @@ pub fn paint_card(
 
     let has_caption = !card.caption.is_empty();
     let has_body = !card.body.is_empty();
-    let cap_h = if has_caption { caption_size as f64 + 4.0 } else { 0.0 };
+    let cap_h = if has_caption {
+        caption_size as f64 + 4.0
+    } else {
+        0.0
+    };
     let title_h = title_size as f64 + if has_body { 4.0 } else { 0.0 };
     let body_h = if has_body { body_size as f64 } else { 0.0 };
     let block_h = cap_h + title_h + body_h;
@@ -553,7 +573,11 @@ impl Widget for ToastStack {
                     self.hovered = now_hover;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if let Some(idx) = self.card_at(self.last_cursor) {
                     self.dismiss(idx);
                     self.hovered = false;
@@ -564,9 +588,13 @@ impl Widget for ToastStack {
         }
     }
 
-    fn name(&self) -> &str { "ToastStack" }
+    fn name(&self) -> &str {
+        "ToastStack"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Politeness, Role};
@@ -606,7 +634,9 @@ mod tests {
         stack.apply_layout(&tree, node, Point::ZERO);
     }
 
-    fn device() -> DeviceId { unsafe { std::mem::zeroed() } }
+    fn device() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
 
     fn feed(s: &mut ToastStack, ev: WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
@@ -615,7 +645,17 @@ mod tests {
         let mut focus = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        s.handle_event(&ev, 1.0, &Default::default(), &mut doc, &root, &mut handled, &mut focus, node, &tree);
+        s.handle_event(
+            &ev,
+            1.0,
+            &Default::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
     }
 
     #[test]
@@ -636,7 +676,10 @@ mod tests {
                 .closable(true)
                 .actionable(true),
         );
-        assert!(hit.close_rect.area() > 0.0, "closable card returns a close rect");
+        assert!(
+            hit.close_rect.area() > 0.0,
+            "closable card returns a close rect"
+        );
         assert!(
             hit.close_rect.x1 <= rect.x1 && hit.close_rect.x1 > rect.center().x,
             "close rect hugs the card's right edge",
@@ -663,8 +706,15 @@ mod tests {
             &ToastCard::new("Build finished", ToastKind::Success),
         );
         let enc = scene.encoding();
-        let color_fills = enc.draw_tags.iter().filter(|t| **t == DrawTag::COLOR).count();
-        assert!(color_fills >= 2, "surface + accent stripe fills; got {color_fills}");
+        let color_fills = enc
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(
+            color_fills >= 2,
+            "surface + accent stripe fills; got {color_fills}"
+        );
         assert!(
             !enc.resources.glyph_runs.is_empty(),
             "the title must push a glyph run into the scene",
@@ -683,9 +733,15 @@ mod tests {
             &mut tr,
             &theme,
             rect,
-            &ToastCard::new("gone", ToastKind::Info).alpha(0.0).closable(true),
+            &ToastCard::new("gone", ToastKind::Info)
+                .alpha(0.0)
+                .closable(true),
         );
-        assert_eq!(hit.close_rect, Rect::ZERO, "faded card exposes no close rect");
+        assert_eq!(
+            hit.close_rect,
+            Rect::ZERO,
+            "faded card exposes no close rect"
+        );
         assert!(
             scene.encoding().draw_tags.is_empty(),
             "a fully-faded card emits no draw ops",
@@ -699,8 +755,21 @@ mod tests {
         s.push("second", ToastKind::Error);
         lay_out(&mut s);
         // Card 1 ("second") spans y ∈ [56, 104); centre ≈ (160, 80).
-        feed(&mut s, WindowEvent::CursorMoved { device_id: device(), position: (160.0, 80.0).into() });
-        feed(&mut s, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left });
+        feed(
+            &mut s,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (160.0, 80.0).into(),
+            },
+        );
+        feed(
+            &mut s,
+            WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
         assert_eq!(s.len(), 1);
         assert_eq!(s.iter().next().unwrap().text, "first");
     }
@@ -722,7 +791,11 @@ mod tests {
         s.push("hello", ToastKind::Info);
         s.push("world", ToastKind::Error);
         let node = Widget::accessibility(&s).unwrap();
-        assert_eq!(node.value.as_deref(), Some("world"), "value is the newest toast");
+        assert_eq!(
+            node.value.as_deref(),
+            Some("world"),
+            "value is the newest toast"
+        );
         assert_eq!(node.live, Some(Politeness::Assertive));
     }
 
@@ -732,13 +805,25 @@ mod tests {
         s.push("stay", ToastKind::Info);
         lay_out(&mut s);
         // Hover over the only card.
-        feed(&mut s, WindowEvent::CursorMoved { device_id: device(), position: (160.0, 24.0).into() });
+        feed(
+            &mut s,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (160.0, 24.0).into(),
+            },
+        );
         assert!(s.is_hovered());
         // tick longer than the TTL — but hovered, so it must NOT expire.
         s.tick(Duration::from_millis(500));
         assert_eq!(s.len(), 1, "hovered toast does not expire");
         // Move away → expiry resumes.
-        feed(&mut s, WindowEvent::CursorMoved { device_id: device(), position: (900.0, 900.0).into() });
+        feed(
+            &mut s,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (900.0, 900.0).into(),
+            },
+        );
         assert!(!s.is_hovered());
         s.tick(Duration::from_millis(500));
         assert_eq!(s.len(), 0, "expires once un-hovered");

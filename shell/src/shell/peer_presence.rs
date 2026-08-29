@@ -185,7 +185,9 @@ impl PeerPresence {
         ) else {
             return false;
         };
-        let key = PresenceKey::Workspace { id: room.to_string() };
+        let key = PresenceKey::Workspace {
+            id: room.to_string(),
+        };
         let Ok(key_str) = serde_json::to_string(&key) else {
             return false;
         };
@@ -220,17 +222,10 @@ impl PeerPresence {
             std::mem::take(&mut *buf)
         };
         let net = Arc::clone(&self.net);
-        let mine: Vec<String> = self
-            .rooms
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default();
-        fold_inbound(
-            drained,
-            presence,
-            &|room| net.peer_labels(room),
-            &|room| mine.iter().any(|r| r == room),
-        )
+        let mine: Vec<String> = self.rooms.lock().map(|g| g.clone()).unwrap_or_default();
+        fold_inbound(drained, presence, &|room| net.peer_labels(room), &|room| {
+            mine.iter().any(|r| r == room)
+        })
     }
 
     /// Write the active workspace's room's people into the tree, where
@@ -331,10 +326,7 @@ pub fn fold_inbound(
                 }
             };
             if let Some(name) = known.get(&entry.peer) {
-                presence.set_display_name(
-                    ui::permissions::UserId(user.clone()),
-                    name.clone(),
-                );
+                presence.set_display_name(ui::permissions::UserId(user.clone()), name.clone());
             }
         }
 
@@ -691,7 +683,10 @@ mod tests {
         let key = PresenceKey::Workspace { id: room.into() };
         let a = &before.pointers.get(&key).expect("a pointer")[0].0;
         let b = &after.pointers.get(&key).expect("a pointer")[0].0;
-        assert_eq!(a, b, "the identity must be the same before and after a name");
+        assert_eq!(
+            a, b,
+            "the identity must be the same before and after a name"
+        );
         assert_eq!(
             before.color_for(a),
             after.color_for(b),
@@ -826,11 +821,7 @@ mod tests {
             .get(&PresenceKey::Workspace { id: room.into() })
             .expect("a pointer");
         assert_eq!(peers[0].0, UserId("peer@42".into()));
-        assert_eq!(
-            presence.display_name(&peers[0].0),
-            "peer@42",
-            "never blank"
-        );
+        assert_eq!(presence.display_name(&peers[0].0), "peer@42", "never blank");
     }
 }
 
@@ -930,7 +921,10 @@ mod two_sessions {
 
     /// Take the one presence frame `cmds` is holding.
     fn published(cmds: &mut tokio::sync::mpsc::Receiver<NetCmd>) -> NeighbourMsg {
-        match cmds.try_recv().expect("the session must put its pointer on the wire") {
+        match cmds
+            .try_recv()
+            .expect("the session must put its pointer on the wire")
+        {
             NetCmd::Publish { msg, .. } => msg,
             other => panic!("expected a publish, got {other:?}"),
         }
@@ -944,8 +938,7 @@ mod two_sessions {
     fn a_pointer_crosses_between_two_sessions_both_ways() {
         let guest_peer = peer_id(9);
         let host_peer = peer_id(11);
-        let (mut host_tree, room) =
-            host_naming(&[(&guest_peer, "bob"), (&host_peer, "ada")]);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, "ada")]);
 
         let guest_tree = guest_joining(&mut host_tree, room);
 
@@ -1056,10 +1049,7 @@ mod two_sessions {
             "and nothing may reach the wire for it",
         );
         let mut on_host = PresenceCtx::default();
-        assert!(
-            !host.pump(&mut on_host),
-            "so the host has nobody to paint",
-        );
+        assert!(!host.pump(&mut on_host), "so the host has nobody to paint",);
         assert!(on_host.pointers.is_empty());
 
         guest.set_cursor(640.0, 610.0);
@@ -1351,8 +1341,10 @@ mod two_sessions {
         host.pump(&mut on_host);
         host.refresh_roster(&on_host);
 
-        let listed: Vec<String> =
-            roster_of(&host_handle).into_iter().map(|(n, ..)| n).collect();
+        let listed: Vec<String> = roster_of(&host_handle)
+            .into_iter()
+            .map(|(n, ..)| n)
+            .collect();
         assert_eq!(
             listed,
             vec!["bob".to_string()],
@@ -1374,8 +1366,7 @@ mod two_sessions {
 
         let dir = std::env::temp_dir().join(format!("qos-roster-guest-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
-        let (guest, _guest_net, _guest_cmds) =
-            session(&dir, "g.sock", &guest_handle, &guest_peer);
+        let (guest, _guest_net, _guest_cmds) = session(&dir, "g.sock", &guest_handle, &guest_peer);
 
         let empty = PresenceCtx::default();
         assert!(

@@ -1,3 +1,3 @@
 pub mod file_view;
-pub mod list_view;
 pub mod grid_view;
+pub mod list_view;

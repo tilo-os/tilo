@@ -216,8 +216,12 @@ mod tests {
         // evicted by page 2, so the second read of page 0 must
         // re-fetch.
         let _ = cache.read(&h, payload.len() as u64, 0, 16).unwrap();
-        let _ = cache.read(&h, payload.len() as u64, PAGE_SIZE as u64, 16).unwrap();
-        let _ = cache.read(&h, payload.len() as u64, 2 * PAGE_SIZE as u64, 16).unwrap();
+        let _ = cache
+            .read(&h, payload.len() as u64, PAGE_SIZE as u64, 16)
+            .unwrap();
+        let _ = cache
+            .read(&h, payload.len() as u64, 2 * PAGE_SIZE as u64, 16)
+            .unwrap();
         let _ = cache.read(&h, payload.len() as u64, 0, 16).unwrap();
         let snap = counted.snapshot();
         assert_eq!(snap.range_calls, 4);

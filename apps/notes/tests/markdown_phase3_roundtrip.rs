@@ -8,7 +8,7 @@
 //! not depend on `ui` for parsing) — this test ensures they emit the
 //! same bytes for the same block list.
 
-use notes::markdown::{parse, serialize, BlockSpec};
+use notes::markdown::{BlockSpec, parse, serialize};
 
 #[test]
 fn round_trip_paragraph_only() {

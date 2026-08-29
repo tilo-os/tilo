@@ -143,7 +143,12 @@ impl MailAccount {
         } else {
             config.email.clone()
         };
-        Self { id, config, collapsed: false, tint: 0 }
+        Self {
+            id,
+            config,
+            collapsed: false,
+            tint: 0,
+        }
     }
 
     /// Display label: display name → email → placeholder.
@@ -229,7 +234,11 @@ pub struct DavAccount {
 }
 
 impl DavAccount {
-    pub fn new(label: impl Into<String>, base_url: impl Into<String>, username: impl Into<String>) -> Self {
+    pub fn new(
+        label: impl Into<String>,
+        base_url: impl Into<String>,
+        username: impl Into<String>,
+    ) -> Self {
         Self {
             id: format!("dav-{}", uuid::Uuid::new_v4()),
             label: label.into(),
@@ -316,7 +325,11 @@ pub struct NextcloudAccount {
 }
 
 impl NextcloudAccount {
-    pub fn new(label: impl Into<String>, server_url: impl Into<String>, username: impl Into<String>) -> Self {
+    pub fn new(
+        label: impl Into<String>,
+        server_url: impl Into<String>,
+        username: impl Into<String>,
+    ) -> Self {
         Self {
             id: format!("nc-{}", uuid::Uuid::new_v4()),
             label: label.into(),
@@ -396,9 +409,9 @@ impl AccountKind {
 
     pub fn glyph(self) -> &'static str {
         match self {
-            AccountKind::Mail => "\u{f01ee}",     // md-email
-            AccountKind::CalDav => "\u{f00ed}",   // md-calendar
-            AccountKind::WebDav => "\u{f0256}",   // md-folder_outline
+            AccountKind::Mail => "\u{f01ee}",      // md-email
+            AccountKind::CalDav => "\u{f00ed}",    // md-calendar
+            AccountKind::WebDav => "\u{f0256}",    // md-folder_outline
             AccountKind::Nextcloud => "\u{f015f}", // md-cloud
         }
     }
@@ -481,9 +494,7 @@ impl AccountDirectory {
                 .collect(),
             AccountKind::CalDav => self.calendar.accounts.iter().map(dav_view_caldav).collect(),
             AccountKind::WebDav => self.files.accounts.iter().map(dav_view_webdav).collect(),
-            AccountKind::Nextcloud => {
-                self.nextcloud.accounts.iter().map(nextcloud_view).collect()
-            }
+            AccountKind::Nextcloud => self.nextcloud.accounts.iter().map(nextcloud_view).collect(),
         }
     }
 }
@@ -571,7 +582,12 @@ fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
             // shape; unknown fields (Mail's `auth`, the sidebar `collapsed`)
             // are ignored.
             let config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
-            Some(MailAccount { id: a.id.to_string(), config, collapsed: false, tint: a.tint })
+            Some(MailAccount {
+                id: a.id.to_string(),
+                config,
+                collapsed: false,
+                tint: a.tint,
+            })
         })
         .collect();
     let active = shared
@@ -608,7 +624,10 @@ fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
             password: String::new(),
         })
         .collect();
-    DavStore { version: 1, accounts }
+    DavStore {
+        version: 1,
+        accounts,
+    }
 }
 
 /// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`.
@@ -662,10 +681,19 @@ pub fn sample_directory() -> AccountDirectory {
     cloud.tint = 6;
 
     AccountDirectory {
-        mail: MailStore { accounts: vec![work, personal], active: 0 },
-        calendar: DavStore { version: 1, accounts: vec![cal] },
+        mail: MailStore {
+            accounts: vec![work, personal],
+            active: 0,
+        },
+        calendar: DavStore {
+            version: 1,
+            accounts: vec![cal],
+        },
         files: DavStore::default(),
-        nextcloud: NextcloudStore { version: 1, accounts: vec![cloud] },
+        nextcloud: NextcloudStore {
+            version: 1,
+            accounts: vec![cloud],
+        },
     }
 }
 
@@ -681,7 +709,10 @@ mod tests {
             ..Default::default()
         });
         acct.tint = 4;
-        let store = MailStore { accounts: vec![acct], active: 0 };
+        let store = MailStore {
+            accounts: vec![acct],
+            active: 0,
+        };
         let json = store.to_json();
         // The password must never reach the JSON.
         assert!(!json.contains("hunter2"));
@@ -719,12 +750,18 @@ mod tests {
     fn dav_and_nextcloud_drop_passwords() {
         let mut a = DavAccount::new("Cal", "https://d/", "u");
         a.password = "secret".into();
-        let store = DavStore { version: 1, accounts: vec![a] };
+        let store = DavStore {
+            version: 1,
+            accounts: vec![a],
+        };
         assert!(!store.to_json().contains("secret"));
 
         let mut n = NextcloudAccount::new("NC", "https://c", "u");
         n.password = "nextsecret".into();
-        let store = NextcloudStore { version: 1, accounts: vec![n] };
+        let store = NextcloudStore {
+            version: 1,
+            accounts: vec![n],
+        };
         assert!(!store.to_json().contains("nextsecret"));
     }
 
@@ -756,11 +793,17 @@ mod tests {
 
     #[test]
     fn autofill_recognises_gmail_and_falls_back() {
-        let mut c = AccountConfig { email: "x@gmail.com".into(), ..Default::default() };
+        let mut c = AccountConfig {
+            email: "x@gmail.com".into(),
+            ..Default::default()
+        };
         assert!(c.autofill_from_email());
         assert_eq!(c.imap_host, "imap.gmail.com");
 
-        let mut c2 = AccountConfig { email: "x@acme.test".into(), ..Default::default() };
+        let mut c2 = AccountConfig {
+            email: "x@acme.test".into(),
+            ..Default::default()
+        };
         assert!(!c2.autofill_from_email());
         assert_eq!(c2.imap_host, "imap.acme.test");
     }

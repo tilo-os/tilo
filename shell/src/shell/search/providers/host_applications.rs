@@ -331,11 +331,7 @@ mod tests {
     #[test]
     fn an_empty_needle_lists_every_host_app() {
         let p = HostApplicationsProvider::new();
-        let out = p.results_against(
-            "",
-            vec![app("a.b.One", "One"), app("a.b.Two", "Two")],
-            &[],
-        );
+        let out = p.results_against("", vec![app("a.b.One", "One"), app("a.b.Two", "Two")], &[]);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|r| r.score == 0));
     }
@@ -376,11 +372,7 @@ mod tests {
         let p = HostApplicationsProvider::new();
         let c = chrome_rc();
         let mut doc = AutoCommit::new();
-        let out = p.results_against(
-            "ghost",
-            vec![app("dev.qos.ghost-host-app", "Ghost")],
-            &[],
-        );
+        let out = p.results_against("ghost", vec![app("dev.qos.ghost-host-app", "Ghost")], &[]);
         let row = out.first().expect("a row for the ghost app");
         assert!(c.borrow().notifications().is_empty());
         (row.on_open)(

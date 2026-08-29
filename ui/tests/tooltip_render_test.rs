@@ -20,7 +20,10 @@ use ui::widget::tooltip;
 use ui::widget::{Button, Widget};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h))).ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 fn render_case(theme: &Theme, bg: Color, name: &str) {
@@ -88,7 +91,10 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
     // And the frame as a whole has substantial painted content (icons + chip).
     let bg_rgba = [bg8.r, bg8.g, bg8.b, bg8.a];
     let non_bg = rgba.chunks_exact(4).filter(|px| px[..4] != bg_rgba).count();
-    assert!(non_bg > 500, "expected painted content ({name}), got {non_bg} px");
+    assert!(
+        non_bg > 500,
+        "expected painted content ({name}), got {non_bg} px"
+    );
 
     if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);

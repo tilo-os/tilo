@@ -380,7 +380,11 @@ pub enum FsPolicyViolation {
          Access to a path outside it is a capability the user grants at runtime, not a line \
          in a manifest."
     )]
-    Write { package: String, entry: String, app_dir: &'static str },
+    Write {
+        package: String,
+        entry: String,
+        app_dir: &'static str,
+    },
     #[error(
         "package `{package}` declares `sandbox.fs.read = [{entry:?}]`, and an app does not \
          choose what it reads.\n  \
@@ -509,8 +513,8 @@ mod tests {
         let path = repo.join("apps/word-processor/qos-app.toml");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-        let m: MinimalManifest = toml::from_str(&text)
-            .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
+        let m: MinimalManifest =
+            toml::from_str(&text).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
         assert_eq!(m.package_id, "dev.qos.word-processor");
         for ext in ["odt", "docx", "md", "rtf"] {
             assert!(
@@ -520,8 +524,9 @@ mod tests {
             );
         }
         assert!(
-            m.opens_ext.iter().all(|e| !e.starts_with('.')
-                && e.chars().all(|c| !c.is_ascii_uppercase())),
+            m.opens_ext
+                .iter()
+                .all(|e| !e.starts_with('.') && e.chars().all(|c| !c.is_ascii_uppercase())),
             "extensions are normalised on decode: {:?}",
             m.opens_ext
         );
@@ -575,10 +580,7 @@ collab = "required@1"
         assert_eq!(m.entrypoint.bin, "bin/notes");
         assert_eq!(m.entrypoint.r#type, EntrypointType::Gui);
         assert_eq!(m.sandbox.net.mode, "off");
-        assert_eq!(
-            m.sandbox.fs.read,
-            vec!["/usr/share/fonts".to_string()]
-        );
+        assert_eq!(m.sandbox.fs.read, vec!["/usr/share/fonts".to_string()]);
         assert!(m.runtime.is_none());
         let req = ServiceReq::parse(m.sandbox.services.get("collab").unwrap()).unwrap();
         assert!(req.is_required());
@@ -606,7 +608,10 @@ commands = ["notes", "notes-import"]
         assert_eq!(m.entrypoint.r#type, EntrypointType::Cli);
         assert_eq!(m.entrypoint.cli_bin(), Some("bin/notes"));
         assert_eq!(m.entrypoint.gui_bin(), None);
-        assert_eq!(m.cli_commands, vec!["notes".to_string(), "notes-import".to_string()]);
+        assert_eq!(
+            m.cli_commands,
+            vec!["notes".to_string(), "notes-import".to_string()]
+        );
     }
 
     #[test]
@@ -660,7 +665,10 @@ type = "gui"
             ("", "a manifest with no kind is an app"),
             ("kind = \"\"\n", "a blank kind is an app"),
             ("kind = \"App\"\n", "kind is compared case-insensitively"),
-            ("kind = \" app \"\n", "surrounding space is not part of the kind"),
+            (
+                "kind = \" app \"\n",
+                "surrounding space is not part of the kind",
+            ),
         ] {
             let toml_text = format!(
                 "[package]\nid = \"dev.qos.x\"\nversion = \"0.1.0\"\n{src}\n\
@@ -676,8 +684,7 @@ type = "gui"
         // A typo'd kind is not a parse error — it just silently stops being an
         // app, invisible except as a missing icon.
         let known = ["app", "service", "plugin", "format-provider", "runtime"];
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../apps");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
         let mut checked = 0;
         for entry in std::fs::read_dir(&root).expect("apps/ readable") {
             let path = entry.expect("dir entry").path().join("qos-app.toml");
@@ -900,8 +907,8 @@ bin = "bin/notes"
                 continue;
             }
             let text = std::fs::read_to_string(&path).expect("manifest readable");
-            let m: MinimalManifest = toml::from_str(&text)
-                .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
+            let m: MinimalManifest =
+                toml::from_str(&text).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
             enforce_fs_policy(&m)
                 .unwrap_or_else(|e| panic!("{} is refused by its own OS: {e}", path.display()));
             checked += 1;

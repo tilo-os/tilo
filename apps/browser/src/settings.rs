@@ -34,7 +34,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Column, Container, Row, Scrollable, ScrollAxis, Spacer, Text, TextInput, Toggle, Widget,
+    Button, Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Toggle, Widget,
 };
 
 /// Boxed-widget currency the `ui` tree speaks.
@@ -322,8 +322,7 @@ impl SettingsPane {
             .push(Box::new(Text::new("Settings").with_size(24.0)))
             .push(Box::new(Spacer::new()))
             .push(Box::new(
-                Button::new("settings.close", "Done", Some(CLOSE_FLAG))
-                    .with_size(96.0, 36.0),
+                Button::new("settings.close", "Done", Some(CLOSE_FLAG)).with_size(96.0, 36.0),
             ));
 
         let general = card(
@@ -451,7 +450,11 @@ fn card(title: &str, body: El) -> El {
         ))
         .push(vgap(CARD_TITLE_GAP))
         .push(body);
-    Box::new(Container::new().with_background().with_child(Box::new(inner)))
+    Box::new(
+        Container::new()
+            .with_background()
+            .with_child(Box::new(inner)),
+    )
 }
 
 /// A vertical stack of rows with explicit inter-row spacing.
@@ -475,7 +478,9 @@ fn setting_row_described(label: &str, description: &str, control: El) -> El {
         .with_intrinsic_height()
         .push(Box::new(Text::new(label).with_size(14.0)))
         .push(vgap(2.0))
-        .push(Box::new(Text::new(description).with_size(12.0).with_color(dim())));
+        .push(Box::new(
+            Text::new(description).with_size(12.0).with_color(dim()),
+        ));
     Box::new(
         Row::new()
             .push(Box::new(text_block))
@@ -853,7 +858,15 @@ mod tests {
             let mut handled = false;
             let mut focus = None;
             pane.handle_event(
-                &ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy,
+                &ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
             );
         };
         dispatch(

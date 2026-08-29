@@ -77,14 +77,23 @@ mod tests {
     use crate::{AttrVal, DocSnapshot, Document, FormatProvider};
     use std::collections::BTreeMap;
 
-    type Norm = Vec<(String, String, Vec<(usize, usize, String)>, BTreeMap<String, AttrVal>)>;
+    type Norm = Vec<(
+        String,
+        String,
+        Vec<(usize, usize, String)>,
+        BTreeMap<String, AttrVal>,
+    )>;
 
     /// Structural view of a document, ignoring block ids (which differ per replica).
     fn norm(snap: &DocSnapshot) -> Norm {
         snap.blocks
             .iter()
             .map(|b| {
-                let mut m: Vec<_> = b.marks.iter().map(|x| (x.start, x.end, x.name.clone())).collect();
+                let mut m: Vec<_> = b
+                    .marks
+                    .iter()
+                    .map(|x| (x.start, x.end, x.name.clone()))
+                    .collect();
                 m.sort();
                 (b.kind.clone(), b.text.clone(), m, b.attrs.clone())
             })
@@ -94,31 +103,76 @@ mod tests {
     #[test]
     fn registry_resolves_builtin_codecs() {
         let r = builtin_registry();
-        assert_eq!(r.provider_for_ext("odt").unwrap().schema_id(), crate::schema::SCHEMA_ID);
-        assert_eq!(r.provider_for_ext("docx").unwrap().schema_id(), crate::schema::SCHEMA_ID);
+        assert_eq!(
+            r.provider_for_ext("odt").unwrap().schema_id(),
+            crate::schema::SCHEMA_ID
+        );
+        assert_eq!(
+            r.provider_for_ext("docx").unwrap().schema_id(),
+            crate::schema::SCHEMA_ID
+        );
         assert!(r.provider_for_ext("md").is_some());
-        assert!(r.provider_for_ext("MD").is_some(), "extension lookup is case-insensitive");
+        assert!(
+            r.provider_for_ext("MD").is_some(),
+            "extension lookup is case-insensitive"
+        );
         assert!(r.provider_for_ext("markdown").is_some());
-        assert!(r.provider_for_ext("DOCX").is_some(), "extension lookup is case-insensitive");
-        assert!(r.provider_for_ext("rtf").is_some(), "RTF import is now a built-in codec");
-        assert!(r.provider_for_ext("RTF").is_some(), "extension lookup is case-insensitive");
-        assert!(r.provider_for_ext("html").is_some(), "HTML import is now a built-in codec");
-        assert!(r.provider_for_ext("htm").is_some(), "the .htm alias is registered too");
-        assert!(r.provider_for_ext("HTML").is_some(), "extension lookup is case-insensitive");
-        assert!(r.provider_for_ext("xyz").is_none(), "unregistered type resolves to None");
+        assert!(
+            r.provider_for_ext("DOCX").is_some(),
+            "extension lookup is case-insensitive"
+        );
+        assert!(
+            r.provider_for_ext("rtf").is_some(),
+            "RTF import is now a built-in codec"
+        );
+        assert!(
+            r.provider_for_ext("RTF").is_some(),
+            "extension lookup is case-insensitive"
+        );
+        assert!(
+            r.provider_for_ext("html").is_some(),
+            "HTML import is now a built-in codec"
+        );
+        assert!(
+            r.provider_for_ext("htm").is_some(),
+            "the .htm alias is registered too"
+        );
+        assert!(
+            r.provider_for_ext("HTML").is_some(),
+            "extension lookup is case-insensitive"
+        );
+        assert!(
+            r.provider_for_ext("xyz").is_none(),
+            "unregistered type resolves to None"
+        );
     }
 
     #[test]
     fn supported_extensions_is_registry_driven() {
         let exts = supported_extensions();
         for want in ["md", "markdown", "odt", "docx", "rtf", "html", "htm"] {
-            assert!(exts.iter().any(|e| e == want), "{want} should be a supported document format");
+            assert!(
+                exts.iter().any(|e| e == want),
+                "{want} should be a supported document format"
+            );
         }
         assert!(is_supported_ext("ODT"), "case-insensitive");
-        assert!(is_supported_ext("RTF"), "RTF import is now supported (case-insensitive)");
-        assert!(is_supported_ext("HTML"), "HTML import is now supported (case-insensitive)");
-        assert!(is_supported_ext("HTM"), "the .htm alias is supported (case-insensitive)");
-        assert!(!is_supported_ext("xyz"), "an unregistered extension is not supported");
+        assert!(
+            is_supported_ext("RTF"),
+            "RTF import is now supported (case-insensitive)"
+        );
+        assert!(
+            is_supported_ext("HTML"),
+            "HTML import is now supported (case-insensitive)"
+        );
+        assert!(
+            is_supported_ext("HTM"),
+            "the .htm alias is supported (case-insensitive)"
+        );
+        assert!(
+            !is_supported_ext("xyz"),
+            "an unregistered extension is not supported"
+        );
     }
 
     use proptest::prelude::*;

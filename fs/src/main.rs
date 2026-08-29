@@ -96,12 +96,14 @@ async fn main() -> Result<()> {
 }
 
 fn parse_identity(hex_str: &str) -> Result<IdentityKey> {
-    let raw = hex::decode(hex_str.trim())
-        .with_context(|| format!("identity {hex_str:?} is not hex"))?;
-    let key: IdentityKey = raw
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("identity must be 32 bytes (64 hex chars), got {}", raw.len()))?;
+    let raw =
+        hex::decode(hex_str.trim()).with_context(|| format!("identity {hex_str:?} is not hex"))?;
+    let key: IdentityKey = raw.as_slice().try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "identity must be 32 bytes (64 hex chars), got {}",
+            raw.len()
+        )
+    })?;
     Ok(key)
 }
 
@@ -126,7 +128,9 @@ fn parse_principal(spec: &str) -> Result<Principal> {
 fn resolve_acl(args: &AclArgs, device_key: IdentityKey) -> Result<Option<Arc<CapabilityFile>>> {
     let Some(path) = &args.acl else {
         if args.identity.is_some() || !args.principals.is_empty() {
-            bail!("--identity/--principal require --acl; without a capability list they enforce nothing");
+            bail!(
+                "--identity/--principal require --acl; without a capability list they enforce nothing"
+            );
         }
         return Ok(None);
     };
@@ -197,7 +201,12 @@ fn spawn_control(
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
             println!("Document control socket at {sock:?}");
-            tokio::spawn(fs::control::serve(listener, namespace, Some(sync), enforcement))
+            tokio::spawn(fs::control::serve(
+                listener,
+                namespace,
+                Some(sync),
+                enforcement,
+            ))
         }
         Err(e) => {
             eprintln!("could not bind control socket {sock:?}: {e}");
@@ -233,7 +242,10 @@ async fn serve(
 
     // Restore a previously-persisted workspace, or start fresh (+ optional seed).
     let (ns_value, fresh) = match np.as_ref().filter(|p| p.exists()) {
-        Some(p) => (Namespace::from_bytes(author.clone(), &std::fs::read(p)?)?, false),
+        Some(p) => (
+            Namespace::from_bytes(author.clone(), &std::fs::read(p)?)?,
+            false,
+        ),
         None => (Namespace::new(author.clone()), true),
     };
     let namespace = Arc::new(Mutex::new(ns_value));
@@ -259,10 +271,13 @@ async fn serve(
     .await?;
 
     println!("Iroh NodeID: {}", endpoint.id());
-    println!("Hosting workspace — share this ticket to invite peers:\n{}", ticket.encode());
+    println!(
+        "Hosting workspace — share this ticket to invite peers:\n{}",
+        ticket.encode()
+    );
 
-    let _control =
-        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
+    let _control = control_sock
+        .map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         mount_point,
@@ -319,8 +334,8 @@ async fn mount(
     println!("Iroh NodeID: {}", endpoint.id());
     println!("Joined workspace.");
 
-    let _control =
-        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
+    let _control = control_sock
+        .map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         mount_point,
@@ -352,9 +367,7 @@ fn thumb_path(cache_dir: &Option<PathBuf>) -> Option<PathBuf> {
 
 /// Atomically persist the namespace document to `path` (write-temp + rename).
 fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
-    let bytes = {
-        namespace.lock().unwrap().save()
-    };
+    let bytes = { namespace.lock().unwrap().save() };
     if let Err(e) = atomic_file::write(path, &bytes) {
         eprintln!("namespace persist to {} failed: {e}", path.display());
     }
@@ -502,10 +515,13 @@ async fn seed_from_dir(
                     None => {
                         let size = data.len() as u64;
                         let hash = store.write_content(&data).await?;
-                        namespace
-                            .lock()
-                            .unwrap()
-                            .create_file(parent_ino, &name, hash.as_ref(), size, now_ms());
+                        namespace.lock().unwrap().create_file(
+                            parent_ino,
+                            &name,
+                            hash.as_ref(),
+                            size,
+                            now_ms(),
+                        );
                     }
                 }
             }
@@ -550,7 +566,10 @@ mod tests {
     fn service_command_line_parses() {
         // The exact line fs.service runs, so a bad flag fails here, not on boot.
         let argv = service_exec_start();
-        assert_eq!(argv[0], "/usr/bin/fs", "unexpected ExecStart binary: {argv:?}");
+        assert_eq!(
+            argv[0], "/usr/bin/fs",
+            "unexpected ExecStart binary: {argv:?}"
+        );
         let cli = Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
             .expect("fs.service command line must parse");
         match cli.command {
@@ -616,10 +635,9 @@ mod tests {
         let containerfile = std::fs::read_to_string(os_file("os/Containerfile"))
             .expect("the production Containerfile must exist");
         assert!(
-            containerfile
-                .lines()
-                .any(|l| l.starts_with("COPY ")
-                    && l.contains("/usr/share/qos/fs-capabilities.json")),
+            containerfile.lines().any(
+                |l| l.starts_with("COPY ") && l.contains("/usr/share/qos/fs-capabilities.json")
+            ),
             "os/Containerfile must ship the default capability list that tmpfiles.d seeds from"
         );
     }

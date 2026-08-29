@@ -9,7 +9,7 @@ use vello::Scene;
 use vello::peniko::Color;
 
 use ui::offscreen::OffscreenRenderer;
-use ui::presence::{draw_remote_cursors, PresenceCtx};
+use ui::presence::{PresenceCtx, draw_remote_cursors};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 

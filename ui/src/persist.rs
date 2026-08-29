@@ -119,7 +119,10 @@ fn finish(mut store: DocStore) -> Result<(State, Autosave), StoreError> {
 /// [`Autosave::last_error`] carries the reason, so nothing downstream can
 /// mistake this for a working store.
 fn in_memory_fallback() -> (State, Autosave) {
-    (State::new(), Autosave::disabled("state directory unavailable"))
+    (
+        State::new(),
+        Autosave::disabled("state directory unavailable"),
+    )
 }
 
 /// Convenience for tests and tools: same as [`open`] but for an explicit
@@ -136,7 +139,7 @@ pub const DEBOUNCE: Duration = DEFAULT_DEBOUNCE;
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ReadDoc, ROOT, ScalarValue, Value};
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
     fn note(state: &crate::state::State) -> Option<String> {
         match state.doc.get(&ROOT, "note") {
@@ -239,7 +242,10 @@ mod tests {
 
         // Run 2: the path is a directory now, and the value survives.
         let (state, autosave) = open(pkg);
-        assert!(autosave.is_enabled(), "persistence stays enabled after recovery");
+        assert!(
+            autosave.is_enabled(),
+            "persistence stays enabled after recovery"
+        );
         assert_eq!(
             note(&state).as_deref(),
             Some("recovered"),

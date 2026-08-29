@@ -1,9 +1,13 @@
-use vello::{Scene, kurbo::{Circle, Point, Rect, Affine, RoundedRect, Stroke}, peniko::{Color, Fill}};
+use super::PresenceCtx;
 use crate::color_compat::ColorCompat;
+use crate::permissions::UserId;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::permissions::UserId;
-use super::PresenceCtx;
+use vello::{
+    Scene,
+    kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke},
+    peniko::{Color, Fill},
+};
 
 /// How much pigment a "just typed" marker lays down over the text.
 /// [`MARKER_PIGMENT_L`] pins pigment to a fixed luminance first, so raising
@@ -19,7 +23,11 @@ fn relative_luminance(c: Color) -> f32 {
     let c = c.to_rgba8();
     let f = |v: u8| {
         let v = v as f32 / 255.0;
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
     };
     0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b)
 }
@@ -41,7 +49,11 @@ fn marker_pigment(c: Color) -> Color {
     let rgba = c.to_rgba8();
     let ch = |v: u8| -> u8 {
         let v = v as f32 / 255.0;
-        let lin = if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let lin = if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        };
         let scaled = (lin * k).clamp(0.0, 1.0);
         let enc = if scaled <= 0.0031308 {
             12.92 * scaled
@@ -135,13 +147,7 @@ impl PresenceCtx {
     /// Draw a soft "indicative mist" glow over `rect` in the peer's colour —
     /// wayfinding to where a peer currently is. Two translucent fills
     /// approximate a radial glow without an actual gradient.
-    pub fn draw_peer_mist(
-        &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        user: &UserId,
-        rect: Rect,
-    ) {
+    pub fn draw_peer_mist(&self, scene: &mut Scene, theme: &Theme, user: &UserId, rect: Rect) {
         let color = color_for(self, user, theme);
         scene.fill(
             Fill::NonZero,
@@ -186,7 +192,15 @@ impl PresenceCtx {
         let cx = caret_rect.x0;
         let cy = caret_rect.y0 - chip_h - 2.0;
         let chip_rect = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
-        draw_peer_pill(scene, transform, text_renderer, theme, chip_rect, name, color);
+        draw_peer_pill(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            chip_rect,
+            name,
+            color,
+        );
     }
 
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs
@@ -222,19 +236,12 @@ impl PresenceCtx {
         }
     }
 
-    pub fn draw_peer_focus(
-        &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        user: &UserId,
-        rect: Rect,
-    ) {
+    pub fn draw_peer_focus(&self, scene: &mut Scene, theme: &Theme, user: &UserId, rect: Rect) {
         let color = color_for(self, user, theme);
         let strip = Rect::new(rect.x0 - 4.0, rect.y0, rect.x0 - 1.0, rect.y1);
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &strip);
     }
 }
-
 
 const DOT_R: f64 = 6.5;
 /// Outer edge including the contrast ring — the clearance pill placement
@@ -322,13 +329,14 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
     ];
     let mut placed: Vec<Rect> = Vec::with_capacity(pills.len());
 
-    let inside = |r: &Rect, vp: &Rect| {
-        r.x0 >= vp.x0 && r.y0 >= vp.y0 && r.x1 <= vp.x1 && r.y1 <= vp.y1
-    };
+    let inside =
+        |r: &Rect, vp: &Rect| r.x0 >= vp.x0 && r.y0 >= vp.y0 && r.x1 <= vp.x1 && r.y1 <= vp.y1;
     let clear = |r: &Rect, placed: &[Rect]| {
-        placed
-            .iter()
-            .all(|p| p.inflate(PILL_GAP / 2.0, PILL_GAP / 2.0).intersect(*r).is_zero_area())
+        placed.iter().all(|p| {
+            p.inflate(PILL_GAP / 2.0, PILL_GAP / 2.0)
+                .intersect(*r)
+                .is_zero_area()
+        })
     };
 
     for i in order {
@@ -340,12 +348,7 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
         let left = px - RING_R - PILL_GAP - w;
         let below = py + RING_R + PILL_GAP;
         let above = py - RING_R - PILL_GAP - h;
-        let corners = [
-            (right, below),
-            (right, above),
-            (left, below),
-            (left, above),
-        ];
+        let corners = [(right, below), (right, above), (left, below), (left, above)];
 
         let mut chosen = None;
         for (n, (x, y)) in corners.into_iter().enumerate() {
@@ -363,7 +366,11 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
             None => {
                 // Every corner taken or off-window: keep to whichever side
                 // fits and walk down the vertical until clear.
-                let x = if right + w <= vp.x1 { right } else { left.max(vp.x0) };
+                let x = if right + w <= vp.x1 {
+                    right
+                } else {
+                    left.max(vp.x0)
+                };
                 let x = x.clamp(vp.x0, (vp.x1 - w).max(vp.x0));
                 let mut r = Rect::new(x, below, x + w, below + h);
                 let step = h + PILL_GAP;
@@ -504,7 +511,10 @@ pub(crate) fn draw_peer_pill(
 ) {
     let label_size = pill_label_size(theme);
     let radius = theme.tokens.radii.sm as f64;
-    let shadow = RoundedRect::from_rect(rect.inflate(0.5, 0.5) + vello::kurbo::Vec2::new(0.0, 1.0), radius);
+    let shadow = RoundedRect::from_rect(
+        rect.inflate(0.5, 0.5) + vello::kurbo::Vec2::new(0.0, 1.0),
+        radius,
+    );
     scene.fill(
         Fill::NonZero,
         transform,
@@ -552,7 +562,12 @@ pub fn draw_remote_cursors(
     if peers.is_empty() {
         return;
     }
-    let unbounded = Rect::new(f64::MIN / 4.0, f64::MIN / 4.0, f64::MAX / 4.0, f64::MAX / 4.0);
+    let unbounded = Rect::new(
+        f64::MIN / 4.0,
+        f64::MIN / 4.0,
+        f64::MAX / 4.0,
+        f64::MAX / 4.0,
+    );
     draw_peer_cursors(scene, transform, unbounded, text_renderer, theme, &peers);
 }
 
@@ -577,7 +592,11 @@ pub fn contrast_ink(bg: Color) -> Color {
     let c = bg.to_rgba8();
     // Rec. 601 luma on the 0..255 channels.
     let luma = 0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32;
-    if luma > 140.0 { Color::BLACK } else { Color::WHITE }
+    if luma > 140.0 {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    }
 }
 
 /// The clickable/paintable rect of an off-screen peer's mist band, centred
@@ -585,10 +604,7 @@ pub fn contrast_ink(bg: Color) -> Color {
 /// [`draw_remote_presence`] (paints) and
 /// [`super::PresenceCtx::hit_test_offscreen_mist`] (hit-tests) so the two
 /// never drift.
-pub(super) fn mist_band_rect(
-    viewport: vello::kurbo::Rect,
-    mist: &super::geom::EdgeMist,
-) -> Rect {
+pub(super) fn mist_band_rect(viewport: vello::kurbo::Rect, mist: &super::geom::EdgeMist) -> Rect {
     use super::geom::MistEdge;
     let x0 = viewport.x0.min(viewport.x1);
     let x1 = viewport.x0.max(viewport.x1);
@@ -847,12 +863,7 @@ mod tests {
         let theme = Theme::default();
         let mut scene = Scene::new();
         let user = UserId("bob".to_string());
-        ctx.draw_peer_mist(
-            &mut scene,
-            &theme,
-            &user,
-            Rect::new(10.0, 10.0, 70.0, 30.0),
-        );
+        ctx.draw_peer_mist(&mut scene, &theme, &user, Rect::new(10.0, 10.0, 70.0, 30.0));
 
         let mut r = OffscreenRenderer::new(80, 80);
         let rgba = r.render(&scene, Color::BLACK);
@@ -895,7 +906,10 @@ mod tests {
 
         // The chip fill, a few pixels above the caret top (y ~ 33).
         let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 120, 31, 33);
-        assert!(ca > 0, "expected an opaque chip above the caret, got alpha {ca}");
+        assert!(
+            ca > 0,
+            "expected an opaque chip above the caret, got alpha {ca}"
+        );
         assert!(
             cg > cr && cg > cb,
             "chip should be emerald (peer color), got ({cr},{cg},{cb})"
@@ -934,7 +948,10 @@ mod tests {
         );
         let rgba2 = r.render(&scene2, Color::BLACK);
         let (red2, ..) = OffscreenRenderer::sample(&rgba2, 80, 40, 20);
-        assert!(red2 < red, "lower alpha must paint a dimmer tint: {red2} !< {red}");
+        assert!(
+            red2 < red,
+            "lower alpha must paint a dimmer tint: {red2} !< {red}"
+        );
     }
 
     /// A peer off to the RIGHT tints the right edge and leaves the left
@@ -1141,7 +1158,10 @@ mod tests {
             let mut r = OffscreenRenderer::new(120, 120);
             r.render(&scene, bg)
         };
-        for (name, bg) in [("a white page", Color::WHITE), ("the desktop", Color::BLACK)] {
+        for (name, bg) in [
+            ("a white page", Color::WHITE),
+            ("the desktop", Color::BLACK),
+        ] {
             let rgba = render(bg);
             let bgc = bg.to_rgba8();
             // Somewhere on the ring around the dot must differ from the
@@ -1184,7 +1204,10 @@ mod tests {
             h >= 18.0,
             "a name pill {h}px tall is the unreadable one this replaced",
         );
-        assert!(w > h, "a name pill should be wider than it is tall, got {w}x{h}");
+        assert!(
+            w > h,
+            "a name pill should be wider than it is tall, got {w}x{h}"
+        );
 
         // Wider pill, same height — height is the type, not the content.
         let (w2, h2) = peer_pill_size(&mut tr, &theme, "bob-with-a-long-name");
@@ -1205,7 +1228,13 @@ mod tests {
         let mut scene = Scene::new();
         let caret = Rect::new(20.0, 60.0, 22.0, 80.0);
         ctx.draw_peer_caret_labeled(
-            &mut scene, &theme, &mut tr, Affine::IDENTITY, &user, "alice", caret,
+            &mut scene,
+            &theme,
+            &mut tr,
+            Affine::IDENTITY,
+            &user,
+            "alice",
+            caret,
         );
         let mut r = OffscreenRenderer::new(160, 160);
         let rgba = r.render(&scene, Color::WHITE);
@@ -1213,8 +1242,7 @@ mod tests {
         // The chip's own top edge is at caret.y0 - h - 2; a pixel just under
         // its bottom edge should be the shadow, darker than the white ground.
         let top = 60.0 - h - 2.0;
-        let (sr, sg, sb, _sa) =
-            OffscreenRenderer::sample(&rgba, 160, 24, (top + h + 1.0) as u32);
+        let (sr, sg, sb, _sa) = OffscreenRenderer::sample(&rgba, 160, 24, (top + h + 1.0) as u32);
         assert!(
             sr < 250 && sg < 250 && sb < 250,
             "expected a drop shadow under the caret's name chip, got \
@@ -1295,7 +1323,10 @@ mod tests {
             .collect();
 
         for (s, u) in &strengths {
-            assert!(*s > 1.4, "{u}'s marker is invisible against the page ({s:.2}:1)");
+            assert!(
+                *s > 1.4,
+                "{u}'s marker is invisible against the page ({s:.2}:1)"
+            );
         }
         let lo = strengths.iter().map(|(s, _)| *s).fold(f32::MAX, f32::min);
         let hi = strengths.iter().map(|(s, _)| *s).fold(0.0f32, f32::max);
@@ -1419,17 +1450,30 @@ mod tests {
         // same key the compositor overlay and broker use.
         let _ = ctx.apply_remote_presence(
             "peer@7".to_string(),
-            crate::presence::PresenceKey::Workspace { id: "room-1".to_string() },
+            crate::presence::PresenceKey::Workspace {
+                id: "room-1".to_string(),
+            },
             crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 512.0 },
         );
-        assert_eq!(ctx.remote_cursors.len(), 1, "the fixture published no pointer");
+        assert_eq!(
+            ctx.remote_cursors.len(),
+            1,
+            "the fixture published no pointer"
+        );
         assert!(
             !ctx.remote_cursors[0].painted_by_window(),
             "fixture error: a room-keyed pointer is the compositor's to paint",
         );
 
         let mut scene = Scene::new();
-        draw_remote_presence(&mut scene, Affine::IDENTITY, viewport, &mut tr, &theme, &ctx);
+        draw_remote_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            viewport,
+            &mut tr,
+            &theme,
+            &ctx,
+        );
         let mut r = OffscreenRenderer::new(320, 240);
         let painted = r.render(&scene, Color::WHITE);
         let mut b = OffscreenRenderer::new(320, 240);
@@ -1476,7 +1520,14 @@ mod tests {
         );
 
         let mut scene = Scene::new();
-        draw_remote_presence(&mut scene, Affine::IDENTITY, viewport, &mut tr, &theme, &ctx);
+        draw_remote_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            viewport,
+            &mut tr,
+            &theme,
+            &ctx,
+        );
         let mut r = OffscreenRenderer::new(320, 240);
         let painted = r.render(&scene, Color::WHITE);
         let mut b = OffscreenRenderer::new(320, 240);

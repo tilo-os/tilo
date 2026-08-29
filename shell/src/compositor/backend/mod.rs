@@ -74,14 +74,34 @@ pub fn combined_geometry(outputs: &[Output]) -> (u32, u32) {
 /// decides whether a gesture is the shell's or the focused client's.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum GestureEvent {
-    SwipeBegin { fingers: u32 },
-    SwipeUpdate { dx: f64, dy: f64 },
-    SwipeEnd { cancelled: bool },
-    PinchBegin { fingers: u32 },
-    PinchUpdate { dx: f64, dy: f64, scale: f64, rotation: f64 },
-    PinchEnd { cancelled: bool },
-    HoldBegin { fingers: u32 },
-    HoldEnd { cancelled: bool },
+    SwipeBegin {
+        fingers: u32,
+    },
+    SwipeUpdate {
+        dx: f64,
+        dy: f64,
+    },
+    SwipeEnd {
+        cancelled: bool,
+    },
+    PinchBegin {
+        fingers: u32,
+    },
+    PinchUpdate {
+        dx: f64,
+        dy: f64,
+        scale: f64,
+        rotation: f64,
+    },
+    PinchEnd {
+        cancelled: bool,
+    },
+    HoldBegin {
+        fingers: u32,
+    },
+    HoldEnd {
+        cancelled: bool,
+    },
 }
 
 /// One touch point's movement, in combined-output coordinates.

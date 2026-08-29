@@ -25,17 +25,17 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::region::{RegionSettings, TimeStyle};
-use crate::widgets::{card, caption, rows, setting_row, value_row};
+use crate::widgets::{caption, card, rows, setting_row, value_row};
 
 pub const AUTO_TIME_KEY: &str = "time.auto";
 pub const H24_KEY: &str = "time.h24";
@@ -387,7 +387,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert!(ntp.calls.lock().unwrap().is_empty(), "seed must not dispatch");
+        assert!(
+            ntp.calls.lock().unwrap().is_empty(),
+            "seed must not dispatch"
+        );
         let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(false));
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root); // idempotent at rest

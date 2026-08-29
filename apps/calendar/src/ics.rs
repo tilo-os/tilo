@@ -32,8 +32,16 @@ pub fn export(model: &Model) -> String {
         raw(&mut out, "UID", &format!("{}@qos", e.id));
         line(&mut out, "SUMMARY", &e.title);
         if e.all_day {
-            raw(&mut out, "DTSTART;VALUE=DATE", &e.start.format(D_ONLY).to_string());
-            raw(&mut out, "DTEND;VALUE=DATE", &e.end.format(D_ONLY).to_string());
+            raw(
+                &mut out,
+                "DTSTART;VALUE=DATE",
+                &e.start.format(D_ONLY).to_string(),
+            );
+            raw(
+                &mut out,
+                "DTEND;VALUE=DATE",
+                &e.end.format(D_ONLY).to_string(),
+            );
         } else {
             raw(&mut out, "DTSTART", &e.start.format(DT_LOCAL).to_string());
             raw(&mut out, "DTEND", &e.end.format(DT_LOCAL).to_string());
@@ -440,7 +448,10 @@ mod tests {
         assert_eq!(standup.start.minute(), 30);
 
         // All-day event keeps its flag.
-        let offsite = events.iter().find(|e| e.title == "Company offsite").unwrap();
+        let offsite = events
+            .iter()
+            .find(|e| e.title == "Company offsite")
+            .unwrap();
         assert!(offsite.all_day);
     }
 

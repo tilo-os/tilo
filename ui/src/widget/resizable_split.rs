@@ -368,7 +368,10 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         let right_node = children.get(2).copied();
 
         let cursor_pt = if let WindowEvent::CursorMoved { position, .. } = event {
-            Some(Point::new(position.x / scale_factor, position.y / scale_factor))
+            Some(Point::new(
+                position.x / scale_factor,
+                position.y / scale_factor,
+            ))
         } else {
             None
         };
@@ -378,7 +381,14 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             if left_rect.contains(pt) {
                 if let Some(n) = left_node {
                     self.left.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, n,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        n,
                         taffy,
                     );
                 }
@@ -386,7 +396,14 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             } else if right_rect.contains(pt) {
                 if let Some(n) = right_node {
                     self.right.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, n,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        n,
                         taffy,
                     );
                 }
@@ -398,15 +415,33 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         // Non-positional events: dispatch to both, stopping at the first
         // to claim `handled`. Same convention `Row` and `Column` use.
         if let Some(n) = left_node {
-            self.left
-                .handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
+            self.left.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
             if *handled {
                 return;
             }
         }
         if let Some(n) = right_node {
-            self.right
-                .handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
+            self.right.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
         }
     }
 
@@ -482,11 +517,25 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         presence: &PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
-        self.left
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
-        self.right
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
+        self.left.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
+        self.right.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
         // Children already drew above, so passing through `draw` here
         // would double-paint — inline the divider strip instead.
         let active = self.divider_hover || self.divider_drag.is_some();
@@ -664,7 +713,11 @@ mod tests {
 
     #[test]
     fn resizable_split_initial_position_split_evenly() {
-        let s = ResizableSplit::new(TestLeaf::new(), TestLeaf::new(), SplitOrientation::Horizontal);
+        let s = ResizableSplit::new(
+            TestLeaf::new(),
+            TestLeaf::new(),
+            SplitOrientation::Horizontal,
+        );
         assert_eq!(s.split_position(), 0.5);
     }
 
@@ -679,7 +732,10 @@ mod tests {
             "cursor inside divider_rect should set hover=true",
         );
         dispatch(&mut s, &mouse_press());
-        assert!(s.divider_drag.is_some(), "press while hovered should start a drag");
+        assert!(
+            s.divider_drag.is_some(),
+            "press while hovered should start a drag"
+        );
         dispatch(&mut s, &cursor_moved(100.0, 150.0));
         dispatch(&mut s, &mouse_release());
         assert!(s.divider_drag.is_none(), "release must end the drag");

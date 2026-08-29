@@ -100,7 +100,16 @@ fn draw_box(
         }
         BoxKind::Name { text, size } => {
             let pos = Point::new(ox + b.x, oy + b.y);
-            draw::text_at(scene, tr, t, pos, text, *size, text_color, TextWeight::Medium);
+            draw::text_at(
+                scene,
+                tr,
+                t,
+                pos,
+                text,
+                *size,
+                text_color,
+                TextWeight::Medium,
+            );
         }
         BoxKind::Paren { open, size } => {
             // Draw a parenthesis glyph scaled vertically to the box height by
@@ -113,7 +122,15 @@ fn draw_box(
                 * Affine::translate((pos.x, pos.y))
                 * Affine::scale_non_uniform(1.0, scale)
                 * Affine::translate((0.0, -(*size as f64) * 1.0));
-            tr.draw_text_weighted(scene, glyph, *size, text_color, xf, None, TextWeight::Regular);
+            tr.draw_text_weighted(
+                scene,
+                glyph,
+                *size,
+                text_color,
+                xf,
+                None,
+                TextWeight::Regular,
+            );
         }
         BoxKind::FracBar => {
             let y = oy + b.y + b.h * 0.5;

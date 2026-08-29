@@ -478,7 +478,13 @@ impl Editor {
             ids: &mut ids,
         };
         for (id, start, end) in spans {
-            dm.add_mark(&id, start, end, qdoc::schema::MARK_AUTHOR, self.author.as_str());
+            dm.add_mark(
+                &id,
+                start,
+                end,
+                qdoc::schema::MARK_AUTHOR,
+                self.author.as_str(),
+            );
         }
     }
 
@@ -558,7 +564,9 @@ mod tests {
             .expect("seed the other app's document");
         foreign.commit();
         let _ = foreign.save_incremental();
-        foreign.splice_text(&buffer, 0, 0, "launch.md").expect("type into it");
+        foreign
+            .splice_text(&buffer, 0, 0, "launch.md")
+            .expect("type into it");
         foreign.commit();
         foreign.save_incremental()
     }
@@ -636,7 +644,9 @@ mod tests {
     #[test]
     fn a_change_is_sent_even_when_the_action_read_after_writing() {
         let mut probe = AutoCommit::new();
-        ReadsAfterWriting.apply(&mut probe).expect("the probe applies");
+        ReadsAfterWriting
+            .apply(&mut probe)
+            .expect("the probe applies");
         assert_eq!(
             probe.pending_ops(),
             0,

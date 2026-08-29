@@ -66,9 +66,9 @@ fn focused_text_tab(st: &ChromeState) -> Option<(u64, &'static str)> {
 pub fn apply(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     // `bind` already proved this is present and is text, so its absence
     // here would be a bug in the binding rather than a caller error.
-    let text = args.text("text").ok_or_else(|| {
-        ActionError::Refused("the bound arguments carry no `text`".to_string())
-    })?;
+    let text = args
+        .text("text")
+        .ok_or_else(|| ActionError::Refused("the bound arguments carry no `text`".to_string()))?;
     let Some((tab_id, body_key)) = focused_text_tab(st) else {
         return Err(ActionError::Refused(
             "the focused tab is not a text document; focus a Notes or Editor \
@@ -172,11 +172,8 @@ mod tests {
     }
 
     fn args(pairs: Vec<(&str, ArgValue)>) -> ActionArgs {
-        ActionArgs::bind(
-            PARAMS,
-            pairs.into_iter().map(|(k, v)| (k.to_string(), v)),
-        )
-        .expect("the test's arguments must satisfy the declared parameters")
+        ActionArgs::bind(PARAMS, pairs.into_iter().map(|(k, v)| (k.to_string(), v)))
+            .expect("the test's arguments must satisfy the declared parameters")
     }
 
     fn insert(chrome: &Chrome, a: ActionArgs) -> Result<(), ActionError> {
@@ -188,8 +185,11 @@ mod tests {
     #[test]
     fn the_insert_lands_in_the_focused_tabs_document() {
         let (chrome, store) = chrome_focused_on("Notes");
-        insert(&chrome, args(vec![("text", ArgValue::Text("hello".into()))]))
-            .expect("inserting into a focused Notes tab must work");
+        insert(
+            &chrome,
+            args(vec![("text", ArgValue::Text("hello".into()))]),
+        )
+        .expect("inserting into a focused Notes tab must work");
         assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("hello"));
     }
 
@@ -282,7 +282,11 @@ mod tests {
     #[test]
     fn an_editor_tab_is_written_under_its_own_body_key() {
         let (chrome, store) = chrome_focused_on("Editor");
-        insert(&chrome, args(vec![("text", ArgValue::Text("fn main".into()))])).unwrap();
+        insert(
+            &chrome,
+            args(vec![("text", ArgValue::Text("fn main".into()))]),
+        )
+        .unwrap();
         assert_eq!(
             tab_body(&store, TAB, crate::shell::editor_app::BODY_KEY).as_deref(),
             Some("fn main"),

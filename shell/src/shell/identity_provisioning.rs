@@ -81,8 +81,7 @@ impl IdentityStore for DiskIdentityStore {
         }
         // 0600 lands on the temp file, so the record is never readable by
         // anyone else at its final path.
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)
-            .map_err(IdentityFlowError::Io)?;
+        atomic_file::write_with_mode(&self.path, &bytes, 0o600).map_err(IdentityFlowError::Io)?;
         Ok(())
     }
 }

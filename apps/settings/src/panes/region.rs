@@ -15,17 +15,17 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::region::{Currency, DateStyle, Measurement, RegionSettings, TimeStyle};
-use crate::widgets::{card, caption, choice_row, rows};
+use crate::widgets::{caption, card, choice_row, rows};
 
 pub const CURRENCY_KEY: &str = "region.currency";
 pub const DATE_KEY: &str = "region.date_format";
@@ -75,18 +75,26 @@ impl RegionPane {
             .with_id("region.currency")
             .with_placeholder(loc.currency.code());
 
-        let date_opts: Vec<String> = DateStyle::ALL.iter().map(|d| d.label().to_string()).collect();
+        let date_opts: Vec<String> = DateStyle::ALL
+            .iter()
+            .map(|d| d.label().to_string())
+            .collect();
         let date = Dropdown::new(date_opts, DATE_KEY)
             .with_id("region.date")
             .with_placeholder(loc.date_format.label());
 
-        let time_opts: Vec<String> = TimeStyle::ALL.iter().map(|t| t.label().to_string()).collect();
+        let time_opts: Vec<String> = TimeStyle::ALL
+            .iter()
+            .map(|t| t.label().to_string())
+            .collect();
         let time = Dropdown::new(time_opts, TIME_KEY)
             .with_id("region.time")
             .with_placeholder(loc.time_format.label());
 
-        let unit_opts: Vec<String> =
-            Measurement::ALL.iter().map(|m| m.label().to_string()).collect();
+        let unit_opts: Vec<String> = Measurement::ALL
+            .iter()
+            .map(|m| m.label().to_string())
+            .collect();
         let units = Dropdown::new(unit_opts, MEASUREMENT_KEY)
             .with_id("region.measurement")
             .with_placeholder(loc.measurement.label());
@@ -105,10 +113,7 @@ impl RegionPane {
         let preview = card(
             "Preview",
             rows(vec![
-                preview_line(
-                    "Amount",
-                    &format!("{}1,234.50", loc.currency.symbol()),
-                ),
+                preview_line("Amount", &format!("{}1,234.50", loc.currency.symbol())),
                 preview_line("Date", loc.date_format.example()),
                 preview_line("Time", loc.time_format.example()),
                 preview_line(
@@ -193,9 +198,7 @@ impl Widget for RegionPane {
             changed = true;
         }
 
-        if changed
-            && let Err(e) = self.settings.save()
-        {
+        if changed && let Err(e) = self.settings.save() {
             warn!(target: "qos::settings", op = "region_save", error = %e, "failed to persist region settings");
         }
 
@@ -273,7 +276,15 @@ impl Widget for RegionPane {
             && let Some(&cn) = children.first()
         {
             c.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
             );
         }
     }
@@ -315,7 +326,10 @@ mod tests {
     #[test]
     fn seed_writes_current_settings_into_crdt() {
         let mut pane = RegionPane::with_settings(RegionSettings {
-            locale: Locale { currency: Currency::EUR, ..Default::default() },
+            locale: Locale {
+                currency: Currency::EUR,
+                ..Default::default()
+            },
         });
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;

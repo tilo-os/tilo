@@ -338,7 +338,12 @@ mod tests {
         let mut ctx = PresenceCtx::empty();
         let mut i = CursorInterpolator::new();
         i.push_sample("alice", "Alice", [0.0, 0.0], t0);
-        i.push_sample("alice", "Alice", [100.0, 100.0], t0 + Duration::from_millis(100));
+        i.push_sample(
+            "alice",
+            "Alice",
+            [100.0, 100.0],
+            t0 + Duration::from_millis(100),
+        );
 
         i.apply_to(&mut ctx, t0 + Duration::from_millis(50));
 
@@ -376,7 +381,10 @@ mod tests {
         i.push_sample("alice", "Alice", [10.0, 10.0], t0);
 
         i.apply_to(&mut ctx, t0);
-        assert_eq!(ctx.remote_cursors[0].color[3], 1.0, "fresh sample is opaque");
+        assert_eq!(
+            ctx.remote_cursors[0].color[3], 1.0,
+            "fresh sample is opaque"
+        );
 
         i.apply_to(&mut ctx, t0 + FADE_AFTER + FADE_DURATION / 2); // mid-fade
         assert_eq!(ctx.remote_cursors.len(), 1);

@@ -180,9 +180,13 @@ pub fn hero(glyph: &str, title: &str, subtitle: &str) -> El {
         .with_intrinsic_height()
         .push(Box::new(Text::new(title).with_size(20.0)))
         .push(vgap(3.0))
-        .push(Box::new(Text::new(subtitle).with_size(12.0).with_color(dim())));
+        .push(Box::new(
+            Text::new(subtitle).with_size(12.0).with_color(dim()),
+        ));
     let row = Row::new()
-        .push(Box::new(Text::new(glyph).with_size(34.0).with_color(accent)))
+        .push(Box::new(
+            Text::new(glyph).with_size(34.0).with_color(accent),
+        ))
         .push(hgap(14.0))
         .push(Box::new(text_block))
         .push(Box::new(Spacer::new()));

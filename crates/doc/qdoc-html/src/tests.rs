@@ -12,7 +12,11 @@ use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
 use std::collections::BTreeMap;
 
 fn empty_snapshot() -> DocSnapshot {
-    DocSnapshot { schema: "qos.richtext".into(), schema_version: 1, ..Default::default() }
+    DocSnapshot {
+        schema: "qos.richtext".into(),
+        schema_version: 1,
+        ..Default::default()
+    }
 }
 
 fn block(kind: &str, text: &str) -> BlockView {
@@ -35,7 +39,12 @@ fn block_attr(kind: &str, text: &str, attrs: &[(&str, AttrVal)]) -> BlockView {
 }
 
 fn mark(start: usize, end: usize, name: &str, value: MarkValue) -> MarkSpan {
-    MarkSpan { start, end, name: name.into(), value }
+    MarkSpan {
+        start,
+        end,
+        name: name.into(),
+        value,
+    }
 }
 
 /// Count occurrences of a substring.
@@ -57,40 +66,78 @@ fn heading_paragraph_bold_run_emits_h1_strong_and_escaped_text() {
     para.marks.push(mark(0, 4, "strong", MarkValue::Bool(true)));
 
     let snap = DocSnapshot {
-        blocks: vec![block_attr("heading", "Title", &[("level", AttrVal::Int(1))]), para],
+        blocks: vec![
+            block_attr("heading", "Title", &[("level", AttrVal::Int(1))]),
+            para,
+        ],
         ..empty_snapshot()
     };
 
     let html = render_html(&snap, HtmlOptions::default());
 
-    assert!(html.contains("<h1>Title</h1>"), "heading level 1 → <h1>:\n{html}");
-    assert!(html.contains("<strong>Bold</strong>"), "bold run wrapped in <strong>:\n{html}");
+    assert!(
+        html.contains("<h1>Title</h1>"),
+        "heading level 1 → <h1>:\n{html}"
+    );
+    assert!(
+        html.contains("<strong>Bold</strong>"),
+        "bold run wrapped in <strong>:\n{html}"
+    );
     // The `&` in the paragraph text is escaped.
-    assert!(html.contains("Bold</strong> &amp; plain"), "ampersand escaped:\n{html}");
-    assert!(!html.contains(" & plain"), "raw ampersand must not appear:\n{html}");
+    assert!(
+        html.contains("Bold</strong> &amp; plain"),
+        "ampersand escaped:\n{html}"
+    );
+    assert!(
+        !html.contains(" & plain"),
+        "raw ampersand must not appear:\n{html}"
+    );
     // Full document scaffolding present.
-    assert!(html.starts_with("<!doctype html>"), "full document:\n{html}");
+    assert!(
+        html.starts_with("<!doctype html>"),
+        "full document:\n{html}"
+    );
 }
 
 #[test]
 fn three_item_ordered_list_yields_one_ol_with_three_li() {
     let snap = DocSnapshot {
         blocks: vec![
-            block_attr("list_item", "One", &[("ordered", AttrVal::Bool(true)), ("level", AttrVal::Int(0))]),
-            block_attr("list_item", "Two", &[("ordered", AttrVal::Bool(true)), ("level", AttrVal::Int(0))]),
-            block_attr("list_item", "Three", &[("ordered", AttrVal::Bool(true)), ("level", AttrVal::Int(0))]),
+            block_attr(
+                "list_item",
+                "One",
+                &[("ordered", AttrVal::Bool(true)), ("level", AttrVal::Int(0))],
+            ),
+            block_attr(
+                "list_item",
+                "Two",
+                &[("ordered", AttrVal::Bool(true)), ("level", AttrVal::Int(0))],
+            ),
+            block_attr(
+                "list_item",
+                "Three",
+                &[("ordered", AttrVal::Bool(true)), ("level", AttrVal::Int(0))],
+            ),
         ],
         ..empty_snapshot()
     };
 
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
 
     assert_eq!(count(&html, "<ol"), 1, "exactly one <ol>:\n{html}");
     assert_eq!(count(&html, "</ol>"), 1, "exactly one </ol>:\n{html}");
     assert_eq!(count(&html, "<li"), 3, "three <li>:\n{html}");
     assert_eq!(count(&html, "</li>"), 3, "three </li> close:\n{html}");
     assert_eq!(count(&html, "<ul"), 0, "no bullet list:\n{html}");
-    assert!(html.contains(">One</li>") && html.contains(">Two</li>") && html.contains(">Three</li>"));
+    assert!(
+        html.contains(">One</li>") && html.contains(">Two</li>") && html.contains(">Three</li>")
+    );
 }
 
 #[test]
@@ -102,15 +149,31 @@ fn image_block_emits_img_with_data_uri() {
     blobs.insert(hash.clone(), png);
 
     let snap = DocSnapshot {
-        blocks: vec![block_attr("image", "A cat", &[("blob", AttrVal::Str(hash))])],
+        blocks: vec![block_attr(
+            "image",
+            "A cat",
+            &[("blob", AttrVal::Str(hash))],
+        )],
         blobs,
         ..empty_snapshot()
     };
 
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
 
-    assert!(html.contains("<img src=\"data:image"), "data URI img:\n{html}");
-    assert!(html.contains("data:image/png;base64,"), "png mime + base64:\n{html}");
+    assert!(
+        html.contains("<img src=\"data:image"),
+        "data URI img:\n{html}"
+    );
+    assert!(
+        html.contains("data:image/png;base64,"),
+        "png mime + base64:\n{html}"
+    );
     assert!(html.contains("alt=\"A cat\""), "alt text carried:\n{html}");
 }
 
@@ -120,12 +183,24 @@ fn script_in_text_is_escaped_no_injection() {
         blocks: vec![block("paragraph", "<script>alert('xss')</script>")],
         ..empty_snapshot()
     };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
 
     // The literal tag must NOT appear; only its escaped form.
     assert!(!html.contains("<script>"), "no raw <script> tag:\n{html}");
-    assert!(html.contains("&lt;script&gt;"), "escaped script tag:\n{html}");
-    assert!(html.contains("&lt;/script&gt;"), "escaped closing tag:\n{html}");
+    assert!(
+        html.contains("&lt;script&gt;"),
+        "escaped script tag:\n{html}"
+    );
+    assert!(
+        html.contains("&lt;/script&gt;"),
+        "escaped closing tag:\n{html}"
+    );
 }
 
 // ---- additional coverage ----------------------------------------------------
@@ -137,15 +212,30 @@ fn heading_levels_map_to_h1_through_h6() {
             blocks: vec![block_attr("heading", "H", &[("level", AttrVal::Int(lvl))])],
             ..empty_snapshot()
         };
-        let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-        assert!(html.contains(&format!("<h{lvl}>H</h{lvl}>")), "level {lvl}:\n{html}");
+        let html = render_html(
+            &snap,
+            HtmlOptions {
+                fragment: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            html.contains(&format!("<h{lvl}>H</h{lvl}>")),
+            "level {lvl}:\n{html}"
+        );
     }
     // Out-of-range clamps to h6 (>6) and h1 (<1).
     let snap = DocSnapshot {
         blocks: vec![block_attr("heading", "X", &[("level", AttrVal::Int(9))])],
         ..empty_snapshot()
     };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
     assert!(html.contains("<h6>X</h6>"), "level 9 clamps to h6:\n{html}");
 }
 
@@ -155,7 +245,13 @@ fn quote_renders_blockquote() {
         blocks: vec![block("quote", "To be or not to be")],
         ..empty_snapshot()
     };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
     assert!(html.contains("<blockquote>"), "quote → blockquote:\n{html}");
     assert!(html.contains("To be or not to be"));
     assert!(html.contains("</blockquote>"));
@@ -165,12 +261,32 @@ fn quote_renders_blockquote() {
 fn bullet_list_uses_ul() {
     let snap = DocSnapshot {
         blocks: vec![
-            block_attr("list_item", "a", &[("ordered", AttrVal::Bool(false)), ("level", AttrVal::Int(0))]),
-            block_attr("list_item", "b", &[("ordered", AttrVal::Bool(false)), ("level", AttrVal::Int(0))]),
+            block_attr(
+                "list_item",
+                "a",
+                &[
+                    ("ordered", AttrVal::Bool(false)),
+                    ("level", AttrVal::Int(0)),
+                ],
+            ),
+            block_attr(
+                "list_item",
+                "b",
+                &[
+                    ("ordered", AttrVal::Bool(false)),
+                    ("level", AttrVal::Int(0)),
+                ],
+            ),
         ],
         ..empty_snapshot()
     };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(count(&html, "<ul>"), 1);
     assert_eq!(count(&html, "</ul>"), 1);
     assert_eq!(count(&html, "<li"), 2);
@@ -182,14 +298,48 @@ fn nested_list_levels_nest_correctly() {
     // L0, L1, L1, L0 → an outer list with a sublist that opens and closes.
     let snap = DocSnapshot {
         blocks: vec![
-            block_attr("list_item", "top", &[("ordered", AttrVal::Bool(false)), ("level", AttrVal::Int(0))]),
-            block_attr("list_item", "sub1", &[("ordered", AttrVal::Bool(false)), ("level", AttrVal::Int(1))]),
-            block_attr("list_item", "sub2", &[("ordered", AttrVal::Bool(false)), ("level", AttrVal::Int(1))]),
-            block_attr("list_item", "top2", &[("ordered", AttrVal::Bool(false)), ("level", AttrVal::Int(0))]),
+            block_attr(
+                "list_item",
+                "top",
+                &[
+                    ("ordered", AttrVal::Bool(false)),
+                    ("level", AttrVal::Int(0)),
+                ],
+            ),
+            block_attr(
+                "list_item",
+                "sub1",
+                &[
+                    ("ordered", AttrVal::Bool(false)),
+                    ("level", AttrVal::Int(1)),
+                ],
+            ),
+            block_attr(
+                "list_item",
+                "sub2",
+                &[
+                    ("ordered", AttrVal::Bool(false)),
+                    ("level", AttrVal::Int(1)),
+                ],
+            ),
+            block_attr(
+                "list_item",
+                "top2",
+                &[
+                    ("ordered", AttrVal::Bool(false)),
+                    ("level", AttrVal::Int(0)),
+                ],
+            ),
         ],
         ..empty_snapshot()
     };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
     // Two <ul> open (outer + nested), two close — balanced.
     assert_eq!(count(&html, "<ul>"), 2, "outer + nested ul:\n{html}");
     assert_eq!(count(&html, "</ul>"), 2, "balanced close:\n{html}");
@@ -198,7 +348,10 @@ fn nested_list_levels_nest_correctly() {
     let top = html.find("top<").unwrap();
     let sub1 = html.find("sub1<").unwrap();
     let top2 = html.find("top2<").unwrap();
-    assert!(top < sub1 && sub1 < top2, "nesting preserves order:\n{html}");
+    assert!(
+        top < sub1 && sub1 < top2,
+        "nesting preserves order:\n{html}"
+    );
 }
 
 #[test]
@@ -215,8 +368,17 @@ fn ordered_list_num_format_sets_list_style_type() {
         )],
         ..empty_snapshot()
     };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-    assert!(html.contains("list-style-type: lower-roman"), "roman numbering:\n{html}");
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        html.contains("list-style-type: lower-roman"),
+        "roman numbering:\n{html}"
+    );
 }
 
 #[test]
@@ -226,14 +388,28 @@ fn all_boolean_marks_render_their_tags() {
     p.marks.push(mark(0, 6, "em", MarkValue::Bool(true)));
     p.marks.push(mark(0, 6, "underline", MarkValue::Bool(true)));
     p.marks.push(mark(0, 6, "strike", MarkValue::Bool(true)));
-    let snap = DocSnapshot { blocks: vec![p], ..empty_snapshot() };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    let snap = DocSnapshot {
+        blocks: vec![p],
+        ..empty_snapshot()
+    };
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
     assert!(html.contains("<strong>"), "strong:\n{html}");
     assert!(html.contains("<em>"), "em:\n{html}");
     assert!(html.contains("<u>"), "u:\n{html}");
     assert!(html.contains("<s>"), "s:\n{html}");
     // And the tags close.
-    assert!(html.contains("</s>") && html.contains("</u>") && html.contains("</em>") && html.contains("</strong>"));
+    assert!(
+        html.contains("</s>")
+            && html.contains("</u>")
+            && html.contains("</em>")
+            && html.contains("</strong>")
+    );
 }
 
 #[test]
@@ -241,39 +417,98 @@ fn partial_bold_run_splits_text_at_mark_boundary() {
     // "Hello world" with bold only over "world" (bytes 6..11).
     let mut p = block("paragraph", "Hello world");
     p.marks.push(mark(6, 11, "strong", MarkValue::Bool(true)));
-    let snap = DocSnapshot { blocks: vec![p], ..empty_snapshot() };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-    assert!(html.contains("Hello <strong>world</strong>"), "boundary split:\n{html}");
+    let snap = DocSnapshot {
+        blocks: vec![p],
+        ..empty_snapshot()
+    };
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        html.contains("Hello <strong>world</strong>"),
+        "boundary split:\n{html}"
+    );
 }
 
 #[test]
 fn link_mark_renders_anchor_with_escaped_href() {
     let mut p = block("paragraph", "click here");
-    p.marks.push(mark(0, 10, "link", MarkValue::Str("https://example.com/?a=1&b=2".into())));
-    let snap = DocSnapshot { blocks: vec![p], ..empty_snapshot() };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-    assert!(html.contains("<a href=\"https://example.com/?a=1&amp;b=2\">"), "anchor + escaped &:\n{html}");
+    p.marks.push(mark(
+        0,
+        10,
+        "link",
+        MarkValue::Str("https://example.com/?a=1&b=2".into()),
+    ));
+    let snap = DocSnapshot {
+        blocks: vec![p],
+        ..empty_snapshot()
+    };
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        html.contains("<a href=\"https://example.com/?a=1&amp;b=2\">"),
+        "anchor + escaped &:\n{html}"
+    );
     assert!(html.contains("</a>"));
 }
 
 #[test]
 fn javascript_href_is_neutralized() {
     let mut p = block("paragraph", "evil");
-    p.marks.push(mark(0, 4, "link", MarkValue::Str("javascript:alert(1)".into())));
-    let snap = DocSnapshot { blocks: vec![p], ..empty_snapshot() };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-    assert!(!html.contains("javascript:"), "javascript: scheme stripped:\n{html}");
+    p.marks.push(mark(
+        0,
+        4,
+        "link",
+        MarkValue::Str("javascript:alert(1)".into()),
+    ));
+    let snap = DocSnapshot {
+        blocks: vec![p],
+        ..empty_snapshot()
+    };
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        !html.contains("javascript:"),
+        "javascript: scheme stripped:\n{html}"
+    );
     assert!(html.contains("<a href=\"#\">"), "neutralized to #:\n{html}");
 }
 
 #[test]
 fn color_and_size_marks_emit_span_style() {
     let mut p = block("paragraph", "rainbow");
-    p.marks.push(mark(0, 7, "color", MarkValue::Str("#ff0000".into())));
+    p.marks
+        .push(mark(0, 7, "color", MarkValue::Str("#ff0000".into())));
     p.marks.push(mark(0, 7, "fontSize", MarkValue::Int(18)));
-    let snap = DocSnapshot { blocks: vec![p], ..empty_snapshot() };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-    assert!(html.contains("<span style=\""), "span carrying style:\n{html}");
+    let snap = DocSnapshot {
+        blocks: vec![p],
+        ..empty_snapshot()
+    };
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        html.contains("<span style=\""),
+        "span carrying style:\n{html}"
+    );
     assert!(html.contains("color: #ff0000"), "color decl:\n{html}");
     assert!(html.contains("font-size: 18pt"), "size decl:\n{html}");
 }
@@ -282,19 +517,43 @@ fn color_and_size_marks_emit_span_style() {
 fn css_injection_via_color_mark_is_sanitized() {
     // A color value trying to break out of the style attribute.
     let mut p = block("paragraph", "x");
-    p.marks.push(mark(0, 1, "color", MarkValue::Str("red; } body { display:none".into())));
-    let snap = DocSnapshot { blocks: vec![p], ..empty_snapshot() };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    p.marks.push(mark(
+        0,
+        1,
+        "color",
+        MarkValue::Str("red; } body { display:none".into()),
+    ));
+    let snap = DocSnapshot {
+        blocks: vec![p],
+        ..empty_snapshot()
+    };
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
     // Isolate the emitted style attribute value.
     let start = html.find("style=\"").expect("has style attr") + "style=\"".len();
     let attr = &html[start..start + html[start..].find('"').expect("closing quote")];
     // Exactly one declaration: the renderer appends a single trailing `;` to
     // close `color: <value>`, so the value itself must contribute NO extra `;`.
     // It also must not contain `{`/`}` (which would start a new rule block).
-    assert_eq!(attr.matches(';').count(), 1, "only the renderer's own terminator survives: {attr:?}\n{html}");
-    assert!(!attr.contains('{') && !attr.contains('}'), "no rule-block breakout: {attr:?}\n{html}");
+    assert_eq!(
+        attr.matches(';').count(),
+        1,
+        "only the renderer's own terminator survives: {attr:?}\n{html}"
+    );
+    assert!(
+        !attr.contains('{') && !attr.contains('}'),
+        "no rule-block breakout: {attr:?}\n{html}"
+    );
     // The injected second-property `;` that preceded ` } body {` is gone.
-    assert!(!attr.contains("; }"), "no injected declaration boundary: {attr:?}\n{html}");
+    assert!(
+        !attr.contains("; }"),
+        "no injected declaration boundary: {attr:?}\n{html}"
+    );
 }
 
 #[test]
@@ -306,8 +565,17 @@ fn table_renders_tr_td_grid() {
     let mut table = block("table", "");
     table.children = vec![row1, row2];
 
-    let snap = DocSnapshot { blocks: vec![table], ..empty_snapshot() };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
+    let snap = DocSnapshot {
+        blocks: vec![table],
+        ..empty_snapshot()
+    };
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(count(&html, "<table"), 1);
     assert_eq!(count(&html, "<tr>"), 2);
     assert_eq!(count(&html, "<td>"), 4);
@@ -317,11 +585,24 @@ fn table_renders_tr_td_grid() {
 #[test]
 fn missing_image_blob_emits_inert_img_without_error() {
     let snap = DocSnapshot {
-        blocks: vec![block_attr("image", "lost", &[("blob", AttrVal::Str("nope".into()))])],
+        blocks: vec![block_attr(
+            "image",
+            "lost",
+            &[("blob", AttrVal::Str("nope".into()))],
+        )],
         ..empty_snapshot()
     };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-    assert!(html.contains("<img src=\"\""), "inert img placeholder:\n{html}");
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        html.contains("<img src=\"\""),
+        "inert img placeholder:\n{html}"
+    );
     assert!(html.contains("alt=\"lost\""));
 }
 
@@ -334,18 +615,34 @@ fn styles_map_emits_css_classes_and_blocks_get_tagged() {
     styles.insert("Fancy".to_string(), fancy);
 
     let snap = DocSnapshot {
-        blocks: vec![block_attr("paragraph", "styled para", &[("style", AttrVal::Str("Fancy".into()))])],
+        blocks: vec![block_attr(
+            "paragraph",
+            "styled para",
+            &[("style", AttrVal::Str("Fancy".into()))],
+        )],
         styles,
         ..empty_snapshot()
     };
     // Full doc so the <style> block is emitted.
     let html = render_html(&snap, HtmlOptions::default());
     assert!(html.contains("<style>"), "style block present:\n{html}");
-    assert!(html.contains(".qdoc-style-Fancy {"), "css class for the style:\n{html}");
-    assert!(html.contains("color: #112233;"), "color declaration:\n{html}");
-    assert!(html.contains("font-size: 20pt;"), "size declaration:\n{html}");
+    assert!(
+        html.contains(".qdoc-style-Fancy {"),
+        "css class for the style:\n{html}"
+    );
+    assert!(
+        html.contains("color: #112233;"),
+        "color declaration:\n{html}"
+    );
+    assert!(
+        html.contains("font-size: 20pt;"),
+        "size declaration:\n{html}"
+    );
     // The block references the class.
-    assert!(html.contains("class=\"qdoc-style-Fancy\""), "block tagged with class:\n{html}");
+    assert!(
+        html.contains("class=\"qdoc-style-Fancy\""),
+        "block tagged with class:\n{html}"
+    );
 }
 
 #[test]
@@ -358,11 +655,26 @@ fn empty_document_is_well_formed() {
 
 #[test]
 fn fragment_mode_omits_document_scaffolding() {
-    let snap = DocSnapshot { blocks: vec![block("paragraph", "hi")], ..empty_snapshot() };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-    assert!(!html.contains("<!doctype"), "no doctype in fragment:\n{html}");
+    let snap = DocSnapshot {
+        blocks: vec![block("paragraph", "hi")],
+        ..empty_snapshot()
+    };
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        !html.contains("<!doctype"),
+        "no doctype in fragment:\n{html}"
+    );
     assert!(!html.contains("<html"), "no html element:\n{html}");
-    assert!(!html.contains("<style>"), "no style block in fragment:\n{html}");
+    assert!(
+        !html.contains("<style>"),
+        "no style block in fragment:\n{html}"
+    );
     assert!(html.contains("<p>hi</p>"), "just the body markup:\n{html}");
 }
 
@@ -373,14 +685,30 @@ fn attribute_value_quotes_are_escaped_in_alt() {
     let mut blobs = BTreeMap::new();
     blobs.insert("h".to_string(), png);
     let snap = DocSnapshot {
-        blocks: vec![block_attr("image", "a \"quoted\" caption", &[("blob", AttrVal::Str("h".into()))])],
+        blocks: vec![block_attr(
+            "image",
+            "a \"quoted\" caption",
+            &[("blob", AttrVal::Str("h".into()))],
+        )],
         blobs,
         ..empty_snapshot()
     };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-    assert!(html.contains("alt=\"a &quot;quoted&quot; caption\""), "quotes escaped in attr:\n{html}");
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        html.contains("alt=\"a &quot;quoted&quot; caption\""),
+        "quotes escaped in attr:\n{html}"
+    );
     // No raw quote that could terminate the attribute early.
-    assert!(!html.contains("alt=\"a \"quoted"), "no attribute breakout:\n{html}");
+    assert!(
+        !html.contains("alt=\"a \"quoted"),
+        "no attribute breakout:\n{html}"
+    );
 }
 
 #[test]
@@ -390,7 +718,19 @@ fn multibyte_text_with_marks_splits_on_char_boundaries() {
     let mut p = block("paragraph", text);
     // bytes: h(0) é(1..3) l(3) l(4) o(5) → end of "héll" is byte 5.
     p.marks.push(mark(0, 5, "strong", MarkValue::Bool(true)));
-    let snap = DocSnapshot { blocks: vec![p], ..empty_snapshot() };
-    let html = render_html(&snap, HtmlOptions { fragment: true, ..Default::default() });
-    assert!(html.contains("<strong>héll</strong>o"), "multibyte boundary respected:\n{html}");
+    let snap = DocSnapshot {
+        blocks: vec![p],
+        ..empty_snapshot()
+    };
+    let html = render_html(
+        &snap,
+        HtmlOptions {
+            fragment: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        html.contains("<strong>héll</strong>o"),
+        "multibyte boundary respected:\n{html}"
+    );
 }

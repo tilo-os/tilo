@@ -157,7 +157,10 @@ mod tests {
             put_text(&mut doc, &root, KEY_CATALOG, &long);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-storing the same text grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-storing the same text grew the document {a} -> {b}"
+        );
     }
 
     #[test]

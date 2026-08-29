@@ -249,16 +249,24 @@ mod tests {
     #[test]
     fn permissive_is_a_capability_not_a_bypass() {
         let ctx = PermissionContext::permissive();
-        assert!(ctx.check(&PermissionScope::path("/var/workspace/secret.png", Verb::Read)));
+        assert!(ctx.check(&PermissionScope::path(
+            "/var/workspace/secret.png",
+            Verb::Read
+        )));
         assert_eq!(ctx.capabilities().len(), 1);
         assert_eq!(ctx.capabilities()[0].verb, Verb::Admin);
         assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
 
         // Same actor, no capability: a role confers no base authority
         // over paths.
-        let stripped =
-            PermissionContext::from_capabilities(Actor::person(Some(Role::Owner), LOCAL_USER), vec![]);
-        assert!(!stripped.check(&PermissionScope::path("/var/workspace/secret.png", Verb::Read)));
+        let stripped = PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Owner), LOCAL_USER),
+            vec![],
+        );
+        assert!(!stripped.check(&PermissionScope::path(
+            "/var/workspace/secret.png",
+            Verb::Read
+        )));
     }
 
     /// NEGATIVE: a Viewer may read an artifact but must not write it.
@@ -316,8 +324,7 @@ mod tests {
             .at_unix_time(999);
         assert!(live.check(&scope), "before the deadline the grant holds");
 
-        let lapsed =
-            PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(1_001);
+        let lapsed = PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(1_001);
         assert!(
             !lapsed.check(&scope),
             "after the deadline the grant is gone"
@@ -355,7 +362,10 @@ mod tests {
     fn actor_without_role_or_capability_is_denied_everything() {
         let ctx = PermissionContext::from_capabilities(Actor::app("dev.example.thing"), vec![]);
         assert!(!ctx.check(&PermissionScope::workspace(Verb::Read)));
-        assert!(!ctx.check(&PermissionScope::app_kind(AppKind::FileExplorer, Verb::Read)));
+        assert!(!ctx.check(&PermissionScope::app_kind(
+            AppKind::FileExplorer,
+            Verb::Read
+        )));
         assert!(!ctx.check(&PermissionScope::path("/etc/shadow", Verb::Read)));
         assert!(ctx.user().0.is_empty(), "an app is not a person");
     }

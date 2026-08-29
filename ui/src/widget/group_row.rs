@@ -685,7 +685,11 @@ impl GroupRow {
         }
         let mut best: Option<f64> = None;
         let mut best_dist = f64::MAX;
-        let home_targets: &[f64] = if self.leading_inset > 0.0 { &[0.0] } else { &[] };
+        let home_targets: &[f64] = if self.leading_inset > 0.0 {
+            &[0.0]
+        } else {
+            &[]
+        };
         for &edge in self.group_left_edges.iter().chain(home_targets.iter()) {
             let candidate = edge.clamp(0.0, max);
             let d = (candidate - self.scroll_x).abs();
@@ -739,8 +743,7 @@ impl GroupRow {
                         // gate was met, not `now` — so the very tick
                         // that detects idle already applies the
                         // curve's first eased frame.
-                        let started = last_wheel
-                            + Duration::from_millis(SNAP_IDLE_MS);
+                        let started = last_wheel + Duration::from_millis(SNAP_IDLE_MS);
                         self.snap_anim = Some(SnapAnim {
                             from: self.scroll_x,
                             to: target,
@@ -760,8 +763,7 @@ impl GroupRow {
                 self.snap_anim = None;
                 self.last_wheel_at = None;
             } else {
-                let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0))
-                    .clamp(0.0, 1.0);
+                let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0)).clamp(0.0, 1.0);
                 let eased = crate::ease_out(raw);
                 self.scroll_x = anim.from + (anim.to - anim.from) * eased;
             }
@@ -773,8 +775,7 @@ impl GroupRow {
         }
     }
 
-
-#[cfg(test)]
+    #[cfg(test)]
     pub(crate) fn set_scroll_x_for_test(&mut self, x: f64) {
         self.scroll_x = x;
     }
@@ -807,13 +808,7 @@ impl GroupRow {
 
     /// Exposed separately from `handle_event` so tests can drive a
     /// transfer without staging a full winit event.
-    pub fn transfer_tab(
-        &mut self,
-        src: usize,
-        dst: usize,
-        tab_id: u64,
-        target_idx: usize,
-    ) -> bool {
+    pub fn transfer_tab(&mut self, src: usize, dst: usize, tab_id: u64, target_idx: usize) -> bool {
         if src == dst || src >= self.groups.len() || dst >= self.groups.len() {
             return false;
         }
@@ -864,12 +859,7 @@ impl GroupRow {
 
     /// Detach `tab_id` from `src` into a brand-new `WindowGroup` at
     /// `gap_idx`, pruning `src` if that leaves it empty.
-    pub fn split_tab_into_new_group(
-        &mut self,
-        src: usize,
-        tab_id: u64,
-        gap_idx: usize,
-    ) -> bool {
+    pub fn split_tab_into_new_group(&mut self, src: usize, tab_id: u64, gap_idx: usize) -> bool {
         if src >= self.groups.len() {
             return false;
         }
@@ -941,7 +931,11 @@ impl GroupRow {
             return;
         }
         // Removing `src` shifts every later slot left by one.
-        let final_idx = if insert_at > src { insert_at - 1 } else { insert_at };
+        let final_idx = if insert_at > src {
+            insert_at - 1
+        } else {
+            insert_at
+        };
         let dest = final_idx.min(self.groups.len().saturating_sub(1));
         if dest == src {
             return;
@@ -1018,11 +1012,7 @@ impl GroupRow {
                 if drag.moved
                     && let Some(insert_at) = self.group_reorder_target.take()
                 {
-                    self.commit_group_reorder(
-                        drag.src_idx,
-                        drag.group_id,
-                        insert_at,
-                    );
+                    self.commit_group_reorder(drag.src_idx, drag.group_id, insert_at);
                 }
                 self.group_reorder_target = None;
                 claimed
@@ -1110,9 +1100,8 @@ impl Widget for GroupRow {
         // its neighbours change structurally anyway.
         let desired_handles = self.groups.len().saturating_sub(1);
         if self.handles.len() < desired_handles {
-            self.handles.extend(
-                (self.handles.len()..desired_handles).map(|_| ResizeHandle::new()),
-            );
+            self.handles
+                .extend((self.handles.len()..desired_handles).map(|_| ResizeHandle::new()));
         } else if self.handles.len() > desired_handles {
             self.handles.truncate(desired_handles);
         }
@@ -1176,7 +1165,11 @@ impl Widget for GroupRow {
                     // A strip owning no part of the current fullscreen
                     // surface collapses away entirely, so the promoted
                     // group in another strip is the only thing painted.
-                    display: if self.hidden { Display::None } else { Display::Flex },
+                    display: if self.hidden {
+                        Display::None
+                    } else {
+                        Display::Flex
+                    },
                     flex_direction: FlexDirection::Row,
                     size: Size {
                         width: Dimension::percent(1.0),
@@ -1289,7 +1282,8 @@ impl Widget for GroupRow {
             let steady = self.snap_anim.is_none()
                 && !self.group_drag_active()
                 && !self.handles.iter().any(|h| h.is_dragging());
-            if geometry_moved && steady
+            if geometry_moved
+                && steady
                 && let Some(target) = self.strip_frame_target(&self.laid_spans)
             {
                 self.scroll_x = target;
@@ -1309,10 +1303,7 @@ impl Widget for GroupRow {
         } else {
             (self.leading_inset, self.scroll_x)
         };
-        let child_origin = Point::new(
-            self.rect.x0 + origin_inset - origin_scroll,
-            self.rect.y0,
-        );
+        let child_origin = Point::new(self.rect.x0 + origin_inset - origin_scroll, self.rect.y0);
         for (g, child_id) in self.groups.iter_mut().zip(self.node_ids.iter()) {
             g.apply_layout(taffy, *child_id, child_origin);
         }
@@ -1439,29 +1430,21 @@ impl Widget for GroupRow {
         if let (Some(_), Some(ins)) = (
             self.group_drag.filter(|d| d.moved),
             self.group_reorder_target,
-        )
-            && !self.groups.is_empty()
+        ) && !self.groups.is_empty()
         {
             let gap_x = if ins == 0 {
                 self.groups[0].get_rect().x0 - 5.0
             } else if ins >= self.groups.len() {
                 self.groups.last().unwrap().get_rect().x1 + 5.0
             } else {
-                (self.groups[ins - 1].get_rect().x1
-                    + self.groups[ins].get_rect().x0)
-                    / 2.0
+                (self.groups[ins - 1].get_rect().x1 + self.groups[ins].get_rect().x0) / 2.0
             };
             let y0 = self.rect.y0;
             let y1 = self.rect.y1;
             if y1 > y0 {
                 let thickness = 4.0;
                 let capsule = RoundedRect::from_rect(
-                    Rect::new(
-                        gap_x - thickness / 2.0,
-                        y0,
-                        gap_x + thickness / 2.0,
-                        y1,
-                    ),
+                    Rect::new(gap_x - thickness / 2.0, y0, gap_x + thickness / 2.0, y1),
                     thickness / 2.0,
                 );
                 scene.fill(
@@ -1549,8 +1532,15 @@ impl Widget for GroupRow {
                     break;
                 };
                 h.handle_event(
-                    event, scale_factor, modifiers, state, root, handled, focus_target,
-                    node_id, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
                 );
                 if *handled {
                     break;
@@ -1591,8 +1581,15 @@ impl Widget for GroupRow {
                 break;
             };
             g.handle_event(
-                event, scale_factor, modifiers, state, root, handled, focus_target,
-                node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             );
             if *handled {
                 break;
@@ -1634,9 +1631,7 @@ impl Widget for GroupRow {
         // CursorMoved only reclassifies on motion, so a child that
         // dropped its `pending_drag` internally could otherwise leave
         // this stuck once every drag has cleared.
-        if self.hover_gap_idx.is_some()
-            && !self.groups.iter().any(|g| g.drag_in_flight())
-        {
+        if self.hover_gap_idx.is_some() && !self.groups.iter().any(|g| g.drag_in_flight()) {
             self.hover_gap_idx = None;
         }
 
@@ -1654,8 +1649,7 @@ impl Widget for GroupRow {
         // model dragging two tabs at once.
         let mut diverted: Option<usize> = None;
         for (idx, &(src_idx, tab_id, release_point)) in detaches.iter().enumerate() {
-            let out_of_band =
-                release_point.y < self.rect.y0 || release_point.y > self.rect.y1;
+            let out_of_band = release_point.y < self.rect.y0 || release_point.y > self.rect.y1;
             if !out_of_band {
                 continue;
             }
@@ -1690,9 +1684,7 @@ impl Widget for GroupRow {
                 .iter()
                 .enumerate()
                 .find(|(i, g)| {
-                    *i != src_idx
-                        && !g.is_closing()
-                        && g.bar_rect().contains(release_point)
+                    *i != src_idx && !g.is_closing() && g.bar_rect().contains(release_point)
                 })
                 .map(|(i, _)| i);
             if let Some(tgt_idx) = target_idx {
@@ -1751,9 +1743,7 @@ impl Widget for GroupRow {
                 .iter()
                 .enumerate()
                 .find(|(i, g)| {
-                    *i != src_idx
-                        && g.is_closing()
-                        && g.bar_rect().contains(release_point)
+                    *i != src_idx && g.is_closing() && g.bar_rect().contains(release_point)
                 })
                 .map(|(i, _)| i);
             if let Some(tgt_idx) = closing_target {
@@ -1777,13 +1767,9 @@ impl Widget for GroupRow {
             // lazily inside its own path, so an unmatched release already
             // leaves the source intact — this is a defensive guard against
             // a future refactor moving the detach earlier.
-            let tab_in_source =
-                self.groups[src_idx].tabs().iter().any(|t| t.id == tab_id);
+            let tab_in_source = self.groups[src_idx].tabs().iter().any(|t| t.id == tab_id);
             if !tab_in_source {
-                let recovered = self
-                    .groups
-                    .iter_mut()
-                    .find_map(|g| g.detach_tab(tab_id));
+                let recovered = self.groups.iter_mut().find_map(|g| g.detach_tab(tab_id));
                 if let Some((desc, host)) = recovered {
                     self.groups[src_idx].insert_detached_tab(0, desc, host);
                 }
@@ -1995,7 +1981,9 @@ mod tests {
         assert!(row.split_tab_into_new_group(0, 2, 1));
 
         assert_eq!(row.groups.len(), 3);
-        let ids: Vec<Vec<u64>> = row.groups.iter()
+        let ids: Vec<Vec<u64>> = row
+            .groups
+            .iter()
             .map(|g| g.tabs().iter().map(|t| t.id).collect())
             .collect();
         assert_eq!(ids[0], vec![1, 3]);
@@ -2050,7 +2038,9 @@ mod tests {
         assert!(row.split_tab_into_new_group(0, 1, 0));
 
         assert_eq!(row.groups.len(), 3);
-        let ids: Vec<Vec<u64>> = row.groups.iter()
+        let ids: Vec<Vec<u64>> = row
+            .groups
+            .iter()
             .map(|g| g.tabs().iter().map(|t| t.id).collect())
             .collect();
         assert_eq!(ids[0], vec![1]);
@@ -2074,7 +2064,10 @@ mod tests {
         let viewport = taffy
             .new_with_children(
                 Style {
-                    size: Size { width: Dimension::length(2000.0), height: Dimension::length(600.0) },
+                    size: Size {
+                        width: Dimension::length(2000.0),
+                        height: Dimension::length(600.0),
+                    },
                     ..Default::default()
                 },
                 &[root],
@@ -2122,12 +2115,14 @@ mod tests {
     const FIXTURE_USABLE_PX: f64 = 1200.0;
 
     fn one_display(usable: f64) -> Vec<OutputSpan> {
-        vec![OutputSpan { x: 0.0, width: usable, usable }]
+        vec![OutputSpan {
+            x: 0.0,
+            width: usable,
+            usable,
+        }]
     }
 
-    fn make_row_with_groups_with_taffy(
-        tab_specs: &[&[u64]],
-    ) -> (GroupRow, TaffyTree<()>, NodeId) {
+    fn make_row_with_groups_with_taffy(tab_specs: &[&[u64]]) -> (GroupRow, TaffyTree<()>, NodeId) {
         make_row_with_groups_on_display(tab_specs, FIXTURE_USABLE_PX, 2000.0)
     }
 
@@ -2228,15 +2223,25 @@ mod tests {
     }
 
     fn press_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, p: Point) {
-        dispatch_at(row, taffy, root, WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        });
-        dispatch_at(row, taffy, root, WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        dispatch_at(
+            row,
+            taffy,
+            root,
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            },
+        );
+        dispatch_at(
+            row,
+            taffy,
+            root,
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
     }
 
     fn dispatch_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, ev: WindowEvent) {
@@ -2245,7 +2250,17 @@ mod tests {
         let path = automerge::ROOT.clone();
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
-        row.handle_event(&ev, 1.0, &modifiers, &mut state, &path, &mut handled, &mut focus, root, taffy);
+        row.handle_event(
+            &ev,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            taffy,
+        );
     }
 
     #[test]
@@ -2269,21 +2284,34 @@ mod tests {
         let grab = group_grab_point(&row, 0);
         press_at(&mut row, &taffy, root, grab);
         let past = Point::new(row.groups[2].get_rect().center().x + 60.0, grab.y);
-        dispatch_at(&mut row, &taffy, root, WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(past.x, past.y),
-        });
-        assert!(row.group_drag_active(), "past-threshold move must engage the drag");
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(past.x, past.y),
+            },
+        );
+        assert!(
+            row.group_drag_active(),
+            "past-threshold move must engage the drag"
+        );
         assert_eq!(
             row.group_reorder_target(),
             Some(3),
             "cursor past every group's centre targets the append gap",
         );
-        dispatch_at(&mut row, &taffy, root, WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
 
         assert_eq!(
             row.group_ids(),
@@ -2304,15 +2332,25 @@ mod tests {
         press_at(&mut row, &taffy, root, grab);
         // Aim at the left half of group 200 (insertion gap 1).
         let target = Point::new(row.groups[1].get_rect().center().x - 20.0, grab.y);
-        dispatch_at(&mut row, &taffy, root, WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(target.x, target.y),
-        });
-        dispatch_at(&mut row, &taffy, root, WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(target.x, target.y),
+            },
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
         assert_eq!(row.group_ids(), vec![100, 300, 200]);
     }
 
@@ -2321,19 +2359,29 @@ mod tests {
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
         let grab = group_grab_point(&row, 0);
         press_at(&mut row, &taffy, root, grab);
-        dispatch_at(&mut row, &taffy, root, WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
-        assert_eq!(row.group_ids(), vec![100, 200, 300], "a click must not reorder");
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(
+            row.group_ids(),
+            vec![100, 200, 300],
+            "a click must not reorder"
+        );
         assert_eq!(row.take_pending_group_reorder(), None);
         assert!(!row.group_drag_active());
     }
 
     #[test]
     fn scroll_group_into_view_pans_to_reveal_offscreen_group() {
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+        let (mut row, _taffy, _root) =
+            make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
         row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
         row.set_content_w_for_test(row.content_width());
         let target_id = 500; // far-right group, off the viewport's edge
@@ -2370,7 +2418,11 @@ mod tests {
             anim.scroll_group_into_view_animated(target_id, t0),
             "an off-screen group must start an animated pan"
         );
-        assert_eq!(anim.scroll_x(), 0.0, "the pan is applied by ticks, not the call");
+        assert_eq!(
+            anim.scroll_x(),
+            0.0,
+            "the pan is applied by ticks, not the call"
+        );
         anim.tick_snap_at(t0 + Duration::from_millis(SNAP_ANIM_MS / 2));
         let mid = anim.scroll_x();
         assert!(
@@ -2437,7 +2489,10 @@ mod tests {
         assert_eq!(row.groups.len(), 1);
         assert_eq!(row.groups[0].tabs().len(), 1);
         assert_eq!(row.groups[0].tabs()[0].id, 1);
-        assert!(row.take_structure_dirty(), "split must flag structure_dirty");
+        assert!(
+            row.take_structure_dirty(),
+            "split must flag structure_dirty"
+        );
     }
 
     #[test]
@@ -2463,8 +2518,15 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(release.x, release.y),
         };
         row.handle_event(
-            &event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, &taffy,
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
 
         assert!(
@@ -2528,8 +2590,15 @@ mod tests {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         row.handle_event(
-            &event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, taffy,
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            taffy,
         );
     }
 
@@ -2561,7 +2630,10 @@ mod tests {
         let mid_y = (row.rect.y0 + row.rect.y1) / 2.0;
         let mid_gap = Point::new((r0.x1 + r1.x0) / 2.0, mid_y);
         fire_cursor_moved(&mut row, &taffy, root, mid_gap);
-        assert!(row.hover_gap_idx.is_some(), "precondition: drag tracked the gap");
+        assert!(
+            row.hover_gap_idx.is_some(),
+            "precondition: drag tracked the gap"
+        );
 
         let event = WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
@@ -2574,8 +2646,15 @@ mod tests {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         row.handle_event(
-            &event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, &taffy,
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
 
         assert_eq!(
@@ -2591,9 +2670,7 @@ mod tests {
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         // Already-elapsed timestamp: ready-to-prune on the very next tick.
-        row.groups[0].set_closing_at_for_tests(
-            Instant::now() - Duration::from_millis(200),
-        );
+        row.groups[0].set_closing_at_for_tests(Instant::now() - Duration::from_millis(200));
         assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
         let event = WindowEvent::CursorMoved {
@@ -2606,8 +2683,15 @@ mod tests {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         row.handle_event(
-            &event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, &taffy,
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
 
         assert_eq!(
@@ -2642,8 +2726,15 @@ mod tests {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         row.handle_event(
-            &event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, &taffy,
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
 
         assert_eq!(
@@ -2660,23 +2751,18 @@ mod tests {
 
         // Two multi-tab groups so neither gets pruned by the
         // detach-empties-source rule.
-        let (mut row, taffy, root) =
-            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11]]);
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11]]);
 
         // B (index 1) is fresh-latched closing, so the prune sweep won't
         // touch it this tick.
         row.groups[1].set_closing_at_for_tests(Instant::now());
         assert!(row.groups[1].is_closing());
         assert!(!row.groups[1].close_complete());
-        let b_tabs_before: Vec<u64> =
-            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        let b_tabs_before: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
         assert_eq!(b_tabs_before, vec![10, 11]);
 
         let b_bar = row.groups[1].bar_rect();
-        let release = Point::new(
-            (b_bar.x0 + b_bar.x1) / 2.0,
-            (b_bar.y0 + b_bar.y1) / 2.0,
-        );
+        let release = Point::new((b_bar.x0 + b_bar.x1) / 2.0, (b_bar.y0 + b_bar.y1) / 2.0);
         row.groups[0].bar_mut().pending_detach = Some((1, release));
 
         let mut doc = AutoCommit::new();
@@ -2689,8 +2775,15 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(release.x, release.y),
         };
         row.handle_event(
-            &event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, &taffy,
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
 
         let b_idx = row
@@ -2698,8 +2791,7 @@ mod tests {
             .iter()
             .position(|g| g.is_closing())
             .expect("B should still be present (mid-fade)");
-        let b_tabs_after: Vec<u64> =
-            row.groups[b_idx].tabs().iter().map(|t| t.id).collect();
+        let b_tabs_after: Vec<u64> = row.groups[b_idx].tabs().iter().map(|t| t.id).collect();
         assert_eq!(
             b_tabs_after, b_tabs_before,
             "closing group's tabs must be unchanged — the drop must not insert into it",
@@ -2712,17 +2804,16 @@ mod tests {
             3,
             "drop-onto-closing falls through to split-into-new-group",
         );
-        let a_tabs: Vec<u64> =
-            row.groups[0].tabs().iter().map(|t| t.id).collect();
+        let a_tabs: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
         assert_eq!(a_tabs, vec![2], "A lost its dragged tab (id 1)");
         assert!(
             row.groups[2].is_closing(),
             "B (closing) should still be present at the right of the row",
         );
-        let new_group_tabs: Vec<u64> =
-            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        let new_group_tabs: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
         assert_eq!(
-            new_group_tabs, vec![1],
+            new_group_tabs,
+            vec![1],
             "dragged tab must end up in a fresh group, not in the closing group",
         );
         assert!(
@@ -2737,8 +2828,7 @@ mod tests {
 
         // B has tabs [10, 11, 12] so prepend/append are distinguishable
         // from a default insert-at-zero.
-        let (mut row, taffy, root) =
-            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11, 12]]);
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11, 12]]);
         let b_rect = row.groups[1].get_rect();
         let b_bar = row.groups[1].bar_rect();
 
@@ -2762,27 +2852,32 @@ mod tests {
             button: MouseButton::Left,
         };
         row.handle_event(
-            &release_event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, &taffy,
+            &release_event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
 
-        let b_ids: Vec<u64> =
-            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        let b_ids: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
         assert_eq!(
             b_ids,
             vec![1, 10, 11, 12],
             "left-half tile drop must prepend the dragged tab to the target's tab list",
         );
-        let a_ids: Vec<u64> =
-            row.groups[0].tabs().iter().map(|t| t.id).collect();
+        let a_ids: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
         assert_eq!(
-            a_ids, vec![2],
+            a_ids,
+            vec![2],
             "source group must lose the dragged tab to the target",
         );
         assert_eq!(row.groups[1].active_tab_id(), 1);
 
-        let (mut row, taffy, root) =
-            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11, 12]]);
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11, 12]]);
         let b_rect = row.groups[1].get_rect();
         let b_bar = row.groups[1].bar_rect();
         let release_right = Point::new(
@@ -2797,12 +2892,18 @@ mod tests {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         row.handle_event(
-            &release_event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, &taffy,
+            &release_event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
 
-        let b_ids: Vec<u64> =
-            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        let b_ids: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
         assert_eq!(
             b_ids,
             vec![10, 11, 12, 1],
@@ -2821,8 +2922,7 @@ mod tests {
 
         // B (index 1) is fresh-latched closing so the prune sweep won't
         // reap it this tick.
-        let (mut row, taffy, root) =
-            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11]]);
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11]]);
         row.groups[1].set_closing_at_for_tests(Instant::now());
         assert!(row.groups[1].is_closing());
         assert!(!row.groups[1].close_complete());
@@ -2830,10 +2930,7 @@ mod tests {
         // Inside B's outer rect but BELOW its bar rect — its content area.
         let b_rect = row.groups[1].get_rect();
         let b_bar = row.groups[1].bar_rect();
-        let release = Point::new(
-            (b_rect.x0 + b_rect.x1) / 2.0,
-            (b_bar.y1 + b_rect.y1) / 2.0,
-        );
+        let release = Point::new((b_rect.x0 + b_rect.x1) / 2.0, (b_bar.y1 + b_rect.y1) / 2.0);
         assert!(
             b_rect.contains(release),
             "precondition: release is inside B's outer rect",
@@ -2850,8 +2947,7 @@ mod tests {
 
         // Pre-stage the detach marker instead of replaying press →
         // drag-past-threshold: `press_origin` is private.
-        let a_tabs_before: Vec<u64> =
-            row.groups[0].tabs().iter().map(|t| t.id).collect();
+        let a_tabs_before: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
         row.groups[0].bar_mut().pending_detach = Some((1, release));
 
         let mut doc = AutoCommit::new();
@@ -2865,12 +2961,18 @@ mod tests {
             button: MouseButton::Left,
         };
         row.handle_event(
-            &release_event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, &taffy,
+            &release_event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
 
-        let a_tabs_after: Vec<u64> =
-            row.groups[0].tabs().iter().map(|t| t.id).collect();
+        let a_tabs_after: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
         assert_eq!(
             a_tabs_after, a_tabs_before,
             "source group must keep the dragged tab when no valid target resolves",
@@ -2885,10 +2987,10 @@ mod tests {
             .iter()
             .position(|g| g.is_closing())
             .expect("B should still be present mid-fade");
-        let b_tabs_after: Vec<u64> =
-            row.groups[b_idx].tabs().iter().map(|t| t.id).collect();
+        let b_tabs_after: Vec<u64> = row.groups[b_idx].tabs().iter().map(|t| t.id).collect();
         assert_eq!(
-            b_tabs_after, vec![10, 11],
+            b_tabs_after,
+            vec![10, 11],
             "closing group's tabs must be untouched — drop did not insert into it",
         );
         assert!(
@@ -2926,12 +3028,8 @@ mod tests {
         // Non-adjacent prune indices (0, 2) verify the
         // highest-index-first sort doesn't shift slots under the loop.
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-        row.groups[0].set_closing_at_for_tests(
-            Instant::now() - Duration::from_millis(500),
-        );
-        row.groups[2].set_closing_at_for_tests(
-            Instant::now() - Duration::from_millis(500),
-        );
+        row.groups[0].set_closing_at_for_tests(Instant::now() - Duration::from_millis(500));
+        row.groups[2].set_closing_at_for_tests(Instant::now() - Duration::from_millis(500));
 
         let groups_pre = row.groups.len();
         let node_ids_pre = row.node_ids.len();
@@ -2955,8 +3053,15 @@ mod tests {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         row.handle_event(
-            &event, 1.0, &modifiers, &mut doc, &doc_root,
-            &mut handled, &mut focus, root, &taffy,
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
 
         assert_eq!(
@@ -3155,9 +3260,7 @@ mod tests {
         let (vis0, vis1) = row.visible_canvas_span();
         row.laid_spans
             .iter()
-            .filter(|(id, x0, x1)| {
-                !cut.contains(id) && *x1 > vis0 + 0.5 && *x0 < vis1 - 0.5
-            })
+            .filter(|(id, x0, x1)| !cut.contains(id) && *x1 > vis0 + 0.5 && *x0 < vis1 - 0.5)
             .map(|(id, _, _)| *id)
             .collect()
     }
@@ -3292,7 +3395,14 @@ mod tests {
         );
         // Source had only one tab, so it's pruned; net group count is 3.
         assert_eq!(row.groups.len(), 3);
-        let last_ids: Vec<u64> = row.groups.last().unwrap().tabs().iter().map(|t| t.id).collect();
+        let last_ids: Vec<u64> = row
+            .groups
+            .last()
+            .unwrap()
+            .tabs()
+            .iter()
+            .map(|t| t.id)
+            .collect();
         assert_eq!(last_ids, vec![src_tab]);
     }
 
@@ -3342,17 +3452,10 @@ mod tests {
                 root,
                 &taffy,
             );
-            assert!(
-                !handled,
-                "a bare wheel must be left unclaimed by the strip"
-            );
+            assert!(!handled, "a bare wheel must be left unclaimed by the strip");
             // Lets any wrongly-started eased travel show itself.
             row.tick_snap_at(Instant::now() + Duration::from_millis(400));
-            assert_eq!(
-                row.scroll_x(),
-                0.0,
-                "a bare wheel must not move the strip"
-            );
+            assert_eq!(row.scroll_x(), 0.0, "a bare wheel must not move the strip");
             row.apply_layout(&taffy, root, Point::ORIGIN);
             assert_eq!(
                 row.groups[0].get_rect().x0,
@@ -3361,7 +3464,6 @@ mod tests {
             );
         }
     }
-
 
     #[test]
     fn scroll_snaps_to_nearest_group_after_wheel_idle() {
@@ -3448,8 +3550,14 @@ mod tests {
                 device_id: dev,
                 position: PhysicalPosition::new(cx, cy),
             },
-            1.0, &modifiers, &mut state, &root_obj,
-            &mut handled, &mut focus, root, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &root_obj,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         row.handle_event(
             &WindowEvent::MouseWheel {
@@ -3457,8 +3565,14 @@ mod tests {
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: winit::event::TouchPhase::Moved,
             },
-            1.0, &modifiers, &mut state, &root_obj,
-            &mut handled, &mut focus, root, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &root_obj,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         let anim = row
             .snap_anim
@@ -3493,8 +3607,7 @@ mod tests {
         use taffy::AvailableSpace;
         // One 4-tab group, matching the live shell's bootstrap_default
         // Home workspace.
-        let (mut row, taffy, root) =
-            make_row_with_groups_with_taffy(&[&[1, 2, 3, 4]]);
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1, 2, 3, 4]]);
 
         // DROP #1: tab 4 dropped right of the only group's bar → 2nd group.
         let g0_rect = row.groups[0].get_rect();
@@ -3513,12 +3626,21 @@ mod tests {
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
             },
-            1.0, &modifiers, &mut state, &root_obj,
-            &mut handled, &mut focus, root, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &root_obj,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         // Mimic App's RedrawRequested path so the new group gets a rect.
         assert_eq!(row.groups.len(), 2, "drop 1 must produce 2 groups");
-        assert!(row.take_structure_dirty(), "split must flag structure_dirty");
+        assert!(
+            row.take_structure_dirty(),
+            "split must flag structure_dirty"
+        );
         let mut new_taffy: TaffyTree<()> = TaffyTree::new();
         let mut new_node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let new_root_child = row.build_layout(&mut new_taffy, &theme, &mut new_node_map);
@@ -3558,7 +3680,10 @@ mod tests {
         let gap_mid = (g0_rect.x1 + g1_rect.x0) / 2.0;
         let release_2 = Point::new(gap_mid, g0_rect.y0 + 6.0);
         eprintln!("  release_2={release_2:?}");
-        eprintln!("  gap_index_for(release_2)={:?}", row.gap_index_for(release_2));
+        eprintln!(
+            "  gap_index_for(release_2)={:?}",
+            row.gap_index_for(release_2)
+        );
         row.groups[0].bar_mut_for_tests().pending_detach = Some((3, release_2));
 
         let mut handled2 = false;
@@ -3568,12 +3693,20 @@ mod tests {
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
             },
-            1.0, &modifiers, &mut state, &root_obj,
-            &mut handled2, &mut focus, root, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &root_obj,
+            &mut handled2,
+            &mut focus,
+            root,
+            &taffy,
         );
         assert_eq!(
-            row.groups.len(), 3,
-            "drop 2 must produce 3 groups (was {})", row.groups.len()
+            row.groups.len(),
+            3,
+            "drop 2 must produce 3 groups (was {})",
+            row.groups.len()
         );
     }
 
@@ -3589,10 +3722,18 @@ mod tests {
         assert_eq!(row.handle_count(), 0, "single-group row needs no handle");
 
         let row = make_row_with_groups(&[&[1], &[2]]);
-        assert_eq!(row.handle_count(), 1, "two-group row has exactly one handle");
+        assert_eq!(
+            row.handle_count(),
+            1,
+            "two-group row has exactly one handle"
+        );
 
         let row = make_row_with_groups(&[&[1], &[2], &[3]]);
-        assert_eq!(row.handle_count(), 2, "three-group row has exactly two handles");
+        assert_eq!(
+            row.handle_count(),
+            2,
+            "three-group row has exactly two handles"
+        );
     }
 
     #[test]
@@ -3601,11 +3742,18 @@ mod tests {
         use taffy::{AvailableSpace, Size as TSize};
 
         let mut row = make_row_with_groups(&[&[1, 2]]);
-        assert_eq!(row.handle_count(), 0, "precondition: one-group row has no handle");
+        assert_eq!(
+            row.handle_count(),
+            0,
+            "precondition: one-group row has no handle"
+        );
 
         assert!(row.split_tab_into_new_group(0, 2, 1));
         assert_eq!(row.groups.len(), 2);
-        assert!(row.take_structure_dirty(), "split must flag structure_dirty");
+        assert!(
+            row.take_structure_dirty(),
+            "split must flag structure_dirty"
+        );
 
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -3641,8 +3789,14 @@ mod tests {
         );
         let handle = row.handle_at(0).expect("handle 0 must exist");
         let r = handle.get_rect();
-        assert!(r.width() > 0.0, "handle rect width must be positive after apply_layout");
-        assert!(r.height() > 0.0, "handle rect height must be positive after apply_layout");
+        assert!(
+            r.width() > 0.0,
+            "handle rect width must be positive after apply_layout"
+        );
+        assert!(
+            r.height() > 0.0,
+            "handle rect height must be positive after apply_layout"
+        );
     }
 
     /// End-to-end press-drag-release exercising the actual production
@@ -3676,9 +3830,18 @@ mod tests {
 
         // CursorMoved over the handle → hover engages.
         row.handle_event(
-            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx, cy) },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, root, &taffy,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(cx, cy),
+            },
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         assert!(
             row.handle_at(0).unwrap().is_hovered(),
@@ -3693,8 +3856,14 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, root, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         assert!(handled, "press on handle must claim the event");
         assert!(row.handle_at(0).unwrap().is_dragging(), "press starts drag");
@@ -3703,9 +3872,18 @@ mod tests {
         // neighbours via `set_width`.
         handled = false;
         row.handle_event(
-            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx + 50.0, cy) },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, root, &taffy,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(cx + 50.0, cy),
+            },
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         assert_eq!(
             row.groups[0].resolved_width_px(),
@@ -3732,11 +3910,20 @@ mod tests {
                 state: ElementState::Released,
                 button: MouseButton::Left,
             },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, root, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         assert!(handled, "release on handle must claim the event");
-        assert!(!row.handle_at(0).unwrap().is_dragging(), "release ends drag");
+        assert!(
+            !row.handle_at(0).unwrap().is_dragging(),
+            "release ends drag"
+        );
         assert_eq!(
             row.groups[0].take_pending_width_change(),
             Some(708),
@@ -3779,9 +3966,18 @@ mod tests {
         let mut focus: Option<NodeId> = None;
 
         row.handle_event(
-            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx, cy) },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, root, &taffy,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(cx, cy),
+            },
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         row.handle_event(
             &WindowEvent::MouseInput {
@@ -3789,16 +3985,31 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, root, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         // Drag 500px left: 400 - 500 = -100, below `min_group_px(1200) =
         // 240`. Clamp pins left at 240; right absorbs only the actual
         // 160px moved, settling at 560.
         row.handle_event(
-            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx - 500.0, cy) },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, root, &taffy,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(cx - 500.0, cy),
+            },
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         let min = min_group_px(FIXTURE_USABLE_PX);
         assert_eq!(
@@ -3842,9 +4053,18 @@ mod tests {
         let mut focus: Option<NodeId> = None;
 
         row.handle_event(
-            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx, cy) },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, root, &taffy,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(cx, cy),
+            },
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
         );
         assert!(
             !row.handle_at(0).unwrap().is_hovered(),
@@ -3856,8 +4076,7 @@ mod tests {
     fn maximized_group_hides_siblings_and_absorbs_row_width() {
         // Three groups verifies BOTH a left-of-max and right-of-max
         // sibling collapse, not just one.
-        let (mut row, taffy, root) =
-            make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
         assert!(row.groups[0].get_rect().width() > 0.0);
         assert!(row.groups[1].get_rect().width() > 0.0);
         assert!(row.groups[2].get_rect().width() > 0.0);
@@ -4024,10 +4243,16 @@ mod tests {
         assert!(!row.is_fullscreen());
         // Promote the middle group (id 200).
         row.set_fullscreen(Some(200), false);
-        assert!(row.groups.iter().all(|g| !g.maximized), "no persisted maximize");
+        assert!(
+            row.groups.iter().all(|g| !g.maximized),
+            "no persisted maximize"
+        );
         relayout_row(&mut row);
 
-        assert!(row.is_fullscreen(), "row reports it owns the fullscreen group");
+        assert!(
+            row.is_fullscreen(),
+            "row reports it owns the fullscreen group"
+        );
         assert!(
             row.groups[0].get_rect().width() <= 0.5,
             "left sibling collapses under fullscreen; got {}",
@@ -4052,7 +4277,11 @@ mod tests {
             r1.x0,
             row.rect.x0,
         );
-        assert_eq!(row.handle_node_ids.len(), 0, "no resize handles under fullscreen");
+        assert_eq!(
+            row.handle_node_ids.len(),
+            0,
+            "no resize handles under fullscreen"
+        );
     }
 
     #[test]
@@ -4121,11 +4350,7 @@ mod tests {
     #[test]
     fn making_room_translates_the_groups_it_pushes_and_never_narrows_them() {
         let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-        let before: Vec<(u64, Rect)> = row
-            .groups
-            .iter()
-            .map(|g| (g.id, g.get_rect()))
-            .collect();
+        let before: Vec<(u64, Rect)> = row.groups.iter().map(|g| (g.id, g.get_rect())).collect();
 
         row.insert_group(make_group(999, &[9]), 1);
         let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
@@ -4183,7 +4408,8 @@ mod tests {
             + HANDLE_SLOT_PX;
 
         assert_eq!(
-            row.shift_offset_for(unmoved), 0.0,
+            row.shift_offset_for(unmoved),
+            0.0,
             "a group that did not move must not be animated",
         );
         for id in pushed {
@@ -4212,7 +4438,8 @@ mod tests {
 
         for id in existing {
             assert_eq!(
-                row.shift_offset_for(id), 0.0,
+                row.shift_offset_for(id),
+                0.0,
                 "nothing had to move, so group {id} must not animate",
             );
         }

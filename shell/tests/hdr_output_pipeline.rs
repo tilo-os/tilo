@@ -17,8 +17,8 @@
 
 use shell::diagnostics::PeerSurfaceMetrics;
 use shell::shell::color_pipeline::{
-    OutputColorSpace, OutputColorState, SurfaceColorOp, map_sdr_pixel_to_pq_bt2020, plan_surface_op,
-    pq_eotf, SDR_REFERENCE_WHITE_NITS,
+    OutputColorSpace, OutputColorState, SDR_REFERENCE_WHITE_NITS, SurfaceColorOp,
+    map_sdr_pixel_to_pq_bt2020, plan_surface_op, pq_eotf,
 };
 use shell::shell::hdr_display::DisplayCapabilities;
 use shell::shell::peer_view::PeerView;

@@ -126,11 +126,7 @@ pub fn expand(argv: &[String], ctx: &ExpandContext<'_>) -> Vec<String> {
 /// Substitute the single-value codes inside one token. `None` means the token expanded to
 /// nothing and must be dropped entirely — what a bare `%f` with no file to open has to do,
 /// since an empty string would look like a filename of `""`.
-fn expand_in_token(
-    token: &str,
-    ctx: &ExpandContext<'_>,
-    urls: &[String],
-) -> Option<String> {
+fn expand_in_token(token: &str, ctx: &ExpandContext<'_>, urls: &[String]) -> Option<String> {
     if !token.contains('%') {
         return Some(token.to_string());
     }

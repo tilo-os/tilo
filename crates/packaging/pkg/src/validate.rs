@@ -174,7 +174,9 @@ fn is_calver(ver: &str) -> bool {
     if !matches!(parts.len(), 2 | 3) {
         return false;
     }
-    parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    parts
+        .iter()
+        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Payload-aware validation, called after walking the payload
@@ -231,7 +233,10 @@ mode = "off"
     fn runtime_kind_with_runtime_field_rejected() {
         let mut m = minimal_runtime_manifest();
         m.package.runtime = Some("qos-runtime/2025.06".into());
-        assert_eq!(validate_manifest(&m), Err(ManifestError::RuntimeKindHasRuntime));
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::RuntimeKindHasRuntime)
+        );
     }
 
     #[test]

@@ -33,7 +33,6 @@ use ui::widget::Widget;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{AppKind, TabDescriptor, TileContent, WindowGroup, WindowWidth};
 
-
 const W: f32 = 1600.0;
 const H: f32 = 900.0;
 
@@ -146,7 +145,6 @@ fn open_quick_settings(chrome: &Chrome) {
     chrome.borrow_mut().overlays.quick_settings = true;
 }
 
-
 /// Audit `concept-coverage.md:24,182-186` (concept:
 /// `WorkspaceSettingsModal.tsx:95-149`): the General tab is just a Name
 /// input. Asserted via an added theme-accent fill, since glyph text isn't
@@ -218,8 +216,7 @@ fn workspace_settings_renders_general_tab_with_invite_link() {
             })
             .count()
     };
-    let added_accent =
-        count_accent(&open_fills).saturating_sub(count_accent(&baseline_fills));
+    let added_accent = count_accent(&open_fills).saturating_sub(count_accent(&baseline_fills));
     assert!(
         added_accent >= 1,
         "Opening WorkspaceSettings on the General tab must add at least one \
@@ -228,7 +225,6 @@ fn workspace_settings_renders_general_tab_with_invite_link() {
          closed-modal baseline."
     );
 }
-
 
 /// Audit `concept-coverage.md:24,187-191`: the per-role tab wasn't drawn.
 /// The tab is now **Members**, rendering [`Workspace::roster`] (the
@@ -253,7 +249,6 @@ fn workspace_settings_renders_members_tab_with_the_real_roster() {
          per-tab branching at all."
     );
 }
-
 
 /// Audit `concept-coverage.md:24,192-196`: the Files tab wasn't drawn.
 /// Per-file access is now enforced via [`Scope::FsPath`] capabilities,
@@ -303,7 +298,6 @@ fn workspace_settings_renders_per_file_capabilities_as_permission_rows() {
     );
 }
 
-
 /// Regression pin: before the typed `WsTab` field, "Files" was selected via
 /// `editing_workspace_name = Some("__files_tab__")`, leaking that literal
 /// into the General Name input. A non-General render must be invariant to
@@ -345,7 +339,6 @@ fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
          which paints the magic string into the Name input."
     );
 }
-
 
 /// Regression pin: a non-General tab's pane must fully replace the General
 /// body, which previously fell through underneath it. Same shape as
@@ -511,7 +504,6 @@ fn render_with_ws_settings_tab(tree: &WorkspaceTree, tab: WsTab) -> (usize, Chro
     (collect_solid_colors(&scene).len(), chrome)
 }
 
-
 /// Audit `concept-coverage.md:25,204-207` (`GlobalSearch.tsx:138-153`):
 /// concept has a leading lucide `Search` icon, ours none. Glyphs emit no
 /// `DrawTag::COLOR`, so this asserts by fill-count delta.
@@ -574,7 +566,6 @@ fn global_search_renders_leading_search_icon() {
     );
 }
 
-
 /// Audit `concept-coverage.md:25,204-207`: same TSX line, but the trailing
 /// "Cmd+K" kbd chip (pill surface + border, +2 fills minimum).
 #[test]
@@ -634,7 +625,6 @@ fn global_search_renders_cmd_k_kbd_chip() {
         fills.len(),
     );
 }
-
 
 /// Audit `concept-coverage.md:25,217-221` (`GlobalSearch.tsx:251`): the
 /// selected row must be the accent, not `neutral[4]` mid-grey.
@@ -697,12 +687,9 @@ fn global_search_selected_row_is_indigo_500_not_grey() {
          Observed solid-colour fills: {fills:?}. \
          has_slate_600_fill={has_slate_600_fill} (when present, that's \
          the stale grey highlight).",
-        accent.r,
-        accent.g,
-        accent.b
+        accent.r, accent.g, accent.b
     );
 }
-
 
 /// Audit `concept-coverage.md:22,128-131` (`QuickSettings.tsx:181-201`):
 /// concept's top row is 3 action tiles (Settings/Camera/Power), ours none.
@@ -770,12 +757,9 @@ fn quick_settings_renders_action_row_with_settings_camera_power() {
         "QuickSettings top action row must include a Power tile marked \
          with the theme's danger colour, nominal ({}, {}, {}) or \
          premultiplied {premul:?}. Observed solid-colour fills: {fills:?}.",
-        danger.r,
-        danger.g,
-        danger.b
+        danger.r, danger.g, danger.b
     );
 }
-
 
 /// Audit `concept-coverage.md:22,132-139` (`QuickSettings.tsx:204-215`):
 /// concept sliders fill white, ours `accent[5]` indigo. Whites present when
@@ -857,7 +841,6 @@ fn quick_settings_slider_fill_is_white_not_indigo() {
          in the slider-fill paint call in `draw_quick_settings`."
     );
 }
-
 
 /// Audit `concept-coverage.md:22,148` (`QuickSettings.tsx:108-128,101-162`):
 /// `nav_stack` is dead state, no WiFi/BT drill-in renders. Asserts a
@@ -946,7 +929,6 @@ fn render_quick_settings_open(
     (collect_solid_colors(&scene).len(), chrome)
 }
 
-
 /// Audit `concept-coverage.md:23,163-166` (`TopBarWidgets.tsx:120-124`):
 /// concept's CPU label is emerald-400 (#4ade80), ours indigo `accent[5]`.
 /// Text glyphs emit colour-paint commands per run, so this is detectable.
@@ -1008,7 +990,6 @@ fn topbar_system_monitor_cpu_label_takes_the_themes_success_colour() {
     );
 }
 
-
 /// Audit row: `concept-coverage.md:23,163-166` — same line as #10 but
 /// asserts the RAM label colour. blue-400 = #60a5fa = (96, 165, 250).
 #[test]
@@ -1068,7 +1049,6 @@ fn topbar_system_monitor_ram_label_takes_the_themes_info_colour() {
         expected.b
     );
 }
-
 
 /// Audit `concept-coverage.md:20,114-123,377-381` (`WindowFrame.tsx:114-123`):
 /// concept hides the maximized floating chrome when cursor.y > 80, ours
@@ -1186,7 +1166,6 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     );
 }
 
-
 /// Audit `concept-coverage.md:23,160-162` (`TopBarWidgets.tsx:120-124`):
 /// concept's sparkline bars are emerald-500 at 30% alpha, ours indigo
 /// `accent_primary`. With #10/#11 this pins the per-metric colour cue.
@@ -1258,7 +1237,6 @@ fn topbar_system_monitor_sparkline_takes_the_cpu_metric_colour() {
         cpu.b
     );
 }
-
 
 /// The right cluster must show per-peer avatars when the active workspace
 /// has peers, wired through `TopBarChrome::sync_from_tree` / `draw`. Uses
@@ -1749,7 +1727,6 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     );
 }
 
-
 /// Concept ships a create-affordance at the tail of the overview's
 /// workspace list. Asserts `add_workspace_rect` is populated after
 /// layout+draw and sits below the last card; the click wiring is pinned by
@@ -1971,7 +1948,6 @@ mod helper_tests {
         assert!(!contains_color_close(&palette, (74, 222, 128), 8));
     }
 }
-
 
 /// The overview's access line + avatar stack must read [`Workspace::roster`]
 /// (live membership) rather than `ws.collaborators` — showing someone on a

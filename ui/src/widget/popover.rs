@@ -138,7 +138,10 @@ impl Popover {
     pub fn open_at(&mut self, anchor: Rect, selected: Option<usize>) {
         self.anchor = anchor;
         self.selected = selected.filter(|&i| i < self.items.len());
-        self.highlighted = self.selected.unwrap_or(0).min(self.items.len().saturating_sub(1));
+        self.highlighted = self
+            .selected
+            .unwrap_or(0)
+            .min(self.items.len().saturating_sub(1));
         self.open = true;
         self.pending = None;
     }
@@ -349,8 +352,20 @@ impl Widget for Popover {
         }
 
         let shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(vello::peniko::Fill::NonZero, transform, c.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            c.border_standard,
+            None,
+            &shape,
+        );
 
         let fs = theme.tokens.typography.scale.sm;
         for (idx, label) in self.items.iter().enumerate() {
@@ -418,7 +433,12 @@ impl Widget for Popover {
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key: key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key: key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 match key {
@@ -594,9 +614,15 @@ mod tests {
     fn arrow_keys_move_highlight_and_are_consumed() {
         let mut p = opened();
         assert_eq!(p.highlighted(), 1, "opens highlighting the selected row");
-        assert!(dispatch(&mut p, &key(NamedKey::ArrowDown)), "ArrowDown consumed");
+        assert!(
+            dispatch(&mut p, &key(NamedKey::ArrowDown)),
+            "ArrowDown consumed"
+        );
         assert_eq!(p.highlighted(), 2);
-        assert!(dispatch(&mut p, &key(NamedKey::ArrowUp)), "ArrowUp consumed");
+        assert!(
+            dispatch(&mut p, &key(NamedKey::ArrowUp)),
+            "ArrowUp consumed"
+        );
         assert_eq!(p.highlighted(), 1);
     }
 
@@ -629,9 +655,17 @@ mod tests {
         dispatch(&mut p, &key(NamedKey::ArrowDown)); // 2 -> 3
         assert!(dispatch(&mut p, &key(NamedKey::Enter)), "Enter consumed");
         assert!(!p.is_open(), "selecting closes the menu");
-        assert_eq!(p.take_selection(), Some(3), "the chosen index is reported once");
+        assert_eq!(
+            p.take_selection(),
+            Some(3),
+            "the chosen index is reported once"
+        );
         assert_eq!(p.take_selection(), None, "selection drains exactly once");
-        assert_eq!(p.selected(), Some(3), "the applied option sticks as selected");
+        assert_eq!(
+            p.selected(),
+            Some(3),
+            "the applied option sticks as selected"
+        );
     }
 
     #[test]
@@ -648,10 +682,16 @@ mod tests {
         // reach the app behind the overlay. A letter that maps to no action
         // must still return `handled == true` and leave the menu open.
         let mut p = opened();
-        assert!(dispatch(&mut p, &char_key("x")), "an unrelated key is swallowed");
+        assert!(
+            dispatch(&mut p, &char_key("x")),
+            "an unrelated key is swallowed"
+        );
         assert!(p.is_open(), "a no-op key does not close the menu");
         assert_eq!(p.take_selection(), None);
-        assert!(dispatch(&mut p, &key(NamedKey::Tab)), "Tab is swallowed too (no focus escape)");
+        assert!(
+            dispatch(&mut p, &key(NamedKey::Tab)),
+            "Tab is swallowed too (no focus escape)"
+        );
         assert!(p.is_open());
     }
 
@@ -691,8 +731,14 @@ mod tests {
             assert_eq!(child.set_size, Some(5));
         }
         // The highlighted row carries focus; the selected row carries selected.
-        assert!(node.children[1].state.focused, "row 1 opens highlighted (== selected)");
-        assert!(node.children[1].state.selected, "row 1 is the current selection");
+        assert!(
+            node.children[1].state.focused,
+            "row 1 opens highlighted (== selected)"
+        );
+        assert!(
+            node.children[1].state.selected,
+            "row 1 is the current selection"
+        );
         assert!(!node.children[0].state.focused);
     }
 
@@ -722,7 +768,10 @@ mod tests {
     fn open_menu_traps_focus_and_captures_input() {
         let p = opened();
         assert!(Widget::traps_focus(&p), "open popover traps focus");
-        assert!(Widget::modal_capture(&p).is_some(), "open popover reports modal capture");
+        assert!(
+            Widget::modal_capture(&p).is_some(),
+            "open popover reports modal capture"
+        );
         let closed = Popover::new();
         assert!(!Widget::traps_focus(&closed));
         assert!(Widget::modal_capture(&closed).is_none());
@@ -734,6 +783,10 @@ mod tests {
         p.select(3);
         assert_eq!(p.take_selection(), Some(3));
         p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), p.selected());
-        assert_eq!(p.highlighted(), 3, "re-opening highlights the applied option");
+        assert_eq!(
+            p.highlighted(),
+            3,
+            "re-opening highlights the applied option"
+        );
     }
 }

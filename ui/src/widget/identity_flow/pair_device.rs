@@ -16,11 +16,9 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
-use threshold_identity::{
-    DkgSession, EnrolmentRound1, EnrolmentRound2, ThresholdIdentity,
-};
 use rand_core::OsRng;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2, ThresholdIdentity};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -454,7 +452,11 @@ impl Widget for PairDeviceScreen {
                 &RoundedRect::from_rect(*r, 6.0),
             );
             let ch = self.code_digits[i];
-            let display: String = if ch == '_' { String::new() } else { ch.to_string() };
+            let display: String = if ch == '_' {
+                String::new()
+            } else {
+                ch.to_string()
+            };
             let (w, _) = text_renderer.measure(&display, 26.0, None);
             text_renderer.draw_text(
                 scene,
@@ -613,11 +615,9 @@ mod tests {
         // Correct code accepted.
         PairDeviceScreen::validate_code_against_payload(derived, &payload).unwrap();
         // Wrong code rejected.
-        let err = PairDeviceScreen::validate_code_against_payload(
-            derived.wrapping_add(1),
-            &payload,
-        )
-        .unwrap_err();
+        let err =
+            PairDeviceScreen::validate_code_against_payload(derived.wrapping_add(1), &payload)
+                .unwrap_err();
         assert!(matches!(err, IdentityFlowError::DecodeFailed(_)));
     }
 }

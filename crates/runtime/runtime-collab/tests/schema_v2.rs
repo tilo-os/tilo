@@ -563,10 +563,7 @@ async fn presence_variants_publish_and_stream_round_trip() {
             // Publish every variant.
             presence.publish_cursor(1.5, 2.5).await.unwrap();
             presence.publish_caret(b"art-a", 100).await.unwrap();
-            presence
-                .publish_selection(b"art-b", 3, 9)
-                .await
-                .unwrap();
+            presence.publish_selection(b"art-b", 3, 9).await.unwrap();
             presence.publish_arrived(b"art-c").await.unwrap();
             presence.publish_left(b"art-d").await.unwrap();
 
@@ -594,10 +591,7 @@ async fn presence_variants_publish_and_stream_round_trip() {
 
             let e3 = stream.read().await.unwrap();
             assert_eq!(e3.user_id, "carol");
-            assert_eq!(
-                e3.payload,
-                PresencePayload::Selection { start: 7, end: 11 }
-            );
+            assert_eq!(e3.payload, PresencePayload::Selection { start: 7, end: 11 });
 
             let e4 = stream.read().await.unwrap();
             assert_eq!(e4.user_id, "dave");
@@ -742,10 +736,7 @@ async fn legacy_unsigned_paths_reach_broker() {
             let collab = stand_up_client(broker).await;
             let channel = collab.join_channel("c", b"id").await.unwrap();
 
-            channel
-                .send_unsigned_snapshot(b"full-doc")
-                .await
-                .unwrap();
+            channel.send_unsigned_snapshot(b"full-doc").await.unwrap();
             channel
                 .send_unsigned_incremental(b"change-1")
                 .await
@@ -789,7 +780,10 @@ async fn fetch_scrollback_round_trip_full_batch() {
             let channel = collab.join_channel("c", b"id").await.unwrap();
 
             let batch = channel.fetch_scrollback(50, 25).await.unwrap();
-            assert_eq!(batch.ops, vec![b"op-a".to_vec(), b"op-b".to_vec(), b"op-c".to_vec()]);
+            assert_eq!(
+                batch.ops,
+                vec![b"op-a".to_vec(), b"op-b".to_vec(), b"op-c".to_vec()]
+            );
             assert_eq!(batch.earliest_seq, 7);
             assert_eq!(batch.latest_seq, 9);
             assert!(!batch.done);
