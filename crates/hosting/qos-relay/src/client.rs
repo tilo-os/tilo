@@ -49,14 +49,19 @@ pub struct RelayClient {
 }
 
 impl Drop for RelayClient {
-    /// Tell the relay the peer has gone.
+    /// Best-effort notice that the peer has gone. Prefer
+    /// [`RelayClient::close`], which waits for the frame to be sent.
     ///
-    /// Dropping the handle alone only abandons the QUIC connection: the relay
-    /// keeps the subscriber until its idle timeout, so for that whole window it
-    /// fans out to a channel nobody reads and skips store-and-forward for a
-    /// member it still believes is online. Those deltas are not queued and not
-    /// delivered — they are lost. An explicit close makes the relay drop the
-    /// subscription now, so the next delta is queued instead.
+    /// Abandoning the connection instead leaves the relay holding the
+    /// subscription until its idle timeout, and for that whole window it fans
+    /// out to a connection nobody reads rather than queueing for
+    /// store-and-forward — every delta published in between is neither
+    /// delivered nor queued.
+    ///
+    /// `Drop` cannot await, so this only queues CONNECTION_CLOSE; the
+    /// endpoint's driver has to run to put it on the wire, and the endpoint is
+    /// dropped with the rest of this struct. Whether the frame makes it out is
+    /// a scheduling race.
     fn drop(&mut self) {
         self._connection.close(0u32.into(), b"client dropped");
     }
@@ -193,5 +198,26 @@ impl RelayClient {
     /// Convenience: recv the next envelope.
     pub async fn recv(&self) -> Option<Envelope> {
         self.inbound.lock().await.recv().await
+    }
+
+    /// Disconnect, waiting until the relay has been told.
+    ///
+    /// Prefer this to dropping the handle whenever the disconnect is
+    /// deliberate. `Connection::close` only queues CONNECTION_CLOSE and there
+    /// is no per-connection flush; `Endpoint::close` is what waits for the
+    /// driver to put it on the wire. Without that wait the endpoint dies with
+    /// the handle first, and the relay keeps the subscription until its idle
+    /// timeout — fanning deltas out to a connection that is gone rather than
+    /// queueing them for store-and-forward.
+    ///
+    /// This closes the endpoint the client was built on, which
+    /// [`RelayClient::connect`] takes by value on the understanding that the
+    /// client owns it. A caller that kept a clone and is still using it — the
+    /// daemon's federation dial loop passes the relay's own endpoint — must
+    /// drop the handle instead.
+    pub async fn close(self) {
+        self._connection.close(0u32.into(), b"client closed");
+        self._connection.closed().await;
+        self._endpoint.close().await;
     }
 }

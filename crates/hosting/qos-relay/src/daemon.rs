@@ -48,8 +48,9 @@ pub enum RelayError {
     Identity(String),
 }
 
-/// A running relay. Dropping the handle stops the daemon (and every
-/// federation dial task with it).
+/// A running relay. Prefer [`Relay::shutdown`]; dropping the handle also
+/// stops the daemon and every federation dial task, but leaves peers to
+/// notice by timeout.
 pub struct Relay {
     /// Iroh endpoint the daemon accepts on.
     pub endpoint: Endpoint,
@@ -182,6 +183,39 @@ impl Relay {
             own_user_public_key: identity.user_public_key,
             peer_relay_tasks,
         })
+    }
+
+    /// Whether this relay currently counts `device` as subscribed to
+    /// `workspace_id`.
+    ///
+    /// This is the relay's own belief, which is what routing acts on: a
+    /// device is here from the moment its `Subscribe` is accepted until
+    /// the connection closes, and a delta published in between is fanned
+    /// out to it rather than queued. There is no way to learn a peer has
+    /// gone before its close arrives, so anything that depends on the
+    /// departure having been noticed has to ask.
+    pub async fn is_subscribed(&self, workspace_id: u64, device: &[u8; 32]) -> bool {
+        let ws = self.workspaces.lock().await.get(&workspace_id).cloned();
+        match ws {
+            Some(ws) => ws.lock().await.has_subscriber(device),
+            None => false,
+        }
+    }
+
+    /// Stop the relay and tell every peer it has gone.
+    ///
+    /// Dropping the handle also stops it, but abandons the QUIC
+    /// connections rather than closing them: each peer keeps this relay
+    /// as a live subscriber until its own idle timeout, and for that
+    /// whole window fans out to a connection nobody reads instead of
+    /// queueing for store-and-forward. Deltas in that window are neither
+    /// delivered nor queued. Closing the endpoint sends CONNECTION_CLOSE
+    /// straight away, so peers drop the subscription and queue instead.
+    pub async fn shutdown(self) {
+        // Stop reconnecting first: the dial loop would otherwise open a
+        // fresh connection while the endpoint is closing.
+        self.peer_relay_tasks.lock().unwrap().clear();
+        self.endpoint.close().await;
     }
 
     /// Add a peer relay after startup — used by tests + the eventual
