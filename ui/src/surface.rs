@@ -136,10 +136,15 @@ fn build_shadow_sprites(r: u8, g: u8, b: u8) -> ShadowSprites {
 
 /// Per-tint sprite cache. Keyed by opaque `(r,g,b)`; the intensity is
 /// applied to the brush at draw time, so one pair serves every intensity.
+type ShadowSpriteCache = Mutex<HashMap<(u8, u8, u8), Arc<ShadowSprites>>>;
+
 fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
-    static CACHE: OnceLock<Mutex<HashMap<(u8, u8, u8), Arc<ShadowSprites>>>> = OnceLock::new();
+    static CACHE: OnceLock<ShadowSpriteCache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = cache.lock().unwrap();
+    // A panic elsewhere while the lock was held can't corrupt this map (a
+    // plain sprite cache, not an invariant-bearing structure), so recover
+    // the data instead of taking the whole render path down with it.
+    let mut map = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     map.entry((r, g, b))
         .or_insert_with(|| Arc::new(build_shadow_sprites(r, g, b)))
         .clone()

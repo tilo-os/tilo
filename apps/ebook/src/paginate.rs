@@ -507,8 +507,10 @@ mod tests {
     #[test]
     fn layout_key_changes_with_settings_and_font() {
         let a = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0);
-        let mut s = Settings::default();
-        s.font_scale = 1.4;
+        let s = Settings {
+            font_scale: 1.4,
+            ..Default::default()
+        };
         let b = LayoutKey::new(0, 300.0, 200.0, &s, 0);
         assert_ne!(a, b, "font scale change relays out");
         // A different font signature (family/size-mult) also relays out.

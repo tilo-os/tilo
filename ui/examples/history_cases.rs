@@ -67,7 +67,6 @@ fn three_session_doc() -> AutoCommit {
         let at = text_len(&doc, &root);
         let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
         dm.splice_text(&para, at, 0, " Revenue held steady.");
-        drop(dm);
         qdoc::history::commit_stamped_at(&mut doc, base + 40 + i * 20);
     }
 
@@ -81,7 +80,6 @@ fn three_session_doc() -> AutoCommit {
         let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
         let mut dm = qdoc::DocMut { doc: &mut peer, c: &cc, ids: &mut pids };
         dm.splice_text(&para, at, 0, " Costs fell by four percent.");
-        drop(dm);
         qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
     }
     doc.merge(&mut peer).expect("peers merge");
@@ -92,7 +90,6 @@ fn three_session_doc() -> AutoCommit {
         let cc = qdoc::model::open(&doc, &root).unwrap();
         let mut dm = qdoc::DocMut { doc: &mut doc, c: &cc, ids: &mut ids };
         dm.splice_text(&para, at, 0, " Headcount is unchanged.");
-        drop(dm);
         qdoc::history::commit_stamped_at(&mut doc, base + 4 * 3600 + i * 25);
     }
     doc
@@ -141,7 +138,6 @@ fn singleton_bands_doc() -> AutoCommit {
         let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
         let mut dm = qdoc::DocMut { doc: &mut peer, c: &cc, ids: &mut pids };
         dm.splice_text(&para, at, 0, text);
-        drop(dm);
         qdoc::history::commit_stamped_at(&mut peer, NOW_SECS as i64 - ago);
         doc.merge(&mut peer).expect("peers merge");
     }
@@ -155,11 +151,11 @@ fn rows(doc: &mut AutoCommit) -> Vec<HistoryEntry> {
     // "Unknown participant" path.
     authors.register(
         &hex_actor("alice"),
-        ui::HistoryAuthor::new("Alice", 210.0, &short(&hex_actor("alice"))),
+        ui::HistoryAuthor::new("Alice", 210.0, short(&hex_actor("alice"))),
     );
     authors.register(
         &hex_actor("Ada Lovelace"),
-        ui::HistoryAuthor::new("Ada Lovelace", 320.0, &short(&hex_actor("Ada Lovelace"))),
+        ui::HistoryAuthor::new("Ada Lovelace", 320.0, short(&hex_actor("Ada Lovelace"))),
     );
     HistorySource::new()
         .with_authors(authors)
@@ -475,11 +471,11 @@ fn author_dir() -> AuthorDirectory {
     let mut authors = AuthorDirectory::new();
     authors.register(
         &hex_actor("alice"),
-        ui::HistoryAuthor::new("Alice", 210.0, &short(&hex_actor("alice"))),
+        ui::HistoryAuthor::new("Alice", 210.0, short(&hex_actor("alice"))),
     );
     authors.register(
         &hex_actor("Ada Lovelace"),
-        ui::HistoryAuthor::new("Ada Lovelace", 320.0, &short(&hex_actor("Ada Lovelace"))),
+        ui::HistoryAuthor::new("Ada Lovelace", 320.0, short(&hex_actor("Ada Lovelace"))),
     );
     authors
 }

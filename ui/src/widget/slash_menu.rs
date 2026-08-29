@@ -539,7 +539,7 @@ impl Widget for SlashMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::{ElementState, KeyEvent, Modifiers};
+    use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 
     /// Same workaround used in `command_palette::tests` — `KeyEventExtra`

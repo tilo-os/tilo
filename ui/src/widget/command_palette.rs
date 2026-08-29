@@ -320,11 +320,14 @@ struct ArgState {
     selection: crate::text_selection::Selection,
 }
 
+/// A predicate narrowing which [`CommandEntry`] rows are shown.
+type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
+
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
     query: String,
     query_selection: crate::text_selection::Selection,
-    filter: Option<Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>>,
+    filter: Option<EntryFilter>,
     visible: Vec<usize>,
     cursor: usize,
     rect: Rect,
@@ -1093,6 +1096,10 @@ impl CommandPalette {
         }
     }
 
+    // Standard immediate-mode paint-helper signature for this vello
+    // renderer (scene + transform + text_renderer + theme, plus this
+    // draw's own content); every parameter is independently load-bearing.
+    #[allow(clippy::too_many_arguments)]
     fn draw_chip(
         &self,
         scene: &mut Scene,
@@ -1540,9 +1547,8 @@ impl CommandPalette {
     fn rebuild(&mut self) {
         self.visible.clear();
         for (i, e) in self.entries.iter().enumerate() {
-            if let Some(f) = &self.filter {
-                if !f(e) { continue; }
-            }
+            if let Some(f) = &self.filter
+                && !f(e) { continue; }
             if !self.bypass_fuzzy && !e.matches(&self.query) { continue; }
             self.visible.push(i);
         }
@@ -1557,24 +1563,24 @@ impl CommandPalette {
         let mut current: Option<&str> = None;
         for (entry_i, &idx) in self.visible.iter().enumerate() {
             let entry = &self.entries[idx];
-            if let Some(group) = entry.group.as_deref() {
-                if current != Some(group) {
-                    current = Some(group);
-                    // Fall back to the contiguous run when the host gives no
-                    // uncapped total.
-                    let total = entry.group_total.unwrap_or_else(|| {
-                        self.visible[entry_i..]
-                            .iter()
-                            .take_while(|&&j| {
-                                self.entries[j].group.as_deref() == Some(group)
-                            })
-                            .count()
-                    });
-                    self.rows.push(VisualRow::Header {
-                        label: group.to_string(),
-                        total,
-                    });
-                }
+            if let Some(group) = entry.group.as_deref()
+                && current != Some(group)
+            {
+                current = Some(group);
+                // Fall back to the contiguous run when the host gives no
+                // uncapped total.
+                let total = entry.group_total.unwrap_or_else(|| {
+                    self.visible[entry_i..]
+                        .iter()
+                        .take_while(|&&j| {
+                            self.entries[j].group.as_deref() == Some(group)
+                        })
+                        .count()
+                });
+                self.rows.push(VisualRow::Header {
+                    label: group.to_string(),
+                    total,
+                });
             }
             self.rows.push(VisualRow::Entry(entry_i));
         }

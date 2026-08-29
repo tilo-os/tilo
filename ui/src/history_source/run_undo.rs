@@ -121,10 +121,10 @@ impl RunUndoReport {
 ///
 /// The pre-flight a coordinator runs **before** undoing anything. An empty
 /// result means every step can be attempted; a non-empty one is a refusal.
-pub fn unreachable_steps<'a>(
-    run: &'a AgentRun,
+pub fn unreachable_steps(
+    run: &AgentRun,
     reachable: impl Fn(&RunStep) -> bool,
-) -> Vec<&'a RunStep> {
+) -> Vec<&RunStep> {
     run.steps.iter().filter(|s| !reachable(s)).collect()
 }
 

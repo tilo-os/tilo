@@ -72,8 +72,8 @@ impl Widget for Divider {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let (w, h) = match self.axis {
-            DividerAxis::Horizontal => (percent(1.0), length(self.thickness)),
-            DividerAxis::Vertical => (length(self.thickness), percent(1.0)),
+            DividerAxis::Horizontal => (percent(1.0_f32), length(self.thickness)),
+            DividerAxis::Vertical => (length(self.thickness), percent(1.0_f32)),
         };
         let node = taffy
             .new_leaf(Style {
@@ -134,7 +134,6 @@ impl Widget for Divider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
 
     fn lay_out(mut d: Divider) -> (Divider, Rect) {
@@ -147,8 +146,8 @@ mod tests {
             .new_with_children(
                 Style {
                     size: taffy::Size {
-                        width: length(400.0),
-                        height: length(200.0),
+                        width: length(400.0_f32),
+                        height: length(200.0_f32),
                     },
                     ..Default::default()
                 },

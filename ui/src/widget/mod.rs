@@ -22,6 +22,13 @@ pub trait Widget {
     fn measure(&mut self, _known: taffy::Size<Option<f32>>, _available: taffy::Size<taffy::AvailableSpace>, _text_renderer: &mut TextRenderer) -> taffy::Size<f32> { taffy::Size::ZERO }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx);
+    // This is the widget system's event-dispatch contract, implemented by
+    // ~90 widgets; every parameter is independently meaningful (the raw
+    // event, scaling, modifiers, CRDT handle+path, two out-params, and the
+    // node's own identity/layout). Bundling it into a context struct would
+    // be a real signature change rippling through every implementor for no
+    // behavioural difference, not a mechanical lint fix.
+    #[allow(clippy::too_many_arguments)]
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>);
     fn children(&self) -> Vec<&dyn Widget> { vec![] }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> { vec![] }

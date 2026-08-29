@@ -317,14 +317,14 @@ impl NumberInput {
 
     /// Flush a pending committed value to the bound CRDT field, if any.
     fn flush_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(v) = self.pending_write.take() {
-            if self.crdt_bound {
-                let _ = state.put(
-                    root,
-                    self.on_change_path.as_str(),
-                    automerge::ScalarValue::F64(v),
-                );
-            }
+        if let Some(v) = self.pending_write.take()
+            && self.crdt_bound
+        {
+            let _ = state.put(
+                root,
+                self.on_change_path.as_str(),
+                automerge::ScalarValue::F64(v),
+            );
         }
     }
 }
@@ -340,20 +340,20 @@ impl Widget for NumberInput {
         if self.field.is_focused() {
             return;
         }
-        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str()) {
-            if let Value::Scalar(s) = val {
-                let v = match s.as_ref() {
-                    automerge::ScalarValue::F64(f) => Some(*f),
-                    automerge::ScalarValue::Int(i) => Some(*i as f64),
-                    automerge::ScalarValue::Uint(u) => Some(*u as f64),
-                    _ => None,
-                };
-                if let Some(v) = v {
-                    let clamped = v.clamp(self.min, self.max);
-                    if (clamped - self.value).abs() > f64::EPSILON {
-                        self.value = clamped;
-                        self.sync_field();
-                    }
+        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
+            && let Value::Scalar(s) = val
+        {
+            let v = match s.as_ref() {
+                automerge::ScalarValue::F64(f) => Some(*f),
+                automerge::ScalarValue::Int(i) => Some(*i as f64),
+                automerge::ScalarValue::Uint(u) => Some(*u as f64),
+                _ => None,
+            };
+            if let Some(v) = v {
+                let clamped = v.clamp(self.min, self.max);
+                if (clamped - self.value).abs() > f64::EPSILON {
+                    self.value = clamped;
+                    self.sync_field();
                 }
             }
         }

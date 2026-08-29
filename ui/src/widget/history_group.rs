@@ -379,20 +379,20 @@ pub fn group_entries(
 /// Insert `r` into `nodes` (siblings sorted by start), nesting or clipping as
 /// documented on [`group_entries`]. `depth` is the depth `r` would occupy.
 fn insert_placed(nodes: &mut Vec<Placed>, mut r: Placed, depth: usize) -> bool {
-    if let Some(last) = nodes.last_mut() {
-        if r.start < last.end {
-            if r.end <= last.end {
-                // Contained: nest it, or refuse if that would be too deep.
-                if depth < MAX_GROUP_DEPTH {
-                    return insert_placed(&mut last.children, r, depth + 1);
-                }
-                return false;
+    if let Some(last) = nodes.last_mut()
+        && r.start < last.end
+    {
+        if r.end <= last.end {
+            // Contained: nest it, or refuse if that would be too deep.
+            if depth < MAX_GROUP_DEPTH {
+                return insert_placed(&mut last.children, r, depth + 1);
             }
-            // Partial overlap: the earlier range keeps what it has.
-            r.start = last.end;
-            if r.start >= r.end {
-                return false;
-            }
+            return false;
+        }
+        // Partial overlap: the earlier range keeps what it has.
+        r.start = last.end;
+        if r.start >= r.end {
+            return false;
         }
     }
     nodes.push(r);

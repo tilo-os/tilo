@@ -864,7 +864,7 @@ mod tests {
             &SegmentedFace::new(&segs, &labels, 0).pill().left_labels(14.0),
         );
         assert!(
-            scene.encoding().draw_tags.iter().any(|t| *t == DrawTag::COLOR),
+            scene.encoding().draw_tags.contains(&DrawTag::COLOR),
             "left-labelled pill paint must emit draw commands",
         );
     }

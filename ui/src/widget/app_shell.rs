@@ -313,21 +313,21 @@ impl AppShell {
         match slot {
             Slot::Content => {
                 let (left, top) = if self.layout == ShellLayout::Wide {
-                    (length(sw as f32), length(0.0))
+                    (length(sw as f32), length(0.0_f32))
                 } else {
-                    (length(0.0), length(BACK_BAND_H as f32))
+                    (length(0.0_f32), length(BACK_BAND_H as f32))
                 };
-                s.inset = taffy::Rect { left, right: length(0.0), top, bottom: length(0.0) };
+                s.inset = taffy::Rect { left, right: length(0.0_f32), top, bottom: length(0.0_f32) };
                 s.size = taffy::Size { width: auto(), height: auto() };
             }
             Slot::Nav => {
-                let right = if self.layout == ShellLayout::Wide { auto() } else { length(0.0) };
+                let right = if self.layout == ShellLayout::Wide { auto() } else { length(0.0_f32) };
                 let width = if self.layout == ShellLayout::Wide { length(sw as f32) } else { auto() };
                 s.inset = taffy::Rect {
-                    left: length(0.0),
+                    left: length(0.0_f32),
                     right,
                     top: length(SEARCH_BAND_H as f32),
-                    bottom: length(0.0),
+                    bottom: length(0.0_f32),
                 };
                 s.size = taffy::Size { width, height: auto() };
             }
@@ -496,7 +496,7 @@ impl Widget for AppShell {
             .new_with_children(
                 Style {
                     display: taffy::Display::Flex,
-                    size: taffy::Size { width: percent(1.0), height: percent(1.0) },
+                    size: taffy::Size { width: percent(1.0_f32), height: percent(1.0_f32) },
                     ..Default::default()
                 },
                 &child_nodes,
@@ -618,15 +618,15 @@ impl Widget for AppShell {
                     self.last_active = NarrowScreen::List;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if self.back_press {
-                    let on_back = self.back_rect.contains(self.last_cursor);
-                    self.back_press = false;
-                    if on_back {
-                        self.back();
-                        *handled = true;
-                        return;
-                    }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. }
+                if self.back_press =>
+            {
+                let on_back = self.back_rect.contains(self.last_cursor);
+                self.back_press = false;
+                if on_back {
+                    self.back();
+                    *handled = true;
+                    return;
                 }
             }
             _ => {}

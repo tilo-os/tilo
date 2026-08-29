@@ -824,23 +824,22 @@ impl RecordSet {
     /// Offer the live document to the active record's writer. Cheap when
     /// nothing changed — a head comparison, no serialisation.
     pub fn tick(&mut self, live: &mut AutoCommit) {
-        if let Some(slot) = self.active.as_ref().and_then(|id| self.open.get_mut(id)) {
-            if let Some(saver) = slot.autosave.as_mut() {
-                saver.request(live);
-            }
+        if let Some(slot) = self.active.as_ref().and_then(|id| self.open.get_mut(id))
+            && let Some(saver) = slot.autosave.as_mut()
+        {
+            saver.request(live);
         }
     }
 
     /// Write out everything still pending, live document included, and wait
     /// for it to land.
     pub fn flush(&mut self, live: &mut AutoCommit) {
-        if let Some(id) = self.active.clone() {
-            if let Some(slot) = self.open.get_mut(&id) {
-                if let Some(saver) = slot.autosave.as_mut() {
-                    saver.request(live);
-                    saver.flush();
-                }
-            }
+        if let Some(id) = self.active.clone()
+            && let Some(slot) = self.open.get_mut(&id)
+            && let Some(saver) = slot.autosave.as_mut()
+        {
+            saver.request(live);
+            saver.flush();
         }
         for slot in self.open.values_mut() {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {

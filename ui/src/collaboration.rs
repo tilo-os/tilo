@@ -394,7 +394,15 @@ impl CollaborationManager {
     pub fn new() -> Self {
         Self::new_scoped(None)
     }
+}
 
+impl Default for CollaborationManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CollaborationManager {
     /// A manager scoped to **one record** — one document, one change graph,
     /// one channel — so two people editing different files in one room
     /// don't get handed each other's state. A process with several records
@@ -429,24 +437,24 @@ impl CollaborationManager {
             .unwrap_or_default();
 
         #[cfg(feature = "legacy-broker")]
-        if let Ok(path) = std::env::var("QUICK_COLLAB_SOCK") {
-            if let Ok(stream) = UnixStream::connect(&path) {
-                let mut manager = Self {
-                    backend: Backend::Legacy(LegacyStream {
-                        stream,
-                        rbuf: Vec::new(),
-                    }),
-                    identity: None,
-                };
-                let (app_id, cluster_id) = auto_hello_env();
-                manager.send(CollabRequest::Hello {
-                    app_id,
-                    cluster_id,
-                    record: record.clone(),
-                    handle: presence_handle_env(),
-                });
-                return manager;
-            }
+        if let Ok(path) = std::env::var("QUICK_COLLAB_SOCK")
+            && let Ok(stream) = UnixStream::connect(&path)
+        {
+            let mut manager = Self {
+                backend: Backend::Legacy(LegacyStream {
+                    stream,
+                    rbuf: Vec::new(),
+                }),
+                identity: None,
+            };
+            let (app_id, cluster_id) = auto_hello_env();
+            manager.send(CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record: record.clone(),
+                handle: presence_handle_env(),
+            });
+            return manager;
         }
 
         match Self::spawn_sdk(SdkConnectSource::Env, identity_bytes) {
@@ -1163,10 +1171,10 @@ async fn drive_shovel(
                 channel = Some(ch);
             }
             CollabRequest::SignedSyncIncremental { envelope } => {
-                if let Some(ch) = channel.as_ref() {
-                    if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
-                        let _ = ch.send(&bytes).await;
-                    }
+                if let Some(ch) = channel.as_ref()
+                    && let Ok(bytes) = postcard::to_stdvec(&*envelope)
+                {
+                    let _ = ch.send(&bytes).await;
                 }
             }
             CollabRequest::SyncCRDT { data } => {
@@ -1311,10 +1319,10 @@ async fn drive_relay(
                 let Some(inbound) = inbound else {
                     break; // host closed the session.
                 };
-                if let Some(evt) = translate_relay_inbound(inbound) {
-                    if inbound_tx.send(evt).is_err() {
-                        break;
-                    }
+                if let Some(evt) = translate_relay_inbound(inbound)
+                    && inbound_tx.send(evt).is_err()
+                {
+                    break;
                 }
             }
         }
@@ -1631,6 +1639,17 @@ pub mod broker {
 
 #[cfg(test)]
 mod tests {
+    // The `Fake*` capnp-rpc mock servers below implement generated `Server`
+    // traits by returning the concrete `Promise<T, capnp::Error>` capnp-rpc
+    // expects, which is more specific than (though it does satisfy) the
+    // trait's generic `impl Future` return -- the exact "refining" this
+    // lint polices, and the rustc note on it says to allow when intended.
+    // Rewriting every method's return type to the verbose `impl
+    // Future<Output = ...>` spelling wouldn't change any behaviour, only
+    // make capnp-generated-shaped code look less like the rest of the
+    // capnp-rpc code it's mocking.
+    #![allow(refining_impl_trait)]
+
     use super::*;
 
     use std::cell::RefCell;
@@ -1855,8 +1874,11 @@ mod tests {
         }
     }
 
+    /// `(op bytes, author)` pairs captured by a fake op/stream mock.
+    type OpBacklog = Rc<RefCell<Vec<(Vec<u8>, String)>>>;
+
     struct FakeOpStream {
-        backlog: Rc<RefCell<Vec<(Vec<u8>, String)>>>,
+        backlog: OpBacklog,
     }
 
     impl stream::Server for FakeOpStream {
@@ -1916,7 +1938,7 @@ mod tests {
 
     struct FakeChannel {
         captures: SharedCaptures,
-        op_backlog: Rc<RefCell<Vec<(Vec<u8>, String)>>>,
+        op_backlog: OpBacklog,
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
         context_backlog: Rc<RefCell<Vec<SeedContext>>>,
         scrollback_response: Rc<RefCell<Option<SeedScrollback>>>,

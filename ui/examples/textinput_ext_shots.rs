@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use vello::Scene;
 
 use ui::offscreen::OffscreenRenderer;

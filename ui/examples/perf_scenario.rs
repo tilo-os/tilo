@@ -11,11 +11,11 @@
 //! Two targets are run to show the harness works against different app shapes:
 //!
 //!   * `list-scroll`   — a tall scrollable list, scrolled N notches. The
-//!                       canonical scroll scenario: it surfaces per-frame
-//!                       layout + draw cost.
+//!     canonical scroll scenario: it surfaces per-frame
+//!     layout + draw cost.
 //!   * `gallery-steady`— the reference component gallery (`common/gallery_scene`),
-//!                       re-rendered N frames with no input: the steady-state
-//!                       redraw cost of a dense screen.
+//!     re-rendered N frames with no input: the steady-state
+//!     redraw cost of a dense screen.
 //!
 //! Run:
 //! ```text

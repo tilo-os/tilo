@@ -181,10 +181,10 @@ impl Autocomplete {
         if !self.suggestions.is_empty() {
             self.status = None;
         }
-        if let Some(h) = self.highlight {
-            if h >= self.suggestions.len() {
-                self.highlight = None;
-            }
+        if let Some(h) = self.highlight
+            && h >= self.suggestions.len()
+        {
+            self.highlight = None;
         }
     }
 
@@ -279,10 +279,10 @@ impl Autocomplete {
         if let Some(f) = &self.suggester {
             self.suggestions = f(self.input.value());
         }
-        if let Some(h) = self.highlight {
-            if h >= self.suggestions.len() {
-                self.highlight = None;
-            }
+        if let Some(h) = self.highlight
+            && h >= self.suggestions.len()
+        {
+            self.highlight = None;
         }
     }
 
@@ -306,15 +306,15 @@ impl Autocomplete {
     /// Keeps the edit open so the user can drill further.
     fn complete_to_highlight(&mut self) {
         let idx = self.highlight.or(if self.suggestions.is_empty() { None } else { Some(0) });
-        if let Some(i) = idx {
-            if let Some(s) = self.suggestions.get(i) {
-                let value = s.value.clone();
-                self.input.set_text(&value);
-                self.input.set_cursor_pos(value.chars().count());
-                self.recompute();
-                self.open = !self.suggestions.is_empty();
-                self.highlight = None;
-            }
+        if let Some(i) = idx
+            && let Some(s) = self.suggestions.get(i)
+        {
+            let value = s.value.clone();
+            self.input.set_text(&value);
+            self.input.set_cursor_pos(value.chars().count());
+            self.recompute();
+            self.open = !self.suggestions.is_empty();
+            self.highlight = None;
         }
     }
 
@@ -369,12 +369,7 @@ impl Autocomplete {
         if !panel.contains(pt) {
             return None;
         }
-        for i in 0..self.suggestions.len().min(self.max_visible) {
-            if self.row_rect(panel, i).contains(pt) {
-                return Some(i);
-            }
-        }
-        None
+        (0..self.suggestions.len().min(self.max_visible)).find(|&i| self.row_rect(panel, i).contains(pt))
     }
 }
 

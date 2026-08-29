@@ -146,6 +146,10 @@ fn button_label(choice: PromptChoice) -> &'static str {
     }
 }
 
+// Standard immediate-mode paint-helper signature for this vello renderer
+// (scene + transform + text_renderer + theme, plus this draw's own
+// content); every parameter is independently load-bearing.
+#[allow(clippy::too_many_arguments)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,

@@ -266,10 +266,10 @@ impl OpfPackage {
                     .or_else(|| manifest.get(toc_id).cloned());
             }
             for itemref in sp.children().filter(|n| n.has_tag_name("itemref")) {
-                if let Some(idref) = itemref.attribute("idref") {
-                    if let Some(href) = manifest.get(idref) {
-                        spine.push(href.clone());
-                    }
+                if let Some(idref) = itemref.attribute("idref")
+                    && let Some(href) = manifest.get(idref)
+                {
+                    spine.push(href.clone());
                 }
             }
         }
@@ -300,22 +300,22 @@ impl OpfPackage {
 // ---------------------------------------------------------------------------
 
 fn read_toc(archive: &mut Archive, pkg: &OpfPackage, base: &str) -> HashMap<String, String> {
-    if let Some(nav) = &pkg.nav_href {
-        if let Ok(src) = read_entry(archive, nav) {
-            let nav_base = parent_dir(nav);
-            let map = parse_nav_doc(&src, &nav_base);
-            if !map.is_empty() {
-                return map;
-            }
+    if let Some(nav) = &pkg.nav_href
+        && let Ok(src) = read_entry(archive, nav)
+    {
+        let nav_base = parent_dir(nav);
+        let map = parse_nav_doc(&src, &nav_base);
+        if !map.is_empty() {
+            return map;
         }
     }
-    if let Some(ncx) = &pkg.ncx_href {
-        if let Ok(src) = read_entry(archive, ncx) {
-            let ncx_base = parent_dir(ncx);
-            let map = parse_ncx(&src, &ncx_base);
-            if !map.is_empty() {
-                return map;
-            }
+    if let Some(ncx) = &pkg.ncx_href
+        && let Ok(src) = read_entry(archive, ncx)
+    {
+        let ncx_base = parent_dir(ncx);
+        let map = parse_ncx(&src, &ncx_base);
+        if !map.is_empty() {
+            return map;
         }
     }
     let _ = base;
@@ -379,10 +379,10 @@ fn parse_ncx(src: &str, base: &str) -> HashMap<String, String> {
 fn node_text(node: roxmltree::Node) -> String {
     let mut s = String::new();
     for d in node.descendants() {
-        if d.is_text() {
-            if let Some(t) = d.text() {
-                s.push_str(t);
-            }
+        if d.is_text()
+            && let Some(t) = d.text()
+        {
+            s.push_str(t);
         }
     }
     s.trim().to_string()
@@ -440,8 +440,8 @@ fn parent_dir(path: &str) -> String {
 
 /// Join a relative href onto a base directory and normalise.
 fn join(base: &str, href: &str) -> String {
-    if href.starts_with('/') {
-        return normalize(&href[1..]);
+    if let Some(stripped) = href.strip_prefix('/') {
+        return normalize(stripped);
     }
     if base.is_empty() {
         return normalize(href);

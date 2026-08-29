@@ -604,13 +604,13 @@ impl Widget for Dropdown {
                             *handled = true;
                         }
                         _ => {
-                            if let Some(t) = text {
-                                if !t.as_str().chars().all(|c| c.is_control()) {
-                                    self.filter.push_str(t.as_str());
-                                    self.highlight = 0;
-                                    self.scroll = 0.0;
-                                    *handled = true;
-                                }
+                            if let Some(t) = text
+                                && !t.as_str().chars().all(|c| c.is_control())
+                            {
+                                self.filter.push_str(t.as_str());
+                                self.highlight = 0;
+                                self.scroll = 0.0;
+                                *handled = true;
                             }
                         }
                     }

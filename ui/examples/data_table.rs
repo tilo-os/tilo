@@ -6,7 +6,7 @@
 //! live, then two frames are rendered:
 //!   1. `data_table-top.png`    — `scroll_y = 0`: the thumb sits at the top.
 //!   2. `data_table-bottom.png` — `scroll_y = max`: the thumb sits at the
-//!                                 bottom, proving it tracks the offset.
+//!      bottom, proving it tracks the offset.
 //!
 //! The example also *asserts* the thumb rect matches the offset (top thumb
 //! at the track top, bottom thumb at the track bottom) so it doubles as a

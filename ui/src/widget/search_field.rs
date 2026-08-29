@@ -222,10 +222,10 @@ impl Widget for SearchField {
                     padding: taffy::Rect {
                         left: length(ICON_GUTTER as f32),
                         right: length(CLEAR_GUTTER as f32),
-                        top: length(0.0),
-                        bottom: length(0.0),
+                        top: length(0.0_f32),
+                        bottom: length(0.0_f32),
                     },
-                    size: taffy::Size { width: percent(1.0), height: length(HEIGHT as f32) },
+                    size: taffy::Size { width: percent(1.0_f32), height: length(HEIGHT as f32) },
                     ..Default::default()
                 },
                 &[child],
@@ -318,11 +318,10 @@ impl Widget for SearchField {
                 button: MouseButton::Left,
                 ..
             } = event
+                && self.rect.contains(self.last_cursor)
             {
-                if self.rect.contains(self.last_cursor) {
-                    self.palette_requested = true;
-                    *handled = true;
-                }
+                self.palette_requested = true;
+                *handled = true;
             }
             return;
         }
@@ -332,13 +331,12 @@ impl Widget for SearchField {
             button: MouseButton::Left,
             ..
         } = event
+            && self.clear_visible() && self.clear_rect.contains(self.last_cursor)
         {
-            if self.clear_visible() && self.clear_rect.contains(self.last_cursor) {
-                self.input.set_text("");
-                self.cleared = true;
-                *handled = true;
-                return;
-            }
+            self.input.set_text("");
+            self.cleared = true;
+            *handled = true;
+            return;
         }
         let child_node = taffy.children(node_id).unwrap()[0];
         self.input

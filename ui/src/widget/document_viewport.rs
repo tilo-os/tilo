@@ -1025,13 +1025,12 @@ impl Widget for DocumentViewport {
                 }
             }
             WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed =>
-            {
-                if self.state.on_key(&key_event.logical_key, &modifiers.state()) {
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
+                if key_event.state == ElementState::Pressed
+                    && self.state.on_key(&key_event.logical_key, &modifiers.state()) =>
+                {
+                self.dirty = true;
+                *handled = true;
+                return;
             }
             _ => {}
         }
