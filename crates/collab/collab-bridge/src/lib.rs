@@ -1,40 +1,28 @@
-// `Promise::from_future(...)` uses `impl Future` internally which
-// silently "refines" the `Promise`-shaped return type declared in
-// the capnp-generated `Server` traits. That's the intended usage
-// pattern in capnp-rpc 0.26, but it generates a per-method
-// `refining_impl_trait` warning we don't want in the output. This
-// pin is safe: `capnp::capability::Promise` IS what the trait
-// expects; the "refining" here is a compiler diagnostic, not a
-// wire-level change.
+// `Promise::from_future` uses `impl Future`, which "refines" the
+// `Promise`-shaped return type the capnp-generated `Server` traits
+// declare — intended in capnp-rpc 0.26, but triggers `refining_impl_trait`.
+// Safe to silence: `Promise` IS what the trait expects; this is a
+// compiler diagnostic, not a wire-level change.
 #![allow(refining_impl_trait)]
 
-//! `collab-bridge` — Cap'n Proto SDK front-end for the shell's
-//! legacy serde-JSON `CollabRequest` / `CollabEvent` broker.
+//! `collab-bridge` — Cap'n Proto SDK front-end for the shell's legacy
+//! serde-JSON `CollabRequest` / `CollabEvent` broker.
 //!
-//! The SDK (`runtime-collab`) speaks Cap'n Proto over the well-
-//! known socket `$XDG_RUNTIME_DIR/qos/services/collab.sock`. Every
-//! qOS app links against `runtime-collab` and expects that socket
-//! to answer with the schema in
+//! Every qOS app links `runtime-collab`, which speaks Cap'n Proto over
+//! `$XDG_RUNTIME_DIR/qos/services/collab.sock` per
 //! `crates/runtime/runtime-collab/schema/collab.capnp`. This crate
-//! provides that answer by translating every capnp method onto one
-//! or more length-prefixed serde-JSON frames sent to the shell's
-//! existing broker at wherever the shell binds its collab socket
-//! (typically `$XDG_RUNTIME_DIR/qos-shell-collab.sock`).
+//! answers that socket by translating each capnp method into one or more
+//! length-prefixed serde-JSON frames sent to the shell's existing broker
+//! socket (typically `$XDG_RUNTIME_DIR/qos-shell-collab.sock`).
 //!
-//! One SDK connection maps to one upstream broker connection. The
-//! bridge holds no long-lived state between connections — every
-//! reader task terminates when its upstream closes and every SDK-
-//! side `.read()` unblocks with `NotAvailable`.
+//! One SDK connection maps to one upstream broker connection; the bridge
+//! holds no state between connections — a closed upstream tears down its
+//! reader task and every SDK-side `.read()` unblocks with `NotAvailable`.
 //!
-//! ## Public surface
-//!
-//! - [`serve`] — daemon entry point (bind SDK socket, accept loop,
-//!   graceful shutdown).
-//! - [`service::BridgeCollabService`] — the capnp `CollabService`
-//!   server implementation; useful for tests that stand up their
-//!   own RPC system.
-//! - [`translate`] / [`wire`] — pure translation helpers, exposed
-//!   so tests can round-trip a wire frame end-to-end.
+//! Public surface: [`serve`] (daemon entry point),
+//! [`service::BridgeCollabService`] (the capnp server, for tests that
+//! stand up their own RPC system), and [`translate`]/[`wire`] (pure
+//! translation helpers for round-tripping a wire frame in tests).
 
 pub mod service;
 pub mod translate;
@@ -54,10 +42,7 @@ use runtime_collab::raw::collab_service;
 use crate::service::{BridgeCollabService, service_for_path};
 use crate::upstream::connect;
 
-/// Bind the SDK-facing socket at `listen`. Removes any stale
-/// inode from a prior run first, then applies user-only
-/// permissions. Best-effort — the caller decides whether an
-/// existing socket is a fatal error.
+/// Binds the SDK-facing socket at `listen`, removing a stale inode from a prior run and applying user-only permissions (best-effort).
 pub fn bind(listen: &std::path::Path) -> std::io::Result<UnixListener> {
     if let Some(dir) = listen.parent() {
         std::fs::create_dir_all(dir)?;
@@ -69,13 +54,10 @@ pub fn bind(listen: &std::path::Path) -> std::io::Result<UnixListener> {
     Ok(listener)
 }
 
-/// Daemon entry point. Runs forever, accepting SDK connections
-/// and spawning one capnp-rpc system per connection against a
-/// fresh upstream Unix connection to `upstream`.
-///
-/// Runs on the current tokio LocalSet — capnp-rpc futures are
-/// `!Send` so the caller must be inside a `LocalSet::run_until` /
-/// `LocalSet::block_on`.
+/// Daemon entry point: runs forever, accepting SDK connections and
+/// spawning one capnp-rpc system per connection against a fresh upstream
+/// connection. Must run on the current tokio `LocalSet` — capnp-rpc
+/// futures are `!Send`.
 pub async fn serve(listener: UnixListener, upstream: PathBuf) -> anyhow::Result<()> {
     tracing::info!(
         listen = ?listener.local_addr().ok(),
@@ -93,13 +75,9 @@ pub async fn serve(listener: UnixListener, upstream: PathBuf) -> anyhow::Result<
     }
 }
 
-/// Handle one SDK connection: stand up a capnp-rpc system whose
-/// bootstrap capability is a fresh [`BridgeCollabService`] wired
-/// to open its upstream against `upstream`.
-///
-/// Every `joinChannel` call on the SDK side dials `upstream` once;
-/// the upstream reader task is torn down when the SDK connection
-/// closes.
+/// Handles one SDK connection: stands up a capnp-rpc system whose
+/// bootstrap capability is a fresh [`BridgeCollabService`] dialing
+/// `upstream` once per `joinChannel`, torn down when the SDK connection closes.
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     upstream: PathBuf,
@@ -119,10 +97,9 @@ async fn handle_connection(
     rpc_system.await.map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-/// Test-only shim: stand up a [`BridgeCollabService`] whose
-/// opener returns a pre-connected upstream every time. Useful for
-/// round-trip tests that want an in-memory upstream instead of a
-/// real socket.
+/// Test-only shim: a [`BridgeCollabService`] whose opener returns a
+/// pre-connected upstream every time, for round-trip tests using an
+/// in-memory upstream.
 #[doc(hidden)]
 pub fn test_service_with_opener(
     opener: crate::service::UpstreamOpener,
@@ -130,8 +107,7 @@ pub fn test_service_with_opener(
     BridgeCollabService::new(opener)
 }
 
-/// Convenience: build the opener that dials `path` on demand.
-/// Exposed so tests can plug it into `test_service_with_opener`.
+/// Builds the opener that dials `path` on demand, for tests to plug into `test_service_with_opener`.
 #[doc(hidden)]
 pub fn opener_for_path(path: PathBuf) -> crate::service::UpstreamOpener {
     Rc::new(move || {

@@ -13,9 +13,7 @@
 use libp2p::{gossipsub, mdns, swarm::NetworkBehaviour};
 
 /// Combined libp2p behaviour for the compositor's peer-sync transport.
-///
-/// `derive(NetworkBehaviour)` produces a `NiriosBehaviourEvent` enum with one
-/// variant per field; the actor matches on it to fan messages back out.
+/// `derive(NetworkBehaviour)` produces a `NiriosBehaviourEvent` enum with one variant per field, matched to fan messages back out.
 #[derive(NetworkBehaviour)]
 pub struct NiriosBehaviour {
     pub gossipsub: gossipsub::Behaviour,
@@ -24,8 +22,7 @@ pub struct NiriosBehaviour {
 
 impl NiriosBehaviour {
     /// Build the behaviour with the project-wide defaults: 1 s gossipsub
-    /// heartbeat, mesh size 8 (low 4 / high 12), strict signed messages,
-    /// LAN mDNS discovery keyed off `local_key`'s `PeerId`.
+    /// heartbeat, mesh size 8 (low 4 / high 12), strict signed messages, LAN mDNS discovery keyed off `local_key`'s `PeerId`.
     pub fn new(
         local_key: &libp2p::identity::Keypair,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -46,39 +43,34 @@ impl NiriosBehaviour {
     }
 }
 
-/// Deterministic 16-bit peer salt from the local libp2p keypair, occupying
-/// the high 16 bits of every id [`crate::shell::state::next_id`] mints so
-/// two peers minting in parallel cannot collide.
+/// Deterministic 16-bit peer salt from the local libp2p keypair,
+/// occupying the high 16 bits of every id
+/// [`crate::shell::state::next_id`] mints so two peers minting in parallel cannot collide.
 ///
-/// Hand-rolled FNV-1a-64 rather than a `std` hasher, whose output std does
-/// not promise across Rust versions — the salt must survive restarts. 16
-/// bits is enough for the peer counts nirios targets; this guards against
-/// accidental collision under CRDT sync, not against a forged salt.
+/// Hand-rolled FNV-1a-64 rather than a `std` hasher, whose output is not
+/// promised stable across Rust versions — the salt must survive
+/// restarts. 16 bits is enough for the peer counts nirios targets; guards against accidental collision, not a forged salt.
 pub fn peer_salt_from_keypair(kp: &libp2p::identity::Keypair) -> u16 {
     let bytes = kp.public().encode_protobuf();
     let h = fnv1a_64(&bytes);
-    // Fold the 64-bit hash down to 16 bits by XOR'ing the four
-    // 16-bit slices. Keeps every output bit a function of every input
-    // bit; collisions are roughly uniform.
+    // Fold the 64-bit hash down to 16 bits by XOR'ing the four 16-bit
+    // slices — keeps every output bit a function of every input bit, roughly uniform collisions.
     let h16 = (h as u16) ^ ((h >> 16) as u16) ^ ((h >> 32) as u16) ^ ((h >> 48) as u16);
     h16
 }
 
 /// Fold a `PeerId` to the `u64` the wire carries as an **opaque liveness
-/// handle**. Never an authority decision: anything turning on *who* a peer
-/// is uses [`crate::shell::state::PeerOrigin`] with the full base58 id,
-/// because an equality check a 64-bit digest can be ground against is not
-/// an identity check.
+/// handle** — never an authority decision: anything turning on *who* a
+/// peer is uses [`crate::shell::state::PeerOrigin`] with the full base58
+/// id, since an equality check against a 64-bit digest is not an identity check.
 ///
 /// Same hand-rolled FNV-1a as the salt — both ends must agree, and
-/// `DefaultHasher` is not stable across Rust versions, so peers built with
-/// different toolchains would stop recognising each other's publishes.
+/// `DefaultHasher` isn't stable across Rust versions, so peers on different toolchains would stop recognising each other's publishes.
 pub fn peer_liveness_handle(peer: &libp2p::PeerId) -> u64 {
     fnv1a_64(&peer.to_bytes())
 }
 
-/// FNV-1a-64 hash, standard primes from
-/// <http://www.isthe.com/chongo/tech/comp/fnv/>.
+/// FNV-1a-64 hash, standard primes from <http://www.isthe.com/chongo/tech/comp/fnv/>.
 fn fnv1a_64(bytes: &[u8]) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -90,36 +82,32 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     h
 }
 
-/// Where the machine's one device key lives. The FUSE mount reads the
-/// same file, so the compositor's libp2p `PeerId` and the filesystem's
-/// iroh `NodeId` are two encodings of a single identity.
+/// Where the machine's one device key lives — the FUSE mount reads the
+/// same file, so the compositor's libp2p `PeerId` and the filesystem's iroh `NodeId` are two encodings of one identity.
 pub const DEVICE_KEY_PATH: &str = "/var/lib/qos/device/keypair.bin";
 
-/// Pre-device-key location of the compositor's own libp2p keypair. Read only
-/// to migrate an existing installation's peer id to [`DEVICE_KEY_PATH`].
+/// Pre-device-key location of the compositor's own libp2p keypair, read only to migrate an existing installation's peer id to [`DEVICE_KEY_PATH`].
 pub const LEGACY_PEER_KEY_PATH: &str = "/var/lib/qos-fs/peer-key";
 
-/// Load the device key at `path` as a libp2p keypair, generating one on first
-/// boot. The stored form is the bare 32-byte Ed25519 seed — the same file the
-/// filesystem reads for its iroh node key, so the compositor has the device's
-/// identity, not one of its own.
+/// Load the device key at `path` as a libp2p keypair, generating one on
+/// first boot. The stored form is the bare 32-byte Ed25519 seed — the
+/// same file the filesystem reads for its iroh node key, so the compositor has the device's identity, not one of its own.
 ///
 /// **A key file that exists but cannot be read is an error**: silently
-/// replacing it would rejoin the mesh under a new `PeerId`, indistinguishable
-/// from first boot, killing every invite naming the old id. The bytes stay on
-/// disk so a restore is possible.
+/// replacing it would rejoin the mesh under a new `PeerId`,
+/// indistinguishable from first boot, killing every invite naming the
+/// old id — the bytes stay on disk so a restore is possible.
 ///
-/// Migrates a libp2p protobuf keypair (the older on-disk shape) to device-key
-/// form, preserving the `PeerId` peers already know.
+/// Migrates a libp2p protobuf keypair (the older on-disk shape) to
+/// device-key form, preserving the `PeerId` peers already know.
 pub fn load_or_create_keypair(
     path: &std::path::Path,
 ) -> std::io::Result<libp2p::identity::Keypair> {
     if path.exists() {
         return read_device_keypair(path);
     }
-    // Nothing at `path`. On a system that predates the shared device
-    // key, the compositor's own keypair is the identity this machine is
-    // already known by — carry it over rather than renaming the machine.
+    // Nothing at `path`. On a system predating the shared device key, the
+    // compositor's own keypair is the identity this machine is already known by — carry it over rather than renaming the machine.
     let legacy = std::path::Path::new(LEGACY_PEER_KEY_PATH);
     if path == std::path::Path::new(DEVICE_KEY_PATH) && legacy.exists() {
         if let Some(seed) = seed_from_libp2p_protobuf(&std::fs::read(legacy)?) {
@@ -136,17 +124,15 @@ pub fn load_or_create_keypair(
     keypair_from_seed(&seed)
 }
 
-/// Read an existing key file, migrating the older libp2p-protobuf shape
-/// in place. Every failure is returned; none is a reason to re-key.
+/// Read an existing key file, migrating the older libp2p-protobuf shape in place; every failure is returned, none is a reason to re-key.
 fn read_device_keypair(
     path: &std::path::Path,
 ) -> std::io::Result<libp2p::identity::Keypair> {
     match qos_user_identity::persist::read_device_key(path) {
         Ok(sk) => keypair_from_seed(&sk.to_bytes()),
         Err(qos_user_identity::PersistError::WrongKeyLength(_)) => {
-            // Not 32 bytes. Either the older protobuf keypair — which
-            // we can migrate without changing the identity — or damage,
-            // which must be reported.
+            // Not 32 bytes — either the older protobuf keypair (migratable without
+            // changing the identity) or damage, which must be reported.
             let bytes = std::fs::read(path)?;
             let seed = seed_from_libp2p_protobuf(&bytes).ok_or_else(|| {
                 std::io::Error::new(
@@ -169,24 +155,20 @@ fn read_device_keypair(
     }
 }
 
-/// Pull the Ed25519 seed out of a libp2p protobuf-encoded keypair, or
-/// `None` if the bytes are not one (or are a non-ed25519 key type).
+/// Pull the Ed25519 seed out of a libp2p protobuf-encoded keypair, or `None` if the bytes aren't one (or a non-ed25519 key type).
 fn seed_from_libp2p_protobuf(bytes: &[u8]) -> Option<[u8; 32]> {
     let kp = libp2p::identity::Keypair::from_protobuf_encoding(bytes).ok()?;
     let ed = kp.try_into_ed25519().ok()?;
     Some(ed.secret().as_ref().try_into().ok()?)
 }
 
-/// Expand a seed into the libp2p keypair. Same 32 bytes, same public
-/// key, so the `PeerId` is a function of the device key alone.
+/// Expand a seed into the libp2p keypair — same 32 bytes, same public key, so the `PeerId` is a function of the device key alone.
 fn keypair_from_seed(seed: &[u8; 32]) -> std::io::Result<libp2p::identity::Keypair> {
     libp2p::identity::Keypair::ed25519_from_bytes(*seed).map_err(std::io::Error::other)
 }
 
-/// Write the seed at the device-key mode with no window where it is
-/// readable at its final path — the private key impersonates this device
-/// on the mesh, and the previous write-then-chmod left it briefly at the
-/// process umask.
+/// Write the seed at the device-key mode with no window where it's
+/// readable at its final path — a write-then-chmod would briefly leave the private key at the process umask.
 fn write_seed(path: &std::path::Path, seed: &[u8; 32]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -202,9 +184,8 @@ mod tests {
     use super::*;
     use libp2p::identity::Keypair;
 
-    // `mdns::tokio::Behaviour::new` calls `tokio::net::UdpSocket::from_std`
-    // which requires a running Tokio runtime, so the smoke test runs under
-    // `#[tokio::test]` even though we don't await anything.
+    // `mdns::tokio::Behaviour::new` calls `tokio::net::UdpSocket::from_std`,
+    // which needs a running Tokio runtime, so the smoke test runs under `#[tokio::test]` even without awaiting anything.
     #[tokio::test]
     async fn behaviour_constructs_with_default_config() {
         let key = Keypair::generate_ed25519();
@@ -222,10 +203,8 @@ mod tests {
         assert_eq!(kp1.public().to_peer_id(), kp2.public().to_peer_id());
     }
 
-    /// A key file that exists but cannot be read must raise: overwriting
-    /// it would rejoin the mesh under a new `PeerId`, silently killing
-    /// every invite that names the old one, with identity loss looking
-    /// exactly like first boot.
+    /// A key file that exists but cannot be read must raise: overwriting it
+    /// would rejoin the mesh under a new `PeerId`, silently killing every invite that names the old one — identity loss looking like first boot.
     #[test]
     fn unreadable_key_file_raises_instead_of_rotating_identity() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -246,9 +225,8 @@ mod tests {
     }
 
     /// A key reachable by users outside the device-trust group is a
-    /// reportable condition, not a reason to mint a replacement.
-    /// Group-readable is expected — the filesystem daemon and the
-    /// compositor read this file as two different uids.
+    /// reportable condition, not a reason to mint a replacement —
+    /// group-readable is expected, since the filesystem daemon and the compositor read this file as two different uids.
     #[test]
     fn key_reachable_outside_the_trust_group_raises_instead_of_rotating() {
         use std::os::unix::fs::PermissionsExt;
@@ -263,8 +241,7 @@ mod tests {
             "a key any local user can read must be reported"
         );
 
-        // Still the same key on disk — tightening the mode recovers it,
-        // and group-read is a legitimate mode for this file.
+        // Still the same key on disk — tightening the mode recovers it, and group-read is a legitimate mode for this file.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
         assert_eq!(
             load_or_create_keypair(&path).unwrap().public().to_peer_id(),
@@ -277,9 +254,8 @@ mod tests {
         );
     }
 
-    /// An installation that already had a libp2p protobuf keypair keeps
-    /// its `PeerId` — the seed is adopted into the device-key format
-    /// rather than the machine being renamed.
+    /// An installation that already had a libp2p protobuf keypair keeps its
+    /// `PeerId` — the seed is adopted into the device-key format rather than the machine being renamed.
     #[test]
     fn legacy_libp2p_keypair_is_adopted_without_changing_the_peer_id() {
         use std::os::unix::fs::PermissionsExt;
@@ -305,10 +281,8 @@ mod tests {
         );
     }
 
-    /// The libp2p `PeerId` is a function of the device key alone: the
-    /// same 32 bytes the FUSE mount reads for its iroh node id. Without
-    /// this the compositor and the filesystem are two anonymous
-    /// identities on one machine.
+    /// The libp2p `PeerId` is a function of the device key alone: the same
+    /// 32 bytes the FUSE mount reads for its iroh node id — without this the compositor and filesystem are two anonymous identities on one machine.
     #[test]
     fn peer_id_is_derived_from_the_device_key_seed() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -319,9 +293,7 @@ mod tests {
         let expected = Keypair::ed25519_from_bytes(seed).unwrap();
         assert_eq!(kp.public().to_peer_id(), expected.public().to_peer_id());
 
-        // …and it is the public key dalek derives from the same seed,
-        // which is what makes the peer id, the node id and the CRDT
-        // author one identity.
+        // …and it's the public key dalek derives from the same seed, which is what makes the peer id, node id and CRDT author one identity.
         let dalek = ed25519_dalek::SigningKey::from_bytes(&seed);
         assert_eq!(
             kp.public().try_into_ed25519().unwrap().to_bytes(),
@@ -329,8 +301,7 @@ mod tests {
         );
     }
 
-    /// Pinned against a literal so a moved derivation fails here rather than
-    /// two toolchains silently disagreeing on the wire.
+    /// Pinned against a literal so a moved derivation fails here rather than two toolchains silently disagreeing on the wire.
     #[test]
     fn peer_liveness_handle_is_pinned_to_the_peer_id() {
         let kp = Keypair::ed25519_from_bytes([3u8; 32]).unwrap();
@@ -356,8 +327,7 @@ mod tests {
         assert!(nested.exists(), "key file must exist after first call");
     }
 
-    /// A non-deterministic salt would change on every restart and partition
-    /// the workspace tree against itself.
+    /// A non-deterministic salt would change on every restart and partition the workspace tree against itself.
     #[test]
     fn peer_salt_is_deterministic_from_keypair() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -376,15 +346,13 @@ mod tests {
             salt1, salt2
         );
 
-        // No exact != assert here (1/65536 collision odds would make it
-        // flaky) — just exercise the derivation on a second independent
-        // keypair so a panic in FNV-1a etc. surfaces.
+        // No exact != assert here (1/65536 collision odds would make it flaky)
+        // — just exercise the derivation on a second keypair so a panic surfaces.
         let other = Keypair::generate_ed25519();
         let _salt_other = peer_salt_from_keypair(&other);
     }
 
-    /// Default `std::fs::write` uses the umask (typically `0644`), which would
-    /// let any local user copy the key and impersonate this device.
+    /// Default `std::fs::write` uses the umask (typically `0644`), which would let any local user copy the key and impersonate this device.
     #[test]
     fn load_or_create_keypair_writes_the_device_key_mode() {
         use std::os::unix::fs::PermissionsExt;

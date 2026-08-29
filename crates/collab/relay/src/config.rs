@@ -1,12 +1,9 @@
 //! TOML configuration schema for `qos-relay`.
 //!
-//! `RelayConfig::default()` is what ships when no TOML file is provided.
-//! All fields are also overrideable on the CLI via `qos-relay --listen
-//! /ip4/.../tcp/4001 --bootstrap /ip4/.../tcp/4001/p2p/<id> --log debug`.
-//!
-//! The loader is intentionally tolerant of missing fields — a config
-//! file that only sets `bootstrap` should not have to repeat the
-//! default `listen` values. `serde(default)` per field handles that.
+//! `RelayConfig::default()` is what ships when no TOML file is provided;
+//! every field is also overrideable on the CLI (`qos-relay --listen ...
+//! --bootstrap ... --log debug`). `serde(default)` per field means a
+//! sparse TOML file only needs to set what it overrides.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -14,60 +11,46 @@ use std::path::{Path, PathBuf};
 use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
-/// On-disk config for a relay instance.
-///
-/// Every field has a `serde(default)` so a sparse TOML file inherits
-/// the rest of the defaults. The `Default` impl is the source of
-/// truth for "what does an out-of-the-box relay do".
+/// On-disk config for a relay instance. Every field has `serde(default)`,
+/// so the `Default` impl is the source of truth for the out-of-the-box config.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RelayConfig {
-    /// Multiaddrs the relay listens on. Each address is dialled
-    /// through `Swarm::listen_on`. Defaults to dual-stack IPv4
-    /// `0.0.0.0` on TCP and QUIC port 4001.
+    /// Multiaddrs the relay listens on, each dialled via `Swarm::listen_on`. Defaults to dual-stack `0.0.0.0` on TCP and QUIC port 4001.
     #[serde(default = "default_listen")]
     pub listen: Vec<Multiaddr>,
 
-    /// Persistent keypair path. Generated on first run if missing.
-    /// The CLI's `--identity` flag (when added) overrides this.
-    /// Default: `/var/lib/qos-relay/identity.key` — matches the
-    /// systemd unit's `StateDirectory=qos-relay`.
+    /// Persistent keypair path, generated on first run if missing. Default
+    /// `/var/lib/qos-relay/identity.key` matches the systemd unit's `StateDirectory=qos-relay`.
     #[serde(default = "default_identity_path")]
     pub identity_path: PathBuf,
 
-    /// Bootstrap multiaddrs to dial on startup. These seed the
-    /// Kademlia routing table; an empty list means "I am the first
-    /// relay" (rendezvous will be slow until peers connect via
-    /// mdns or `--bootstrap` from the CLI). Each addr should
-    /// include a `/p2p/<peerid>` suffix so libp2p can authenticate
-    /// the dialled peer.
+    /// Bootstrap multiaddrs to dial on startup, seeding the Kademlia routing
+    /// table; an empty list means "I am the first relay" (slow rendezvous
+    /// until peers connect via mdns). Each addr should carry a
+    /// `/p2p/<peerid>` suffix so libp2p can authenticate the dial.
     #[serde(default)]
     pub bootstrap: Vec<Multiaddr>,
 
-    /// Gossipsub topics the relay will forward, as glob patterns.
-    /// Default: `["qos.*"]` (every topic prefixed `qos.`). Use
-    /// `["*"]` to forward everything (development only — exposes
-    /// the relay to topic-flooding by random peers).
+    /// Gossipsub topics to forward, as glob patterns. Default `["qos.*"]`;
+    /// `["*"]` forwards everything (dev only — exposes the relay to
+    /// topic-flooding by random peers).
     #[serde(default = "default_topic_allowlist")]
     pub topic_allowlist: Vec<String>,
 
-    /// Soft cap on messages per minute per (topic, peer) pair
-    /// before a warning logs and the message is dropped. 0 disables
-    /// the limiter. Defaults to 6 000 (≈100 msgs/sec/peer), which
-    /// is generous enough that human-paced editing never trips it
-    /// but tight enough to catch a runaway peer.
+    /// Soft cap on messages per minute per (topic, peer) before a warning
+    /// logs and the message drops; 0 disables it. Default 6 000
+    /// (≈100 msgs/sec/peer) — generous for human editing, tight enough to
+    /// catch a runaway peer.
     #[serde(default = "default_rate_limit")]
     pub rate_limit_per_topic_per_minute: u32,
 
-    /// Where to bind the Prometheus exposition endpoint. `None`
-    /// (the default) disables metrics. When set, the relay serves
-    /// `/metrics` on this socket; everything else returns `404`.
+    /// Prometheus exposition bind address; `None` (default) disables
+    /// metrics. When set, `/metrics` serves there and everything else 404s.
     #[serde(default)]
     pub metrics_listen: Option<SocketAddr>,
 
-    /// Log level filter. Accepts `tracing_subscriber::EnvFilter`
-    /// directives. Default: `"info"`. Common useful values:
-    /// `"relay=debug,libp2p=info"` to debug the relay loop
-    /// without drowning in libp2p internals.
+    /// Log level filter (`tracing_subscriber::EnvFilter` directives).
+    /// Default `"info"`; e.g. `"relay=debug,libp2p=info"` to debug just the relay loop.
     #[serde(default = "default_log_level")]
     pub log_level: String,
 }
@@ -114,11 +97,8 @@ impl Default for RelayConfig {
 }
 
 impl RelayConfig {
-    /// Parse a config file at `path`. The file must be UTF-8 TOML.
-    /// Missing fields fall back to the [`Default`] values.
-    ///
-    /// Errors surface with the file path included so multi-relay
-    /// setups can identify which config tripped.
+    /// Parses a config file at `path` (UTF-8 TOML); missing fields fall back
+    /// to [`Default`]. Errors include the file path for multi-relay setups.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|e| {
             anyhow::anyhow!("failed to read config at {}: {}", path.display(), e)
@@ -128,22 +108,17 @@ impl RelayConfig {
         })
     }
 
-    /// Parse TOML config from a string. Useful for tests and for the
-    /// `QOS_RELAY_CONFIG` env-var path where the caller has already
-    /// done the file read.
+    /// Parses TOML config from a string; used by tests and the `QOS_RELAY_CONFIG` env-var path.
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
     }
 
-    /// Serialise the config to a TOML string for round-trip tests and
-    /// for printing the effective config at startup.
+    /// Serialises the config to TOML, for round-trip tests and printing the effective config at startup.
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
     }
 
-    /// Validate the config after CLI overrides have been merged.
-    /// Returns the first problem encountered, or `Ok(())`. The
-    /// caller renders the message to the user; no auto-fix.
+    /// Validates the config after CLI overrides are merged, returning the first problem found; the caller renders the message, no auto-fix.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.listen.is_empty() {
             anyhow::bail!("listen must contain at least one multiaddr");
@@ -161,10 +136,8 @@ impl RelayConfig {
         Ok(())
     }
 
-    /// Compile the topic-allowlist patterns into a [`GlobSet`] for
-    /// fast lookup in the gossipsub message handler. Returns
-    /// `None` when the allowlist is empty (which `validate` rejects,
-    /// so callers should call `validate` first).
+    /// Compiles the topic-allowlist into a [`GlobSet`] for fast lookup in the
+    /// gossipsub handler; call [`Self::validate`] first to reject bad patterns.
     pub fn compile_topic_matcher(&self) -> anyhow::Result<globset::GlobSet> {
         let mut builder = globset::GlobSetBuilder::new();
         for pat in &self.topic_allowlist {

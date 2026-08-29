@@ -1,20 +1,17 @@
 //! Integration tests for schema v2 additions:
 //!
 //! - Extended presence: `publish_caret`, `publish_selection`,
-//!   `publish_arrived`, `publish_left` and the unified
-//!   `subscribe_all` stream carrying every payload variant.
-//! - Roster / context: `subscribe_context` yielding
-//!   `ChannelContext` snapshots.
-//! - Signed op stream attribution: `Stream.read()` returns
-//!   `(op, fromUserId)` and the wrapper decodes both fields.
-//! - Legacy unsigned paths: `send_unsigned_snapshot` /
-//!   `send_unsigned_incremental` are dispatched to the broker
-//!   verbatim.
-//! - Scrollback: `fetch_scrollback` decodes `ScrollbackBatch` into
-//!   the typed Rust struct.
+//!   `publish_arrived`, `publish_left`, and the unified `subscribe_all`
+//!   stream carrying every payload variant.
+//! - Roster/context: `subscribe_context` yielding `ChannelContext` snapshots.
+//! - Signed op stream attribution: `Stream.read()` returns `(op,
+//!   fromUserId)`, decoded by the wrapper.
+//! - Legacy unsigned paths (`send_unsigned_snapshot` /
+//!   `send_unsigned_incremental`) dispatched to the broker verbatim.
+//! - Scrollback: `fetch_scrollback` decodes `ScrollbackBatch`.
 //!
-//! No real broker; everything runs against a hand-rolled fake
-//! server over an in-memory `UnixStream` pair.
+//! No real broker — everything runs against a hand-rolled fake server over
+//! an in-memory `UnixStream` pair.
 
 use std::cell::RefCell;
 use std::os::fd::IntoRawFd;
@@ -33,7 +30,7 @@ use runtime_collab::raw::{
 use runtime_collab::{CollabClient, CollabServiceClient, PresencePayload};
 use runtime_portal::UnixCapnpClient;
 
-// --- shared capture state ------------------------------------------------
+// shared capture state
 
 #[derive(Default)]
 struct Captures {
@@ -49,11 +46,10 @@ struct Captures {
 
 type SharedCaptures = Rc<RefCell<Captures>>;
 
-// --- fake presence stream -----------------------------------------------
+// fake presence stream
 
-/// Pre-seeded events. Each `read()` pops one. Each event is a
-/// (user, key_bytes, payload_kind_and_data) triple. `payload` is
-/// encoded via the `PresencePayloadKind` helper below.
+/// Pre-seeded events; each `read()` pops one, as a (user, key_bytes,
+/// payload) triple encoded via the `PresencePayloadKind` helper below.
 #[derive(Clone)]
 struct SeedPresence {
     user_id: String,
@@ -110,7 +106,7 @@ impl presence_stream::Server for FakePresenceStream {
     }
 }
 
-// --- fake cursor stream (schema-v1 path) --------------------------------
+// fake cursor stream (schema-v1 path)
 
 struct FakeCursorStream {
     backlog: Rc<RefCell<Vec<(String, f32, f32)>>>,
@@ -135,7 +131,7 @@ impl cursor_stream::Server for FakeCursorStream {
     }
 }
 
-// --- fake presence handle -----------------------------------------------
+// fake presence handle
 
 struct FakePresence {
     captures: SharedCaptures,
@@ -259,7 +255,7 @@ impl presence_handle::Server for FakePresence {
     }
 }
 
-// --- fake op stream (for `subscribe`) — attribution round-trip ----------
+// fake op stream (for `subscribe`) — attribution round-trip
 
 struct FakeOpStream {
     backlog: Rc<RefCell<Vec<(Vec<u8>, String)>>>,
@@ -283,11 +279,10 @@ impl stream::Server for FakeOpStream {
     }
 }
 
-// --- fake context stream ------------------------------------------------
+// fake context stream
 
-/// A seeded `ChannelContext` snapshot to emit on the next
-/// `read()`. Kept as owned Rust data so the test can pass typed
-/// values in.
+/// A seeded `ChannelContext` snapshot to emit on the next `read()`, kept as
+/// owned data so the test can pass typed values in.
 #[derive(Clone)]
 struct SeedContext {
     collaborators: Vec<(String, String, u32)>,
@@ -331,7 +326,7 @@ impl context_stream::Server for FakeContextStream {
     }
 }
 
-// --- fake channel handle ------------------------------------------------
+// fake channel handle
 
 struct FakeChannel {
     captures: SharedCaptures,
@@ -461,7 +456,7 @@ impl channel_handle::Server for FakeChannel {
     }
 }
 
-// --- fake broker + wiring -----------------------------------------------
+// fake broker + wiring
 
 struct FakeBroker {
     captures: SharedCaptures,
@@ -515,7 +510,7 @@ async fn stand_up_client(broker: FakeBroker) -> CollabClient {
     CollabClient::from_raw(client)
 }
 
-// --- tests ---------------------------------------------------------------
+// tests
 
 #[tokio::test(flavor = "current_thread")]
 async fn presence_variants_publish_and_stream_round_trip() {
@@ -524,8 +519,7 @@ async fn presence_variants_publish_and_stream_round_trip() {
         .run_until(async {
             let captures = Rc::new(RefCell::new(Captures::default()));
 
-            // Seed one of each payload variant so the client sees
-            // full-variant coverage on `subscribe_all`.
+            // Seed one of each payload variant for full-variant coverage on `subscribe_all`.
             let presence_backlog = vec![
                 SeedPresence {
                     user_id: "alice".into(),
@@ -585,8 +579,8 @@ async fn presence_variants_publish_and_stream_round_trip() {
                 assert_eq!(c.presence_left, vec![b"art-d".to_vec()]);
             }
 
-            // Drain the unified stream and assert every seeded variant
-            // decodes into the right `PresencePayload` shape.
+            // Drain the unified stream and assert every seeded variant decodes into
+            // the right shape.
             let stream = presence.subscribe_all().await.unwrap();
 
             let e1 = stream.read().await.unwrap();
@@ -619,7 +613,7 @@ async fn presence_variants_publish_and_stream_round_trip() {
 #[tokio::test(flavor = "current_thread")]
 async fn backward_compat_publish_cursor_and_cursor_stream_still_work() {
     // Guards `PresenceHandle::publish_cursor` + `subscribe_remote_cursors`
-    // haven't drifted while adding the schema v2 methods.
+    // against drift from the schema v2 additions.
     let local = LocalSet::new();
     local
         .run_until(async {
@@ -810,9 +804,8 @@ async fn fetch_scrollback_empty_done_batch_decodes() {
     local
         .run_until(async {
             let captures = Rc::new(RefCell::new(Captures::default()));
-            // No scrollback_response means the fake replies with an
-            // empty + done batch — the "broker holds nothing" path
-            // clients need to distinguish from "here's a page".
+            // No scrollback_response means the fake replies with an empty+done batch —
+            // the "broker holds nothing" path clients must distinguish from "here's a page".
             let broker = FakeBroker {
                 captures: captures.clone(),
                 op_backlog: Vec::new(),

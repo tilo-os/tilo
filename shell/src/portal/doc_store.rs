@@ -1,57 +1,36 @@
 //! Turning "the user picked this file" into "the app can open it".
 //!
-//! ## Why a grant is not enough
-//!
 //! A capability recorded on a workspace is what the *launcher* reads,
-//! decided once when the app starts (`--ro-bind-try` / Landlock, from
-//! one plan so the two enforcement layers can't disagree). A grant made
-//! *after* the app started changes nothing about the namespace it's
-//! already living in: an app under `--unshare-all` has its own mount
-//! namespace, and a host `mount --bind` does not propagate into it. A
-//! portal that hands back `/home/you/notes.md` hands back a path that
-//! resolves to `ENOENT` inside the caller.
+//! decided once when the app starts. A grant made *after* the app
+//! started changes nothing about the mount namespace it's already
+//! living in — a host `mount --bind` doesn't propagate into an
+//! `--unshare-all` sandbox, so handing back `/home/you/notes.md` hands
+//! back a path that resolves to `ENOENT` inside the caller.
 //!
-//! ## The three candidate mechanisms
-//!
-//! **A launch-time grant** is what already exists (`doc_open.rs`):
-//! grant, *then* start the app. Can't serve a running app — exactly the
-//! case the portal is for.
-//!
-//! **A live re-bind** would mean entering the app's mount and user
-//! namespaces to mount from inside, which needs a `CAP_SYS_ADMIN`
-//! helper living inside the sandbox. That helper becomes the most
-//! valuable target in the sandbox — compromise its protocol and you
-//! have arbitrary host mounts from inside the thing meant to contain
-//! them. It trades a confinement boundary for convenience.
-//!
-//! **A document store** — this module — mounts one filesystem the
-//! compositor owns, before any app starts, and binds a per-app subtree
-//! into each sandbox. The mount topology is fixed for the app's whole
-//! life; what changes is the *contents*, edited by the compositor from
-//! outside and visible inside immediately since it's the same
-//! filesystem. This is how `xdg-document-portal` solves the same
-//! problem.
-//!
-//! ## What it means for confinement
+//! Three candidate fixes: a **launch-time grant** (what `doc_open.rs`
+//! already does) can't serve a running app — exactly the case this
+//! portal is for. A **live re-bind** would need a `CAP_SYS_ADMIN` helper
+//! inside the sandbox to mount from within — the most valuable target in
+//! the sandbox, trading confinement for convenience. A **document
+//! store** — this module — mounts one compositor-owned filesystem before
+//! any app starts and binds a per-app subtree into each sandbox; the
+//! mount topology never changes, only the contents, edited from outside
+//! and visible inside immediately. This is how `xdg-document-portal` solves the same problem.
 //!
 //! The bind is unconditional: every sandbox gets `/run/qos/documents`
-//! whether or not the user has picked a file for it yet. At launch the
-//! app's subtree is **empty** — no ambient authority: the app can't
-//! enumerate another app's documents (the bind is of its own subtree,
-//! not the store root), can't guess its way to one (a handle it wasn't
-//! given isn't in its subtree at all), and can't keep one after the
-//! grant is removed. Strictly narrower than the portal it replaces,
-//! which granted `Scope::FsPath("/")` permanently on one *Always* click.
+//! whether or not a file has been picked yet, empty at launch — no
+//! ambient authority. An app can't enumerate another app's documents
+//! (the bind is of its own subtree, not the store root), can't guess its
+//! way to one, and can't keep one after the grant is removed — strictly
+//! narrower than the portal it replaces, which granted
+//! `Scope::FsPath("/")` permanently on one *Always* click.
 //!
-//! ## When the store cannot be mounted
-//!
-//! FUSE may be unavailable — no `/dev/fuse`, no permission, no
-//! `fusermount3`. [`HostPathStore`] serves callers that share the
+//! FUSE may be unavailable (no `/dev/fuse`, no permission, no
+//! `fusermount3`). [`HostPathStore`] serves callers sharing the
 //! compositor's own namespace (built-in apps, dev runs, tests) by
 //! handing back the real path; it does **not** pretend to serve a
-//! confined caller. `documents_reach_confined_apps()` is what the
-//! compositor logs at startup, so "file open silently doesn't work for
-//! sandboxed apps" is a line in the journal, not a mystery.
+//! confined caller — `documents_reach_confined_apps()` is what the
+//! compositor logs at startup, so a silent failure is a journal line, not a mystery.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,12 +44,10 @@ pub const SANDBOX_DOC_DIR: &str = "/run/qos/documents";
 /// Env var naming [`SANDBOX_DOC_DIR`] inside the sandbox.
 pub const DOC_DIR_ENV: &str = "QOS_DOC_DIR";
 
-/// The projected workspace tree. Not part of the store — named here
-/// because the picker's default scope reaches it.
+/// The projected workspace tree — not part of the store, named here because the picker's default scope reaches it.
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
 
-/// One published document: the path the app should use, and the host
-/// path it resolves to.
+/// One published document: the path the app should use, and the host path it resolves to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublishedDoc {
     /// What goes in the portal's `uris` result.
@@ -83,20 +60,17 @@ pub struct PublishedDoc {
 
 /// How picked paths are made reachable by the caller.
 pub trait DocumentStore: Send + Sync {
-    /// Publish `paths` for `caller` and return the path each one should
-    /// be addressed by. Must return one entry per input, in order.
+    /// Publish `paths` for `caller` and return the path each one should be addressed by; one entry per input, in order.
     fn publish(&self, caller: &PortalCaller, paths: &[PathBuf], mode: FsMode) -> Vec<PublishedDoc>;
 
-    /// Whether a caller confined to its own mount namespace can reach
-    /// what this store publishes.
+    /// Whether a caller confined to its own mount namespace can reach what this store publishes.
     fn reaches_confined_apps(&self) -> bool;
 
     /// Human-readable name, for the startup log.
     fn describe(&self) -> String;
 }
 
-/// Cheap clone wrapper, matching the shape of the other
-/// [`super::PortalContext`] handles.
+/// Cheap clone wrapper, matching the shape of the other [`super::PortalContext`] handles.
 #[derive(Clone)]
 pub struct DocumentStoreHandle {
     inner: Arc<dyn DocumentStore>,
@@ -107,9 +81,8 @@ impl DocumentStoreHandle {
         Self { inner }
     }
 
-    /// A store that hands back real host paths. Correct for callers
-    /// that share the compositor's mount namespace; see the module
-    /// docs for what it does *not* claim.
+    /// A store that hands back real host paths — correct for callers that
+    /// share the compositor's mount namespace; see the module docs for what it does *not* claim.
     pub fn host_paths() -> Self {
         Self::new(Arc::new(HostPathStore))
     }
@@ -150,11 +123,9 @@ impl Default for DocumentStoreHandle {
 
 /// The identity store: a picked path is published as itself.
 ///
-/// This is the truthful answer for every caller that shares the
-/// compositor's mount namespace — a built-in app, a development run, a
-/// test. It is the *wrong* answer for a bwrap'd app, which is why it
-/// reports [`DocumentStore::reaches_confined_apps`] as `false` rather
-/// than quietly succeeding.
+/// The truthful answer for every caller sharing the compositor's mount
+/// namespace (built-in app, dev run, test) — the *wrong* answer for a
+/// bwrap'd app, which is why it reports [`DocumentStore::reaches_confined_apps`] as `false` rather than quietly succeeding.
 pub struct HostPathStore;
 
 impl DocumentStore for HostPathStore {
@@ -180,10 +151,8 @@ impl DocumentStore for HostPathStore {
 
 /// The per-app subdirectory name inside the store root.
 ///
-/// Keyed by workspace and app, matching how the launcher already
-/// partitions an app's writable directory by room — two rooms are two
-/// directories, and a document published into one is not nameable from
-/// the other.
+/// Keyed by workspace and app, matching how the launcher partitions an
+/// app's writable directory by room — two rooms are two directories, and a document published in one isn't nameable from the other.
 pub fn caller_slug(caller: &PortalCaller) -> String {
     format!(
         "{}/{}",
@@ -192,8 +161,7 @@ pub fn caller_slug(caller: &PortalCaller) -> String {
     )
 }
 
-/// An app id is untrusted input, so it may not become more than one
-/// path component.
+/// An app id is untrusted input, so it may not become more than one path component.
 fn sanitise_component(raw: &str) -> String {
     let mapped: String = raw
         .trim()
@@ -214,10 +182,9 @@ fn sanitise_component(raw: &str) -> String {
 
 /// The file name a published document keeps.
 ///
-/// The app sees the name the user picked, so "Open" followed by "Save"
+/// The app sees the name the user picked, so "Open" then "Save"
 /// round-trips a sensible default filename. A path with no final
-/// component (which `read_dir` cannot produce, but a caller could
-/// construct) falls back to a fixed name rather than an empty one.
+/// component falls back to a fixed name rather than an empty one.
 pub fn doc_file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -251,10 +218,8 @@ mod tests {
 
     #[test]
     fn host_paths_does_not_claim_to_serve_confined_callers() {
-        // The whole point of the flag: a passthrough store is honest
-        // that a bwrap'd app cannot reach what it returns. If this ever
-        // reports true, the compositor's startup log starts lying about
-        // whether sandboxed file-open works.
+        // The whole point of the flag: a passthrough store is honest that a
+        // bwrap'd app can't reach what it returns; reporting true here would make the compositor's startup log lie about sandboxed file-open.
         assert!(!DocumentStoreHandle::host_paths().reaches_confined_apps());
     }
 
@@ -291,18 +256,14 @@ mod tests {
                 2,
                 "an app id must not add path components: {hostile:?} -> {slug}"
             );
-            // The property that matters is that no *component* is a
-            // traversal, not that the string lacks the substring — a
-            // file legitimately named `.._.._etc_passwd` is one
-            // directory and escapes nothing.
+            // The property that matters is that no *component* is a traversal, not
+            // that the string lacks the substring — a file legitimately named `.._.._etc_passwd` is one directory and escapes nothing.
             assert!(
                 components.iter().all(|c| matches!(c, Component::Normal(_))),
                 "every component must be an ordinary name: {hostile:?} -> {slug} \
                  ({components:?})"
             );
-            // And the composed path must stay under the root it is
-            // joined to, which is the thing the components check is a
-            // proxy for.
+            // The composed path must also stay under the root it's joined to — what the components check is a proxy for.
             let root = Path::new("/run/qos/documents");
             assert!(
                 root.join(&slug).starts_with(root),

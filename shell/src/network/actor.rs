@@ -1,14 +1,12 @@
 //! Network actor.
 //!
-//! Owns a [`Swarm<NiriosBehaviour>`](libp2p::Swarm) and runs it as a tokio
-//! task. The shell drives the actor over an `mpsc::Sender<NetCmd>`; per-
-//! workspace event subscribers receive `NetEvent`s back over their own
+//! Owns a [`Swarm<NiriosBehaviour>`](libp2p::Swarm) and runs it as a
+//! tokio task. The shell drives the actor over an `mpsc::Sender<NetCmd>`;
+//! per-workspace event subscribers receive `NetEvent`s over their own
 //! `mpsc::Sender<NetEvent>` (registered via [`NetCmd::JoinWorkspace`]).
 //!
-//! The actor is transport-agnostic at the type level: it only speaks
-//! [`NeighbourMsg`] in/out. Workspace subscriptions are namespaced as
-//! gossipsub topics `nirios/ws/{ws}`. mDNS-discovered peers are auto-
-//! added to the gossipsub mesh.
+//! Transport-agnostic at the type level — only speaks [`NeighbourMsg`]
+//! in/out. Workspace subscriptions are gossipsub topics `nirios/ws/{ws}`; mDNS-discovered peers auto-join the mesh.
 
 use crate::network::behaviour::{NiriosBehaviour, NiriosBehaviourEvent};
 use crate::network::protocol::NeighbourMsg;
@@ -36,20 +34,17 @@ pub type PeerId = libp2p::PeerId;
 #[derive(Debug)]
 pub enum NetCmd {
     /// Subscribe to the workspace's gossipsub topic and register a
-    /// per-workspace event sink. Multiple `JoinWorkspace` calls for
-    /// the same `ws` replace the prior sink.
+    /// per-workspace event sink; multiple `JoinWorkspace` calls for the same `ws` replace the prior sink.
     JoinWorkspace {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
     },
     /// Drop the workspace subscription and event sink.
     LeaveWorkspace { ws: WorkspaceId },
-    /// Publish `msg` to the workspace's gossipsub topic. Failures
-    /// (no peers, oversized payload, etc.) are silently dropped — the
-    /// actor logs but does not propagate the error.
+    /// Publish `msg` to the workspace's gossipsub topic. Failures (no
+    /// peers, oversized payload, etc.) are silently dropped — the actor logs but does not propagate the error.
     Publish { ws: WorkspaceId, msg: NeighbourMsg },
-    /// Dial a multiaddr. Used by the loopback test and by future
-    /// out-of-band bootstrap mechanisms; mDNS handles LAN discovery.
+    /// Dial a multiaddr — used by the loopback test and future out-of-band bootstrap; mDNS handles LAN discovery.
     Connect { addr: Multiaddr },
 }
 
@@ -74,12 +69,10 @@ pub struct Actor {
     cmd_rx: mpsc::Receiver<NetCmd>,
     /// Per-workspace event subscribers, keyed by `WorkspaceId`.
     subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
-    /// Last time we observed any gossipsub message from each peer; used
-    /// to evict peers that have gone silent for `PEER_TIMEOUT`.
+    /// Last time we observed any gossipsub message from each peer; used to evict peers gone silent for `PEER_TIMEOUT`.
     peers_seen: HashMap<libp2p::PeerId, Instant>,
-    /// Every address the swarm has reported listening on, newest last.
-    /// Shared with the shell so [`crate::shell::network::ShellNetwork`]
-    /// can put a dialable address inside an invite token.
+    /// Every address the swarm has reported listening on, newest last —
+    /// shared with the shell so [`crate::shell::network::ShellNetwork`] can put a dialable address inside an invite token.
     listen_addrs: Arc<Mutex<Vec<Multiaddr>>>,
 }
 
@@ -89,9 +82,8 @@ fn ws_topic(ws: WorkspaceId) -> gossipsub::IdentTopic {
 
 
 
-/// Returns peers in `peers` whose last-seen timestamp is older than
-/// `now - threshold`. Pure function so the eviction policy is unit-
-/// testable without spinning up a swarm.
+/// Returns peers in `peers` whose last-seen timestamp is older than `now
+/// - threshold`. Pure function so the eviction policy is unit-testable without spinning up a swarm.
 fn evict_stale(
     peers: &HashMap<libp2p::PeerId, Instant>,
     now: Instant,
@@ -104,9 +96,8 @@ fn evict_stale(
         .collect()
 }
 
-/// Reverse-lookup: find the `WorkspaceId` whose topic-hash matches
-/// the gossipsub message. Linear scan over `subscribers`; the count
-/// is small (one per active workspace) so this is fine.
+/// Reverse-lookup: find the `WorkspaceId` whose topic-hash matches the
+/// gossipsub message. Linear scan over `subscribers` — small count, fine.
 fn ws_for_topic(
     subscribers: &HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
     hash: &gossipsub::TopicHash,
@@ -118,22 +109,19 @@ fn ws_for_topic(
 }
 
 impl Actor {
-    /// Spawn the actor on the current tokio runtime. Returns the
-    /// command sender and the spawned task's `JoinHandle` so the
-    /// caller can await shutdown.
+    /// Spawn the actor on the current tokio runtime; returns the command
+    /// sender and the spawned task's `JoinHandle` so the caller can await shutdown.
     pub fn spawn(
         swarm: Swarm<NiriosBehaviour>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         Self::spawn_reporting_addrs(swarm, Arc::new(Mutex::new(Vec::new())))
     }
 
-    /// [`Self::spawn`], plus a slot the actor writes every address the
-    /// swarm starts listening on into.
+    /// [`Self::spawn`], plus a slot the actor writes every address the swarm
+    /// starts listening on into.
     ///
-    /// An invite has to carry an address a peer can dial, and only the
-    /// swarm knows what it bound — the port is assigned by the kernel.
-    /// Without this the address is unknowable outside the actor task,
-    /// and an invite can only carry a guess.
+    /// An invite has to carry an address a peer can dial, and only the swarm
+    /// knows what it bound — the port is kernel-assigned. Without this the address is unknowable outside the actor task.
     pub fn spawn_reporting_addrs(
         swarm: Swarm<NiriosBehaviour>,
         listen_addrs: Arc<Mutex<Vec<Multiaddr>>>,
@@ -153,8 +141,7 @@ impl Actor {
     async fn run(&mut self) {
         let mut hb_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
         let mut ev_tick = tokio::time::interval(EVICTION_INTERVAL);
-        // Discard the immediate first tick on each interval so we don't
-        // spam a heartbeat / eviction sweep before any peers exist.
+        // Discard the immediate first tick on each interval so we don't spam a heartbeat / eviction sweep before any peers exist.
         hb_tick.tick().await;
         ev_tick.tick().await;
         loop {
@@ -175,8 +162,7 @@ impl Actor {
     }
 
     /// Publish a `NeighbourMsg::Heartbeat` to every joined workspace's
-    /// gossipsub topic. Failures (no peers, oversized payload, etc.) are
-    /// silently dropped — heartbeat loss is itself the signal to evict.
+    /// gossipsub topic. Failures are silently dropped — heartbeat loss is itself the signal to evict.
     fn publish_heartbeat(&mut self) {
         let peer = crate::network::behaviour::peer_liveness_handle(self.swarm.local_peer_id());
         let ts = std::time::SystemTime::now()
@@ -199,9 +185,8 @@ impl Actor {
         }
     }
 
-    /// Sweep `peers_seen` for entries older than `PEER_TIMEOUT`; for
-    /// every stale peer, emit `NetEvent::PeerLeft` to all workspace
-    /// subscribers and drop the entry.
+    /// Sweep `peers_seen` for entries older than `PEER_TIMEOUT`; for every
+    /// stale peer, emit `NetEvent::PeerLeft` to all workspace subscribers and drop the entry.
     async fn evict_stale_peers(&mut self) {
         let stale = evict_stale(&self.peers_seen, Instant::now(), PEER_TIMEOUT);
         if stale.is_empty() {
@@ -211,8 +196,7 @@ impl Actor {
             self.peers_seen.remove(peer);
         }
         for peer in stale {
-            // Fan out PeerLeft on every workspace; the receiver decides
-            // what to do with peers it has not been tracking.
+            // Fan out PeerLeft on every workspace; the receiver decides what to do with peers it hasn't been tracking.
             let workspaces: Vec<WorkspaceId> = self.subscribers.keys().copied().collect();
             for ws in workspaces {
                 if let Some(tx) = self.subscribers.get(&ws) {
@@ -250,9 +234,8 @@ impl Actor {
 
     async fn handle_swarm_event(&mut self, event: SwarmEvent<NiriosBehaviourEvent>) {
         match event {
-            // The bound address is only knowable here — the port comes
-            // from the kernel — and an invite that cannot name one is an
-            // invite nobody can act on.
+            // The bound address is only knowable here — the port comes from the
+            // kernel — and an invite that can't name one is an invite nobody can act on.
             SwarmEvent::NewListenAddr { address, .. } => {
                 tracing::info!(addr = %address, "peer-sync: listening");
                 if let Ok(mut addrs) = self.listen_addrs.lock() {
@@ -264,9 +247,8 @@ impl Actor {
                 message,
                 ..
             })) => {
-                // Touch liveness for the propagation source — that is the
-                // peer we have a direct connection to, regardless of who
-                // originally signed the message.
+                // Touch liveness for the propagation source — the peer we have a
+                // direct connection to, regardless of who originally signed the message.
                 self.peers_seen.insert(propagation_source, Instant::now());
 
                 let Some(ws) = ws_for_topic(&self.subscribers, &message.topic) else {
@@ -275,8 +257,7 @@ impl Actor {
                 let Ok(decoded) = serde_json::from_slice::<NeighbourMsg>(&message.data) else {
                     return;
                 };
-                // Heartbeats are transport-internal noise — they keep
-                // `peers_seen` warm but never surface to subscribers.
+                // Heartbeats are transport-internal noise — they keep `peers_seen` warm but never surface to subscribers.
                 if matches!(decoded, NeighbourMsg::Heartbeat { .. }) {
                     return;
                 }
@@ -317,15 +298,12 @@ impl Actor {
                         .gossipsub
                         .add_explicit_peer(&peer_id);
                 }
-                // Kick a roomless SyncReq out on every joined workspace
-                // so a returning peer starts a sync round without waiting
-                // for the next local edit.
+                // Kick a roomless SyncReq out on every joined workspace so a returning
+                // peer starts a sync round without waiting for the next local edit.
                 //
-                // Roomless because the transport does not hold the tree
-                // and so cannot know which rooms anyone is in. It is not
-                // a request for everything: a replica answers a roomless
-                // request by naming its own rooms, never by exporting a
-                // document. See `WorkspaceTreeReplica::handle`.
+                // Roomless because the transport doesn't hold the tree and can't know
+                // which rooms anyone is in — not a request for everything: a replica
+                // answers by naming its own rooms, never by exporting a document. See `WorkspaceTreeReplica::handle`.
                 if any_discovered {
                     let msg = NeighbourMsg::SyncReq {
                         since: vec![],
@@ -408,9 +386,8 @@ mod tests {
     }
 
     /// Two actors in the same process, connected over TCP loopback, exchange
-    /// a `NeighbourMsg::SyncReq` via gossipsub. The 10 s `tokio::time::timeout`
-    /// budget for both PeerJoined and Msg keeps the test bounded; mesh
-    /// formation typically completes well under 1 s on loopback.
+    /// a `NeighbourMsg::SyncReq` via gossipsub. The 10 s timeout budget for
+    /// both PeerJoined and Msg keeps the test bounded; mesh formation typically completes well under 1 s on loopback.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_actors_exchange_publish_via_loopback() {
         const WS: WorkspaceId = 42;
@@ -435,8 +412,7 @@ mod tests {
         let addr_b = timeout(Duration::from_secs(5), first_listen_addr(&mut swarm_b))
             .await
             .expect("peer B listen addr");
-        // Drain peer A's NewListenAddr too so it does not stall the swarm
-        // before we hand it to the actor.
+        // Drain peer A's NewListenAddr too so it doesn't stall the swarm before we hand it to the actor.
         let _ = timeout(Duration::from_secs(5), first_listen_addr(&mut swarm_a))
             .await
             .expect("peer A listen addr");
@@ -464,8 +440,7 @@ mod tests {
 
         cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
 
-        // Peer B emits PeerJoined once A subscribes to the topic over the
-        // established connection.
+        // Peer B emits PeerJoined once A subscribes to the topic over the established connection.
         let _peer_joined = timeout(Duration::from_secs(10), async {
             loop {
                 match ev_rx_b.recv().await {
@@ -494,10 +469,8 @@ mod tests {
             .await
             .unwrap();
 
-        // The reconnect-sync path also broadcasts an empty
-        // `SyncReq { since: vec![] }` on PeerJoined, so the loop keeps
-        // draining until it sees the payload this test actually published
-        // (`since: [1, 2, 3]`).
+        // The reconnect-sync path also broadcasts an empty `SyncReq { since:
+        // vec![] }` on PeerJoined, so the loop keeps draining until it sees the payload this test actually published (`since: [1, 2, 3]`).
         let received = timeout(Duration::from_secs(10), async {
             loop {
                 match ev_rx_b.recv().await {
@@ -519,8 +492,7 @@ mod tests {
         assert_eq!(received.0, WS);
         assert_eq!(received.1, payload);
 
-        // Drain any final A-side events so the actor's task can shut down
-        // without warnings during runtime drop.
+        // Drain any final A-side events so the actor's task can shut down without warnings during runtime drop.
         let _ = ev_rx_a.try_recv();
     }
 }

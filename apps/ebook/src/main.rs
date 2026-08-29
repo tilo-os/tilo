@@ -1,26 +1,20 @@
 //! Books — thin binary entry point. All logic lives in the library.
 //!
-//! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
-//!
-//! Optional flags for `--shots` (to capture states the single-frame renderer
-//! can't reach through live input):
-//!   * `--scenario NAME` — stage a frame (`narrow`); see
-//!                          [`ebook::app_root_for_shot`].
-//!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 720x900`
-//!                          to exercise the narrow-window overlay flap).
+//! Modes: default runs the live winit event loop via `ui::App`; `--shots
+//! PATH` renders one offscreen frame to a PNG and exits (identical passes
+//! to the live app). `--shots` also accepts `--scenario NAME` (see
+//! [`ebook::app_root_for_shot`]) and `--viewport WxH` to capture states the
+//! single-frame renderer can't reach through live input.
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;

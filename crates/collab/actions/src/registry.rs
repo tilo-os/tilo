@@ -1,11 +1,8 @@
-//! The [`ActionRegistry`]: `type_id` → decoder, so a replaying peer can turn an
-//! [`EncodedAction`] back into a live `Box<dyn Action>` without knowing the
-//! concrete type at the call site.
-//!
-//! An app registers each of its action types once (typically in `main`, or in a
-//! `register(&mut ActionRegistry)` helper the app exposes). The registry is the
-//! same seam the OS-wide / FS global-search backend plugs into to enumerate the
-//! action *types* available across every app.
+//! The [`ActionRegistry`]: `type_id` → decoder, so a replaying peer can
+//! turn an [`EncodedAction`] back into a live `Box<dyn Action>` without
+//! knowing the concrete type at the call site. An app registers each
+//! action type once; the registry is the same seam the OS-wide
+//! global-search backend plugs into to enumerate action *types* across apps.
 
 use std::collections::HashMap;
 
@@ -15,8 +12,8 @@ use crate::action::{Action, ActionError, EncodedAction};
 
 type Decoder = Box<dyn Fn(&[u8]) -> Result<Box<dyn Action>, ActionError> + Send + Sync>;
 
-/// Maps a stable `type_id` to the decoder that reconstructs its action from a
-/// payload. Cheap to clone-free share behind an `Arc`/`&` at dispatch time.
+/// Maps a stable `type_id` to the decoder that reconstructs its action
+/// from a payload — cheap to share behind an `Arc`/`&` at dispatch time.
 #[derive(Default)]
 pub struct ActionRegistry {
     decoders: HashMap<String, Decoder>,
@@ -27,9 +24,9 @@ impl ActionRegistry {
         Self::default()
     }
 
-    /// Register `A` under `type_id`. A later [`decode`](Self::decode) of an
-    /// [`EncodedAction`] carrying this `type_id` deserializes the payload into
-    /// an `A` and boxes it as a `dyn Action`.
+    /// Register `A` under `type_id`; a later [`decode`](Self::decode) of an
+    /// [`EncodedAction`] carrying this `type_id` deserializes the payload
+    /// into an `A` and boxes it as `dyn Action`.
     pub fn register<A>(&mut self, type_id: impl Into<String>)
     where
         A: Action + DeserializeOwned + 'static,
