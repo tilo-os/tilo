@@ -7,8 +7,8 @@ use crate::document::MarkSpan;
 use crate::format::CodecError;
 use crate::model::DocRef;
 use crate::schema::{
-    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME, STYLE_SIZE, STYLE_SPACE_AFTER,
-    STYLE_SPACE_BEFORE,
+    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
+    STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
 };
 use crate::snapshot::{AttrVal, DocSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,7 +60,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     }
     // Page header/footer → `styles.xml` master-page: splice regenerated header/footer into a
     // copy of `styles.xml` (or synthesise one). No-op when the document has neither.
-    if let Some(styles_xml) = super::headers::export_master_headers(&doc, original_styles.as_deref()) {
+    if let Some(styles_xml) =
+        super::headers::export_master_headers(&doc, original_styles.as_deref())
+    {
         let is_new = !had_styles;
         c.set("styles.xml", styles_xml);
         if is_new {
@@ -138,8 +140,14 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         }
     }
     if !pic_entries.is_empty() {
-        let manifest = c.get("META-INF/manifest.xml").map(|b| b.to_vec()).unwrap_or_else(|| MANIFEST.to_vec());
-        c.set("META-INF/manifest.xml", inject_manifest_entries(&manifest, &pic_entries));
+        let manifest = c
+            .get("META-INF/manifest.xml")
+            .map(|b| b.to_vec())
+            .unwrap_or_else(|| MANIFEST.to_vec());
+        c.set(
+            "META-INF/manifest.xml",
+            inject_manifest_entries(&manifest, &pic_entries),
+        );
     }
 
     c.set("content.xml", content.into_bytes());
@@ -206,17 +214,41 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
     match m.name.as_str() {
         "strong" => Some(("qdoc-strong".into(), r#"fo:font-weight="bold""#.into())),
         "em" => Some(("qdoc-em".into(), r#"fo:font-style="italic""#.into())),
-        "underline" => Some(("qdoc-underline".into(), r#"style:text-underline-style="solid""#.into())),
-        "strike" => Some(("qdoc-strike".into(), r#"style:text-line-through-style="solid""#.into())),
-        "fontSize" => m.value.as_int().map(|n| (format!("qdoc-fs-{n}"), format!(r#"fo:font-size="{n}pt""#))),
-        "fontFamily" => m.value.as_str().map(|f| (format!("qdoc-ff-{f}"), format!(r#"style:font-name="{}""#, font_name(f)))),
-        "color" => m.value.as_str().map(|c| (format!("qdoc-color-{}", color_token(c)), format!(r#"fo:color="{}""#, c))),
-        "highlight" => m
+        "underline" => Some((
+            "qdoc-underline".into(),
+            r#"style:text-underline-style="solid""#.into(),
+        )),
+        "strike" => Some((
+            "qdoc-strike".into(),
+            r#"style:text-line-through-style="solid""#.into(),
+        )),
+        "fontSize" => m
             .value
-            .as_str()
-            .map(|c| (format!("qdoc-hl-{}", color_token(c)), format!(r#"fo:background-color="{}""#, c))),
+            .as_int()
+            .map(|n| (format!("qdoc-fs-{n}"), format!(r#"fo:font-size="{n}pt""#))),
+        "fontFamily" => m.value.as_str().map(|f| {
+            (
+                format!("qdoc-ff-{f}"),
+                format!(r#"style:font-name="{}""#, font_name(f)),
+            )
+        }),
+        "color" => m.value.as_str().map(|c| {
+            (
+                format!("qdoc-color-{}", color_token(c)),
+                format!(r#"fo:color="{}""#, c),
+            )
+        }),
+        "highlight" => m.value.as_str().map(|c| {
+            (
+                format!("qdoc-hl-{}", color_token(c)),
+                format!(r#"fo:background-color="{}""#, c),
+            )
+        }),
         // Vertical alignment: ODF `style:text-position` (keyword + 58% font height, matching what LibreOffice writes for menu super/subscript).
-        "super" => Some(("qdoc-super".into(), r#"style:text-position="super 58%""#.into())),
+        "super" => Some((
+            "qdoc-super".into(),
+            r#"style:text-position="super 58%""#.into(),
+        )),
         "sub" => Some(("qdoc-sub".into(), r#"style:text-position="sub 58%""#.into())),
         // Per-run language override: split BCP-47 `de-DE` into ODF `fo:language="de" fo:country="DE"` text-properties.
         "lang" => m
@@ -243,7 +275,11 @@ fn lang_token(c: &str) -> String {
 fn lang_text_props(code: &str) -> String {
     match code.split_once('-') {
         Some((lang, country)) if !country.is_empty() => {
-            format!(r#"fo:language="{}" fo:country="{}""#, escape_attr(lang), escape_attr(country))
+            format!(
+                r#"fo:language="{}" fo:country="{}""#,
+                escape_attr(lang),
+                escape_attr(country)
+            )
         }
         _ => format!(r#"fo:language="{}""#, escape_attr(code)),
     }
@@ -349,7 +385,9 @@ fn bookmark_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
 fn change_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     let mut v: Vec<String> = marks
         .iter()
-        .filter(|m| (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.start == i)
+        .filter(|m| {
+            (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.start == i
+        })
         .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
         .collect();
     v.sort();
@@ -359,7 +397,9 @@ fn change_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
 fn change_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     let mut v: Vec<String> = marks
         .iter()
-        .filter(|m| (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.end == i)
+        .filter(|m| {
+            (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.end == i
+        })
         .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
         .collect();
     v.sort();
@@ -389,69 +429,78 @@ fn render_inline(
         open.clear();
     };
     // Emit annotation boundary markers at `i`, closing spans/link first so the annotation element is a clean sibling of the surrounding inline content.
-    let emit_comment_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
-        let ends = comment_ends_at(marks, i);
-        let starts = comment_starts_at(marks, i);
-        if ends.is_empty() && starts.is_empty() {
-            return;
-        }
-        close_spans(out, open);
-        if cur_link.is_some() {
-            out.push_str("</text:a>");
-            *cur_link = None;
-        }
-        // Ends before starts so an adjacent comment's end closes before the next opens.
-        for id in ends {
-            if let Some(c) = comments.get(&id) {
-                out.push_str(&super::comments::render_annotation_end(c));
+    let emit_comment_boundaries =
+        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+            let ends = comment_ends_at(marks, i);
+            let starts = comment_starts_at(marks, i);
+            if ends.is_empty() && starts.is_empty() {
+                return;
             }
-        }
-        for id in starts {
-            if let Some(c) = comments.get(&id) {
-                out.push_str(&super::comments::render_annotation_start(c));
+            close_spans(out, open);
+            if cur_link.is_some() {
+                out.push_str("</text:a>");
+                *cur_link = None;
             }
-        }
-    };
+            // Ends before starts so an adjacent comment's end closes before the next opens.
+            for id in ends {
+                if let Some(c) = comments.get(&id) {
+                    out.push_str(&super::comments::render_annotation_end(c));
+                }
+            }
+            for id in starts {
+                if let Some(c) = comments.get(&id) {
+                    out.push_str(&super::comments::render_annotation_start(c));
+                }
+            }
+        };
     // Emit `text:bookmark-end`/`text:bookmark-start` markers at `i`, closing spans/link first.
-    let emit_bookmark_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
-        let ends = bookmark_ends_at(marks, i);
-        let starts = bookmark_starts_at(marks, i);
-        if ends.is_empty() && starts.is_empty() {
-            return;
-        }
-        close_spans(out, open);
-        if cur_link.is_some() {
-            out.push_str("</text:a>");
-            *cur_link = None;
-        }
-        // Ends before starts so an adjacent bookmark's end closes before the next opens.
-        for name in ends {
-            out.push_str(&format!(r#"<text:bookmark-end text:name="{}"/>"#, escape_attr(&name)));
-        }
-        for name in starts {
-            out.push_str(&format!(r#"<text:bookmark-start text:name="{}"/>"#, escape_attr(&name)));
-        }
-    };
+    let emit_bookmark_boundaries =
+        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+            let ends = bookmark_ends_at(marks, i);
+            let starts = bookmark_starts_at(marks, i);
+            if ends.is_empty() && starts.is_empty() {
+                return;
+            }
+            close_spans(out, open);
+            if cur_link.is_some() {
+                out.push_str("</text:a>");
+                *cur_link = None;
+            }
+            // Ends before starts so an adjacent bookmark's end closes before the next opens.
+            for name in ends {
+                out.push_str(&format!(
+                    r#"<text:bookmark-end text:name="{}"/>"#,
+                    escape_attr(&name)
+                ));
+            }
+            for name in starts {
+                out.push_str(&format!(
+                    r#"<text:bookmark-start text:name="{}"/>"#,
+                    escape_attr(&name)
+                ));
+            }
+        };
     // Emit tracked-change `text:change-end`/`text:change-start` markers at `i`, closing spans/link first so each marker is a clean sibling of the surrounding content.
-    let emit_change_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
-        let ends = change_ends_at(marks, i);
-        let starts = change_starts_at(marks, i);
-        if ends.is_empty() && starts.is_empty() {
-            return;
-        }
-        close_spans(out, open);
-        if cur_link.is_some() {
-            out.push_str("</text:a>");
-            *cur_link = None;
-        }
-        // Ends before starts so an adjacent change's end closes before the next opens.
-        for id in ends {
-            out.push_str(&super::changes::render_change_end(&id));
-        }
-        for id in starts {
-            out.push_str(&super::changes::render_change_start(&id));
-        }
-    };
+    let emit_change_boundaries =
+        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+            let ends = change_ends_at(marks, i);
+            let starts = change_starts_at(marks, i);
+            if ends.is_empty() && starts.is_empty() {
+                return;
+            }
+            close_spans(out, open);
+            if cur_link.is_some() {
+                out.push_str("</text:a>");
+                *cur_link = None;
+            }
+            // Ends before starts so an adjacent change's end closes before the next opens.
+            for id in ends {
+                out.push_str(&super::changes::render_change_end(&id));
+            }
+            for id in starts {
+                out.push_str(&super::changes::render_change_start(&id));
+            }
+        };
     for i in 0..n {
         emit_comment_boundaries(&mut out, &mut open, &mut cur_link, i);
         emit_bookmark_boundaries(&mut out, &mut open, &mut cur_link, i);
@@ -503,7 +552,10 @@ fn render_inline(
         out.push_str("</text:a>");
     }
     for name in bookmark_ends_at(marks, n) {
-        out.push_str(&format!(r#"<text:bookmark-end text:name="{}"/>"#, escape_attr(&name)));
+        out.push_str(&format!(
+            r#"<text:bookmark-end text:name="{}"/>"#,
+            escape_attr(&name)
+        ));
     }
     for id in comment_ends_at(marks, n) {
         if let Some(c) = comments.get(&id) {
@@ -567,7 +619,11 @@ fn image_wrap(b: &BlockView) -> &str {
 
 /// Build the `draw:frame` XML for an `image` block, or `None` if its blob is absent; the
 /// `xlink:href` matches the `Pictures/<hash>.<ext>` part `export()` writes for the same blob.
-fn image_frame_xml(b: &BlockView, snap: &DocSnapshot, graphic_styles: &mut Vec<(String, String)>) -> Option<String> {
+fn image_frame_xml(
+    b: &BlockView,
+    snap: &DocSnapshot,
+    graphic_styles: &mut Vec<(String, String)>,
+) -> Option<String> {
     let hash = match b.attrs.get("blob") {
         Some(AttrVal::Str(h)) => h,
         _ => return None,
@@ -587,7 +643,10 @@ fn image_frame_xml(b: &BlockView, snap: &DocSnapshot, graphic_styles: &mut Vec<(
     // A graphic automatic style carries the wrap; only emit it when meaningful (a floating frame, since `as-char` ignores wrap in ODF anyway).
     if anchor != "inline" {
         let gname = format!("gr{}", graphic_styles.len() + 1);
-        graphic_styles.push((gname.clone(), super::styles::model_wrap_to_odf(wrap).to_string()));
+        graphic_styles.push((
+            gname.clone(),
+            super::styles::model_wrap_to_odf(wrap).to_string(),
+        ));
         frame.push_str(&format!(r#" draw:style-name="{gname}""#));
     }
     if let Some(AttrVal::Int(w)) = b.attrs.get("width") {
@@ -601,7 +660,10 @@ fn image_frame_xml(b: &BlockView, snap: &DocSnapshot, graphic_styles: &mut Vec<(
         }
     }
     frame.push('>');
-    frame.push_str(&format!(r#"<draw:image xlink:href="{}"/>"#, escape_attr(&href)));
+    frame.push_str(&format!(
+        r#"<draw:image xlink:href="{}"/>"#,
+        escape_attr(&href)
+    ));
     if let Some(AttrVal::Str(alt)) = b.attrs.get("alt") {
         if !alt.is_empty() {
             frame.push_str(&format!("<svg:title>{}</svg:title>", escape_text(alt)));
@@ -655,7 +717,11 @@ fn odf_num_format(fmt: &str) -> &'static str {
 /// ordered list re-imports with its numbering intact; `name` is the generated automatic-style name.
 fn list_style_def_xml(name: &str, fmt: &str, start: i64) -> String {
     let nf = odf_num_format(fmt);
-    let sv = if start != 1 { format!(r#" text:start-value="{start}""#) } else { String::new() };
+    let sv = if start != 1 {
+        format!(r#" text:start-value="{start}""#)
+    } else {
+        String::new()
+    };
     format!(
         r#"<text:list-style style:name="{name}"><text:list-level-style-number text:level="1" style:num-format="{nf}"{sv}/></text:list-style>"#
     )
@@ -687,7 +753,11 @@ fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
         None => {
             let name = format!("Lqdoc{}", list_styles.len() + 1);
             let xml = list_style_def_xml(&name, fmt, start);
-            list_styles.push(ListStyle { name: name.clone(), key, xml });
+            list_styles.push(ListStyle {
+                name: name.clone(),
+                key,
+                xml,
+            });
             name
         }
     };
@@ -718,7 +788,10 @@ fn snap_cell_rc(b: &BlockView) -> (usize, usize) {
 }
 
 /// Get-or-create a paragraph automatic style for `(parent, paragraph-props, text-props)`, returning its `P{n}` name. Dedups identical styles.
-fn register_auto(styles: &mut Vec<(Option<String>, String, String)>, key: (Option<String>, String, String)) -> String {
+fn register_auto(
+    styles: &mut Vec<(Option<String>, String, String)>,
+    key: (Option<String>, String, String),
+) -> String {
     if let Some(i) = styles.iter().position(|p| p == &key) {
         format!("P{}", i + 1)
     } else {
@@ -866,7 +939,9 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     let comments = comment_index(snap);
     let comments = &comments;
     let tracked_changes = super::changes::render_tracked_changes(&snap.changes);
-    let mut style_attr = |b: &BlockView| -> String { resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs) };
+    let mut style_attr = |b: &BlockView| -> String {
+        resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs)
+    };
     let mut i = 0;
     while i < snap.blocks.len() {
         let b = &snap.blocks[i];
@@ -918,7 +993,10 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                         }
                     }
                     let sa = style_attr(li);
-                    body.push_str(&format!(r#"<text:list-item><text:p{sa}>{}</text:p>"#, render_inline(&li.text, &li.marks, &mut used, &notes, note_ctr, comments)));
+                    body.push_str(&format!(
+                        r#"<text:list-item><text:p{sa}>{}</text:p>"#,
+                        render_inline(&li.text, &li.marks, &mut used, &notes, note_ctr, comments)
+                    ));
                     item_open = true;
                     i += 1;
                 }
@@ -951,21 +1029,33 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
             "cell" => {
                 let tid = snap_cell_table(b).unwrap_or_default();
                 let start = i;
-                while i < snap.blocks.len() && snap_cell_table(&snap.blocks[i]).as_deref() == Some(tid.as_str()) {
+                while i < snap.blocks.len()
+                    && snap_cell_table(&snap.blocks[i]).as_deref() == Some(tid.as_str())
+                {
                     i += 1;
                 }
                 let cells = &snap.blocks[start..i];
                 let nrows = cells.iter().map(|c| snap_cell_rc(c).0).max().unwrap_or(0) + 1;
                 let ncols = cells.iter().map(|c| snap_cell_rc(c).1).max().unwrap_or(0) + 1;
                 body.push_str(&format!(r#"<table:table table:name="{tid}">"#));
-                body.push_str(&format!(r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#));
+                body.push_str(&format!(
+                    r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#
+                ));
                 for r in 0..nrows {
                     body.push_str("<table:table-row>");
                     for c in 0..ncols {
                         let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
                         let sa = cell.map(|cl| style_attr(cl)).unwrap_or_default();
-                        let inner = cell.map(|cl| render_inline(&cl.text, &cl.marks, &mut used, &notes, note_ctr, comments)).unwrap_or_default();
-                        body.push_str(&format!(r#"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"#));
+                        let inner = cell
+                            .map(|cl| {
+                                render_inline(
+                                    &cl.text, &cl.marks, &mut used, &notes, note_ctr, comments,
+                                )
+                            })
+                            .unwrap_or_default();
+                        body.push_str(&format!(
+                            r#"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"#
+                        ));
                     }
                     body.push_str("</table:table-row>");
                 }
@@ -999,7 +1089,10 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
         }
     }
     for (idx, (parent, pp, tp)) in pstyles.iter().enumerate() {
-        let parent_attr = parent.as_ref().map(|p| format!(r#" style:parent-style-name="{p}""#)).unwrap_or_default();
+        let parent_attr = parent
+            .as_ref()
+            .map(|p| format!(r#" style:parent-style-name="{p}""#))
+            .unwrap_or_default();
         styles.push_str(&format!(
             r#"<style:style style:name="P{}" style:family="paragraph"{parent_attr}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
             idx + 1
@@ -1027,18 +1120,27 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
 
 #[cfg(test)]
 mod tests {
-    use super::super::container::{minimal_odt, minimal_odt_styled, OdtContainer};
     use super::super::OdtCodec;
+    use super::super::container::{OdtContainer, minimal_odt, minimal_odt_styled};
     use crate::{AttrVal, DocSnapshot, Document, FormatProvider};
     use std::collections::BTreeMap;
 
-    type Norm = Vec<(String, String, Vec<(usize, usize, String)>, BTreeMap<String, AttrVal>)>;
+    type Norm = Vec<(
+        String,
+        String,
+        Vec<(usize, usize, String)>,
+        BTreeMap<String, AttrVal>,
+    )>;
 
     fn norm(snap: &DocSnapshot) -> Norm {
         snap.blocks
             .iter()
             .map(|b| {
-                let mut m: Vec<_> = b.marks.iter().map(|x| (x.start, x.end, x.name.clone())).collect();
+                let mut m: Vec<_> = b
+                    .marks
+                    .iter()
+                    .map(|x| (x.start, x.end, x.name.clone()))
+                    .collect();
                 m.sort();
                 (b.kind.clone(), b.text.clone(), m, b.attrs.clone())
             })
@@ -1046,11 +1148,20 @@ mod tests {
     }
 
     /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the volatile per-import block id so two independent imports compare equal.
-    fn norm_region(blocks: &[crate::snapshot::BlockView]) -> Vec<(String, Vec<(usize, usize, String, crate::document::MarkValue)>)> {
+    fn norm_region(
+        blocks: &[crate::snapshot::BlockView],
+    ) -> Vec<(
+        String,
+        Vec<(usize, usize, String, crate::document::MarkValue)>,
+    )> {
         blocks
             .iter()
             .map(|b| {
-                let mut m: Vec<_> = b.marks.iter().map(|x| (x.start, x.end, x.name.clone(), x.value.clone())).collect();
+                let mut m: Vec<_> = b
+                    .marks
+                    .iter()
+                    .map(|x| (x.start, x.end, x.name.clone(), x.value.clone()))
+                    .collect();
                 m.sort();
                 (b.text.clone(), m)
             })
@@ -1103,8 +1214,20 @@ mod tests {
         let b = &snap.blocks[0];
         assert_eq!(b.text, "styled");
         assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())));
-        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)), "{:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)),
+            "{:?}",
+            b.marks
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+            "{:?}",
+            b.marks
+        );
     }
 
     #[test]
@@ -1124,9 +1247,18 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains(r##"fo:background-color="#ffff00""##), "highlight bg: {content}");
-        assert!(content.contains(r#"style:text-position="super"#), "super position: {content}");
-        assert!(content.contains(r#"fo:line-height="150%""#), "line-height: {content}");
+        assert!(
+            content.contains(r##"fo:background-color="#ffff00""##),
+            "highlight bg: {content}"
+        );
+        assert!(
+            content.contains(r#"style:text-position="super"#),
+            "super position: {content}"
+        );
+        assert!(
+            content.contains(r#"fo:line-height="150%""#),
+            "line-height: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
@@ -1134,16 +1266,27 @@ mod tests {
         let b = &snap.blocks[0];
         assert_eq!(b.text, "E=mc2");
         assert!(
-            b.marks.iter().any(|m| m.name == "highlight" && m.value == MarkValue::Str("#ffff00".into()) && m.start == 0 && m.end == 5),
+            b.marks.iter().any(|m| m.name == "highlight"
+                && m.value == MarkValue::Str("#ffff00".into())
+                && m.start == 0
+                && m.end == 5),
             "highlight mark: {:?}",
             b.marks
         );
         assert!(
-            b.marks.iter().any(|m| m.name == "super" && m.value == MarkValue::Bool(true) && m.start == 4 && m.end == 5),
+            b.marks.iter().any(|m| m.name == "super"
+                && m.value == MarkValue::Bool(true)
+                && m.start == 4
+                && m.end == 5),
             "super mark: {:?}",
             b.marks
         );
-        assert_eq!(b.attrs.get("line_spacing"), Some(&AttrVal::Float(1.5)), "line_spacing attr: {:?}", b.attrs);
+        assert_eq!(
+            b.attrs.get("line_spacing"),
+            Some(&AttrVal::Float(1.5)),
+            "line_spacing attr: {:?}",
+            b.attrs
+        );
     }
 
     #[test]
@@ -1161,7 +1304,10 @@ mod tests {
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert!(
-            b.marks.iter().any(|m| m.name == "sub" && m.value == MarkValue::Bool(true) && m.start == 1 && m.end == 2),
+            b.marks.iter().any(|m| m.name == "sub"
+                && m.value == MarkValue::Bool(true)
+                && m.start == 1
+                && m.end == 2),
             "sub mark: {:?}",
             b.marks
         );
@@ -1188,7 +1334,11 @@ mod tests {
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "go home now");
-        let link = b.marks.iter().find(|m| m.name == "link").expect("link survives round-trip");
+        let link = b
+            .marks
+            .iter()
+            .find(|m| m.name == "link")
+            .expect("link survives round-trip");
         assert_eq!((link.start, link.end), (3, 7), "{:?}", b.marks);
         assert_eq!(link.value, MarkValue::Str("https://qos.dev/".into()));
     }
@@ -1208,24 +1358,60 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains(r#"<text:bookmark-start text:name="intro"/>"#), "bookmark-start emitted: {content}");
-        assert!(content.contains(r#"<text:bookmark-end text:name="intro"/>"#), "bookmark-end emitted: {content}");
-        assert!(content.contains(r##"<text:a xlink:href="#intro">above</text:a>"##), "cross-ref text:a emitted: {content}");
+        assert!(
+            content.contains(r#"<text:bookmark-start text:name="intro"/>"#),
+            "bookmark-start emitted: {content}"
+        );
+        assert!(
+            content.contains(r#"<text:bookmark-end text:name="intro"/>"#),
+            "bookmark-end emitted: {content}"
+        );
+        assert!(
+            content.contains(r##"<text:a xlink:href="#intro">above</text:a>"##),
+            "cross-ref text:a emitted: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        assert_eq!(snap.bookmarks.len(), 1, "one bookmark survives: {:?}", snap.bookmarks);
+        assert_eq!(
+            snap.bookmarks.len(),
+            1,
+            "one bookmark survives: {:?}",
+            snap.bookmarks
+        );
         let bm = &snap.bookmarks[0];
         assert_eq!(bm.name, "intro");
-        assert_eq!((bm.range.1, bm.range.2), (4, 9), "bookmark range over 'intro': {:?}", bm);
-        let tb = snap.blocks.iter().find(|b| b.text == "the intro section").unwrap();
-        let mark = tb.marks.iter().find(|m| m.name == crate::schema::MARK_BOOKMARK).expect("bookmark mark present");
+        assert_eq!(
+            (bm.range.1, bm.range.2),
+            (4, 9),
+            "bookmark range over 'intro': {:?}",
+            bm
+        );
+        let tb = snap
+            .blocks
+            .iter()
+            .find(|b| b.text == "the intro section")
+            .unwrap();
+        let mark = tb
+            .marks
+            .iter()
+            .find(|m| m.name == crate::schema::MARK_BOOKMARK)
+            .expect("bookmark mark present");
         assert_eq!((mark.start, mark.end), (4, 9));
         assert_eq!(mark.value, MarkValue::Str("intro".into()));
         let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
-        let link = sb.marks.iter().find(|m| m.name == "link").expect("cross-ref link mark present");
-        assert_eq!((link.start, link.end), (4, 9), "cross-ref over 'above': {:?}", sb.marks);
+        let link = sb
+            .marks
+            .iter()
+            .find(|m| m.name == "link")
+            .expect("cross-ref link mark present");
+        assert_eq!(
+            (link.start, link.end),
+            (4, 9),
+            "cross-ref over 'above': {:?}",
+            sb.marks
+        );
         assert_eq!(link.value, MarkValue::Str("#intro".into()));
     }
 
@@ -1240,12 +1426,24 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains("a=1&amp;b=2"), "ampersand escaped: {content}");
+        assert!(
+            content.contains("a=1&amp;b=2"),
+            "ampersand escaped: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
-        let link = d2.materialize().blocks[0].marks.iter().find(|m| m.name == "link").unwrap().value.clone();
-        assert_eq!(link, crate::document::MarkValue::Str("https://x/?a=1&b=2".into()));
+        let link = d2.materialize().blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == "link")
+            .unwrap()
+            .value
+            .clone();
+        assert_eq!(
+            link,
+            crate::document::MarkValue::Str("https://x/?a=1&b=2".into())
+        );
     }
 
     #[test]
@@ -1262,7 +1460,10 @@ mod tests {
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "red text");
         assert!(
-            b.marks.iter().any(|m| m.name == "color" && m.start == 0 && m.end == 3 && m.value == MarkValue::Str("#ff0000".into())),
+            b.marks.iter().any(|m| m.name == "color"
+                && m.start == 0
+                && m.end == 3
+                && m.value == MarkValue::Str("#ff0000".into())),
             "color survives round-trip: {:?}",
             b.marks
         );
@@ -1287,19 +1488,28 @@ mod tests {
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "click");
         for name in ["link", "strong", "color"] {
-            assert!(b.marks.iter().any(|m| m.name == name && m.start == 0 && m.end == 5), "{name} survives: {:?}", b.marks);
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == name && m.start == 0 && m.end == 5),
+                "{name} survives: {:?}",
+                b.marks
+            );
         }
-        assert_eq!(b.marks.iter().find(|m| m.name == "link").unwrap().value, MarkValue::Str("http://q/".into()));
+        assert_eq!(
+            b.marks.iter().find(|m| m.name == "link").unwrap().value,
+            MarkValue::Str("http://q/".into())
+        );
     }
 
     /// A genuinely valid 1x1 truecolor-RGB PNG (signature + IHDR + IDAT + IEND),
     /// embedded so the image round-trip is self-contained.
     const TINY_PNG: [u8; 69] = [
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-        0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
-        0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
-        0x44, 0xae, 0x42, 0x60, 0x82,
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8,
+        0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
     #[test]
@@ -1334,8 +1544,14 @@ mod tests {
             "picture registered in manifest: {manifest}"
         );
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains("<draw:frame"), "draw:frame emitted: {content}");
-        assert!(content.contains(&format!(r#"xlink:href="{}""#, pic.0)), "image href matches part: {content}");
+        assert!(
+            content.contains("<draw:frame"),
+            "draw:frame emitted: {content}"
+        );
+        assert!(
+            content.contains(&format!(r#"xlink:href="{}""#, pic.0)),
+            "image href matches part: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
@@ -1353,12 +1569,32 @@ mod tests {
             other => panic!("image block missing blob attr: {other:?}"),
         };
         assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
-        assert_eq!(im.attrs.get("alt"), Some(&AttrVal::Str("a tiny red dot".into())));
-        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(64)), "{:?}", im.attrs);
-        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(48)), "{:?}", im.attrs);
+        assert_eq!(
+            im.attrs.get("alt"),
+            Some(&AttrVal::Str("a tiny red dot".into()))
+        );
+        assert_eq!(
+            im.attrs.get("width"),
+            Some(&AttrVal::Int(64)),
+            "{:?}",
+            im.attrs
+        );
+        assert_eq!(
+            im.attrs.get("height"),
+            Some(&AttrVal::Int(48)),
+            "{:?}",
+            im.attrs
+        );
 
-        let bytes = snap.blobs.get(&blob_hash).expect("blob bytes present after round-trip");
-        assert_eq!(bytes.as_slice(), &TINY_PNG[..], "image bytes survive the round-trip");
+        let bytes = snap
+            .blobs
+            .get(&blob_hash)
+            .expect("blob bytes present after round-trip");
+        assert_eq!(
+            bytes.as_slice(),
+            &TINY_PNG[..],
+            "image bytes survive the round-trip"
+        );
         assert_eq!(d2.blob(&blob_hash).as_deref(), Some(&TINY_PNG[..]));
     }
 
@@ -1381,20 +1617,48 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains(r#"text:anchor-type="paragraph""#), "anchor-type emitted: {content}");
         assert!(
-            content.contains(r#"style:family="graphic""#) && content.contains(r#"style:wrap="right""#),
+            content.contains(r#"text:anchor-type="paragraph""#),
+            "anchor-type emitted: {content}"
+        );
+        assert!(
+            content.contains(r#"style:family="graphic""#)
+                && content.contains(r#"style:wrap="right""#),
             "graphic style with wrap emitted: {content}"
         );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        let im = snap.blocks.iter().find(|b| b.kind == "image").expect("image block present");
-        assert_eq!(im.attrs.get("anchor"), Some(&AttrVal::Str("paragraph".into())), "{:?}", im.attrs);
-        assert_eq!(im.attrs.get("wrap"), Some(&AttrVal::Str("right".into())), "{:?}", im.attrs);
-        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(120)), "{:?}", im.attrs);
-        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(80)), "{:?}", im.attrs);
+        let im = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "image")
+            .expect("image block present");
+        assert_eq!(
+            im.attrs.get("anchor"),
+            Some(&AttrVal::Str("paragraph".into())),
+            "{:?}",
+            im.attrs
+        );
+        assert_eq!(
+            im.attrs.get("wrap"),
+            Some(&AttrVal::Str("right".into())),
+            "{:?}",
+            im.attrs
+        );
+        assert_eq!(
+            im.attrs.get("width"),
+            Some(&AttrVal::Int(120)),
+            "{:?}",
+            im.attrs
+        );
+        assert_eq!(
+            im.attrs.get("height"),
+            Some(&AttrVal::Int(80)),
+            "{:?}",
+            im.attrs
+        );
     }
 
     #[test]
@@ -1425,10 +1689,20 @@ mod tests {
             Some(AttrVal::Int(n)) => *n,
             _ => 0i64,
         };
-        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").map(|b| (b.text.clone(), level(b))).collect();
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "list_item")
+            .map(|b| (b.text.clone(), level(b)))
+            .collect();
         assert_eq!(
             items,
-            vec![("a".into(), 0i64), ("b".into(), 0), ("nested".into(), 1), ("c".into(), 0)],
+            vec![
+                ("a".into(), 0i64),
+                ("b".into(), 0),
+                ("nested".into(), 1),
+                ("c".into(), 0)
+            ],
             "levels round-trip through nested ODF lists"
         );
     }
@@ -1449,16 +1723,42 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains(r#"fo:text-align="justify""#), "justify → fo:text-align justify: {content}");
+        assert!(
+            content.contains(r#"fo:text-align="justify""#),
+            "justify → fo:text-align justify: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "styled");
-        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("justify".into())), "justify survives: {:?}", b.attrs);
-        assert!(b.marks.iter().any(|m| m.name == "color" && m.value == MarkValue::Str("#3366cc".into())), "colour: {:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "serif: {:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)), "20pt: {:?}", b.marks);
+        assert_eq!(
+            b.attrs.get("align"),
+            Some(&AttrVal::Str("justify".into())),
+            "justify survives: {:?}",
+            b.attrs
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "color" && m.value == MarkValue::Str("#3366cc".into())),
+            "colour: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+            "serif: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
+            "20pt: {:?}",
+            b.marks
+        );
     }
 
     #[test]
@@ -1483,24 +1783,53 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains(r#"style:num-format="I""#), "upper-roman list-style emitted: {content}");
-        assert!(content.contains(r#"text:start-value="3""#), "start value emitted: {content}");
+        assert!(
+            content.contains(r#"style:num-format="I""#),
+            "upper-roman list-style emitted: {content}"
+        );
+        assert!(
+            content.contains(r#"text:start-value="3""#),
+            "start value emitted: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "list_item")
+            .collect();
         assert_eq!(items.len(), 2, "{snap:?}");
         for it in &items {
-            assert_eq!(it.attrs.get("ordered"), Some(&AttrVal::Bool(true)), "still ordered: {:?}", it.attrs);
-            assert_eq!(it.attrs.get("num_format"), Some(&AttrVal::Str("upper-roman".into())), "format survives: {:?}", it.attrs);
-            assert_eq!(it.attrs.get("num_start"), Some(&AttrVal::Int(3)), "start survives: {:?}", it.attrs);
+            assert_eq!(
+                it.attrs.get("ordered"),
+                Some(&AttrVal::Bool(true)),
+                "still ordered: {:?}",
+                it.attrs
+            );
+            assert_eq!(
+                it.attrs.get("num_format"),
+                Some(&AttrVal::Str("upper-roman".into())),
+                "format survives: {:?}",
+                it.attrs
+            );
+            assert_eq!(
+                it.attrs.get("num_start"),
+                Some(&AttrVal::Int(3)),
+                "start survives: {:?}",
+                it.attrs
+            );
         }
 
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "list-numbering model stable across a second round-trip");
+        assert_eq!(
+            norm(&d2.materialize()),
+            norm(&d3.materialize()),
+            "list-numbering model stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -1528,21 +1857,36 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains(r#"text:style-name="Fancy""#), "paragraph references the named style: {content}");
+        assert!(
+            content.contains(r#"text:style-name="Fancy""#),
+            "paragraph references the named style: {content}"
+        );
         assert!(
             content.contains(r#"<style:style style:name="Fancy" style:family="paragraph""#),
             "named style defined as ODF style:style: {content}"
         );
-        assert!(content.contains(r#"fo:font-weight="bold""#) && content.contains(r#"fo:font-size="20pt""#), "props emitted: {content}");
+        assert!(
+            content.contains(r#"fo:font-weight="bold""#)
+                && content.contains(r#"fo:font-size="20pt""#),
+            "props emitted: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert_eq!(b.text, "fancy");
-        assert_eq!(b.attrs.get("style"), Some(&AttrVal::Str("Fancy".into())), "block keeps its style ref: {:?}", b.attrs);
+        assert_eq!(
+            b.attrs.get("style"),
+            Some(&AttrVal::Str("Fancy".into())),
+            "block keeps its style ref: {:?}",
+            b.attrs
+        );
 
-        let st = snap.styles.get("Fancy").expect("style present in container after round-trip");
+        let st = snap
+            .styles
+            .get("Fancy")
+            .expect("style present in container after round-trip");
         assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
         assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())));
         assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)));
@@ -1555,7 +1899,11 @@ mod tests {
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "named-style model is stable across a second round-trip");
+        assert_eq!(
+            norm(&d2.materialize()),
+            norm(&d3.materialize()),
+            "named-style model is stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -1574,32 +1922,75 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let meta = std::str::from_utf8(cont.get("meta.xml").expect("meta.xml written")).unwrap();
-        assert!(meta.contains("<dc:title>My Title</dc:title>"), "title in meta.xml: {meta}");
-        assert!(meta.contains("<dc:creator>Ada Lovelace</dc:creator>"), "creator: {meta}");
-        assert!(meta.contains("<dc:subject>Analytical Engine</dc:subject>"), "subject: {meta}");
-        assert!(meta.contains("<meta:keyword>computing, history</meta:keyword>"), "keyword: {meta}");
-        assert!(meta.contains("<meta:creation-date>2020-01-02T03:04:05</meta:creation-date>"), "created: {meta}");
-        assert!(meta.contains("<dc:date>2021-06-07T08:09:10</dc:date>"), "modified: {meta}");
-        assert!(meta.contains("<meta:generator>qdoc/1.0</meta:generator>"), "generator: {meta}");
+        assert!(
+            meta.contains("<dc:title>My Title</dc:title>"),
+            "title in meta.xml: {meta}"
+        );
+        assert!(
+            meta.contains("<dc:creator>Ada Lovelace</dc:creator>"),
+            "creator: {meta}"
+        );
+        assert!(
+            meta.contains("<dc:subject>Analytical Engine</dc:subject>"),
+            "subject: {meta}"
+        );
+        assert!(
+            meta.contains("<meta:keyword>computing, history</meta:keyword>"),
+            "keyword: {meta}"
+        );
+        assert!(
+            meta.contains("<meta:creation-date>2020-01-02T03:04:05</meta:creation-date>"),
+            "created: {meta}"
+        );
+        assert!(
+            meta.contains("<dc:date>2021-06-07T08:09:10</dc:date>"),
+            "modified: {meta}"
+        );
+        assert!(
+            meta.contains("<meta:generator>qdoc/1.0</meta:generator>"),
+            "generator: {meta}"
+        );
         let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
-        assert!(manifest.contains("meta.xml"), "meta.xml registered in manifest: {manifest}");
+        assert!(
+            manifest.contains("meta.xml"),
+            "meta.xml registered in manifest: {manifest}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let props = d2.doc_props();
         assert_eq!(props.get("title").map(String::as_str), Some("My Title"));
-        assert_eq!(props.get("author").map(String::as_str), Some("Ada Lovelace"));
-        assert_eq!(props.get("subject").map(String::as_str), Some("Analytical Engine"));
-        assert_eq!(props.get("keywords").map(String::as_str), Some("computing, history"));
-        assert_eq!(props.get("created").map(String::as_str), Some("2020-01-02T03:04:05"));
-        assert_eq!(props.get("modified").map(String::as_str), Some("2021-06-07T08:09:10"));
+        assert_eq!(
+            props.get("author").map(String::as_str),
+            Some("Ada Lovelace")
+        );
+        assert_eq!(
+            props.get("subject").map(String::as_str),
+            Some("Analytical Engine")
+        );
+        assert_eq!(
+            props.get("keywords").map(String::as_str),
+            Some("computing, history")
+        );
+        assert_eq!(
+            props.get("created").map(String::as_str),
+            Some("2020-01-02T03:04:05")
+        );
+        assert_eq!(
+            props.get("modified").map(String::as_str),
+            Some("2021-06-07T08:09:10")
+        );
         assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
         assert_eq!(d2.materialize().blocks[0].text, "body");
 
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        assert_eq!(d2.doc_props(), d3.doc_props(), "properties stable across a second round-trip");
+        assert_eq!(
+            d2.doc_props(),
+            d3.doc_props(),
+            "properties stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -1614,17 +2005,33 @@ mod tests {
 
         let mut d = Document::new();
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
-        assert_eq!(d.doc_prop("title").as_deref(), Some("Old"), "title imported");
+        assert_eq!(
+            d.doc_prop("title").as_deref(),
+            Some("Old"),
+            "title imported"
+        );
         d.set_doc_prop("title", "New");
         d.set_doc_prop("keywords", "k");
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let out = OdtContainer::read(&exported).unwrap();
         let meta_out = std::str::from_utf8(out.get("meta.xml").unwrap()).unwrap();
-        assert!(meta_out.contains("<dc:title>New</dc:title>"), "title updated: {meta_out}");
-        assert!(!meta_out.contains("<dc:title>Old</dc:title>"), "old title gone: {meta_out}");
-        assert!(meta_out.contains("editing-cycles>7</"), "unmodeled field preserved: {meta_out}");
-        assert!(meta_out.contains("<meta:keyword>k</meta:keyword>"), "new keyword emitted: {meta_out}");
+        assert!(
+            meta_out.contains("<dc:title>New</dc:title>"),
+            "title updated: {meta_out}"
+        );
+        assert!(
+            !meta_out.contains("<dc:title>Old</dc:title>"),
+            "old title gone: {meta_out}"
+        );
+        assert!(
+            meta_out.contains("editing-cycles>7</"),
+            "unmodeled field preserved: {meta_out}"
+        );
+        assert!(
+            meta_out.contains("<meta:keyword>k</meta:keyword>"),
+            "new keyword emitted: {meta_out}"
+        );
     }
 
     #[test]
@@ -1634,7 +2041,10 @@ mod tests {
         d.splice_text(&p, 0, 0, "plain");
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
-        assert!(cont.get("meta.xml").is_none(), "no metadata part synthesised for a doc with no properties");
+        assert!(
+            cont.get("meta.xml").is_none(),
+            "no metadata part synthesised for a doc with no properties"
+        );
     }
 
     #[test]
@@ -1652,12 +2062,25 @@ mod tests {
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
-        let styles = std::str::from_utf8(cont.get("styles.xml").expect("styles.xml written")).unwrap();
-        assert!(styles.contains("<style:header>") && styles.contains("Title"), "header in master-page: {styles}");
-        assert!(styles.contains("<style:footer>"), "footer in master-page: {styles}");
-        assert!(styles.contains("<text:page-number/>"), "page-number field emitted: {styles}");
+        let styles =
+            std::str::from_utf8(cont.get("styles.xml").expect("styles.xml written")).unwrap();
+        assert!(
+            styles.contains("<style:header>") && styles.contains("Title"),
+            "header in master-page: {styles}"
+        );
+        assert!(
+            styles.contains("<style:footer>"),
+            "footer in master-page: {styles}"
+        );
+        assert!(
+            styles.contains("<text:page-number/>"),
+            "page-number field emitted: {styles}"
+        );
         let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
-        assert!(manifest.contains("styles.xml"), "styles.xml registered in manifest: {manifest}");
+        assert!(
+            manifest.contains("styles.xml"),
+            "styles.xml registered in manifest: {manifest}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
@@ -1667,17 +2090,39 @@ mod tests {
         assert_eq!(header[0].text, "Title");
         let footer = d2.footer();
         assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
-        assert_eq!(footer[0].text, format!("Page {}", FIELD_PLACEHOLDER), "placeholder kept: {:?}", footer[0].text);
-        let field = footer[0].marks.iter().find(|m| m.name == MARK_FIELD).expect("page-number field survives");
-        assert_eq!((field.start, field.end), (5, 6), "field spans the placeholder: {:?}", footer[0].marks);
+        assert_eq!(
+            footer[0].text,
+            format!("Page {}", FIELD_PLACEHOLDER),
+            "placeholder kept: {:?}",
+            footer[0].text
+        );
+        let field = footer[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_FIELD)
+            .expect("page-number field survives");
+        assert_eq!(
+            (field.start, field.end),
+            (5, 6),
+            "field spans the placeholder: {:?}",
+            footer[0].marks
+        );
         assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
 
         // Idempotent across a second round-trip: block ids are volatile per import, so compare on text + marks, not the full BlockView.
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        assert_eq!(norm_region(&d2.header()), norm_region(&d3.header()), "header stable across a second round-trip");
-        assert_eq!(norm_region(&d2.footer()), norm_region(&d3.footer()), "footer stable across a second round-trip");
+        assert_eq!(
+            norm_region(&d2.header()),
+            norm_region(&d3.header()),
+            "header stable across a second round-trip"
+        );
+        assert_eq!(
+            norm_region(&d2.footer()),
+            norm_region(&d3.footer()),
+            "footer stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -1700,8 +2145,14 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let out = OdtContainer::read(&exported).unwrap();
         let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
-        assert!(styles_out.contains(r#"style:page-layout-name="pm1""#), "page-layout reference preserved: {styles_out}");
-        assert!(styles_out.contains("New Header") && !styles_out.contains("Old Header"), "header updated: {styles_out}");
+        assert!(
+            styles_out.contains(r#"style:page-layout-name="pm1""#),
+            "page-layout reference preserved: {styles_out}"
+        );
+        assert!(
+            styles_out.contains("New Header") && !styles_out.contains("Old Header"),
+            "header updated: {styles_out}"
+        );
     }
 
     #[test]
@@ -1721,9 +2172,23 @@ mod tests {
         let snap = d.materialize();
 
         let p = &snap.blocks[0];
-        assert_eq!(p.text, format!("see {}ref", FIELD_PLACEHOLDER), "placeholder spliced inline: {:?}", p.text);
-        let nref = p.marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("note-ref mark present");
-        assert_eq!((nref.start, nref.end), (4, 5), "marker covers exactly the placeholder: {:?}", p.marks);
+        assert_eq!(
+            p.text,
+            format!("see {}ref", FIELD_PLACEHOLDER),
+            "placeholder spliced inline: {:?}",
+            p.text
+        );
+        let nref = p
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_NOTE_REF)
+            .expect("note-ref mark present");
+        assert_eq!(
+            (nref.start, nref.end),
+            (4, 5),
+            "marker covers exactly the placeholder: {:?}",
+            p.marks
+        );
         let nid = match &nref.value {
             MarkValue::Str(s) => s.clone(),
             other => panic!("note-ref value is the note id, got {other:?}"),
@@ -1759,36 +2224,76 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains(r#"text:note-class="footnote""#), "footnote emitted inline: {content}");
-        assert!(content.contains(r#"text:note-class="endnote""#), "endnote emitted inline: {content}");
-        assert!(content.contains("a footnote") && content.contains("an endnote"), "note bodies emitted: {content}");
+        assert!(
+            content.contains(r#"text:note-class="footnote""#),
+            "footnote emitted inline: {content}"
+        );
+        assert!(
+            content.contains(r#"text:note-class="endnote""#),
+            "endnote emitted inline: {content}"
+        );
+        assert!(
+            content.contains("a footnote") && content.contains("an endnote"),
+            "note bodies emitted: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        assert_eq!(snap.blocks[0].text.chars().filter(|c| *c != '\u{FFFC}').collect::<String>(), "see ref");
-        let nref = snap.blocks[0].marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("footnote marker survives");
+        assert_eq!(
+            snap.blocks[0]
+                .text
+                .chars()
+                .filter(|c| *c != '\u{FFFC}')
+                .collect::<String>(),
+            "see ref"
+        );
+        let nref = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_NOTE_REF)
+            .expect("footnote marker survives");
         let f_id = match &nref.value {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("note-ref value"),
         };
         assert_eq!(snap.notes.len(), 2, "both notes survive: {:?}", snap.notes);
-        let foot = snap.notes.iter().find(|n| n.id == f_id).expect("footnote note present by id");
+        let foot = snap
+            .notes
+            .iter()
+            .find(|n| n.id == f_id)
+            .expect("footnote note present by id");
         assert_eq!(foot.kind, "footnote");
         assert_eq!(foot.blocks[0].text, "a footnote");
-        let end = snap.notes.iter().find(|n| n.kind == "endnote").expect("endnote present");
+        let end = snap
+            .notes
+            .iter()
+            .find(|n| n.kind == "endnote")
+            .expect("endnote present");
         assert_eq!(end.blocks[0].text, "an endnote");
 
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
         let kinds_texts = |snap: &DocSnapshot| {
-            let mut v: Vec<(String, String)> =
-                snap.notes.iter().map(|n| (n.kind.clone(), n.blocks.iter().map(|b| b.text.clone()).collect())).collect();
+            let mut v: Vec<(String, String)> = snap
+                .notes
+                .iter()
+                .map(|n| {
+                    (
+                        n.kind.clone(),
+                        n.blocks.iter().map(|b| b.text.clone()).collect(),
+                    )
+                })
+                .collect();
             v.sort();
             v
         };
-        assert_eq!(kinds_texts(&d2.materialize()), kinds_texts(&d3.materialize()), "notes stable across a second round-trip");
+        assert_eq!(
+            kinds_texts(&d2.materialize()),
+            kinds_texts(&d3.materialize()),
+            "notes stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -1809,9 +2314,22 @@ mod tests {
         let snap = d.materialize();
 
         let p = &snap.blocks[0];
-        assert_eq!(p.text, "fix this word", "annotation markup not in text: {:?}", p.text);
-        let cm = p.marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment mark present");
-        assert_eq!((cm.start, cm.end), (4, 13), "marker spans 'this word': {:?}", p.marks);
+        assert_eq!(
+            p.text, "fix this word",
+            "annotation markup not in text: {:?}",
+            p.text
+        );
+        let cm = p
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_COMMENT)
+            .expect("comment mark present");
+        assert_eq!(
+            (cm.start, cm.end),
+            (4, 13),
+            "marker spans 'this word': {:?}",
+            p.marks
+        );
         let cid = match &cm.value {
             MarkValue::Str(s) => s.clone(),
             other => panic!("comment value is the comment id, got {other:?}"),
@@ -1837,23 +2355,53 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains("<office:annotation"), "annotation emitted: {content}");
-        assert!(content.contains("<office:annotation-end"), "annotation-end emitted (ranged): {content}");
-        assert!(content.contains("<dc:creator>Ada Lovelace</dc:creator>"), "author emitted: {content}");
-        assert!(content.contains("note: fix"), "comment body emitted: {content}");
+        assert!(
+            content.contains("<office:annotation"),
+            "annotation emitted: {content}"
+        );
+        assert!(
+            content.contains("<office:annotation-end"),
+            "annotation-end emitted (ranged): {content}"
+        );
+        assert!(
+            content.contains("<dc:creator>Ada Lovelace</dc:creator>"),
+            "author emitted: {content}"
+        );
+        assert!(
+            content.contains("note: fix"),
+            "comment body emitted: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
         assert_eq!(snap.blocks[0].text, "please fix this word now");
-        let cm = snap.blocks[0].marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment marker survives");
-        assert_eq!((cm.start, cm.end), (11, 20), "anchored range survives: {:?}", snap.blocks[0].marks);
+        let cm = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_COMMENT)
+            .expect("comment marker survives");
+        assert_eq!(
+            (cm.start, cm.end),
+            (11, 20),
+            "anchored range survives: {:?}",
+            snap.blocks[0].marks
+        );
         let new_id = match &cm.value {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("comment value"),
         };
-        assert_eq!(snap.comments.len(), 1, "comment survives: {:?}", snap.comments);
-        let cmt = snap.comments.iter().find(|c| c.id == new_id).expect("comment present by id");
+        assert_eq!(
+            snap.comments.len(),
+            1,
+            "comment survives: {:?}",
+            snap.comments
+        );
+        let cmt = snap
+            .comments
+            .iter()
+            .find(|c| c.id == new_id)
+            .expect("comment present by id");
         assert_eq!(cmt.author, "Ada Lovelace");
         assert_eq!(cmt.blocks[0].text, "note: fix");
         assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
@@ -1901,22 +2449,65 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
-        assert!(content.contains("<text:tracked-changes>"), "tracked-changes block emitted: {content}");
-        assert!(content.contains("<text:insertion>"), "insertion region emitted: {content}");
-        assert!(content.contains("<text:deletion>"), "deletion region emitted: {content}");
-        assert!(content.contains("<text:change-start"), "change-start marker emitted: {content}");
-        assert!(content.contains("<text:change-end"), "change-end marker emitted: {content}");
-        assert!(content.contains("<dc:creator>Ada</dc:creator>"), "ins author emitted: {content}");
-        assert!(content.contains("<dc:creator>Bob</dc:creator>"), "del author emitted: {content}");
+        assert!(
+            content.contains("<text:tracked-changes>"),
+            "tracked-changes block emitted: {content}"
+        );
+        assert!(
+            content.contains("<text:insertion>"),
+            "insertion region emitted: {content}"
+        );
+        assert!(
+            content.contains("<text:deletion>"),
+            "deletion region emitted: {content}"
+        );
+        assert!(
+            content.contains("<text:change-start"),
+            "change-start marker emitted: {content}"
+        );
+        assert!(
+            content.contains("<text:change-end"),
+            "change-end marker emitted: {content}"
+        );
+        assert!(
+            content.contains("<dc:creator>Ada</dc:creator>"),
+            "ins author emitted: {content}"
+        );
+        assert!(
+            content.contains("<dc:creator>Bob</dc:creator>"),
+            "del author emitted: {content}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        assert_eq!(snap.blocks[0].text, "hello there world", "ins kept, del retained: {:?}", snap.blocks[0].text);
-        let im = snap.blocks[0].marks.iter().find(|m| m.name == MARK_INS).expect("ins mark survives");
-        assert_eq!((im.start, im.end), (5, 11), "ins range survives: {:?}", snap.blocks[0].marks);
-        let dm = snap.blocks[0].marks.iter().find(|m| m.name == MARK_DEL).expect("del mark survives");
-        assert_eq!((dm.start, dm.end), (12, 17), "del range survives: {:?}", snap.blocks[0].marks);
+        assert_eq!(
+            snap.blocks[0].text, "hello there world",
+            "ins kept, del retained: {:?}",
+            snap.blocks[0].text
+        );
+        let im = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_INS)
+            .expect("ins mark survives");
+        assert_eq!(
+            (im.start, im.end),
+            (5, 11),
+            "ins range survives: {:?}",
+            snap.blocks[0].marks
+        );
+        let dm = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_DEL)
+            .expect("del mark survives");
+        assert_eq!(
+            (dm.start, dm.end),
+            (12, 17),
+            "del range survives: {:?}",
+            snap.blocks[0].marks
+        );
         let ins_id = match &im.value {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("ins value"),
@@ -1925,12 +2516,25 @@ mod tests {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("del value"),
         };
-        assert_eq!(snap.changes.len(), 2, "both changes survive: {:?}", snap.changes);
-        let ic = snap.changes.iter().find(|c| c.id == ins_id).expect("ins change present");
+        assert_eq!(
+            snap.changes.len(),
+            2,
+            "both changes survive: {:?}",
+            snap.changes
+        );
+        let ic = snap
+            .changes
+            .iter()
+            .find(|c| c.id == ins_id)
+            .expect("ins change present");
         assert_eq!(ic.kind, crate::snapshot::ChangeKind::Ins);
         assert_eq!(ic.author, "Ada");
         assert_eq!(ic.range, Some((snap.blocks[0].id.clone(), 5, 11)));
-        let dc = snap.changes.iter().find(|c| c.id == del_id).expect("del change present");
+        let dc = snap
+            .changes
+            .iter()
+            .find(|c| c.id == del_id)
+            .expect("del change present");
         assert_eq!(dc.kind, crate::snapshot::ChangeKind::Del);
         assert_eq!(dc.author, "Bob");
         assert_eq!(dc.range, Some((snap.blocks[0].id.clone(), 12, 17)));
@@ -1939,7 +2543,10 @@ mod tests {
         d2.accept_change(&ins_id);
         d2.accept_change(&del_id);
         let after = d2.materialize();
-        assert_eq!(after.blocks[0].text, "hello there ", "accept-ins keeps text; accept-del removes 'world'");
+        assert_eq!(
+            after.blocks[0].text, "hello there ",
+            "accept-ins keeps text; accept-del removes 'world'"
+        );
         assert!(after.changes.is_empty(), "both changes resolved");
     }
 
@@ -1947,7 +2554,10 @@ mod tests {
     fn preserves_unmodeled_parts() {
         let base = minimal_odt_styled("", "<text:p>hi</text:p>");
         let mut c = OdtContainer::read(&base).unwrap();
-        c.set("settings.xml", b"<office:settings>custom</office:settings>".to_vec());
+        c.set(
+            "settings.xml",
+            b"<office:settings>custom</office:settings>".to_vec(),
+        );
         let odt = c.write().unwrap();
 
         let mut d = Document::new();
@@ -1974,9 +2584,16 @@ mod tests {
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let out = OdtContainer::read(&exported).unwrap();
-        let styles = std::str::from_utf8(out.get("styles.xml").expect("styles.xml synthesised")).unwrap();
-        assert!(styles.contains(r#"style:column-count="2""#), "column-count in page-layout: {styles}");
-        assert!(styles.contains("style:column-gap="), "column-gap emitted: {styles}");
+        let styles =
+            std::str::from_utf8(out.get("styles.xml").expect("styles.xml synthesised")).unwrap();
+        assert!(
+            styles.contains(r#"style:column-count="2""#),
+            "column-count in page-layout: {styles}"
+        );
+        assert!(
+            styles.contains("style:column-gap="),
+            "column-gap emitted: {styles}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
@@ -1984,8 +2601,15 @@ mod tests {
         assert_eq!(count, 2, "column count survives .odt round-trip");
         // The gap round-trips through px → cm → px; allow a small unit-conversion epsilon.
         let gap = gap.expect("gap present");
-        assert!((gap - 48.0).abs() < 0.5, "column gap ≈ 48 px after round-trip, got {gap}");
-        assert_eq!(d2.materialize().columns, 2, "snapshot surfaces the column count");
+        assert!(
+            (gap - 48.0).abs() < 0.5,
+            "column gap ≈ 48 px after round-trip, got {gap}"
+        );
+        assert_eq!(
+            d2.materialize().columns,
+            2,
+            "snapshot surfaces the column count"
+        );
     }
 
     #[test]
@@ -2006,13 +2630,26 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let out = OdtContainer::read(&exported).unwrap();
         let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
-        assert!(styles_out.contains(r#"fo:page-width="21cm""#), "page size preserved: {styles_out}");
-        assert!(styles_out.contains(r#"fo:margin-left="2cm""#), "margin preserved: {styles_out}");
-        assert!(styles_out.contains(r#"style:column-count="3""#), "columns injected: {styles_out}");
+        assert!(
+            styles_out.contains(r#"fo:page-width="21cm""#),
+            "page size preserved: {styles_out}"
+        );
+        assert!(
+            styles_out.contains(r#"fo:margin-left="2cm""#),
+            "margin preserved: {styles_out}"
+        );
+        assert!(
+            styles_out.contains(r#"style:column-count="3""#),
+            "columns injected: {styles_out}"
+        );
 
         let mut d2 = Document::new();
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
-        assert_eq!(d2.columns().0, 3, "column count survives alongside the page-layout");
+        assert_eq!(
+            d2.columns().0,
+            3,
+            "column count survives alongside the page-layout"
+        );
     }
 
     #[test]
@@ -2033,8 +2670,15 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let out = OdtContainer::read(&exported).unwrap();
         let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
-        assert_eq!(styles_out.matches("<style:columns").count(), 1, "exactly one style:columns: {styles_out}");
-        assert!(styles_out.contains(r#"style:column-count="2""#), "count updated to 2: {styles_out}");
+        assert_eq!(
+            styles_out.matches("<style:columns").count(),
+            1,
+            "exactly one style:columns: {styles_out}"
+        );
+        assert!(
+            styles_out.contains(r#"style:column-count="2""#),
+            "count updated to 2: {styles_out}"
+        );
     }
 
     /// Build a `.odt` whose preserved `styles.xml` holds two independent top-level style atoms — the canonical "two unmodeled regions in one part" shape.
@@ -2067,7 +2711,11 @@ mod tests {
     #[test]
     fn preserved_multi_atom_part_round_trips_verbatim() {
         let odt = odt_with_two_style_atoms();
-        let original_styles = OdtContainer::read(&odt).unwrap().get("styles.xml").unwrap().to_vec();
+        let original_styles = OdtContainer::read(&odt)
+            .unwrap()
+            .get("styles.xml")
+            .unwrap()
+            .to_vec();
 
         let mut d = Document::new();
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
@@ -2102,16 +2750,36 @@ mod tests {
         // The two style atoms have the SAME stable ids on both replicas.
         let (id_quote, quote_bytes) = atom_containing(&a, "QuoteFont");
         let (id_caption, caption_bytes) = atom_containing(&a, "CaptionFont");
-        assert_eq!(id_quote, atom_containing(&b, "QuoteFont").0, "fork shares atom ids");
-        assert_eq!(id_caption, atom_containing(&b, "CaptionFont").0, "fork shares atom ids");
+        assert_eq!(
+            id_quote,
+            atom_containing(&b, "QuoteFont").0,
+            "fork shares atom ids"
+        );
+        assert_eq!(
+            id_caption,
+            atom_containing(&b, "CaptionFont").0,
+            "fork shares atom ids"
+        );
         assert_ne!(id_quote, id_caption, "distinct atoms have distinct ids");
 
         // A rewrites ONLY the Quote atom; B rewrites ONLY the Caption atom — each a read-modify-write
         // that keeps the atom's framing (prologue/root-open tags on the first atom, close tags on the last).
-        let edited_quote = String::from_utf8(quote_bytes).unwrap().replace("QuoteFont", "QuoteFont-EDITED");
-        let edited_caption = String::from_utf8(caption_bytes).unwrap().replace("CaptionFont", "CaptionFont-EDITED");
-        a.as_mut().set_preserved_atom_bytes("odt/part/styles.xml", &id_quote, edited_quote.as_bytes());
-        b.as_mut().set_preserved_atom_bytes("odt/part/styles.xml", &id_caption, edited_caption.as_bytes());
+        let edited_quote = String::from_utf8(quote_bytes)
+            .unwrap()
+            .replace("QuoteFont", "QuoteFont-EDITED");
+        let edited_caption = String::from_utf8(caption_bytes)
+            .unwrap()
+            .replace("CaptionFont", "CaptionFont-EDITED");
+        a.as_mut().set_preserved_atom_bytes(
+            "odt/part/styles.xml",
+            &id_quote,
+            edited_quote.as_bytes(),
+        );
+        b.as_mut().set_preserved_atom_bytes(
+            "odt/part/styles.xml",
+            &id_caption,
+            edited_caption.as_bytes(),
+        );
 
         a.merge(&mut b);
         b.merge(&mut a);
@@ -2121,18 +2789,35 @@ mod tests {
             let exported = OdtCodec.export(d.as_ref()).unwrap();
             let out = OdtContainer::read(&exported).unwrap();
             let styles = String::from_utf8(out.get("styles.xml").unwrap().to_vec()).unwrap();
-            assert!(styles.contains("QuoteFont-EDITED"), "replica {who} kept A's Quote edit: {styles}");
-            assert!(styles.contains("CaptionFont-EDITED"), "replica {who} kept B's Caption edit: {styles}");
+            assert!(
+                styles.contains("QuoteFont-EDITED"),
+                "replica {who} kept A's Quote edit: {styles}"
+            );
+            assert!(
+                styles.contains("CaptionFont-EDITED"),
+                "replica {who} kept B's Caption edit: {styles}"
+            );
             // Order + structure intact (Quote before Caption, root tags present).
             assert!(
-                styles.find("QuoteFont-EDITED").unwrap() < styles.find("CaptionFont-EDITED").unwrap(),
+                styles.find("QuoteFont-EDITED").unwrap()
+                    < styles.find("CaptionFont-EDITED").unwrap(),
                 "replica {who} kept atom order: {styles}"
             );
-            assert!(styles.contains("<office:styles>") && styles.contains("</office:document-styles>"));
+            assert!(
+                styles.contains("<office:styles>") && styles.contains("</office:document-styles>")
+            );
         }
         // Convergence: identical exported styles.xml on both replicas.
-        let sa = OdtContainer::read(&OdtCodec.export(a.as_ref()).unwrap()).unwrap().get("styles.xml").unwrap().to_vec();
-        let sb = OdtContainer::read(&OdtCodec.export(b.as_ref()).unwrap()).unwrap().get("styles.xml").unwrap().to_vec();
+        let sa = OdtContainer::read(&OdtCodec.export(a.as_ref()).unwrap())
+            .unwrap()
+            .get("styles.xml")
+            .unwrap()
+            .to_vec();
+        let sb = OdtContainer::read(&OdtCodec.export(b.as_ref()).unwrap())
+            .unwrap()
+            .get("styles.xml")
+            .unwrap()
+            .to_vec();
         assert_eq!(sa, sb, "replicas converge on identical styles.xml");
     }
 }

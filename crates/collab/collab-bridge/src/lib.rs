@@ -101,9 +101,7 @@ async fn handle_connection(
 /// pre-connected upstream every time, for round-trip tests using an
 /// in-memory upstream.
 #[doc(hidden)]
-pub fn test_service_with_opener(
-    opener: crate::service::UpstreamOpener,
-) -> BridgeCollabService {
+pub fn test_service_with_opener(opener: crate::service::UpstreamOpener) -> BridgeCollabService {
     BridgeCollabService::new(opener)
 }
 

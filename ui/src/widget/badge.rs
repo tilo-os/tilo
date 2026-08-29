@@ -9,15 +9,15 @@
 //! Positioning is the caller's responsibility — `Badge` does not anchor
 //! itself to another widget.
 
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::Color;
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 
 /// See module docs for variant semantics.
 #[derive(Clone, Debug)]
@@ -180,7 +180,10 @@ impl Widget for Badge {
         if !needs_emit {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(&self.cached, Some(out_transform * Affine::translate((dx, dy))));
+            out_scene.append(
+                &self.cached,
+                Some(out_transform * Affine::translate((dx, dy))),
+            );
             return;
         }
         // mem::take dance — `display_text` borrows &self while `cached` needs &mut self.
@@ -225,9 +228,15 @@ impl Widget for Badge {
         self.cache_rect = self.rect;
     }
 
-    fn needs_redraw(&self) -> bool { self.dirty }
-    fn mark_drawn(&mut self) { self.dirty = false; }
-    fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+    fn is_layout_dirty(&self) -> bool {
+        self.cache_rect == Rect::ZERO
+    }
 
     fn handle_event(
         &mut self,
@@ -244,9 +253,13 @@ impl Widget for Badge {
         // Badges are purely informational — no input handling.
     }
 
-    fn name(&self) -> &str { "Badge" }
+    fn name(&self) -> &str {
+        "Badge"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
@@ -299,15 +312,9 @@ mod tests {
             "values >= 100 must clamp to the \"99+\" overflow string",
         );
         // A larger value, so a future "only 100 is special" off-by-one doesn't slip by.
-        assert_eq!(
-            Badge::count(9_999).display_text().as_deref(),
-            Some("99+"),
-        );
+        assert_eq!(Badge::count(9_999).display_text().as_deref(), Some("99+"),);
         // The boundary just below: `99` must NOT clamp.
-        assert_eq!(
-            Badge::count(99).display_text().as_deref(),
-            Some("99"),
-        );
+        assert_eq!(Badge::count(99).display_text().as_deref(), Some("99"),);
     }
 
     #[test]
@@ -321,7 +328,10 @@ mod tests {
 
         // Overflow clamps in the value too.
         let over = Badge::count(250);
-        assert_eq!(Widget::accessibility(&over).unwrap().value.as_deref(), Some("99+"));
+        assert_eq!(
+            Widget::accessibility(&over).unwrap().value.as_deref(),
+            Some("99+")
+        );
 
         // Dot variant carries no text → no accessible value.
         let dot = Badge::dot();

@@ -130,8 +130,16 @@ impl BrowserWidget {
     pub fn with_engine(engine: SharedEngine, headless: bool) -> Self {
         // Persisted state; `load()` returns defaults/empty when absent, so
         // `--shots` runs are unaffected by (and don't write) real files.
-        let settings = if headless { Settings::default() } else { Settings::load() };
-        let history = if headless { History::default() } else { History::load() };
+        let settings = if headless {
+            Settings::default()
+        } else {
+            Settings::load()
+        };
+        let history = if headless {
+            History::default()
+        } else {
+            History::load()
+        };
         Self {
             rect: Rect::ZERO,
             engine,
@@ -305,9 +313,7 @@ impl BrowserWidget {
                     self.progress = 1.0;
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
-                    if !self.headless
-                        && self.current_uri.starts_with("http")
-                    {
+                    if !self.headless && self.current_uri.starts_with("http") {
                         self.history.record(&self.current_uri, &self.title);
                         let _ = self.history.save();
                     }
@@ -343,13 +349,16 @@ impl BrowserWidget {
     fn set_adblock(&self, enabled: bool) {
         if enabled {
             crate::blocker::spawn_filter_loader(self.engine.clone());
-            self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
-                crate::blocker::user_scripts(),
-            )));
+            self.engine
+                .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+                    crate::blocker::user_scripts(),
+                )));
         } else {
             self.engine.send(WebViewCommand::SetContentFilter(None));
             self.engine
-                .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(Vec::new())));
+                .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+                    Vec::new(),
+                )));
         }
     }
 
@@ -500,9 +509,10 @@ impl Widget for BrowserWidget {
                     crate::blocker::spawn_filter_loader(self.engine.clone());
                     // Scriptlet-style blocking (YouTube ad-skip etc.) the
                     // declarative content filter can't express.
-                    self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
-                        crate::blocker::user_scripts(),
-                    )));
+                    self.engine
+                        .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+                            crate::blocker::user_scripts(),
+                        )));
                 }
                 self.engine
                     .send(WebViewCommand::Navigate(self.initial_url.to_string()));
@@ -622,7 +632,10 @@ impl Widget for BrowserWidget {
     fn take_structure_dirty(&mut self) -> bool {
         // Toggling the settings pane swaps the content widget → rebuild.
         std::mem::take(&mut self.structure_dirty)
-            || self.composed.as_mut().is_some_and(|c| c.take_structure_dirty())
+            || self
+                .composed
+                .as_mut()
+                .is_some_and(|c| c.take_structure_dirty())
     }
 
     fn handle_event(

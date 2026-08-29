@@ -492,7 +492,10 @@ mod tests {
     fn decode_pixel_32bpp_bgrx() {
         // rgb888(): little-endian value R<<16|G<<8|B -> bytes [B,G,R,x].
         let f = PixelFormat::rgb888();
-        assert_eq!(f.decode_pixel(&[0x10, 0x20, 0x30, 0x00]), [0x30, 0x20, 0x10, 255]);
+        assert_eq!(
+            f.decode_pixel(&[0x10, 0x20, 0x30, 0x00]),
+            [0x30, 0x20, 0x10, 255]
+        );
     }
 
     #[test]
@@ -607,7 +610,10 @@ mod tests {
     fn security_negotiation() {
         let types = parse_security_types(2, &[security::NONE, security::VNC_AUTH]).unwrap();
         assert_eq!(choose_security(&types), Some(security::NONE));
-        assert_eq!(choose_security(&[security::VNC_AUTH]), Some(security::VNC_AUTH));
+        assert_eq!(
+            choose_security(&[security::VNC_AUTH]),
+            Some(security::VNC_AUTH)
+        );
         assert_eq!(choose_security(&[99]), None);
         assert!(parse_security_types(0, &[]).is_err());
     }

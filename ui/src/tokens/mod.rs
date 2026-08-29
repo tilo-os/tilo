@@ -1,21 +1,21 @@
 pub mod colors;
-pub mod typography;
-pub mod spacing;
-pub mod radii;
 pub mod elevation;
 pub mod motion;
+pub mod radii;
+pub mod spacing;
 pub mod terminal_palette;
+pub mod typography;
 
 pub use colors::{
-    AccentChip, Colors, ColorRamp, NON_TEXT_MIN_CONTRAST, OnCard, PaletteSpec, SemanticColors,
+    AccentChip, ColorRamp, Colors, NON_TEXT_MIN_CONTRAST, OnCard, PaletteSpec, SemanticColors,
     Surfaces,
 };
-pub use typography::{Typography, TypeScale, WeightScale, FontFamily};
-pub use spacing::Spacing;
-pub use radii::Radii;
 pub use elevation::{Elevation, Shadow};
 pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
+pub use radii::Radii;
+pub use spacing::Spacing;
 pub use terminal_palette::TerminalPalette;
+pub use typography::{FontFamily, TypeScale, Typography, WeightScale};
 
 #[derive(Clone, Debug)]
 pub struct Tokens {

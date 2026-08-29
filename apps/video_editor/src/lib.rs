@@ -61,7 +61,9 @@ pub fn app_root_narrow() -> Box<dyn Widget> {
 /// filters + fades showing in the inspector (the "clip selected with filters"
 /// shot). Deterministic: playhead parked inside the drone open.
 pub fn app_root_filters() -> Box<dyn Widget> {
-    Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::SelectedFilters))
+    Box::new(VideoEditorApp::new_for_shot(
+        app::ShotScenario::SelectedFilters,
+    ))
 }
 
 /// Root configured to capture the timeline immediately after a split at the
@@ -83,7 +85,9 @@ pub fn app_root_rename() -> Box<dyn Widget> {
 
 /// Root configured to capture a bin clip mid-drag over a timeline lane.
 pub fn app_root_drag() -> Box<dyn Widget> {
-    Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::DragToTimeline))
+    Box::new(VideoEditorApp::new_for_shot(
+        app::ShotScenario::DragToTimeline,
+    ))
 }
 
 /// Root configured to capture the per-clip effects stack in the inspector.

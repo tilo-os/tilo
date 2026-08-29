@@ -182,9 +182,9 @@ impl Dictionary {
         // Upper bound: first word that does not start with prefix. We compare
         // against `prefix` truncated-then-incremented conceptually by checking
         // the `starts_with` boundary directly.
-        let hi = self.by_lex[lo..].partition_point(|&i| {
-            self.entries[i as usize].word.as_str().starts_with(prefix)
-        }) + lo;
+        let hi = self.by_lex[lo..]
+            .partition_point(|&i| self.entries[i as usize].word.as_str().starts_with(prefix))
+            + lo;
         (lo, hi)
     }
 }

@@ -30,13 +30,7 @@ const PROMOTED: &[&str] = &[
 /// the caller falls back to the bundled sample so the UI is never blank.
 pub fn load_live(limit: usize) -> Vec<LogEntry> {
     let output = Command::new("journalctl")
-        .args([
-            "-o",
-            "json",
-            "--no-pager",
-            "-n",
-            &limit.to_string(),
-        ])
+        .args(["-o", "json", "--no-pager", "-n", &limit.to_string()])
         .output();
 
     let Ok(output) = output else {
@@ -116,7 +110,11 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
     let mut extra: Vec<(String, String)> = obj
         .iter()
         .filter(|(k, _)| !PROMOTED.contains(&k.as_str()))
-        .filter_map(|(k, val)| field(v, k).map(|s| (k.clone(), s)).or(Some((k.clone(), val.to_string()))))
+        .filter_map(|(k, val)| {
+            field(v, k)
+                .map(|s| (k.clone(), s))
+                .or(Some((k.clone(), val.to_string())))
+        })
         .collect();
     extra.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -164,18 +162,16 @@ pub fn sample_entries() -> Vec<LogEntry> {
         &'static [(&'static str, &'static str)],
     );
 
-    let prev: &[Row] = &[
-        (
-            0,
-            "systemd-journald.service",
-            "systemd-journald",
-            Priority::Notice,
-            Some(very(412)),
-            "journal",
-            "Journal stopped",
-            &[("CODE_FUNC", "server_done"), ("SYSLOG_FACILITY", "3")],
-        ),
-    ];
+    let prev: &[Row] = &[(
+        0,
+        "systemd-journald.service",
+        "systemd-journald",
+        Priority::Notice,
+        Some(very(412)),
+        "journal",
+        "Journal stopped",
+        &[("CODE_FUNC", "server_done"), ("SYSLOG_FACILITY", "3")],
+    )];
 
     let rows: &[Row] = &[
         (
@@ -306,7 +302,10 @@ pub fn sample_entries() -> Vec<LogEntry> {
             Some(very(820)),
             "stdout",
             "sandbox: cluster 'web' requested /home/quinten/Downloads — prompting user",
-            &[("CODE_FILE", "shell/src/portal/access.rs"), ("CLUSTER", "web")],
+            &[
+                ("CODE_FILE", "shell/src/portal/access.rs"),
+                ("CLUSTER", "web"),
+            ],
         ),
         (
             2600,
@@ -386,7 +385,10 @@ pub fn sample_entries() -> Vec<LogEntry> {
             Some(very(820)),
             "stdout",
             "wgpu: surface lost (Outdated) during cluster crossfade — recreating swapchain",
-            &[("CODE_FILE", "shell/src/render/frame.rs"), ("BACKEND", "vulkan")],
+            &[
+                ("CODE_FILE", "shell/src/render/frame.rs"),
+                ("BACKEND", "vulkan"),
+            ],
         ),
         (
             4520,
@@ -406,7 +408,10 @@ pub fn sample_entries() -> Vec<LogEntry> {
             Some(very(641)),
             "stdout",
             "conflict copy written: spec.md ⇒ spec.conflict-mara.md (concurrent edit)",
-            &[("CODE_FILE", "fs/src/conflict.rs"), ("PATH", "notes/spec.md")],
+            &[
+                ("CODE_FILE", "fs/src/conflict.rs"),
+                ("PATH", "notes/spec.md"),
+            ],
         ),
         (
             5200,
@@ -456,7 +461,10 @@ pub fn sample_entries() -> Vec<LogEntry> {
             Some(very(820)),
             "stdout",
             "collab: remote cursor stream from 'mara@thinkpad' attached (12 fps)",
-            &[("CODE_FILE", "shell/src/collab/cursor.rs"), ("PEER", "mara")],
+            &[
+                ("CODE_FILE", "shell/src/collab/cursor.rs"),
+                ("PEER", "mara"),
+            ],
         ),
         (
             7050,
@@ -575,8 +583,7 @@ mod tests {
         assert!(e.iter().any(|x| x.priority == Priority::Err));
         assert!(e.iter().any(|x| x.priority == Priority::Warning));
         assert!(e.iter().any(|x| x.priority == Priority::Crit));
-        let boots: std::collections::HashSet<_> =
-            e.iter().map(|x| x.boot_id.clone()).collect();
+        let boots: std::collections::HashSet<_> = e.iter().map(|x| x.boot_id.clone()).collect();
         assert_eq!(boots.len(), 2, "should span exactly two boots");
         // Sorted ascending by time.
         assert!(e.windows(2).all(|w| w[0].realtime_us <= w[1].realtime_us));

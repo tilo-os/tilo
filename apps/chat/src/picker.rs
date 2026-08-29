@@ -93,7 +93,9 @@ fn list_filtered(dir: &Path, accept: fn(&str) -> bool) -> Vec<PickEntry> {
 }
 
 fn collect(dir: &Path, depth: usize, accept: fn(&str) -> bool, out: &mut Vec<PickEntry>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in rd.flatten() {
         if out.len() >= 200 {
             return;
@@ -112,14 +114,21 @@ fn collect(dir: &Path, depth: usize, accept: fn(&str) -> bool, out: &mut Vec<Pic
         }
         let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
         let is_video = is_video_name(&name);
-        out.push(PickEntry { path, name, size, is_video });
+        out.push(PickEntry {
+            path,
+            name,
+            size,
+            is_video,
+        });
     }
 }
 
 /// True width/height of an image file, read from its header only (cheap — no
 /// full decode). `None` when the file is missing or not a supported image.
 pub fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
-    image::image_dimensions(path).ok().filter(|&(w, h)| w > 0 && h > 0)
+    image::image_dimensions(path)
+        .ok()
+        .filter(|&(w, h)| w > 0 && h > 0)
 }
 
 #[cfg(test)]
@@ -160,10 +169,23 @@ mod tests {
         std::fs::write(dir.path().join("notes.md"), b"nope").unwrap();
 
         let entries = list_media(dir.path());
-        assert_eq!(entries.len(), 2, "the image and the video are both offered, the .md is not");
-        let vid = entries.iter().find(|e| e.name == "clip.mp4").expect("video listed");
-        assert!(vid.is_video, "the video is flagged so it posts as a video card");
-        let img = entries.iter().find(|e| e.name == "shot.png").expect("image listed");
+        assert_eq!(
+            entries.len(),
+            2,
+            "the image and the video are both offered, the .md is not"
+        );
+        let vid = entries
+            .iter()
+            .find(|e| e.name == "clip.mp4")
+            .expect("video listed");
+        assert!(
+            vid.is_video,
+            "the video is flagged so it posts as a video card"
+        );
+        let img = entries
+            .iter()
+            .find(|e| e.name == "shot.png")
+            .expect("image listed");
         assert!(!img.is_video);
         // The image-only listing excludes the video.
         assert!(list_images(dir.path()).iter().all(|e| e.name != "clip.mp4"));

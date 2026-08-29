@@ -11,10 +11,19 @@ use winit::{
 /// real-hardware events take the identical code path.
 #[derive(Debug, Clone)]
 pub enum UserEvent {
-    Hover { x: f64, y: f64 },
+    Hover {
+        x: f64,
+        y: f64,
+    },
     /// CursorMoved → Pressed → Released, dispatched as one unit.
-    Click { x: f64, y: f64 },
-    Wheel { dx: f32, dy: f32 },
+    Click {
+        x: f64,
+        y: f64,
+    },
+    Wheel {
+        dx: f32,
+        dy: f32,
+    },
     /// Delivered to [`crate::widget::Widget::on_external_event`] rather than
     /// translated to a `WindowEvent` (e.g. installer progress).
     External(String),
@@ -27,26 +36,31 @@ impl From<accesskit_winit::Event> for UserEvent {
         UserEvent::AccessKit(e.window_event)
     }
 }
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use crate::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use crate::gpu::RenderContext;
-use vello::{Scene, Renderer, RendererOptions, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
-use taffy::{TaffyTree, AvailableSpace, NodeId};
+use crate::permissions::PermissionContext;
+use crate::presence::{PresenceCtx, PresenceKey};
+use crate::render_thread::{FrameOutcome, RenderRequest, RenderThreadHandle, spawn_render_thread};
 use crate::state::State;
-use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::collaboration::{CollaborationManager, CollabEvent, CollabRequest, PresencePayload};
-use crate::presence::{PresenceCtx, PresenceKey};
-use crate::permissions::PermissionContext;
-use crate::render_thread::{spawn_render_thread, FrameOutcome, RenderRequest, RenderThreadHandle};
+use crate::widget::Widget;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use taffy::{AvailableSpace, NodeId, TaffyTree};
+use vello::{
+    Renderer, RendererOptions, Scene, kurbo::Affine, kurbo::Point, kurbo::Rect as KurboRect,
+    peniko::Color,
+};
 
 /// Cached `QUICK_UI_PERF=1` check, so the per-frame read costs nothing.
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
-        std::env::var("QUICK_UI_PERF").map(|s| !s.is_empty()).unwrap_or(false)
+        std::env::var("QUICK_UI_PERF")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
     })
 }
 
@@ -58,7 +72,9 @@ fn scroll_opt_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
-        std::env::var("QUICK_UI_NO_SCROLL_OPT").map(|s| !s.is_empty()).unwrap_or(false)
+        std::env::var("QUICK_UI_NO_SCROLL_OPT")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
     })
 }
 
@@ -122,7 +138,11 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
         end = next;
     }
     let word = &s[start..end];
-    if word.is_empty() { None } else { Some(word.to_string()) }
+    if word.is_empty() {
+        None
+    } else {
+        Some(word.to_string())
+    }
 }
 
 /// Minimum gap between outbound pointer presence broadcasts, in
@@ -147,10 +167,7 @@ pub(crate) fn pointer_broadcast_allowed(
 /// Free function so the fullscreen reconcile decision is unit-testable
 /// without a live winit window (real OS fullscreen can't be exercised
 /// headlessly).
-pub(crate) fn fullscreen_request_decision(
-    requested: bool,
-    want: Option<bool>,
-) -> Option<bool> {
+pub(crate) fn fullscreen_request_decision(requested: bool, want: Option<bool>) -> Option<bool> {
     match want {
         Some(w) if w != requested => Some(w),
         _ => None,
@@ -172,7 +189,12 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Direction { Up, Down, Left, Right }
+enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
 
 /// Fans cursor moves out to libp2p peers too, alongside the Unix-socket
 /// send. Invoked after the throttle gate.
@@ -247,10 +269,8 @@ pub struct App {
     followed_peer: Option<String>,
     last_pointer_broadcast: Option<Instant>,
     /// Diffed against, to avoid re-sending unchanged presence every frame.
-    last_focus_presence:
-        Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    last_location_presence:
-        Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    last_focus_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    last_location_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     last_view_presence: Option<crate::view::ViewSubset>,
     /// Fans cursor moves out to libp2p peers too, alongside the Unix-socket
     /// send. Invoked after the throttle gate.
@@ -453,17 +473,15 @@ impl App {
         };
         let root = self.state.root.clone();
         let before = self.state.doc.get_heads();
-        let consumed = palette.handle_key(
-            event,
-            &self.modifiers,
-            &mut self.state.doc,
-            &root,
-        );
+        let consumed = palette.handle_key(event, &self.modifiers, &mut self.state.doc, &root);
         // An action row may have fired: drain + dispatch through qos_actions.
-        let dispatched = self
-            .action_palette
-            .as_mut()
-            .and_then(|p| p.take_dispatch(&mut self.state.doc, &self.action_registry, self.action_transport.as_mut()));
+        let dispatched = self.action_palette.as_mut().and_then(|p| {
+            p.take_dispatch(
+                &mut self.state.doc,
+                &self.action_registry,
+                self.action_transport.as_mut(),
+            )
+        });
         if let Some(result) = dispatched {
             match result {
                 Ok(d) if d.mutated_local() => {
@@ -477,7 +495,10 @@ impl App {
         }
         // A content row may have fired: hand its id to the app to navigate,
         // recording an undo point only if it mutated the shared doc.
-        let navigation = self.action_palette.as_mut().and_then(|p| p.take_navigation());
+        let navigation = self
+            .action_palette
+            .as_mut()
+            .and_then(|p| p.take_navigation());
         if let Some(action_id) = navigation {
             let nav_before = self.state.doc.get_heads();
             self.root_widget
@@ -539,7 +560,8 @@ impl App {
         for key in ["QOS_A11Y_TEXT_SCALE", "QOS_TEXT_SCALE"] {
             if let Ok(v) = std::env::var(key)
                 && let Ok(f) = v.trim().parse::<f32>()
-                && f.is_finite() && f > 0.0
+                && f.is_finite()
+                && f > 0.0
             {
                 return Some(f);
             }
@@ -553,7 +575,8 @@ impl App {
         for key in ["QOS_UI_SCALE", "QOS_A11Y_UI_SCALE"] {
             if let Ok(v) = std::env::var(key)
                 && let Ok(f) = v.trim().parse::<f32>()
-                && f.is_finite() && f > 0.0
+                && f.is_finite()
+                && f > 0.0
             {
                 return Some(f);
             }
@@ -670,7 +693,9 @@ impl App {
 
     fn announce_current_focus(&mut self) {
         let Some(id) = self.focused_node else { return };
-        let Some(&w_ptr) = self.node_map.get(&id) else { return };
+        let Some(&w_ptr) = self.node_map.get(&id) else {
+            return;
+        };
         // SAFETY: same node_map dereference invariant the rest of `App` relies
         // on — pointers are valid for the duration of an event dispatch (the
         // tree is only rebuilt between frames). Mirrors `navigate_focus`.
@@ -972,10 +997,7 @@ impl App {
                     self.collab_manager.is_connected()
                 );
             }
-            self.broadcast_presence(
-                k,
-                crate::collaboration::PresencePayload::Arrived,
-            );
+            self.broadcast_presence(k, crate::collaboration::PresencePayload::Arrived);
         }
     }
 
@@ -983,8 +1005,12 @@ impl App {
         self.presence_broadcast_scope.as_ref()
     }
 
-    pub fn presence_ctx(&self) -> &PresenceCtx { &self.presence_ctx }
-    pub fn presence_ctx_mut(&mut self) -> &mut PresenceCtx { &mut self.presence_ctx }
+    pub fn presence_ctx(&self) -> &PresenceCtx {
+        &self.presence_ctx
+    }
+    pub fn presence_ctx_mut(&mut self) -> &mut PresenceCtx {
+        &mut self.presence_ctx
+    }
 
     pub fn set_followed_peer(&mut self, user_id: Option<String>) {
         self.followed_peer = user_id;
@@ -1013,7 +1039,9 @@ impl App {
         }
     }
 
-    pub fn permission_ctx(&self) -> &PermissionContext { &self.permission_ctx }
+    pub fn permission_ctx(&self) -> &PermissionContext {
+        &self.permission_ctx
+    }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         self.permission_ctx = ctx;
     }
@@ -1064,11 +1092,15 @@ impl App {
                 Some((new_key, PresencePayload::Caret { pos: new_pos })),
                 Some((old_key, PresencePayload::Caret { pos: old_pos })),
             ) = (&current, &self.last_focus_presence)
-                && new_key == old_key && new_pos > old_pos
+                && new_key == old_key
+                && new_pos > old_pos
             {
                 self.broadcast_presence(
                     new_key.clone(),
-                    PresencePayload::Typing { start: *old_pos, end: *new_pos },
+                    PresencePayload::Typing {
+                        start: *old_pos,
+                        end: *new_pos,
+                    },
                 );
             }
             if let Some((key, payload)) = current.clone() {
@@ -1197,7 +1229,11 @@ impl App {
                     self.presence_ctx
                         .upsert_remote_cursor(user_id, [x, y], None);
                 }
-                CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+                CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    key,
+                    payload,
+                } => {
                     self.apply_remote_presence(user_id, key, payload);
                 }
                 CollabEvent::ActionArrived {
@@ -1265,7 +1301,11 @@ impl App {
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
-                CollabEvent::ScrollbackBatch { artifact: _, ops, exhausted: _ } => {
+                CollabEvent::ScrollbackBatch {
+                    artifact: _,
+                    ops,
+                    exhausted: _,
+                } => {
                     // Broker pre-validated each envelope, trusted the same
                     // way as `SignedCRDTIncremental`.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
@@ -1287,7 +1327,11 @@ impl App {
     #[doc(hidden)]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
         match event {
-            CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+            CollabEvent::RemotePresenceUpdate {
+                user_id,
+                key,
+                payload,
+            } => {
                 self.apply_remote_presence(user_id, key, payload);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
@@ -1301,7 +1345,8 @@ impl App {
                 );
                 entry.x = x;
                 entry.y = y;
-                self.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
+                self.presence_ctx
+                    .upsert_remote_cursor(user_id, [x, y], None);
             }
             CollabEvent::CRDTIncremental { data } => {
                 let _ = self.state.load_incremental(&data);
@@ -1334,8 +1379,15 @@ impl App {
 
     fn update_focusable_order(&mut self) {
         self.focusable_order.clear();
-        fn collect_focusable(node_id: NodeId, widget: &dyn Widget, taffy: &TaffyTree<()>, order: &mut Vec<NodeId>) {
-            if widget.is_focusable() && widget.is_enabled() { order.push(node_id); }
+        fn collect_focusable(
+            node_id: NodeId,
+            widget: &dyn Widget,
+            taffy: &TaffyTree<()>,
+            order: &mut Vec<NodeId>,
+        ) {
+            if widget.is_focusable() && widget.is_enabled() {
+                order.push(node_id);
+            }
             let children = widget.children();
             if let Ok(child_nodes) = taffy.children(node_id) {
                 for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
@@ -1375,7 +1427,12 @@ impl App {
         if let Some(trapped) = trap {
             self.focusable_order = trapped;
         } else {
-            collect_focusable(root, self.root_widget.as_ref(), &self.taffy, &mut self.focusable_order);
+            collect_focusable(
+                root,
+                self.root_widget.as_ref(),
+                &self.taffy,
+                &mut self.focusable_order,
+            );
         }
 
         match (self.focus_trap_active, trap_active) {
@@ -1448,14 +1505,16 @@ impl App {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
                     if let Some(&w_ptr) = self.node_map.get(&id) {
-                        unsafe { (*w_ptr).set_state(&metadata); }
+                        unsafe {
+                            (*w_ptr).set_state(&metadata);
+                        }
                     }
                     self.last_stable_metadata = Some(metadata);
                 }
                 self.last_stable_focus_idx = Some(idx);
             }
-        } else { 
-            self.set_focused_node(None); 
+        } else {
+            self.set_focused_node(None);
             self.last_stable_focus_idx = None;
             self.last_stable_metadata = None;
         }
@@ -1472,9 +1531,13 @@ impl App {
             self.last_stable_metadata.clone(),
             Some(self.local_author.clone()),
         );
-        self.last_stable_focus_idx = self.focused_node.and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+        self.last_stable_focus_idx = self
+            .focused_node
+            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.last_stable_metadata = self.focused_node.and_then(|id| {
-            self.node_map.get(&id).and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
+            self.node_map
+                .get(&id)
+                .and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
         });
 
         // Incremental delta, not the whole document — serialising per
@@ -1491,20 +1554,22 @@ impl App {
             if let Some(old_id) = self.focused_node
                 && let Some(&w_ptr) = self.node_map.get(&old_id)
             {
-                unsafe { (*w_ptr).set_focus(false); }
+                unsafe {
+                    (*w_ptr).set_focus(false);
+                }
             }
             self.focused_node = new_id;
             if let Some(id) = new_id
                 && let Some(&w_ptr) = self.node_map.get(&id)
             {
-                unsafe { (*w_ptr).set_focus(true); }
+                unsafe {
+                    (*w_ptr).set_focus(true);
+                }
                 // Interrupts the previous utterance so rapid arrow/Tab
                 // navigation stays responsive.
                 if self.screen_reader.is_some() {
                     let node = unsafe { (*w_ptr).accessibility() };
-                    if let (Some(node), Some(sr)) =
-                        (node, self.screen_reader.as_mut())
-                    {
+                    if let (Some(node), Some(sr)) = (node, self.screen_reader.as_mut()) {
                         sr.announce_focus(&node);
                     }
                 }
@@ -1525,7 +1590,9 @@ impl App {
     /// Only fires if focus did NOT move — a move is narrated separately by
     /// [`set_focused_node`].
     fn announce_state_change(&mut self, pre: Option<(NodeId, String)>) {
-        let Some((pre_id, pre_state)) = pre else { return };
+        let Some((pre_id, pre_state)) = pre else {
+            return;
+        };
         if self.focused_node != Some(pre_id) {
             return;
         }
@@ -1558,14 +1625,18 @@ impl App {
     /// Typing is left to the widget's own echo so this never double-speaks
     /// an edit.
     fn announce_text_review(&mut self, pre: Option<(NodeId, usize, String)>) {
-        let Some((pre_id, pre_caret, pre_text)) = pre else { return };
+        let Some((pre_id, pre_caret, pre_text)) = pre else {
+            return;
+        };
         if self.focused_node != Some(pre_id) {
             return;
         }
         if self.screen_reader.is_none() {
             return;
         }
-        let Some(&w_ptr) = self.node_map.get(&pre_id) else { return };
+        let Some(&w_ptr) = self.node_map.get(&pre_id) else {
+            return;
+        };
         let Some((now_caret, now_text)) = (unsafe { (*w_ptr).text_review() }) else {
             return;
         };
@@ -1599,10 +1670,7 @@ impl App {
         // A live region without an accessible name can't be tracked stably
         // across frames, so it's skipped.
         let mut seen: Vec<(String, crate::a11y::Politeness, String)> = Vec::new();
-        fn visit(
-            w: &dyn Widget,
-            out: &mut Vec<(String, crate::a11y::Politeness, String)>,
-        ) {
+        fn visit(w: &dyn Widget, out: &mut Vec<(String, crate::a11y::Politeness, String)>) {
             if let Some(node) = w.accessibility()
                 && let (Some(politeness), Some(name)) = (node.live, node.name.clone())
             {
@@ -1627,7 +1695,8 @@ impl App {
         }
         // Drop snapshots for regions that left the tree, so a region that
         // reappears with the same text announces afresh.
-        self.live_region_last.retain(|k, _| current_keys.contains(k));
+        self.live_region_last
+            .retain(|k, _| current_keys.contains(k));
 
         if let Some(sr) = self.screen_reader.as_mut() {
             for (politeness, text) in to_announce {
@@ -1645,18 +1714,32 @@ impl App {
     fn navigate_focus(&mut self, direction: Direction) {
         let current_id = match self.focused_node {
             Some(id) => id,
-            None => { if !self.focusable_order.is_empty() { self.set_focused_node(Some(self.focusable_order[0])); } return; }
+            None => {
+                if !self.focusable_order.is_empty() {
+                    self.set_focused_node(Some(self.focusable_order[0]));
+                }
+                return;
+            }
         };
-        let current_rect = if let Some(&w_ptr) = self.node_map.get(&current_id) { unsafe { (*w_ptr).get_rect() } } else { return; };
+        let current_rect = if let Some(&w_ptr) = self.node_map.get(&current_id) {
+            unsafe { (*w_ptr).get_rect() }
+        } else {
+            return;
+        };
         let current_center = current_rect.center();
         let mut best_candidate = None;
         let mut best_score = f64::MAX;
         for &candidate_id in &self.focusable_order {
-            if candidate_id == current_id { continue; }
+            if candidate_id == current_id {
+                continue;
+            }
             if let Some(&candidate_ptr) = self.node_map.get(&candidate_id) {
                 let candidate_rect = unsafe { (*candidate_ptr).get_rect() };
                 let candidate_center = candidate_rect.center();
-                let vector = vello::kurbo::Vec2::new(candidate_center.x - current_center.x, candidate_center.y - current_center.y);
+                let vector = vello::kurbo::Vec2::new(
+                    candidate_center.x - current_center.x,
+                    candidate_center.y - current_center.y,
+                );
                 let (primary_dist, secondary_dist, in_direction) = match direction {
                     Direction::Up => (-vector.y, vector.x.abs(), vector.y < -1.0),
                     Direction::Down => (vector.y, vector.x.abs(), vector.y > 1.0),
@@ -1665,11 +1748,16 @@ impl App {
                 };
                 if in_direction {
                     let score = primary_dist + (secondary_dist * 2.0);
-                    if score < best_score { best_score = score; best_candidate = Some(candidate_id); }
+                    if score < best_score {
+                        best_score = score;
+                        best_candidate = Some(candidate_id);
+                    }
                 }
             }
         }
-        if let Some(new_id) = best_candidate { self.set_focused_node(Some(new_id)); }
+        if let Some(new_id) = best_candidate {
+            self.set_focused_node(Some(new_id));
+        }
     }
 
     /// Gated on the focus-trap signal, not `modal_capture`: that governs only
@@ -1731,9 +1819,8 @@ impl App {
         let taffy_id = NodeId::from(raw - 1);
         let &w_ptr = self.node_map.get(&taffy_id)?;
 
-        let handled = unsafe {
-            (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root)
-        };
+        let handled =
+            unsafe { (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root) };
         if handled {
             self.needs_sync = true;
             self.layout_dirty = true;
@@ -1849,7 +1936,8 @@ impl App {
             &mut self.node_map,
         ));
         self.update_focusable_order();
-        if self.autofocus_first && self.focused_node.is_none()
+        if self.autofocus_first
+            && self.focused_node.is_none()
             && let Some(&first) = self.focusable_order.first()
         {
             self.set_focused_node(Some(first));
@@ -1881,19 +1969,19 @@ impl App {
     #[doc(hidden)]
     pub fn rebuild_structure(&mut self) {
         // Node ids below are about to be invalidated.
-        let (prev_focus_idx, prev_focus_state, focus_reset) =
-            if self.autofocus_on_structure_change {
-                let idx = self
-                    .focused_node
-                    .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-                let state = self
-                    .focused_node
-                    .and_then(|id| self.node_map.get(&id).copied())
-                    .and_then(|w| unsafe { (*w).get_state() });
-                (idx, state, self.root_widget.take_focus_reset())
-            } else {
-                (None, None, false)
-            };
+        let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
+        {
+            let idx = self
+                .focused_node
+                .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+            let state = self
+                .focused_node
+                .and_then(|id| self.node_map.get(&id).copied())
+                .and_then(|w| unsafe { (*w).get_state() });
+            (idx, state, self.root_widget.take_focus_reset())
+        } else {
+            (None, None, false)
+        };
 
         self.taffy = TaffyTree::new();
         self.node_map.clear();
@@ -1922,7 +2010,9 @@ impl App {
                         && let Some(state) = prev_focus_state.as_deref()
                         && let Some(&w) = self.node_map.get(&id)
                     {
-                        unsafe { (*w).set_state(state); }
+                        unsafe {
+                            (*w).set_state(state);
+                        }
                     }
                 }
             }
@@ -2016,10 +2106,7 @@ impl App {
                 // with a full snapshot, so a window opening a file someone
                 // else is editing hears its existing content too.
                 if let Some(scope) = self.presence_broadcast_scope.clone() {
-                    self.broadcast_presence(
-                        scope,
-                        crate::collaboration::PresencePayload::Arrived,
-                    );
+                    self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
                 true
             }
@@ -2081,9 +2168,7 @@ impl App {
     where
         F: FnOnce(EventLoopProxy<UserEvent>),
     {
-        let event_loop = EventLoop::<UserEvent>::with_user_event()
-            .build()
-            .unwrap();
+        let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
         let proxy = event_loop.create_proxy();
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
@@ -2238,7 +2323,9 @@ impl AppHandler {
         let configure_scope = device_handle
             .device
             .push_error_scope(vello::wgpu::ErrorFilter::Validation);
-        surface.surface.configure(&device_handle.device, &surface.config);
+        surface
+            .surface
+            .configure(&device_handle.device, &surface.config);
         if let Some(err) = pollster::block_on(configure_scope.pop()) {
             return Err(format!("could not configure the drawing surface: {err}"));
         }
@@ -2263,7 +2350,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     // DeviceId is opaque and the dispatch chain never inspects it (same
     // trick `shell::compositor::native` uses headless).
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
-        let Some(window) = self.window.as_ref().cloned() else { return };
+        let Some(window) = self.window.as_ref().cloned() else {
+            return;
+        };
         let window_id = window.id();
         match event {
             UserEvent::Hover { x, y } => {
@@ -2349,13 +2438,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             window.request_redraw();
                         }
                     }
-                    AkWindowEvent::AccessibilityDeactivated => {
-                    }
+                    AkWindowEvent::AccessibilityDeactivated => {}
                 }
             }
         }
     }
-
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Can fire more than once (suspend/resume on mobile).
@@ -2520,8 +2607,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // outgoing one's.
                 app.record_tick();
 
-                let __prof_frame_start =
-                    app.profiler.as_ref().map(|_| std::time::Instant::now());
+                let __prof_frame_start = app.profiler.as_ref().map(|_| std::time::Instant::now());
                 if app.needs_sync {
                     app.root_widget.sync(&mut app.state.doc, &app.state.root);
                     app.needs_sync = false;
@@ -2549,7 +2635,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
 
                 let perf = perf_enabled();
-                let t_frame_start = if perf { Some(std::time::Instant::now()) } else { None };
+                let t_frame_start = if perf {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 let mut t_compute_us = 0u128;
                 let mut t_apply_us = 0u128;
                 let mut t_relayout_branch = false;
@@ -2582,7 +2672,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                 },
                                 |known, available, node_id, _, _| {
                                     if let Some(&widget_ptr) = node_map.get(&node_id) {
-                                        unsafe { (*widget_ptr).measure(known, available, text_renderer) }
+                                        unsafe {
+                                            (*widget_ptr).measure(known, available, text_renderer)
+                                        }
                                     } else {
                                         taffy::Size::ZERO
                                     }
@@ -2617,7 +2709,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                let t_draw_start = if perf { Some(std::time::Instant::now()) } else { None };
+                let t_draw_start = if perf {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 // Widget rects are logical; this transform rasterises at the
                 // physical resolution, so the frame stays crisp at any
                 // fractional scale.
@@ -2763,7 +2859,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     ) {
                         let rect = widget.get_rect();
                         let color = cycle[depth % 3];
-                        scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, color, None, &rect);
+                        scene.stroke(
+                            &vello::kurbo::Stroke::new(1.5),
+                            transform,
+                            color,
+                            None,
+                            &rect,
+                        );
                         let label = format!("{}: {}", widget.name(), depth);
                         let text_y = (rect.y0 + 12.0).min(rect.y1);
                         let bg_rect =
@@ -2842,8 +2944,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let t_send_us = t_frame_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
                 if let Some(_start) = t_frame_start {
                     // On a static frame this reads `shape=0us hit=N miss=0`.
-                    let (shape_hits, shape_misses, shape_ns) =
-                        app.text_renderer.take_shape_stats();
+                    let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
                     crate::diag!(
                         "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
                         t_send_us,
@@ -2877,7 +2978,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         tracing::debug!(?state, ?button, "App::window_event MouseInput");
                     }
                     WindowEvent::CursorMoved { position, .. } => {
-                        tracing::trace!(x = position.x, y = position.y, "App::window_event CursorMoved");
+                        tracing::trace!(
+                            x = position.x,
+                            y = position.y,
+                            "App::window_event CursorMoved"
+                        );
                     }
                     WindowEvent::KeyboardInput { event: ke, .. } => {
                         tracing::debug!(key = ?ke.logical_key, state = ?ke.state, "App::window_event KeyboardInput");
@@ -2976,7 +3081,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
-                                logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12),
+                                logical_key:
+                                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12),
                                 state: winit::event::ElementState::Pressed,
                                 ..
                             },
@@ -2987,7 +3093,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     handled = true;
                 }
 
-                if !handled && app.modifiers.state().control_key()
+                if !handled
+                    && app.modifiers.state().control_key()
                     && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
@@ -3055,11 +3162,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                if !handled && app.keyboard_nav_allowed(modal_rect)
+                if !handled
+                    && app.keyboard_nav_allowed(modal_rect)
                     && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
-                                logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                                logical_key:
+                                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
                                 state: winit::event::ElementState::Pressed,
                                 ..
                             },
@@ -3088,9 +3197,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
                         _ => None,
                     };
-                    if let (Some(d), true, true) =
-                        (dir, app.modifiers.state().alt_key(), app.keyboard_nav_allowed(modal_rect))
-                    {
+                    if let (Some(d), true, true) = (
+                        dir,
+                        app.modifiers.state().alt_key(),
+                        app.keyboard_nav_allowed(modal_rect),
+                    ) {
                         app.navigate_focus(d);
                         handled = true;
                     }
@@ -3102,8 +3213,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     let map_phase = |p: winit::event::TouchPhase| match p {
                         winit::event::TouchPhase::Started => GesturePhase::Begin,
                         winit::event::TouchPhase::Moved => GesturePhase::Update,
-                        winit::event::TouchPhase::Ended
-                        | winit::event::TouchPhase::Cancelled => GesturePhase::End,
+                        winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                            GesturePhase::End
+                        }
                     };
                     let nav = match &event {
                         WindowEvent::MouseWheel { delta, phase, .. } => {
@@ -3113,11 +3225,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                     (*x as f64, *y as f64, false)
                                 }
                             };
-                            app.nav_gestures.on_scroll(dx, dy, map_phase(*phase), precise)
+                            app.nav_gestures
+                                .on_scroll(dx, dy, map_phase(*phase), precise)
                         }
-                        WindowEvent::PanGesture { delta, phase, .. } => app
-                            .nav_gestures
-                            .on_scroll(delta.x as f64, delta.y as f64, map_phase(*phase), true),
+                        WindowEvent::PanGesture { delta, phase, .. } => app.nav_gestures.on_scroll(
+                            delta.x as f64,
+                            delta.y as f64,
+                            map_phase(*phase),
+                            true,
+                        ),
                         WindowEvent::Touch(t) => {
                             let width = window.inner_size().width as f64;
                             app.nav_gestures.on_touch(
@@ -3149,7 +3265,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     let root_node = app.root_node.unwrap();
                     let was_mouse_click = matches!(
                         event,
-                        WindowEvent::MouseInput { state: winit::event::ElementState::Pressed, .. }
+                        WindowEvent::MouseInput {
+                            state: winit::event::ElementState::Pressed,
+                            ..
+                        }
                     );
                     app.root_widget.handle_event(
                         &event,
@@ -3264,11 +3383,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         let mut any = false;
                         for _ in 0..times {
                             any |= unsafe {
-                                (*w_ptr).perform_action(
-                                    &act,
-                                    &mut app.state.doc,
-                                    &app.state.root,
-                                )
+                                (*w_ptr).perform_action(&act, &mut app.state.doc, &app.state.root)
                             };
                         }
                         if any {
@@ -3279,7 +3394,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                if !handled && app.keyboard_nav_allowed(modal_rect)
+                if !handled
+                    && app.keyboard_nav_allowed(modal_rect)
                     && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
@@ -3353,9 +3469,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 if let WindowEvent::CursorMoved { position, .. } = &event {
                     let scale = window.scale_factor();
                     let logical = Point::new(position.x / scale, position.y / scale);
-                    let desired = app
-                        .resolve_cursor(logical)
-                        .unwrap_or(CursorIcon::Default);
+                    let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
                     if app.current_cursor != desired {
                         app.current_cursor = desired;
                         window.set_cursor(desired);
@@ -3370,8 +3484,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
                 if matches!(
                     &event,
-                    WindowEvent::MouseInput { state: ElementState::Pressed, .. }
-                        | WindowEvent::MouseWheel { .. }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        ..
+                    } | WindowEvent::MouseWheel { .. }
                         | WindowEvent::KeyboardInput { .. }
                         | WindowEvent::CursorLeft { .. }
                 ) && app.tooltip_host.dismiss()
@@ -3543,7 +3659,12 @@ mod window_title_tests {
 
     #[test]
     fn package_id_falls_back_to_humanized_last_segment() {
-        let t = resolve_title_from(None, None, Some("dev.qos.file-explorer"), Some("file-explorer"));
+        let t = resolve_title_from(
+            None,
+            None,
+            Some("dev.qos.file-explorer"),
+            Some("file-explorer"),
+        );
         assert_eq!(t, "File Explorer");
         assert_ne!(t, "QuickUI App");
     }
@@ -3652,7 +3773,11 @@ mod pointer_broadcast_tests {
     #[test]
     fn pointer_broadcast_allowed_first_call_always_passes() {
         let now = Instant::now();
-        assert!(pointer_broadcast_allowed(None, now, Duration::from_millis(33)));
+        assert!(pointer_broadcast_allowed(
+            None,
+            now,
+            Duration::from_millis(33)
+        ));
     }
 
     #[test]
@@ -3689,9 +3814,7 @@ mod pointer_broadcast_tests {
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(state, root);
         app.last_pointer_broadcast = Some(Instant::now());
-        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
-            id: "home".into(),
-        }));
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: "home".into() }));
         assert!(
             app.last_pointer_broadcast.is_none(),
             "scope change must clear the throttle so the next move broadcasts immediately"
@@ -3740,7 +3863,9 @@ mod pointer_broadcast_tests {
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert_eq!(
             app.presence_broadcast_scope(),
-            Some(&PresenceKey::Workspace { id: room.to_string() }),
+            Some(&PresenceKey::Workspace {
+                id: room.to_string()
+            }),
             "a workspace in the environment is a scope, with no app-side call"
         );
         unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
@@ -3785,7 +3910,7 @@ mod pointer_broadcast_tests {
     #[test]
     fn crdt_update_merges_not_replaces() {
         use automerge::transaction::Transactable;
-        use automerge::{ObjType, ReadDoc, ROOT};
+        use automerge::{ObjType, ROOT, ReadDoc};
         let mut base = automerge::AutoCommit::new();
         let m = base.put_object(&ROOT, "m", ObjType::Map).unwrap();
         base.put(&m, "x", 1).unwrap();
@@ -3819,7 +3944,10 @@ mod pointer_broadcast_tests {
             Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
             _ => panic!("m exists"),
         };
-        assert!(doc.get(&m, "a").unwrap().is_some(), "local edit survives merge");
+        assert!(
+            doc.get(&m, "a").unwrap().is_some(),
+            "local edit survives merge"
+        );
         assert!(doc.get(&m, "b").unwrap().is_some(), "remote edit merged in");
         assert!(doc.get(&m, "x").unwrap().is_some(), "base value present");
     }
@@ -3870,7 +3998,11 @@ mod pointer_broadcast_tests {
             PresenceKey::Workspace { id: "x".into() },
             PresencePayload::Arrived,
         );
-        assert_eq!(*count.lock().unwrap(), 1, "sink fires before clear, never after");
+        assert_eq!(
+            *count.lock().unwrap(),
+            1,
+            "sink fires before clear, never after"
+        );
     }
 }
 
@@ -4015,7 +4147,9 @@ mod rebuild_focus_tests {
         app.init_layout();
 
         let id = app.focused_node.expect("input focused at startup");
-        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("3"); }
+        unsafe {
+            (*(*app.node_map.get(&id).unwrap())).set_state("3");
+        }
         assert_eq!(caret(&app).as_deref(), Some("3"));
 
         // Triggers a structural rebuild that recreates the input as a fresh
@@ -4031,7 +4165,11 @@ mod rebuild_focus_tests {
             Some("3"),
             "caret offset must be preserved across the rebuild"
         );
-        assert_eq!(app.root_widget.children().len(), 2, "status sibling appeared");
+        assert_eq!(
+            app.root_widget.children().len(),
+            2,
+            "status sibling appeared"
+        );
         assert_eq!(app.focusable_order.len(), 1, "status is non-focusable");
     }
 
@@ -4043,7 +4181,9 @@ mod rebuild_focus_tests {
         app.init_layout();
 
         let id = app.focused_node.unwrap();
-        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("3"); }
+        unsafe {
+            (*(*app.node_map.get(&id).unwrap())).set_state("3");
+        }
 
         let mut tmp = AutoCommit::new();
         app.root_widget
@@ -4082,10 +4222,10 @@ mod screen_reader_tests {
     use super::*;
     use crate::screen_reader::ScreenReader;
     use crate::widget::{Button, Widget};
-    use tts::{NullSpeaker, Speaker, Utterance};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
+    use tts::{NullSpeaker, Speaker, Utterance};
 
     #[derive(Clone, Default)]
     struct SharedRecorder(Rc<RefCell<NullSpeaker>>);
@@ -4142,7 +4282,9 @@ mod screen_reader_tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &kids)
+                .unwrap();
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -4173,7 +4315,10 @@ mod screen_reader_tests {
             self.kids.iter().map(|c| c.as_ref()).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            self.kids.iter_mut().map(|c| &mut **c as &mut (dyn Widget + '_)).collect()
+            self.kids
+                .iter_mut()
+                .map(|c| &mut **c as &mut (dyn Widget + '_))
+                .collect()
         }
         fn name(&self) -> &str {
             "two-buttons"
@@ -4222,7 +4367,10 @@ mod screen_reader_tests {
         assert!(app.screen_reader_enabled());
         app.set_screen_reader_enabled(false);
         assert!(!app.screen_reader_enabled());
-        assert!(rec.0.borrow().stop_count() >= 1, "disabling stops in-flight speech");
+        assert!(
+            rec.0.borrow().stop_count() >= 1,
+            "disabling stops in-flight speech"
+        );
         let before = rec.0.borrow().spoken().len();
         let second = app.focusable_order[1];
         let ak_id = accesskit::NodeId(u64::from(second) + 1);
@@ -4371,7 +4519,10 @@ mod screen_reader_tests {
             Some("Notifications, group, File saved"),
             "the changed live text is announced (name, role, value)"
         );
-        assert_eq!(app.focused_node, focus_before, "live region must not move focus");
+        assert_eq!(
+            app.focused_node, focus_before,
+            "live region must not move focus"
+        );
 
         rec.0.borrow_mut().reset();
         app.scan_live_regions();
@@ -4389,7 +4540,10 @@ mod screen_reader_tests {
         *val.borrow_mut() = "Permission denied".to_string();
         app.scan_live_regions();
         let recref = rec.0.borrow();
-        let last = recref.utterances().last().expect("an utterance was recorded");
+        let last = recref
+            .utterances()
+            .last()
+            .expect("an utterance was recorded");
         assert_eq!(last.priority, tts::Priority::Important);
         assert!(last.interrupt, "assertive live regions interrupt");
     }
@@ -4402,7 +4556,10 @@ mod screen_reader_tests {
         *val.borrow_mut() = "Uploading, 40%".to_string();
         app.scan_live_regions();
         let recref = rec.0.borrow();
-        let last = recref.utterances().last().expect("an utterance was recorded");
+        let last = recref
+            .utterances()
+            .last()
+            .expect("an utterance was recorded");
         assert_eq!(last.priority, tts::Priority::Notification);
         assert!(!last.interrupt, "polite live regions do not interrupt");
     }
@@ -4437,9 +4594,15 @@ mod screen_reader_tests {
         let pre = app.text_review_snapshot();
         assert!(pre.is_some(), "focused text input yields a review snapshot");
         rec.0.borrow_mut().reset(); // forget the autofocus narration
-        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("2"); }
+        unsafe {
+            (*(*app.node_map.get(&id).unwrap())).set_state("2");
+        }
         app.announce_text_review(pre);
-        assert_eq!(rec.0.borrow().last(), Some("c"), "single-step move echoes the char");
+        assert_eq!(
+            rec.0.borrow().last(),
+            Some("c"),
+            "single-step move echoes the char"
+        );
     }
 
     #[test]
@@ -4447,9 +4610,15 @@ mod screen_reader_tests {
         let (mut app, rec, id) = app_with_focused_input("hello world");
         let pre = app.text_review_snapshot();
         rec.0.borrow_mut().reset(); // forget the autofocus narration
-        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("0"); }
+        unsafe {
+            (*(*app.node_map.get(&id).unwrap())).set_state("0");
+        }
         app.announce_text_review(pre);
-        assert_eq!(rec.0.borrow().last(), Some("hello"), "a long jump echoes the word");
+        assert_eq!(
+            rec.0.borrow().last(),
+            Some("hello"),
+            "a long jump echoes the word"
+        );
     }
 
     #[test]
@@ -4458,7 +4627,10 @@ mod screen_reader_tests {
         let pre = app.text_review_snapshot();
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         app.announce_text_review(pre);
-        assert!(rec.0.borrow().spoken().is_empty(), "no move, no announcement");
+        assert!(
+            rec.0.borrow().spoken().is_empty(),
+            "no move, no announcement"
+        );
     }
 
     #[test]
@@ -4515,7 +4687,9 @@ mod focus_trap_tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &kids)
+                .unwrap();
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -4546,7 +4720,10 @@ mod focus_trap_tests {
             self.kids.iter().map(|c| c.as_ref()).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            self.kids.iter_mut().map(|c| &mut **c as &mut (dyn Widget + '_)).collect()
+            self.kids
+                .iter_mut()
+                .map(|c| &mut **c as &mut (dyn Widget + '_))
+                .collect()
         }
         fn name(&self) -> &str {
             "two-kids"
@@ -4596,7 +4773,9 @@ mod focus_trap_tests {
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
             kids.push(self.modal.build_layout(taffy, theme, node_map));
-            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &kids)
+                .unwrap();
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -4694,8 +4873,7 @@ mod focus_trap_tests {
         app.refresh_focus_order();
         assert!(app.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
-        let modal_set: std::collections::HashSet<_> =
-            app.focusable_order.iter().copied().collect();
+        let modal_set: std::collections::HashSet<_> = app.focusable_order.iter().copied().collect();
         let first = app.focusable_order[0];
         let second = app.focusable_order[1];
 
@@ -4708,12 +4886,24 @@ mod focus_trap_tests {
 
         app.set_focused_node(Some(first));
         assert!(app.focus_tab(false), "Tab moves focus");
-        assert_eq!(app.focused_node, Some(second), "Tab advances within the modal");
+        assert_eq!(
+            app.focused_node,
+            Some(second),
+            "Tab advances within the modal"
+        );
         assert!(modal_set.contains(&second));
         assert!(app.focus_tab(false));
-        assert_eq!(app.focused_node, Some(first), "Tab from the last wraps to the first");
+        assert_eq!(
+            app.focused_node,
+            Some(first),
+            "Tab from the last wraps to the first"
+        );
         assert!(app.focus_tab(true));
-        assert_eq!(app.focused_node, Some(second), "Shift+Tab from the first wraps to the last");
+        assert_eq!(
+            app.focused_node,
+            Some(second),
+            "Shift+Tab from the first wraps to the last"
+        );
         assert!(
             modal_set.contains(&app.focused_node.unwrap()),
             "Shift+Tab stays inside the modal subtree"
@@ -4727,7 +4917,10 @@ mod focus_trap_tests {
         let (mut app, _open) = host_app();
         app.init_layout();
         assert!(!app.focus_trap_active);
-        assert!(app.keyboard_nav_allowed(None), "with no modal, Tab runs normally");
+        assert!(
+            app.keyboard_nav_allowed(None),
+            "with no modal, Tab runs normally"
+        );
         assert!(
             !app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 10.0, 10.0))),
             "a pointer-capturing surface with no focus trap suppresses App-level Tab"
@@ -4748,7 +4941,10 @@ mod focus_trap_tests {
 
         open.set(false);
         app.refresh_focus_order();
-        assert!(!app.focus_trap_active, "trap released when the modal closes");
+        assert!(
+            !app.focus_trap_active,
+            "trap released when the modal closes"
+        );
         assert_eq!(
             app.focused_node,
             Some(outer),
@@ -4806,7 +5002,10 @@ mod low_vision_tests {
         assert!(!now_off);
         assert!(!a.high_contrast());
         let restored = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
-        assert!((restored - plain_ratio).abs() < 1e-6, "off restores base colours");
+        assert!(
+            (restored - plain_ratio).abs() < 1e-6,
+            "off restores base colours"
+        );
     }
 
     #[test]
@@ -4826,7 +5025,11 @@ mod low_vision_tests {
         a.set_text_scale(1.5);
         let hc_base = Theme::high_contrast().tokens.typography.scale.base;
         a.set_high_contrast(true);
-        assert_eq!(a.text_scale(), 1.5, "scale preference is preserved across the swap");
+        assert_eq!(
+            a.text_scale(),
+            1.5,
+            "scale preference is preserved across the swap"
+        );
         assert!((a.theme.tokens.typography.scale.base - hc_base * 1.5).abs() < 1e-3);
         assert_eq!(a.theme.name, "High Contrast");
     }
@@ -4837,7 +5040,10 @@ mod low_vision_tests {
         assert!(!a.theme.reduce_motion);
         a.set_reduce_motion(true);
         assert!(a.reduce_motion());
-        assert!(a.theme.reduce_motion, "the flag reaches the theme widgets draw against");
+        assert!(
+            a.theme.reduce_motion,
+            "the flag reaches the theme widgets draw against"
+        );
         a.set_reduce_motion(false);
         assert!(!a.theme.reduce_motion);
     }
@@ -4864,9 +5070,18 @@ mod low_vision_tests {
         let base_type = a.theme.tokens.typography.scale.base;
         a.set_ui_scale(1.5);
         assert_eq!(a.ui_scale(), 1.5);
-        assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-3, "spacing grows");
-        assert!((a.theme.tokens.radii.md - base_radius * 1.5).abs() < 1e-3, "radii grow");
-        assert!((a.theme.tokens.typography.scale.base - base_type * 1.5).abs() < 1e-3, "type grows");
+        assert!(
+            (a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-3,
+            "spacing grows"
+        );
+        assert!(
+            (a.theme.tokens.radii.md - base_radius * 1.5).abs() < 1e-3,
+            "radii grow"
+        );
+        assert!(
+            (a.theme.tokens.typography.scale.base - base_type * 1.5).abs() < 1e-3,
+            "type grows"
+        );
         // A UI-scale change must re-run layout so the whole interface re-flows.
         assert!(a.layout_dirty);
     }
@@ -4891,7 +5106,11 @@ mod low_vision_tests {
         a.set_ui_scale(1.5);
         let hc_gap = Theme::high_contrast().tokens.spacing.s3;
         a.set_high_contrast(true);
-        assert_eq!(a.ui_scale(), 1.5, "UI-scale preference is preserved across the swap");
+        assert_eq!(
+            a.ui_scale(),
+            1.5,
+            "UI-scale preference is preserved across the swap"
+        );
         assert!((a.theme.tokens.spacing.s3 - hc_gap * 1.5).abs() < 1e-2);
         assert_eq!(a.theme.name, "High Contrast");
     }
@@ -4920,7 +5139,8 @@ mod low_vision_tests {
             _tr: &mut TextRenderer,
             _theme: &Theme,
             _p: &crate::presence::PresenceCtx,
-        ) {}
+        ) {
+        }
         #[allow(clippy::too_many_arguments)]
         fn handle_event(
             &mut self,
@@ -4933,15 +5153,25 @@ mod low_vision_tests {
             _ft: &mut Option<NodeId>,
             _n: NodeId,
             _t: &TaffyTree<()>,
-        ) {}
+        ) {
+        }
         fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
             Some(self.intent.clone())
         }
-        fn name(&self) -> &str { "AppearanceRoot" }
-        fn get_rect(&self) -> vello::kurbo::Rect { vello::kurbo::Rect::ZERO }
+        fn name(&self) -> &str {
+            "AppearanceRoot"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
     }
 
-    fn intent(theme: Theme, ui_scale: f32, text_scale: f32, high_contrast: bool) -> crate::theme::AppearanceIntent {
+    fn intent(
+        theme: Theme,
+        ui_scale: f32,
+        text_scale: f32,
+        high_contrast: bool,
+    ) -> crate::theme::AppearanceIntent {
         crate::theme::AppearanceIntent {
             base_theme: theme,
             high_contrast,
@@ -4953,7 +5183,9 @@ mod low_vision_tests {
 
     #[test]
     fn appearance_reconcile_off_is_a_noop() {
-        let root = AppearanceRoot { intent: intent(Theme::nord(), 1.5, 1.3, true) };
+        let root = AppearanceRoot {
+            intent: intent(Theme::nord(), 1.5, 1.3, true),
+        };
         let mut a = App::new(State::new(), Box::new(root));
         assert!(!a.reconcile_appearance());
         assert_eq!(a.theme.name, "Dark");
@@ -4965,19 +5197,30 @@ mod low_vision_tests {
         let base_gap = Theme::high_contrast().tokens.spacing.s3;
         let base_type = Theme::high_contrast().tokens.typography.scale.base;
         // Nord base + high_contrast=true → high-contrast track wins; ui 1.5, text 1.2.
-        let root = AppearanceRoot { intent: intent(Theme::nord(), 1.5, 1.2, true) };
+        let root = AppearanceRoot {
+            intent: intent(Theme::nord(), 1.5, 1.2, true),
+        };
         let mut a = App::new(State::new(), Box::new(root));
         a.appearance_reconcile = true;
-        assert!(a.reconcile_appearance(), "first reconcile applies the intent");
+        assert!(
+            a.reconcile_appearance(),
+            "first reconcile applies the intent"
+        );
         assert_eq!(a.ui_scale(), 1.5);
         assert_eq!(a.text_scale(), 1.2);
         assert!(a.high_contrast());
-        assert_eq!(a.theme.name, "High Contrast", "high_contrast overrides the Nord base");
+        assert_eq!(
+            a.theme.name, "High Contrast",
+            "high_contrast overrides the Nord base"
+        );
         // Spacing grew by the UI factor; type by UI × text.
         assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
         assert!((a.theme.tokens.typography.scale.base - base_type * 1.5 * 1.2).abs() < 1e-1);
         assert!(a.layout_dirty, "a live appearance change re-runs layout");
-        assert!(!a.reconcile_appearance(), "unchanged intent does not re-theme");
+        assert!(
+            !a.reconcile_appearance(),
+            "unchanged intent does not re-theme"
+        );
     }
 }
 
@@ -5002,7 +5245,11 @@ mod fullscreen_tests {
         fn new(want: Option<bool>) -> (Self, Rc<RefCell<Vec<bool>>>) {
             let changes = Rc::new(RefCell::new(Vec::new()));
             (
-                Self { want, rect: Rect::ZERO, changes: changes.clone() },
+                Self {
+                    want,
+                    rect: Rect::ZERO,
+                    changes: changes.clone(),
+                },
                 changes,
             )
         }
@@ -5097,7 +5344,7 @@ mod action_palette_tests {
     use super::*;
     use crate::widget::Widget;
     use automerge::transaction::Transactable;
-    use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, ROOT};
+    use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue};
     use qos_actions::{Action, ActionError, ActionSpec, Doc, Resource};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
@@ -5194,7 +5441,8 @@ mod action_palette_tests {
             vec![Box::new(PeopleProvider)]
         }
         fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _p: &ObjId) {
-            doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into())).unwrap();
+            doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
+                .unwrap();
         }
     }
 
@@ -5203,8 +5451,7 @@ mod action_palette_tests {
     fn synth_enter() -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -5255,14 +5502,21 @@ mod action_palette_tests {
             .get(&ROOT, "flipped")
             .unwrap()
             .and_then(|(v, _)| v.to_bool());
-        assert_eq!(flipped, Some(true), "dispatched action set the flag in the CRDT");
+        assert_eq!(
+            flipped,
+            Some(true),
+            "dispatched action set the flag in the CRDT"
+        );
         assert!(
             app.state.peek_last_undo().is_some(),
             "the dispatched action is undoable"
         );
         assert!(app.needs_sync, "dispatch marks the app for re-sync");
         assert!(app.layout_dirty, "dispatch marks the app for relayout");
-        assert!(app.action_palette().is_none(), "palette closed after selection");
+        assert!(
+            app.action_palette().is_none(),
+            "palette closed after selection"
+        );
     }
 
     /// A content row does NOT dispatch — it hands its id back through
@@ -5273,7 +5527,10 @@ mod action_palette_tests {
         app.open_action_palette();
         app.action_palette.as_mut().unwrap().set_query("ada");
         let labels = app.action_palette().unwrap().result_labels();
-        assert!(labels.iter().any(|l| l == "Ada Lovelace"), "content hit present: {labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "Ada Lovelace"),
+            "content hit present: {labels:?}"
+        );
         assert!(
             !labels.iter().any(|l| l.contains("Flip it")),
             "the action row is filtered out by the query: {labels:?}"
@@ -5297,8 +5554,14 @@ mod action_palette_tests {
             Some("person:Ada Lovelace".to_string()),
             "the content row's id reached the app to navigate"
         );
-        assert!(app.action_palette().is_none(), "navigation closes the palette");
-        assert!(app.needs_sync && app.layout_dirty, "navigation marks a redraw");
+        assert!(
+            app.action_palette().is_none(),
+            "navigation closes the palette"
+        );
+        assert!(
+            app.needs_sync && app.layout_dirty,
+            "navigation marks a redraw"
+        );
     }
 }
 
@@ -5392,19 +5655,19 @@ impl crate::view::FreezeThaw for App {
 #[cfg(test)]
 mod view_presence_tests {
     use super::*;
+    use crate::PresenceCtx;
+    use crate::TextRenderer;
+    use crate::Theme;
     use crate::record::{RecordCheckout, RecordId, RecordKind};
     use crate::state::State;
     use crate::view::{FreezeThaw, ViewContribution, ViewSubset};
     use crate::widget::Widget;
-    use crate::PresenceCtx;
-    use crate::TextRenderer;
-    use crate::Theme;
     use automerge::{AutoCommit, ObjId};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use taffy::TaffyTree;
-    use vello::kurbo::{Affine, Point, Rect as KurboRect};
     use vello::Scene;
+    use vello::kurbo::{Affine, Point, Rect as KurboRect};
     use winit::event::WindowEvent;
 
     /// No focus field — [`ViewSubset`] excludes the caret.
@@ -5523,9 +5786,16 @@ mod view_presence_tests {
             Some("file:/report.md"),
             "the open resource rode the frame"
         );
-        assert_eq!(sent.view_mode.as_deref(), Some("grid"), "view mode rode the frame");
+        assert_eq!(
+            sent.view_mode.as_deref(),
+            Some("grid"),
+            "view mode rode the frame"
+        );
         assert_eq!(sent.viewport.width, 1024.0, "viewport width rode the frame");
-        assert_eq!(sent.viewport.height, 768.0, "viewport height rode the frame");
+        assert_eq!(
+            sent.viewport.height, 768.0,
+            "viewport height rode the frame"
+        );
 
         let mut receiver = app_with_root(ViewRoot::new());
         assert!(
@@ -5545,7 +5815,10 @@ mod view_presence_tests {
             .presence_ctx()
             .peer_view(&crate::permissions::UserId("alice".into()))
             .expect("the peer's View is stored after their broadcast");
-        assert_eq!(peer_view, &sent, "the receiver stores the peer's exact View subset");
+        assert_eq!(
+            peer_view, &sent,
+            "the receiver stores the peer's exact View subset"
+        );
 
         // The inert carrier payload must not be processed as a real Arrived.
         assert!(
@@ -5581,8 +5854,16 @@ mod view_presence_tests {
 
         app.follow("bob");
         let v = <App as FreezeThaw>::capture_view(&app);
-        assert_eq!(v.scroll, vec![100.0], "follow moved the local view to the peer's scroll");
-        assert_eq!(v.view_mode.as_deref(), Some("list"), "follow adopted the peer's view mode");
+        assert_eq!(
+            v.scroll,
+            vec![100.0],
+            "follow moved the local view to the peer's scroll"
+        );
+        assert_eq!(
+            v.view_mode.as_deref(),
+            Some("list"),
+            "follow adopted the peer's view mode"
+        );
 
         deliver(&mut app, "bob", vec![250.0], "board");
         assert_eq!(
@@ -5612,8 +5893,16 @@ mod view_presence_tests {
         app.follow("ghost");
 
         let v = <App as FreezeThaw>::capture_view(&app);
-        assert_eq!(v.scroll, vec![7.0], "following an absent peer leaves the local view untouched");
-        assert_eq!(app.followed_peer(), Some("ghost"), "the follow intent is still latched");
+        assert_eq!(
+            v.scroll,
+            vec![7.0],
+            "following an absent peer leaves the local view untouched"
+        );
+        assert_eq!(
+            app.followed_peer(),
+            Some("ghost"),
+            "the follow intent is still latched"
+        );
     }
 }
 
@@ -5624,7 +5913,7 @@ mod semantic_tree_app_tests {
     use crate::state::State;
     use crate::widget::{Button, Widget};
     use automerge::transaction::Transactable;
-    use automerge::{ReadDoc, ScalarValue, Value, ROOT};
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
     use qos_actions::{
         Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
     };
@@ -5666,7 +5955,9 @@ mod semantic_tree_app_tests {
     }
     impl CounterCard {
         fn new() -> Self {
-            Self { button: Button::new("bump", "Bump", None) }
+            Self {
+                button: Button::new("bump", "Bump", None),
+            }
         }
     }
     impl Widget for CounterCard {
@@ -5680,7 +5971,9 @@ mod semantic_tree_app_tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let kid = self.button.build_layout(taffy, theme, node_map);
-            let node = taffy.new_with_children(taffy::Style::default(), &[kid]).unwrap();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &[kid])
+                .unwrap();
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -5720,28 +6013,34 @@ mod semantic_tree_app_tests {
             KurboRect::ZERO
         }
         fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
-            vec![Resource::new("test.counter", "test.counter", "Counter")
-                .with_action(
-                    ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
-                        .unwrap(),
-                )
-                .with_action(ActionSpec::prompted(
-                    "set-label",
-                    "Set label",
-                    "Label",
-                    "name…",
-                    ExecutionLocus::ClientLocal,
-                    |s: &str| {
-                        EncodedAction::encode(COUNTER_TYPE, &CounterAction::SetLabel(s.to_string()))
+            vec![
+                Resource::new("test.counter", "test.counter", "Counter")
+                    .with_action(
+                        ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
+                            .unwrap(),
+                    )
+                    .with_action(ActionSpec::prompted(
+                        "set-label",
+                        "Set label",
+                        "Label",
+                        "name…",
+                        ExecutionLocus::ClientLocal,
+                        |s: &str| {
+                            EncodedAction::encode(
+                                COUNTER_TYPE,
+                                &CounterAction::SetLabel(s.to_string()),
+                            )
                             .unwrap()
-                    },
-                ))]
+                        },
+                    )),
+            ]
         }
     }
 
     fn app() -> App {
         let mut app = App::new(State::new(), Box::new(CounterCard::new()));
-        app.action_registry_mut().register::<CounterAction>(COUNTER_TYPE);
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
         app
     }
@@ -5771,7 +6070,10 @@ mod semantic_tree_app_tests {
             .node(&SemanticId("r:test.counter".into()))
             .expect("the app's open resource is a semantic node");
         assert_eq!(node.name.as_deref(), Some("Counter"));
-        assert!(node.action("bump").is_some(), "the resource's action is an affordance");
+        assert!(
+            node.action("bump").is_some(),
+            "the resource's action is an affordance"
+        );
         assert!(node.action("set-label").is_some());
         // The root owns it (resources hang off the window root).
         let root = tree.node(tree.root()).unwrap();
@@ -5782,9 +6084,13 @@ mod semantic_tree_app_tests {
     fn identity_is_stable_across_refreshes() {
         let mut app = app();
         app.refresh_semantic_tree();
-        let ids_before: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
+        let ids_before: Vec<SemanticId> =
+            app.semantic_tree().iter().map(|n| n.id.clone()).collect();
         let delta = app.refresh_semantic_tree();
-        assert!(delta.is_empty(), "a stable frame yields no delta, got {delta:?}");
+        assert!(
+            delta.is_empty(),
+            "a stable frame yields no delta, got {delta:?}"
+        );
         let ids_after: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
         assert_eq!(ids_before, ids_after, "node identity survives a refresh");
     }
@@ -5801,7 +6107,10 @@ mod semantic_tree_app_tests {
         let mut host = crate::action_host::ActionHost::new();
         let mut host_doc = automerge::AutoCommit::new();
         host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
-        let from_affordance = host.last_dispatched().expect("the affordance dispatched").clone();
+        let from_affordance = host
+            .last_dispatched()
+            .expect("the affordance dispatched")
+            .clone();
 
         match &bump.kind {
             SemanticActionKind::App(enc) => assert_eq!(
@@ -5820,7 +6129,11 @@ mod semantic_tree_app_tests {
         assert_eq!(counter(&app), 0);
 
         assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
-        assert_eq!(counter(&app), 1, "the invoked action mutated the shared doc");
+        assert_eq!(
+            counter(&app),
+            1,
+            "the invoked action mutated the shared doc"
+        );
         assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
         assert_eq!(counter(&app), 2);
 
@@ -5834,15 +6147,23 @@ mod semantic_tree_app_tests {
         let mut app = app();
         app.refresh_semantic_tree();
         let id = SemanticId("r:test.counter".into());
-        assert!(app.invoke_semantic_action(&id, "set-label", Some("hello")).unwrap());
-        assert_eq!(label(&app), "hello", "the prompted argument reached the built action");
+        assert!(
+            app.invoke_semantic_action(&id, "set-label", Some("hello"))
+                .unwrap()
+        );
+        assert_eq!(
+            label(&app),
+            "hello",
+            "the prompted argument reached the built action"
+        );
     }
 
     #[test]
     fn invoke_matches_a_direct_affordance_dispatch_byte_for_byte() {
         let mut app = app();
         app.refresh_semantic_tree();
-        app.invoke_semantic_action(&SemanticId("r:test.counter".into()), "bump", None).unwrap();
+        app.invoke_semantic_action(&SemanticId("r:test.counter".into()), "bump", None)
+            .unwrap();
 
         let mut host = crate::action_host::ActionHost::new();
         let mut host_doc = automerge::AutoCommit::new();
@@ -5853,6 +6174,9 @@ mod semantic_tree_app_tests {
             Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
             _ => 0,
         };
-        assert_eq!(via_a11y, via_affordance, "both paths produce the same result");
+        assert_eq!(
+            via_a11y, via_affordance,
+            "both paths produce the same result"
+        );
     }
 }

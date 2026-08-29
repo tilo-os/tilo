@@ -415,7 +415,7 @@ pub struct ChordMods {
 }
 
 impl ChordMods {
-/// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`crate::network::streaming::InputEvent::Key`].
+    /// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`crate::network::streaming::InputEvent::Key`].
     pub fn from_xkb_bits(bits: u32) -> Self {
         Self {
             shift: bits & 0x1 != 0,
@@ -818,7 +818,7 @@ fn event_time(state: &State) -> u32 {
 }
 
 impl State {
-/// Point the seat's keyboard at `surface_id` (or nothing when `None`), sending `leave`/`enter` and the keymap; idempotent, so the run loop can call it unconditionally every tick.
+    /// Point the seat's keyboard at `surface_id` (or nothing when `None`), sending `leave`/`enter` and the keymap; idempotent, so the run loop can call it unconditionally every tick.
     pub fn set_client_keyboard_focus(&mut self, surface_id: Option<u64>) {
         if self.client_input.keyboard_focus == surface_id {
             return;
@@ -837,20 +837,18 @@ impl State {
         let serial = mint_serial(self);
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);
         // Clipboard/primary selection follow the keyboard: smithay refuses `set_selection` from a client without keyboard focus.
-        let selection_client = target
-            .as_ref()
-            .and_then(|(_, surface)| surface.client());
+        let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
         self.set_selection_focus(selection_client);
         keyboard.set_focus(self, target.map(|(_, s)| s), serial);
     }
 
-/// Push one key press/release through the seat, forwarding to the focused
-/// client only when `forward` is set; `true` when it reached a client.
-///
-/// **Every** key goes through here, including ones the shell keeps:
-/// smithay's xkb state derives modifier state from the keycode stream, so
-/// skipping them desynchronises it. `FilterResult::Intercept` advances
-/// state without emitting; `keycode` is evdev, smithay wants xkb form (evdev + 8).
+    /// Push one key press/release through the seat, forwarding to the focused
+    /// client only when `forward` is set; `true` when it reached a client.
+    ///
+    /// **Every** key goes through here, including ones the shell keeps:
+    /// smithay's xkb state derives modifier state from the keycode stream, so
+    /// skipping them desynchronises it. `FilterResult::Intercept` advances
+    /// state without emitting; `keycode` is evdev, smithay wants xkb form (evdev + 8).
     pub fn deliver_client_key(&mut self, keycode: u32, pressed: bool, forward: bool) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
@@ -880,8 +878,8 @@ impl State {
         forward && has_focus && intercepted.is_none()
     }
 
-/// Move the seat pointer to `global` and focus it on `target` (`(surface
-/// id, tile origin)`) — smithay derives `enter`/`leave`/`motion` from the focus transition; passing `None` is how the pointer *leaves* a client.
+    /// Move the seat pointer to `global` and focus it on `target` (`(surface
+    /// id, tile origin)`) — smithay derives `enter`/`leave`/`motion` from the focus transition; passing `None` is how the pointer *leaves* a client.
     pub fn forward_client_pointer_motion(
         &mut self,
         global: (f64, f64),
@@ -980,8 +978,8 @@ impl State {
         true
     }
 
-/// Forward one touchpad gesture to the focused client over
-/// `zwp_pointer_gestures_v1` — only gestures the shell did *not* claim reach here, since the finger-count split happens once, in [`crate::compositor::backend::drm::gestures`].
+    /// Forward one touchpad gesture to the focused client over
+    /// `zwp_pointer_gestures_v1` — only gestures the shell did *not* claim reach here, since the finger-count split happens once, in [`crate::compositor::backend::drm::gestures`].
     pub fn forward_client_gesture(&mut self, gesture: BackendGestureEvent) {
         if self.client_input.pointer_focus.is_none() {
             return;
@@ -1064,8 +1062,8 @@ impl State {
         }
     }
 
-/// Forward one touch point to the focused client over `wl_touch`.
-/// `target` is `(surface id, tile origin)` for a `Down` landing inside a client tile; touch focus is set on `down` only (per protocol).
+    /// Forward one touch point to the focused client over `wl_touch`.
+    /// `target` is `(surface id, tile origin)` for a `Down` landing inside a client tile; touch focus is set on `down` only (per protocol).
     pub fn forward_client_touch(
         &mut self,
         touch: BackendTouchEvent,
@@ -1580,13 +1578,16 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
     );
     let metadata = smithay::wayland::selection::data_device::SourceMetadata {
         mime_types: drag.mime_types.clone(),
-        dnd_action: smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction::Copy,
+        dnd_action:
+            smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction::Copy,
     };
     // This drag's file names are known, so the picture the compositor draws over the desktop can say which file rather than which kind.
     state
         .selection
         .dnd_label
-        .set(Some(crate::compositor::drag_feedback::label_for_paths(&drag.paths)));
+        .set(Some(crate::compositor::drag_feedback::label_for_paths(
+            &drag.paths,
+        )));
     state.selection.chrome_drag = Some(drag);
     let serial = mint_serial(state);
     let location = SmithayPoint::from(state.client_input.cursor());
@@ -1598,7 +1599,15 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
     };
     let dh = state.display_handle.clone();
     let seat = state.seat.clone();
-    smithay::wayland::selection::data_device::start_dnd(&dh, &seat, state, serial, Some(start), None, metadata);
+    smithay::wayland::selection::data_device::start_dnd(
+        &dh,
+        &seat,
+        state,
+        serial,
+        Some(start),
+        None,
+        metadata,
+    );
     deliver_pointer(state, Some(hit));
 }
 
@@ -1690,7 +1699,7 @@ mod tests {
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
 
-/// Every printable ASCII character resolves to a key on the board — asserted over the whole range since a missing shifted-punctuation entry is exactly the gap a hand-picked list would miss.
+    /// Every printable ASCII character resolves to a key on the board — asserted over the whole range since a missing shifted-punctuation entry is exactly the gap a hand-picked list would miss.
     #[test]
     fn every_printable_ascii_character_names_a_key() {
         let missing: Vec<char> = (0x20u8..0x7f)
@@ -1737,7 +1746,7 @@ mod tests {
     }
 
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
-    // Mirrors the synthesis helpers already used by the test-control executor: winit's `KeyEvent` has a private platform field, so the struct is zero-initialised.
+        // Mirrors the synthesis helpers already used by the test-control executor: winit's `KeyEvent` has a private platform field, so the struct is zero-initialised.
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical;
         ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
@@ -1867,12 +1876,18 @@ mod tests {
         );
         // Apply it, step again → Terminal; then the right edge clamps.
         tree.workspaces[0].strips[0].window_groups[0].active_tab = ids[1];
-        assert_eq!(step_active_window(&tree, 1), Some((strip_id, group_id, ids[2])));
+        assert_eq!(
+            step_active_window(&tree, 1),
+            Some((strip_id, group_id, ids[2]))
+        );
         tree.workspaces[0].strips[0].window_groups[0].active_tab = ids[2];
         assert_eq!(step_active_window(&tree, 1), None, "right edge clamps");
         assert_eq!(step_active_window(&tree, 5), None, "overshoot clamps too");
         // And back left, two at once, lands on Notes; the left edge clamps.
-        assert_eq!(step_active_window(&tree, -2), Some((strip_id, group_id, ids[0])));
+        assert_eq!(
+            step_active_window(&tree, -2),
+            Some((strip_id, group_id, ids[0]))
+        );
         tree.workspaces[0].strips[0].window_groups[0].active_tab = ids[0];
         assert_eq!(step_active_window(&tree, -1), None, "left edge clamps");
     }
@@ -1896,11 +1911,19 @@ mod tests {
     fn wheel_jump_detents_map_wheel_down_to_a_rightward_jump() {
         use winit::dpi::PhysicalPosition;
         // Winit: positive y = wheel up. Niri: WheelScrollDown → focus-column-right — so wheel-down must be a positive detent.
-        assert_eq!(wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, -1.0)), 1.0);
-        assert_eq!(wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, 1.0)), -1.0);
+        assert_eq!(
+            wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, -1.0)),
+            1.0
+        );
+        assert_eq!(
+            wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, 1.0)),
+            -1.0
+        );
         // Touchpad pixels are fractional: one detent per JUMP_PX_PER_DETENT.
         assert_eq!(
-            wheel_jump_detents(&MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -25.0))),
+            wheel_jump_detents(&MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+                0.0, -25.0
+            ))),
             0.5
         );
     }
@@ -2215,8 +2238,8 @@ mod tests {
         assert!(!rename_foreign_tab(&mut tree, 12345, "nope"));
     }
 
-/// The peer-sync card must take the keyboard away from a focused client, or
-/// it cannot be dismissed — a key only reaches its handler when `chrome_captures_input` says the chrome has taken input.
+    /// The peer-sync card must take the keyboard away from a focused client, or
+    /// it cannot be dismissed — a key only reaches its handler when `chrome_captures_input` says the chrome has taken input.
     #[test]
     fn the_peer_sync_card_takes_input_from_a_focused_client() {
         for field in ["invite_token", "connect_input"] {
@@ -2229,9 +2252,7 @@ mod tests {
 
             fb.with_chrome(|chrome| {
                 match field {
-                    "invite_token" => {
-                        chrome.peer_sync_invite_token = Some("a-signed-blob".into())
-                    }
+                    "invite_token" => chrome.peer_sync_invite_token = Some("a-signed-blob".into()),
                     _ => chrome.peer_sync_connect_input = Some(String::new()),
                 }
                 chrome.bump();
@@ -2247,10 +2268,10 @@ mod tests {
         }
     }
 
-/// The portal's file chooser is modal, so it must hold input while it is
-/// up — the same contract as the peer-sync card above. Asserted on
-/// `chrome_captures_input` with the dialog mounted the way the compositor
-/// mounts one (through the portal's queue, drained by `pump_file_picker`), so this can't pass against a dialog production would never raise.
+    /// The portal's file chooser is modal, so it must hold input while it is
+    /// up — the same contract as the peer-sync card above. Asserted on
+    /// `chrome_captures_input` with the dialog mounted the way the compositor
+    /// mounts one (through the portal's queue, drained by `pump_file_picker`), so this can't pass against a dialog production would never raise.
     #[test]
     fn the_file_chooser_takes_input_from_a_focused_client() {
         use crate::portal::FilePickerSpawner as _;
@@ -2263,9 +2284,8 @@ mod tests {
         );
 
         let queue = crate::portal::FilePickerQueue::new();
-        let prompts = crate::portal::PromptQueueHandle::new(
-            crate::portal::PromptResolver::AutoAllow,
-        );
+        let prompts =
+            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow);
         fb.host_mut().set_portal_queues(prompts, queue.clone());
 
         let workspace = fb
@@ -2303,10 +2323,10 @@ mod tests {
         );
     }
 
-/// The geometry contract the pointer router depends on: a foreign
-/// toplevel mirrored into the chrome's tree becomes a live window group
-/// whose *tile* rect is laid out, hit-testable, and translates a global
-/// cursor into surface-local coordinates. Runs against the real `FrameBuilder`, so a regression in the tree→widget resync or `ShellOverlayHost::active_tile_rect` fails here.
+    /// The geometry contract the pointer router depends on: a foreign
+    /// toplevel mirrored into the chrome's tree becomes a live window group
+    /// whose *tile* rect is laid out, hit-testable, and translates a global
+    /// cursor into surface-local coordinates. Runs against the real `FrameBuilder`, so a regression in the tree→widget resync or `ShellOverlayHost::active_tile_rect` fails here.
     #[test]
     fn a_mirrored_foreign_group_is_laid_out_and_hit_testable() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -2360,7 +2380,7 @@ mod tests {
         );
     }
 
-/// The remote-input firewall's z-order check and local pointer routing must never disagree about what is on top — the disagreement *is* the clickjacking hole; they share [`foreign_tiles`].
+    /// The remote-input firewall's z-order check and local pointer routing must never disagree about what is on top — the disagreement *is* the clickjacking hole; they share [`foreign_tiles`].
     #[test]
     fn the_firewall_view_and_local_hit_testing_resolve_the_same_surface() {
         use crate::network::input_firewall::ShellView;
@@ -2436,10 +2456,10 @@ mod tests {
         );
     }
 
-/// A tab is a place input can land only while the compositor still holds
-/// the client's surface — one left in the tree after its toplevel went
-/// away is a rectangle nothing is behind, and publishing it would hand a
-/// guest a coordinate the local user can't even click on. Drives the real publisher against the real laid-out tree, then asks the firewall the question a peer's event asks.
+    /// A tab is a place input can land only while the compositor still holds
+    /// the client's surface — one left in the tree after its toplevel went
+    /// away is a rectangle nothing is behind, and publishing it would hand a
+    /// guest a coordinate the local user can't even click on. Drives the real publisher against the real laid-out tree, then asks the firewall the question a peer's event asks.
     #[test]
     fn a_tab_whose_surface_the_compositor_does_not_hold_is_not_published() {
         use crate::network::input_firewall::Denial;
@@ -2489,8 +2509,8 @@ mod tests {
 
     const ORPHAN_SURFACE: u64 = 900_003;
 
-/// The lock surface is drawn by the session, not the tiled tree, so tiles
-/// beneath it stay laid out and topmost as far as the tree knows — the publisher must carry the lock across, or a guest keeps driving a password-protected window.
+    /// The lock surface is drawn by the session, not the tiled tree, so tiles
+    /// beneath it stay laid out and topmost as far as the tree knows — the publisher must carry the lock across, or a guest keeps driving a password-protected window.
     #[test]
     fn a_locked_session_is_carried_into_the_published_view() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -2515,10 +2535,10 @@ mod tests {
         assert!(state.remote_input_firewall.view().session_locked());
     }
 
-/// A session nobody has pointed at holds no pointer position, and holds
-/// one the instant a real motion is routed through. The two accessors
-/// disagree by design: `cursor()` answers the origin (hit-testing needs a
-/// point), `pointer_position` answers `None` — publishing the origin would announce a cursor for somebody who isn't there.
+    /// A session nobody has pointed at holds no pointer position, and holds
+    /// one the instant a real motion is routed through. The two accessors
+    /// disagree by design: `cursor()` answers the origin (hit-testing needs a
+    /// point), `pointer_position` answers `None` — publishing the origin would announce a cursor for somebody who isn't there.
     #[test]
     fn a_pointer_that_has_never_moved_has_no_position() {
         let mut state = state_sharing(9_000_101);
@@ -2553,10 +2573,10 @@ mod tests {
         );
     }
 
-/// Routing a motion tells the chrome where the pointer went, whether or
-/// not the chrome is the one that gets to read the event — the chrome
-/// hit-tests a press against the last position it was given, since
-/// `MouseInput` carries none of its own. Motion over a client window is withheld from the chrome's own dispatch, so without this its pointer idea would freeze at its last chrome-side position.
+    /// Routing a motion tells the chrome where the pointer went, whether or
+    /// not the chrome is the one that gets to read the event — the chrome
+    /// hit-tests a press against the last position it was given, since
+    /// `MouseInput` carries none of its own. Motion over a client window is withheld from the chrome's own dispatch, so without this its pointer idea would freeze at its last chrome-side position.
     #[test]
     fn routing_a_motion_keeps_the_chrome_pointer_current() {
         let mut state = state_sharing(9_000_103);
@@ -2610,8 +2630,7 @@ mod tests {
             EventLoop::try_new().expect("calloop event loop");
         let display: Display<crate::compositor::state::State> =
             Display::new().expect("wayland display");
-        let mut state =
-            crate::compositor::state::State::new(event_loop.handle(), display.handle());
+        let mut state = crate::compositor::state::State::new(event_loop.handle(), display.handle());
         state
             .share_registry
             .insert(KILL_PEER, surface, StreamingShare::new());
@@ -2637,7 +2656,7 @@ mod tests {
         )
     }
 
-/// The panic key, end to end from the action the chord triggers: a guest is driving the seat, the host presses it, the guest stops, and the host is told so.
+    /// The panic key, end to end from the action the chord triggers: a guest is driving the seat, the host presses it, the guest stops, and the host is told so.
     #[test]
     fn stopping_remote_input_halts_the_guest_and_says_so_on_screen() {
         use crate::network::input_firewall::Denial;
@@ -2648,7 +2667,10 @@ mod tests {
         guest_motion(&mut state).expect("the guest is driving the seat to begin with");
 
         let revoked = stop_remote_input(&mut state, &mut fb);
-        assert_eq!(revoked, 1, "the one writable share had to lose write access");
+        assert_eq!(
+            revoked, 1,
+            "the one writable share had to lose write access"
+        );
 
         assert_eq!(
             guest_motion(&mut state),
@@ -2674,7 +2696,7 @@ mod tests {
         );
     }
 
-/// Do-Not-Disturb is a request for quiet, not to be kept uninformed about the machine's own security state — a suppressed confirmation makes a working kill switch look broken.
+    /// Do-Not-Disturb is a request for quiet, not to be kept uninformed about the machine's own security state — a suppressed confirmation makes a working kill switch look broken.
     #[test]
     fn the_kill_switch_confirmation_is_shown_under_do_not_disturb() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -2697,7 +2719,7 @@ mod tests {
         );
     }
 
-/// The notification stack is capped, and a guest driving a client can make that client post toasts — filling the stack must not hide that the panic key worked.
+    /// The notification stack is capped, and a guest driving a client can make that client post toasts — filling the stack must not hide that the panic key worked.
     #[test]
     fn a_flood_of_app_toasts_cannot_push_the_confirmation_off_the_screen() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -2720,7 +2742,7 @@ mod tests {
         );
     }
 
-/// The scrubber reads evdev keycodes off the wire; local input reads winit logical keys — both narrow to a [`ChordKey`], so the two can't drift apart.
+    /// The scrubber reads evdev keycodes off the wire; local input reads winit logical keys — both narrow to a [`ChordKey`], so the two can't drift apart.
     #[test]
     fn chord_key_agrees_across_both_directions() {
         let named = [
@@ -2789,7 +2811,7 @@ mod tests {
         );
     }
 
-/// Function keys carry no chord on their own — the compositor hands `F2` to a focused client; it's the `Ctrl+Alt` combination the kernel takes.
+    /// Function keys carry no chord on their own — the compositor hands `F2` to a focused client; it's the `Ctrl+Alt` combination the kernel takes.
     #[test]
     fn function_keys_are_not_shell_chords_on_their_own() {
         assert!(!shell_owns_chord(

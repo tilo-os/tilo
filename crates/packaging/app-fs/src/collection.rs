@@ -80,8 +80,7 @@ impl Collection {
             if cursor + 4 > bytes.len() {
                 return Err(CollectionDecodeError::Truncated);
             }
-            let plen =
-                u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+            let plen = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
             cursor += 4;
             if cursor + plen + 32 > bytes.len() {
                 return Err(CollectionDecodeError::Truncated);

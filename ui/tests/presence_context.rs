@@ -1,5 +1,5 @@
-use ui::presence::{PresenceCtx, PresenceKey, PathSegment, SelectionRange};
 use ui::permissions::UserId;
+use ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 
 #[test]
 fn presence_key_widget_path_equality_and_hash() {
@@ -34,8 +34,12 @@ fn selection_range_construction() {
 fn caret_is_single_location_per_peer() {
     // A caret moving from block A to B must not leave a stale one on A.
     let mut ctx = PresenceCtx::empty();
-    let a = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
-    let b = PresenceKey::Widget { path: vec![PathSegment::Index(1)] };
+    let a = PresenceKey::Widget {
+        path: vec![PathSegment::Index(0)],
+    };
+    let b = PresenceKey::Widget {
+        path: vec![PathSegment::Index(1)],
+    };
     let alice = UserId("alice".into());
 
     ctx.set_caret(&a, alice.clone(), 2);
@@ -52,14 +56,22 @@ fn caret_is_single_location_per_peer() {
     let bob = UserId("bob".into());
     ctx.set_caret(&a, bob.clone(), 1);
     ctx.set_caret(&b, alice.clone(), 6);
-    assert_eq!(ctx.caret_for(&a, &bob), Some(1), "other peers keep their caret");
+    assert_eq!(
+        ctx.caret_for(&a, &bob),
+        Some(1),
+        "other peers keep their caret"
+    );
 }
 
 #[test]
 fn selection_is_single_location_per_peer() {
     let mut ctx = PresenceCtx::empty();
-    let a = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
-    let b = PresenceKey::Widget { path: vec![PathSegment::Index(1)] };
+    let a = PresenceKey::Widget {
+        path: vec![PathSegment::Index(0)],
+    };
+    let b = PresenceKey::Widget {
+        path: vec![PathSegment::Index(1)],
+    };
     let alice = UserId("alice".into());
 
     ctx.set_selection(&a, alice.clone(), SelectionRange { start: 0, end: 3 });
@@ -97,7 +109,9 @@ fn pointer_for_returns_latest_coord() {
 #[test]
 fn selection_for_returns_range() {
     let mut ctx = PresenceCtx::empty();
-    let key = PresenceKey::Widget { path: vec![PathSegment::Field("body".into())] };
+    let key = PresenceKey::Widget {
+        path: vec![PathSegment::Field("body".into())],
+    };
     ctx.set_selection(
         &key,
         UserId("alice".into()),
@@ -108,16 +122,18 @@ fn selection_for_returns_range() {
     assert_eq!(sel.end, 9);
 }
 
-use vello::Scene;
 use ui::theme::Theme;
+use vello::Scene;
 
 #[test]
 fn draw_peer_caret_emits_scene_content() {
     let ctx = PresenceCtx::empty();
     let mut scene = Scene::new();
     let theme = Theme::dark();
-    assert!(scene.encoding().is_empty(),
-        "precondition: scene must start empty");
+    assert!(
+        scene.encoding().is_empty(),
+        "precondition: scene must start empty"
+    );
     ctx.draw_peer_caret(
         &mut scene,
         &theme,
@@ -125,8 +141,10 @@ fn draw_peer_caret_emits_scene_content() {
         &UserId("alice".into()),
         vello::kurbo::Rect::new(100.0, 50.0, 102.0, 70.0),
     );
-    assert!(!scene.encoding().is_empty(),
-        "draw_peer_caret must add geometry to the scene");
+    assert!(
+        !scene.encoding().is_empty(),
+        "draw_peer_caret must add geometry to the scene"
+    );
 }
 
 #[test]
@@ -146,15 +164,17 @@ fn draw_peer_selection_emits_scene_content() {
 
 #[test]
 fn text_input_renders_peer_caret_when_presence_ctx_has_caret() {
-    use ui::widget::TextInput;
-    use ui::text_render::TextRenderer;
     use ui::permissions::PermissionContext;
+    use ui::text_render::TextRenderer;
+    use ui::widget::TextInput;
     use ui::widget::Widget;
     use vello::kurbo::Affine;
 
     let mut input = TextInput::new(vec![PathSegment::Field("body".into())]);
     let mut presence = PresenceCtx::empty();
-    let key = input.presence_key().expect("text_input exposes presence_key");
+    let key = input
+        .presence_key()
+        .expect("text_input exposes presence_key");
     presence.set_caret(&key, UserId("alice".into()), 3);
 
     let mut scene = Scene::new();
@@ -162,9 +182,18 @@ fn text_input_renders_peer_caret_when_presence_ctx_has_caret() {
     let mut tr = TextRenderer::new();
     let perms = PermissionContext::permissive();
 
-    input.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
-    assert!(!scene.encoding().is_empty(),
-        "peer caret should produce scene geometry");
+    input.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &presence,
+        &perms,
+    );
+    assert!(
+        !scene.encoding().is_empty(),
+        "peer caret should produce scene geometry"
+    );
 }
 
 use ui::collaboration::{CollabEvent, PresencePayload};
@@ -179,7 +208,11 @@ fn remote_presence_update_round_trips_through_serde() {
     let json = serde_json::to_string(&event).unwrap();
     let back: CollabEvent = serde_json::from_str(&json).unwrap();
     match back {
-        CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+        CollabEvent::RemotePresenceUpdate {
+            user_id,
+            key,
+            payload,
+        } => {
             assert_eq!(user_id, "alice");
             assert_eq!(key, PresenceKey::Tab { id: "tab-1".into() });
             assert!(matches!(payload, PresencePayload::Caret { pos: 12 }));

@@ -12,7 +12,9 @@ use quick_xml::reader::Reader;
 /// into blocks; returns the new note id. Citation text is recomputed by renderers,
 /// not modeled here.
 pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
-    let kind = note_class(raw).map(|c| NoteKind::from_str(&c)).unwrap_or(NoteKind::Footnote);
+    let kind = note_class(raw)
+        .map(|c| NoteKind::from_str(&c))
+        .unwrap_or(NoteKind::Footnote);
     let note_id = doc.insert_note(kind);
 
     // Each `text:p`/`text:h` in `text:note-body` becomes a paragraph block; text/tabs/breaks/spaces map on.
@@ -22,7 +24,10 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
     let mut cur: Option<String> = None;
     let mut cur_len: usize = 0;
 
-    let open_block = |doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize| {
+    let open_block = |doc: &mut DocMut,
+                      prev: &mut Option<String>,
+                      cur: &mut Option<String>,
+                      cur_len: &mut usize| {
         if let Some(id) = doc.insert_note_block(&note_id, prev.as_deref(), "paragraph") {
             *prev = Some(id.clone());
             *cur = Some(id);
@@ -46,7 +51,9 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"text:note-body" => in_body = true,
-                b"text:p" | b"text:h" if in_body => open_block(doc, &mut prev, &mut cur, &mut cur_len),
+                b"text:p" | b"text:h" if in_body => {
+                    open_block(doc, &mut prev, &mut cur, &mut cur_len)
+                }
                 _ => {}
             },
             Event::Empty(e) if in_body => match e.name().as_ref() {
@@ -61,7 +68,11 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
                         .attributes()
                         .flatten()
                         .find(|a| a.key.as_ref() == b"text:c")
-                        .and_then(|a| a.unescape_value().ok().and_then(|v| v.parse::<usize>().ok()))
+                        .and_then(|a| {
+                            a.unescape_value()
+                                .ok()
+                                .and_then(|v| v.parse::<usize>().ok())
+                        })
                         .unwrap_or(1)
                         .min(256);
                     append(doc, &cur, &mut cur_len, &" ".repeat(n));
@@ -71,7 +82,9 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
             Event::Text(t) if in_body && cur.is_some() => {
                 if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
-                    if !txt.is_empty() && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r'])) {
+                    if !txt.is_empty()
+                        && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r']))
+                    {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
                 }
@@ -137,7 +150,11 @@ fn render_note_body(blocks: &[BlockView]) -> String {
 pub(super) fn render_inline_note(note: &NoteView, n: usize) -> String {
     let kind = NoteKind::from_str(&note.kind);
     let class = kind.as_str();
-    let id_prefix = if matches!(kind, NoteKind::Endnote) { "endnote" } else { "ftn" };
+    let id_prefix = if matches!(kind, NoteKind::Endnote) {
+        "endnote"
+    } else {
+        "ftn"
+    };
     format!(
         r#"<text:note text:id="{id_prefix}{n}" text:note-class="{class}"><text:note-citation>{n}</text:note-citation><text:note-body>{}</text:note-body></text:note>"#,
         render_note_body(&note.blocks)

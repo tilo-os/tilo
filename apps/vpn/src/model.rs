@@ -316,7 +316,10 @@ mod tests {
 
     #[test]
     fn kind_status_round_trip() {
-        assert_eq!(ConnKind::from_str(ConnKind::OpenVpn.as_str()), ConnKind::OpenVpn);
+        assert_eq!(
+            ConnKind::from_str(ConnKind::OpenVpn.as_str()),
+            ConnKind::OpenVpn
+        );
         assert_eq!(
             ConnStatus::from_str(ConnStatus::Connecting.as_str()),
             ConnStatus::Connecting

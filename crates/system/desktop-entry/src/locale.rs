@@ -96,18 +96,16 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
-        move |var| {
-            owned
-                .iter()
-                .find(|(k, _)| k == var)
-                .map(|(_, v)| v.clone())
-        }
+        move |var| owned.iter().find(|(k, _)| k == var).map(|(_, v)| v.clone())
     }
 
     #[test]
     fn lc_all_overrides_the_messages_category() {
         assert_eq!(
-            candidates_from(env(&[("LC_ALL", "de_DE.UTF-8"), ("LC_MESSAGES", "en_US.UTF-8")])),
+            candidates_from(env(&[
+                ("LC_ALL", "de_DE.UTF-8"),
+                ("LC_MESSAGES", "en_US.UTF-8")
+            ])),
             vec!["de_DE", "de"]
         );
     }
@@ -115,7 +113,10 @@ mod tests {
     #[test]
     fn lc_messages_is_taken_when_lc_all_is_unset_or_empty() {
         assert_eq!(
-            candidates_from(env(&[("LC_MESSAGES", "fr_FR.UTF-8"), ("LANG", "en_US.UTF-8")])),
+            candidates_from(env(&[
+                ("LC_MESSAGES", "fr_FR.UTF-8"),
+                ("LANG", "en_US.UTF-8")
+            ])),
             vec!["fr_FR", "fr"]
         );
         assert_eq!(
@@ -126,7 +127,10 @@ mod tests {
 
     #[test]
     fn lang_is_the_last_resort_and_nothing_set_means_unlocalised() {
-        assert_eq!(candidates_from(env(&[("LANG", "es_ES")])), vec!["es_ES", "es"]);
+        assert_eq!(
+            candidates_from(env(&[("LANG", "es_ES")])),
+            vec!["es_ES", "es"]
+        );
         assert!(candidates_from(env(&[])).is_empty());
     }
 }

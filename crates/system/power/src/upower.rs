@@ -65,7 +65,11 @@ impl UPowerMonitor {
     /// [`BatterySnapshot::absent`] so the threshold monitor stays quiet.
     pub async fn battery_snapshot(&self) -> zbus::Result<BatterySnapshot> {
         let dev_type: u32 = self.display.get_property("Type").await.unwrap_or(0);
-        let present: bool = self.display.get_property("IsPresent").await.unwrap_or(false);
+        let present: bool = self
+            .display
+            .get_property("IsPresent")
+            .await
+            .unwrap_or(false);
         if dev_type != DEVICE_TYPE_BATTERY || !present {
             return Ok(BatterySnapshot::absent());
         }
@@ -77,7 +81,6 @@ impl UPowerMonitor {
             state: BatteryState::from_upower(state_code),
         })
     }
-
 }
 
 #[cfg(test)]
@@ -96,7 +99,9 @@ mod tests {
 
     #[tokio::test]
     async fn reads_a_coherent_battery_snapshot() {
-        let Some(m) = monitor_or_skip("snapshot").await else { return };
+        let Some(m) = monitor_or_skip("snapshot").await else {
+            return;
+        };
         let snap = m.battery_snapshot().await.expect("battery_snapshot");
         // Percentage is always in range; a present battery has a real state.
         assert!(snap.percent <= 100, "percent in range: {snap:?}");
@@ -111,7 +116,9 @@ mod tests {
 
     #[tokio::test]
     async fn lid_query_is_consistent() {
-        let Some(m) = monitor_or_skip("lid").await else { return };
+        let Some(m) = monitor_or_skip("lid").await else {
+            return;
+        };
         let present = m.lid_is_present().await.expect("LidIsPresent");
         let closed = m.lid_is_closed().await.expect("LidIsClosed");
         // A machine with no lid can never report the lid closed.

@@ -115,9 +115,7 @@ fn main() -> anyhow::Result<()> {
             // hosts, and that is admin work the caller must do via
             // a device that carries the root key. Ships as a stub
             // that documents the intent + fails loudly.
-            let paths = qos_user_identity::IdentityPaths::under(
-                &load(&cli.config)?.identity_root,
-            );
+            let paths = qos_user_identity::IdentityPaths::under(&load(&cli.config)?.identity_root);
             if !paths.user_privkey.exists() {
                 anyhow::bail!(
                     "cannot revoke: no user root private key at {}. Run this from your primary device.",

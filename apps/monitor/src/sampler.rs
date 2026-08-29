@@ -221,14 +221,31 @@ mod tests {
         assert!(m.mem_total > 0, "real memory total sampled");
         assert!(!model.processes.is_empty(), "real process list sampled");
         // Throughput deltas are non-negative, finite, and pushed to histories.
-        assert!(m.net_rx >= 0.0 && m.net_rx.is_finite(), "net rx is a real rate");
-        assert!(m.disk_read >= 0.0 && m.disk_read.is_finite(), "disk read is a real rate");
-        assert_eq!(m.net_rx_hist.last(), m.net_rx, "net rx history tracks the throughput");
-        assert_eq!(m.disk_read_hist.last(), m.disk_read, "disk read history tracks the throughput");
+        assert!(
+            m.net_rx >= 0.0 && m.net_rx.is_finite(),
+            "net rx is a real rate"
+        );
+        assert!(
+            m.disk_read >= 0.0 && m.disk_read.is_finite(),
+            "disk read is a real rate"
+        );
+        assert_eq!(
+            m.net_rx_hist.last(),
+            m.net_rx,
+            "net rx history tracks the throughput"
+        );
+        assert_eq!(
+            m.disk_read_hist.last(),
+            m.disk_read,
+            "disk read history tracks the throughput"
+        );
         // A second refresh recomputes deltas over real elapsed wall time.
         s.refresh(&mut model);
         assert!(model.metrics.net_tx >= 0.0 && model.metrics.net_tx.is_finite());
-        assert_eq!(model.metrics.disk_write_hist.last(), model.metrics.disk_write);
+        assert_eq!(
+            model.metrics.disk_write_hist.last(),
+            model.metrics.disk_write
+        );
     }
 
     /// `signal`/`kill` route through the real process handle: an unknown pid
@@ -236,8 +253,14 @@ mod tests {
     #[test]
     fn signal_and_kill_reject_unknown_pid() {
         let s = Sampler::new();
-        assert!(!s.signal(u32::MAX, StopKind::Term), "no such process to SIGTERM");
-        assert!(!s.signal(u32::MAX, StopKind::Kill), "no such process to SIGKILL");
+        assert!(
+            !s.signal(u32::MAX, StopKind::Term),
+            "no such process to SIGTERM"
+        );
+        assert!(
+            !s.signal(u32::MAX, StopKind::Kill),
+            "no such process to SIGKILL"
+        );
         assert!(!s.kill(u32::MAX), "no such process to hard-kill");
     }
 }

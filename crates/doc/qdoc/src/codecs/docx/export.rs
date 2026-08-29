@@ -7,8 +7,8 @@ use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocRef;
 use crate::schema::{
-    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME, STYLE_SIZE, STYLE_SPACE_AFTER,
-    STYLE_SPACE_BEFORE,
+    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
+    STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
 };
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
@@ -56,14 +56,23 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let cols = super::columns::section_columns_xml(&doc).unwrap_or_default();
     // sectPr is emitted when header/footer refs or columns need it; OOXML orders header/footer refs before w:cols.
     let sectpr = if hf_parts.any() || !cols.is_empty() {
-        format!(r#"<w:sectPr>{}{}</w:sectPr>"#, super::headers::section_references(&hf_parts), cols)
+        format!(
+            r#"<w:sectPr>{}{}</w:sectPr>"#,
+            super::headers::section_references(&hf_parts),
+            cols
+        )
     } else {
         String::new()
     };
     let notes = super::notes::export_notes(&doc);
     let comments = super::comments::export_comments(&doc);
-    let (document, named_refs, numbering, images) =
-        build_document_xml(&snap, &sectpr, &notes.id_map, &notes.kind_map, &comments.id_map);
+    let (document, named_refs, numbering, images) = build_document_xml(
+        &snap,
+        &sectpr,
+        &notes.id_map,
+        &notes.kind_map,
+        &comments.id_map,
+    );
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
     // A document default language forces styles.xml emission via `<w:docDefaults>`, so the language always has a home.
     let doc_lang = snap.language.clone();
@@ -143,12 +152,13 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let need_comments_wireup = comments.comments_xml.is_some() && !had_comments_part;
 
     // Regenerated from canonical properties, merging unmodeled children of any preserved original; new parts need an override + root relationship.
-    let wrote_core = if let Some(core_xml) = super::meta::export_core(&doc, original_core.as_deref()) {
-        c.set("docProps/core.xml", core_xml);
-        true
-    } else {
-        false
-    };
+    let wrote_core =
+        if let Some(core_xml) = super::meta::export_core(&doc, original_core.as_deref()) {
+            c.set("docProps/core.xml", core_xml);
+            true
+        } else {
+            false
+        };
     let wrote_app = if let Some(app_xml) = super::meta::export_app(&doc, original_app.as_deref()) {
         c.set("docProps/app.xml", app_xml);
         true
@@ -160,13 +170,22 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
 
     if has_lists {
         // Ensures numbering maps numId 1→bullet, 2→decimal plus custom ordered numberings, so format+start round-trip.
-        let xml = if numbering.has_custom() { numbering.numbering_xml() } else { NUMBERING_XML.to_string() };
+        let xml = if numbering.has_custom() {
+            numbering.numbering_xml()
+        } else {
+            NUMBERING_XML.to_string()
+        };
         c.set("word/numbering.xml", xml.into_bytes());
     }
 
     // Merge referenced CRDT styles into the preserved styles.xml as `w:style` defs; already-declared styles are referenced, not redefined.
     if has_styles {
-        let merged = merge_styles_xml(c.get("word/styles.xml"), &named_refs, &snap.styles, doc_lang.as_deref());
+        let merged = merge_styles_xml(
+            c.get("word/styles.xml"),
+            &named_refs,
+            &snap.styles,
+            doc_lang.as_deref(),
+        );
         c.set("word/styles.xml", merged);
     }
     let need_styles_wireup = has_styles && !had_styles_part;
@@ -248,7 +267,10 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
                     let probe = format!(r#"Extension="{}""#, img.ext);
                     if !s.contains(&probe) {
                         let (_, media) = image_ext_and_media(&img.bytes);
-                        let def = format!(r#"<Default Extension="{}" ContentType="{}"/>"#, img.ext, media);
+                        let def = format!(
+                            r#"<Default Extension="{}" ContentType="{}"/>"#,
+                            img.ext, media
+                        );
                         inject_before(&mut s, "</Types>", &def);
                     }
                 }
@@ -375,7 +397,12 @@ fn doc_defaults_lang_xml(lang: &str) -> String {
 /// styles; a style already declared there is left untouched. `doc_lang` is emitted as a
 /// `<w:docDefaults>` block ahead of the styles only if one isn't already present — the
 /// schema requires docDefaults precede styles.
-fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &BTreeMap<String, BTreeMap<String, AttrVal>>, doc_lang: Option<&str>) -> Vec<u8> {
+fn merge_styles_xml(
+    existing: Option<&[u8]>,
+    refs: &BTreeSet<String>,
+    styles: &BTreeMap<String, BTreeMap<String, AttrVal>>,
+    doc_lang: Option<&str>,
+) -> Vec<u8> {
     match existing {
         Some(bytes) => {
             let present = style_ids_in(bytes);
@@ -388,7 +415,9 @@ fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &B
                     defs.push_str(&para_style_def_xml(id, props));
                 }
             }
-            let has_doc_defaults = bytes.windows(b"<w:docDefaults".len()).any(|w| w == b"<w:docDefaults");
+            let has_doc_defaults = bytes
+                .windows(b"<w:docDefaults".len())
+                .any(|w| w == b"<w:docDefaults");
             let defaults_inject = match doc_lang {
                 Some(lang) if !has_doc_defaults => doc_defaults_lang_xml(lang),
                 _ => String::new(),
@@ -513,8 +542,16 @@ fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
     }
 
     let name = gets(STYLE_NAME).unwrap_or(id);
-    let ppr = if pp.is_empty() { String::new() } else { format!("<w:pPr>{pp}</w:pPr>") };
-    let rpr = if rp.is_empty() { String::new() } else { format!("<w:rPr>{rp}</w:rPr>") };
+    let ppr = if pp.is_empty() {
+        String::new()
+    } else {
+        format!("<w:pPr>{pp}</w:pPr>")
+    };
+    let rpr = if rp.is_empty() {
+        String::new()
+    } else {
+        format!("<w:rPr>{rp}</w:rPr>")
+    };
     format!(
         r#"<w:style w:type="paragraph" w:styleId="{}"><w:name w:val="{}"/>{ppr}{rpr}</w:style>"#,
         escape_attr(id),
@@ -626,7 +663,10 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     }
     // w:shd carries the arbitrary hex highlight fill, since it round-trips any colour unlike the named w:highlight palette.
     if let Some(c) = highlight {
-        s.push_str(&format!(r#"<w:shd w:val="clear" w:color="auto" w:fill="{}"/>"#, color_hex(c)));
+        s.push_str(&format!(
+            r#"<w:shd w:val="clear" w:color="auto" w:fill="{}"/>"#,
+            color_hex(c)
+        ));
     }
     if let Some(n) = sz {
         let hp = n * 2;
@@ -690,7 +730,10 @@ fn note_reference_run(
     note_kinds: &BTreeMap<String, crate::model::NoteKind>,
 ) -> Option<String> {
     let docx_id = note_ids.get(note_id)?;
-    let kind = note_kinds.get(note_id).copied().unwrap_or(crate::model::NoteKind::Footnote);
+    let kind = note_kinds
+        .get(note_id)
+        .copied()
+        .unwrap_or(crate::model::NoteKind::Footnote);
     let (style, elem) = match kind {
         crate::model::NoteKind::Footnote => ("FootnoteReference", "w:footnoteReference"),
         crate::model::NoteKind::Endnote => ("EndnoteReference", "w:endnoteReference"),
@@ -748,7 +791,10 @@ fn cross_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String>
         .iter()
         .find(|m| m.name == crate::schema::MARK_LINK && i >= m.start && i < m.end)
         .and_then(|m| m.value.as_str())
-        .and_then(|v| v.strip_prefix(crate::schema::CROSS_REF_PREFIX).map(|s| s.to_string()))
+        .and_then(|v| {
+            v.strip_prefix(crate::schema::CROSS_REF_PREFIX)
+                .map(|s| s.to_string())
+        })
 }
 
 /// Whether a run must break before `j`: any mark-set change, note-ref, comment/bookmark boundary, or cross-reference change.
@@ -778,7 +824,10 @@ fn change_index(snap: &DocSnapshot) -> ChangeIndex<'_> {
 }
 
 /// The tracked change anchoring char `i`, if any; insertion wins if both somehow overlap.
-fn change_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<(crate::snapshot::ChangeKind, String)> {
+fn change_at(
+    marks: &[crate::document::MarkSpan],
+    i: usize,
+) -> Option<(crate::snapshot::ChangeKind, String)> {
     let find = |name: &str| {
         marks
             .iter()
@@ -797,8 +846,15 @@ fn change_open_tag(change: &crate::snapshot::ChangeView, docx_id: i64) -> String
         crate::snapshot::ChangeKind::Ins => "w:ins",
         crate::snapshot::ChangeKind::Del => "w:del",
     };
-    let date = if change.date.is_empty() { String::new() } else { format!(r#" w:date="{}""#, escape_attr(&change.date)) };
-    format!(r#"<{elem} w:id="{docx_id}" w:author="{}"{date}>"#, escape_attr(&change.author))
+    let date = if change.date.is_empty() {
+        String::new()
+    } else {
+        format!(r#" w:date="{}""#, escape_attr(&change.date))
+    };
+    format!(
+        r#"<{elem} w:id="{docx_id}" w:author="{}"{date}>"#,
+        escape_attr(&change.author)
+    )
 }
 
 /// Emit a *deleted* run's content as `<w:delText>` (OOXML requires it, not `w:t`); `\t`/`\n` still map as usual.
@@ -874,7 +930,10 @@ fn render_runs(
         }
         for name in bookmark_starts_at(marks, i) {
             if let Some(id) = bookmark_ids.get(&name) {
-                out.push_str(&format!(r#"<w:bookmarkStart w:id="{id}" w:name="{}"/>"#, escape_attr(&name)));
+                out.push_str(&format!(
+                    r#"<w:bookmarkStart w:id="{id}" w:name="{}"/>"#,
+                    escape_attr(&name)
+                ));
             }
         }
     };
@@ -907,7 +966,11 @@ fn render_runs(
                         crate::snapshot::ChangeKind::Ins => "</w:ins>",
                         crate::snapshot::ChangeKind::Del => "</w:del>",
                     };
-                    (change_open_tag(ch, *docx_id), close, *kind == crate::snapshot::ChangeKind::Del)
+                    (
+                        change_open_tag(ch, *docx_id),
+                        close,
+                        *kind == crate::snapshot::ChangeKind::Del,
+                    )
                 }
                 _ => (String::new(), "", false),
             },
@@ -915,7 +978,10 @@ fn render_runs(
         };
         // A cross-reference wraps the whole run group in `<w:hyperlink w:anchor>`, the outermost wrapper.
         let (xref_open, xref_close) = match &active_xref {
-            Some(target) => (format!(r#"<w:hyperlink w:anchor="{}">"#, escape_attr(target)), "</w:hyperlink>"),
+            Some(target) => (
+                format!(r#"<w:hyperlink w:anchor="{}">"#, escape_attr(target)),
+                "</w:hyperlink>",
+            ),
             None => (String::new(), ""),
         };
         let rpr = run_props(&active);
@@ -1050,7 +1116,9 @@ impl Numbering {
             abs.push_str(&format!(
                 r#"<w:abstractNum w:abstractNumId="{id}"><w:lvl w:ilvl="0"><w:start w:val="{start}"/><w:numFmt w:val="{nf}"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>"#
             ));
-            nums.push_str(&format!(r#"<w:num w:numId="{id}"><w:abstractNumId w:val="{id}"/></w:num>"#));
+            nums.push_str(&format!(
+                r#"<w:num w:numId="{id}"><w:abstractNumId w:val="{id}"/></w:num>"#
+            ));
         }
         format!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1089,7 +1157,10 @@ impl ImageExport {
         for img in &self.images {
             if seen.insert(img.ext) {
                 let (_, media) = image_ext_and_media(&img.bytes);
-                out.push(format!(r#"<Default Extension="{}" ContentType="{}"/>"#, img.ext, media));
+                out.push(format!(
+                    r#"<Default Extension="{}" ContentType="{}"/>"#,
+                    img.ext, media
+                ));
             }
         }
         out
@@ -1187,7 +1258,11 @@ fn image_drawing_xml(b: &BlockView, snap: &DocSnapshot, imgs: &mut ImageExport) 
     } else {
         // Floating: positioned relative to the column (paragraph anchor) or page.
         let rel_from = if anchor == "page" { "page" } else { "column" };
-        let rel_from_v = if anchor == "page" { "page" } else { "paragraph" };
+        let rel_from_v = if anchor == "page" {
+            "page"
+        } else {
+            "paragraph"
+        };
         let wrap = match image_wrap(b) {
             "left" => r#"<wp:wrapSquare wrapText="left"/>"#.to_string(),
             "right" => r#"<wp:wrapSquare wrapText="right"/>"#.to_string(),
@@ -1214,7 +1289,12 @@ fn build_document_xml(
     let mut imgs = ImageExport::default();
     // Tracked-change ids are assigned from 0 in canonical (sorted) order, independent of comment ids.
     let changes = change_index(snap);
-    let change_ids: BTreeMap<String, i64> = snap.changes.iter().enumerate().map(|(i, c)| (c.id.clone(), i as i64)).collect();
+    let change_ids: BTreeMap<String, i64> = snap
+        .changes
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.id.clone(), i as i64))
+        .collect();
     let changes = &changes;
     let change_ids = &change_ids;
     // Bookmark ids are assigned from 0 in sorted-name order so output is deterministic.
@@ -1222,7 +1302,11 @@ fn build_document_xml(
         let mut names: Vec<String> = snap.bookmarks.iter().map(|bm| bm.name.clone()).collect();
         names.sort();
         names.dedup();
-        names.into_iter().enumerate().map(|(i, name)| (name, i as i64)).collect()
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| (name, i as i64))
+            .collect()
     };
     let bookmark_ids = &bookmark_ids;
     let mut i = 0;
@@ -1238,7 +1322,16 @@ fn build_document_xml(
                     r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
                     spacing_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids)
+                    render_runs(
+                        &b.text,
+                        &b.marks,
+                        note_ids,
+                        note_kinds,
+                        comment_ids,
+                        changes,
+                        change_ids,
+                        bookmark_ids
+                    )
                 ));
                 i += 1;
             }
@@ -1268,13 +1361,17 @@ fn build_document_xml(
             "cell" => {
                 let tid = cell_table(b).unwrap_or_default();
                 let start = i;
-                while i < snap.blocks.len() && cell_table(&snap.blocks[i]).as_deref() == Some(tid.as_str()) {
+                while i < snap.blocks.len()
+                    && cell_table(&snap.blocks[i]).as_deref() == Some(tid.as_str())
+                {
                     i += 1;
                 }
                 let cells = &snap.blocks[start..i];
                 let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
                 let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
-                body.push_str(r#"<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid>"#);
+                body.push_str(
+                    r#"<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid>"#,
+                );
                 for _ in 0..ncols {
                     body.push_str("<w:gridCol/>");
                 }
@@ -1285,7 +1382,18 @@ fn build_document_xml(
                         let inner = cells
                             .iter()
                             .find(|cl| cell_rc(cl) == (r, c))
-                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids))
+                            .map(|cl| {
+                                render_runs(
+                                    &cl.text,
+                                    &cl.marks,
+                                    note_ids,
+                                    note_kinds,
+                                    comment_ids,
+                                    changes,
+                                    change_ids,
+                                    bookmark_ids,
+                                )
+                            })
                             .unwrap_or_default();
                         body.push_str(&format!(
                             r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
@@ -1306,8 +1414,24 @@ fn build_document_xml(
                 }
                 ppr_inner.push_str(&jc_xml(b));
                 ppr_inner.push_str(&spacing_xml(b));
-                let ppr = if ppr_inner.is_empty() { String::new() } else { format!("<w:pPr>{ppr_inner}</w:pPr>") };
-                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids)));
+                let ppr = if ppr_inner.is_empty() {
+                    String::new()
+                } else {
+                    format!("<w:pPr>{ppr_inner}</w:pPr>")
+                };
+                body.push_str(&format!(
+                    "<w:p>{ppr}{}</w:p>",
+                    render_runs(
+                        &b.text,
+                        &b.marks,
+                        note_ids,
+                        note_kinds,
+                        comment_ids,
+                        changes,
+                        change_ids,
+                        bookmark_ids
+                    )
+                ));
                 i += 1;
             }
         }
@@ -1323,19 +1447,28 @@ fn build_document_xml(
 
 #[cfg(test)]
 mod tests {
-    use super::super::container::{minimal_docx, minimal_docx_styled, DocxContainer};
     use super::super::DocxCodec;
+    use super::super::container::{DocxContainer, minimal_docx, minimal_docx_styled};
     use crate::document::MarkValue;
     use crate::{AttrVal, DocSnapshot, Document, FormatProvider};
     use std::collections::BTreeMap;
 
-    type Norm = Vec<(String, String, Vec<(usize, usize, String)>, BTreeMap<String, AttrVal>)>;
+    type Norm = Vec<(
+        String,
+        String,
+        Vec<(usize, usize, String)>,
+        BTreeMap<String, AttrVal>,
+    )>;
 
     fn norm(snap: &DocSnapshot) -> Norm {
         snap.blocks
             .iter()
             .map(|b| {
-                let mut m: Vec<_> = b.marks.iter().map(|x| (x.start, x.end, x.name.clone())).collect();
+                let mut m: Vec<_> = b
+                    .marks
+                    .iter()
+                    .map(|x| (x.start, x.end, x.name.clone()))
+                    .collect();
                 m.sort();
                 (b.kind.clone(), b.text.clone(), m, b.attrs.clone())
             })
@@ -1343,11 +1476,17 @@ mod tests {
     }
 
     /// Normalize a region's blocks, dropping the volatile per-import block id so imports compare equal.
-    fn norm_region(blocks: &[crate::snapshot::BlockView]) -> Vec<(String, Vec<(usize, usize, String, MarkValue)>)> {
+    fn norm_region(
+        blocks: &[crate::snapshot::BlockView],
+    ) -> Vec<(String, Vec<(usize, usize, String, MarkValue)>)> {
         blocks
             .iter()
             .map(|b| {
-                let mut m: Vec<_> = b.marks.iter().map(|x| (x.start, x.end, x.name.clone(), x.value.clone())).collect();
+                let mut m: Vec<_> = b
+                    .marks
+                    .iter()
+                    .map(|x| (x.start, x.end, x.name.clone(), x.value.clone()))
+                    .collect();
                 m.sort();
                 (b.text.clone(), m)
             })
@@ -1379,11 +1518,11 @@ mod tests {
 
     // 1×1 PNG blob for the image round-trip tests.
     const TINY_PNG: [u8; 69] = [
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-        0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
-        0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
-        0x44, 0xae, 0x42, 0x60, 0x82,
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8,
+        0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
     #[test]
@@ -1411,25 +1550,57 @@ mod tests {
             .expect("media part written");
         assert_eq!(media.1, &TINY_PNG[..], "image bytes written verbatim");
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains("<wp:inline"), "inline drawing emitted: {document}");
+        assert!(
+            document.contains("<wp:inline"),
+            "inline drawing emitted: {document}"
+        );
         let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
-        assert!(rels.contains(r#"Target="media/image1.png""#), "image rel wired: {rels}");
+        assert!(
+            rels.contains(r#"Target="media/image1.png""#),
+            "image rel wired: {rels}"
+        );
         let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(ct.contains(r#"Extension="png""#), "png content-type default: {ct}");
+        assert!(
+            ct.contains(r#"Extension="png""#),
+            "png content-type default: {ct}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        let im = snap.blocks.iter().find(|b| b.kind == "image").expect("image block present");
+        let im = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "image")
+            .expect("image block present");
         let blob_hash = match im.attrs.get("blob") {
             Some(AttrVal::Str(h)) => h.clone(),
             other => panic!("image missing blob attr: {other:?}"),
         };
         assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
-        assert_eq!(snap.blobs.get(&blob_hash).map(|b| b.as_slice()), Some(&TINY_PNG[..]), "blob bytes survive");
-        assert_eq!(im.attrs.get("anchor"), Some(&AttrVal::Str("inline".into())), "{:?}", im.attrs);
-        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(64)), "{:?}", im.attrs);
-        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(48)), "{:?}", im.attrs);
+        assert_eq!(
+            snap.blobs.get(&blob_hash).map(|b| b.as_slice()),
+            Some(&TINY_PNG[..]),
+            "blob bytes survive"
+        );
+        assert_eq!(
+            im.attrs.get("anchor"),
+            Some(&AttrVal::Str("inline".into())),
+            "{:?}",
+            im.attrs
+        );
+        assert_eq!(
+            im.attrs.get("width"),
+            Some(&AttrVal::Int(64)),
+            "{:?}",
+            im.attrs
+        );
+        assert_eq!(
+            im.attrs.get("height"),
+            Some(&AttrVal::Int(48)),
+            "{:?}",
+            im.attrs
+        );
     }
 
     #[test]
@@ -1451,17 +1622,47 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains("<wp:anchor"), "anchor drawing emitted: {document}");
-        assert!(document.contains(r#"<wp:wrapSquare wrapText="right"/>"#), "right wrap emitted: {document}");
+        assert!(
+            document.contains("<wp:anchor"),
+            "anchor drawing emitted: {document}"
+        );
+        assert!(
+            document.contains(r#"<wp:wrapSquare wrapText="right"/>"#),
+            "right wrap emitted: {document}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        let im = snap.blocks.iter().find(|b| b.kind == "image").expect("image block present");
-        assert_eq!(im.attrs.get("anchor"), Some(&AttrVal::Str("paragraph".into())), "{:?}", im.attrs);
-        assert_eq!(im.attrs.get("wrap"), Some(&AttrVal::Str("right".into())), "{:?}", im.attrs);
-        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(120)), "{:?}", im.attrs);
-        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(80)), "{:?}", im.attrs);
+        let im = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "image")
+            .expect("image block present");
+        assert_eq!(
+            im.attrs.get("anchor"),
+            Some(&AttrVal::Str("paragraph".into())),
+            "{:?}",
+            im.attrs
+        );
+        assert_eq!(
+            im.attrs.get("wrap"),
+            Some(&AttrVal::Str("right".into())),
+            "{:?}",
+            im.attrs
+        );
+        assert_eq!(
+            im.attrs.get("width"),
+            Some(&AttrVal::Int(120)),
+            "{:?}",
+            im.attrs
+        );
+        assert_eq!(
+            im.attrs.get("height"),
+            Some(&AttrVal::Int(80)),
+            "{:?}",
+            im.attrs
+        );
     }
 
     #[test]
@@ -1489,9 +1690,25 @@ mod tests {
         let b = &snap.blocks[1];
         assert_eq!(b.text, "styled");
         assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())));
-        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)), "{:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "underline"), "{:?}", b.marks);
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)),
+            "{:?}",
+            b.marks
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+            "{:?}",
+            b.marks
+        );
+        assert!(
+            b.marks.iter().any(|m| m.name == "underline"),
+            "{:?}",
+            b.marks
+        );
     }
 
     #[test]
@@ -1509,9 +1726,18 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let c = DocxContainer::read(&exported).unwrap();
         let xml = std::str::from_utf8(c.get("word/document.xml").unwrap()).unwrap();
-        assert!(xml.contains(r#"w:shd w:val="clear" w:color="auto" w:fill="FFFF00""#), "highlight shd: {xml}");
-        assert!(xml.contains(r#"<w:vertAlign w:val="superscript"/>"#), "super vertAlign: {xml}");
-        assert!(xml.contains(r#"<w:spacing w:line="360" w:lineRule="auto"/>"#), "line spacing: {xml}");
+        assert!(
+            xml.contains(r#"w:shd w:val="clear" w:color="auto" w:fill="FFFF00""#),
+            "highlight shd: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<w:vertAlign w:val="superscript"/>"#),
+            "super vertAlign: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<w:spacing w:line="360" w:lineRule="auto"/>"#),
+            "line spacing: {xml}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
@@ -1519,16 +1745,27 @@ mod tests {
         let b = &snap.blocks[0];
         assert_eq!(b.text, "E=mc2");
         assert!(
-            b.marks.iter().any(|m| m.name == "highlight" && m.value == MarkValue::Str("#ffff00".into()) && m.start == 0 && m.end == 5),
+            b.marks.iter().any(|m| m.name == "highlight"
+                && m.value == MarkValue::Str("#ffff00".into())
+                && m.start == 0
+                && m.end == 5),
             "highlight mark: {:?}",
             b.marks
         );
         assert!(
-            b.marks.iter().any(|m| m.name == "super" && m.value == MarkValue::Bool(true) && m.start == 4 && m.end == 5),
+            b.marks.iter().any(|m| m.name == "super"
+                && m.value == MarkValue::Bool(true)
+                && m.start == 4
+                && m.end == 5),
             "super mark: {:?}",
             b.marks
         );
-        assert_eq!(b.attrs.get("line_spacing"), Some(&AttrVal::Float(1.5)), "line_spacing attr: {:?}", b.attrs);
+        assert_eq!(
+            b.attrs.get("line_spacing"),
+            Some(&AttrVal::Float(1.5)),
+            "line_spacing attr: {:?}",
+            b.attrs
+        );
     }
 
     #[test]
@@ -1544,7 +1781,10 @@ mod tests {
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert!(
-            b.marks.iter().any(|m| m.name == "sub" && m.value == MarkValue::Bool(true) && m.start == 1 && m.end == 2),
+            b.marks.iter().any(|m| m.name == "sub"
+                && m.value == MarkValue::Bool(true)
+                && m.start == 1
+                && m.end == 2),
             "sub mark: {:?}",
             b.marks
         );
@@ -1563,24 +1803,60 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains(r#"<w:bookmarkStart w:id="0" w:name="intro"/>"#), "bookmarkStart emitted: {document}");
-        assert!(document.contains(r#"<w:bookmarkEnd w:id="0"/>"#), "bookmarkEnd emitted: {document}");
-        assert!(document.contains(r#"<w:hyperlink w:anchor="intro">"#), "cross-ref hyperlink emitted: {document}");
+        assert!(
+            document.contains(r#"<w:bookmarkStart w:id="0" w:name="intro"/>"#),
+            "bookmarkStart emitted: {document}"
+        );
+        assert!(
+            document.contains(r#"<w:bookmarkEnd w:id="0"/>"#),
+            "bookmarkEnd emitted: {document}"
+        );
+        assert!(
+            document.contains(r#"<w:hyperlink w:anchor="intro">"#),
+            "cross-ref hyperlink emitted: {document}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        assert_eq!(snap.bookmarks.len(), 1, "one bookmark survives: {:?}", snap.bookmarks);
+        assert_eq!(
+            snap.bookmarks.len(),
+            1,
+            "one bookmark survives: {:?}",
+            snap.bookmarks
+        );
         let bm = &snap.bookmarks[0];
         assert_eq!(bm.name, "intro");
-        assert_eq!((bm.range.1, bm.range.2), (4, 9), "bookmark range over 'intro': {:?}", bm);
-        let tb = snap.blocks.iter().find(|b| b.text == "the intro section").unwrap();
-        let mark = tb.marks.iter().find(|m| m.name == crate::schema::MARK_BOOKMARK).expect("bookmark mark present");
+        assert_eq!(
+            (bm.range.1, bm.range.2),
+            (4, 9),
+            "bookmark range over 'intro': {:?}",
+            bm
+        );
+        let tb = snap
+            .blocks
+            .iter()
+            .find(|b| b.text == "the intro section")
+            .unwrap();
+        let mark = tb
+            .marks
+            .iter()
+            .find(|m| m.name == crate::schema::MARK_BOOKMARK)
+            .expect("bookmark mark present");
         assert_eq!((mark.start, mark.end), (4, 9));
         assert_eq!(mark.value, MarkValue::Str("intro".into()));
         let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
-        let link = sb.marks.iter().find(|m| m.name == "link").expect("cross-ref link mark present");
-        assert_eq!((link.start, link.end), (4, 9), "cross-ref over 'above': {:?}", sb.marks);
+        let link = sb
+            .marks
+            .iter()
+            .find(|m| m.name == "link")
+            .expect("cross-ref link mark present");
+        assert_eq!(
+            (link.start, link.end),
+            (4, 9),
+            "cross-ref over 'above': {:?}",
+            sb.marks
+        );
         assert_eq!(link.value, MarkValue::Str("#intro".into()));
     }
 
@@ -1601,7 +1877,11 @@ mod tests {
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        let items: Vec<_> = snap.blocks.iter().filter(|x| x.kind == "list_item").collect();
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|x| x.kind == "list_item")
+            .collect();
         assert_eq!(items.len(), 2, "{snap:?}");
         assert_eq!(items[0].text, "first");
         assert_eq!(items[0].attrs.get("ordered"), Some(&AttrVal::Bool(true)));
@@ -1629,24 +1909,53 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
         let numbering = std::str::from_utf8(cont.get("word/numbering.xml").unwrap()).unwrap();
-        assert!(numbering.contains(r#"<w:numFmt w:val="upperRoman"/>"#), "upper-roman numFmt emitted: {numbering}");
-        assert!(numbering.contains(r#"<w:start w:val="3"/>"#), "start value emitted: {numbering}");
+        assert!(
+            numbering.contains(r#"<w:numFmt w:val="upperRoman"/>"#),
+            "upper-roman numFmt emitted: {numbering}"
+        );
+        assert!(
+            numbering.contains(r#"<w:start w:val="3"/>"#),
+            "start value emitted: {numbering}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        let items: Vec<_> = snap.blocks.iter().filter(|x| x.kind == "list_item").collect();
+        let items: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|x| x.kind == "list_item")
+            .collect();
         assert_eq!(items.len(), 2, "{snap:?}");
         for it in &items {
-            assert_eq!(it.attrs.get("ordered"), Some(&AttrVal::Bool(true)), "still ordered: {:?}", it.attrs);
-            assert_eq!(it.attrs.get("num_format"), Some(&AttrVal::Str("upper-roman".into())), "format survives: {:?}", it.attrs);
-            assert_eq!(it.attrs.get("num_start"), Some(&AttrVal::Int(3)), "start survives: {:?}", it.attrs);
+            assert_eq!(
+                it.attrs.get("ordered"),
+                Some(&AttrVal::Bool(true)),
+                "still ordered: {:?}",
+                it.attrs
+            );
+            assert_eq!(
+                it.attrs.get("num_format"),
+                Some(&AttrVal::Str("upper-roman".into())),
+                "format survives: {:?}",
+                it.attrs
+            );
+            assert_eq!(
+                it.attrs.get("num_start"),
+                Some(&AttrVal::Int(3)),
+                "start survives: {:?}",
+                it.attrs
+            );
         }
 
         let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "list-numbering model stable across a second round-trip");
+        assert_eq!(
+            norm(&d2.materialize()),
+            norm(&d3.materialize()),
+            "list-numbering model stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -1664,16 +1973,42 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains(r#"<w:jc w:val="both"/>"#), "justify → w:jc both: {document}");
+        assert!(
+            document.contains(r#"<w:jc w:val="both"/>"#),
+            "justify → w:jc both: {document}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "styled");
-        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("justify".into())), "justify survives: {:?}", b.attrs);
-        assert!(b.marks.iter().any(|m| m.name == "color" && m.value == MarkValue::Str("#3366cc".into())), "colour: {:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "serif: {:?}", b.marks);
-        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)), "20pt: {:?}", b.marks);
+        assert_eq!(
+            b.attrs.get("align"),
+            Some(&AttrVal::Str("justify".into())),
+            "justify survives: {:?}",
+            b.attrs
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "color" && m.value == MarkValue::Str("#3366cc".into())),
+            "colour: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+            "serif: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks
+                .iter()
+                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
+            "20pt: {:?}",
+            b.marks
+        );
     }
 
     #[test]
@@ -1696,7 +2031,11 @@ mod tests {
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
         let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
-        assert_eq!(cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(), vec!["a", "b", "c", "d"], "{snap:?}");
+        assert_eq!(
+            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            vec!["a", "b", "c", "d"],
+            "{snap:?}"
+        );
         assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
         assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
         // Cells stay editable: their text lives in a real Text object.
@@ -1728,30 +2067,53 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains(r#"<w:pStyle w:val="Fancy"/>"#), "paragraph references the named style: {document}");
+        assert!(
+            document.contains(r#"<w:pStyle w:val="Fancy"/>"#),
+            "paragraph references the named style: {document}"
+        );
         let styles = std::str::from_utf8(cont.get("word/styles.xml").unwrap()).unwrap();
         assert!(
             styles.contains(r#"<w:style w:type="paragraph" w:styleId="Fancy">"#),
             "named style defined as OOXML w:style: {styles}"
         );
         assert!(
-            styles.contains("<w:b/>") && styles.contains("<w:i/>") && styles.contains(r#"<w:sz w:val="40"/>"#),
+            styles.contains("<w:b/>")
+                && styles.contains("<w:i/>")
+                && styles.contains(r#"<w:sz w:val="40"/>"#),
             "props emitted: {styles}"
         );
-        assert!(styles.contains(r#"<w:jc w:val="center"/>"#) && styles.contains(r#"<w:color w:val="FF0000"/>"#), "pPr/colour emitted: {styles}");
+        assert!(
+            styles.contains(r#"<w:jc w:val="center"/>"#)
+                && styles.contains(r#"<w:color w:val="FF0000"/>"#),
+            "pPr/colour emitted: {styles}"
+        );
         let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(ct.contains("/word/styles.xml"), "styles override registered: {ct}");
+        assert!(
+            ct.contains("/word/styles.xml"),
+            "styles override registered: {ct}"
+        );
         let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
-        assert!(rels.contains(r#"Target="styles.xml""#), "styles relationship registered: {rels}");
+        assert!(
+            rels.contains(r#"Target="styles.xml""#),
+            "styles relationship registered: {rels}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert_eq!(b.text, "fancy");
-        assert_eq!(b.attrs.get("style"), Some(&AttrVal::Str("Fancy".into())), "block keeps its style ref: {:?}", b.attrs);
+        assert_eq!(
+            b.attrs.get("style"),
+            Some(&AttrVal::Str("Fancy".into())),
+            "block keeps its style ref: {:?}",
+            b.attrs
+        );
 
-        let st = snap.styles.get("Fancy").expect("style present in container after round-trip");
+        let st = snap
+            .styles
+            .get("Fancy")
+            .expect("style present in container after round-trip");
         assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
         assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())));
         assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)));
@@ -1764,7 +2126,11 @@ mod tests {
         let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "named-style model is stable across a second round-trip");
+        assert_eq!(
+            norm(&d2.materialize()),
+            norm(&d3.materialize()),
+            "named-style model is stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -1783,36 +2149,85 @@ mod tests {
 
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
-        let core = std::str::from_utf8(cont.get("docProps/core.xml").expect("core.xml written")).unwrap();
-        assert!(core.contains("<dc:title>My Title</dc:title>"), "title in core.xml: {core}");
-        assert!(core.contains("<dc:creator>Ada Lovelace</dc:creator>"), "creator: {core}");
-        assert!(core.contains("<dc:subject>Analytical Engine</dc:subject>"), "subject: {core}");
-        assert!(core.contains("<cp:keywords>computing, history</cp:keywords>"), "keywords: {core}");
-        assert!(core.contains("2020-01-02T03:04:05Z</dcterms:created>"), "created: {core}");
-        assert!(core.contains("2021-06-07T08:09:10Z</dcterms:modified>"), "modified: {core}");
-        let app = std::str::from_utf8(cont.get("docProps/app.xml").expect("app.xml written")).unwrap();
-        assert!(app.contains("<Application>qdoc/1.0</Application>"), "generator in app.xml: {app}");
+        let core =
+            std::str::from_utf8(cont.get("docProps/core.xml").expect("core.xml written")).unwrap();
+        assert!(
+            core.contains("<dc:title>My Title</dc:title>"),
+            "title in core.xml: {core}"
+        );
+        assert!(
+            core.contains("<dc:creator>Ada Lovelace</dc:creator>"),
+            "creator: {core}"
+        );
+        assert!(
+            core.contains("<dc:subject>Analytical Engine</dc:subject>"),
+            "subject: {core}"
+        );
+        assert!(
+            core.contains("<cp:keywords>computing, history</cp:keywords>"),
+            "keywords: {core}"
+        );
+        assert!(
+            core.contains("2020-01-02T03:04:05Z</dcterms:created>"),
+            "created: {core}"
+        );
+        assert!(
+            core.contains("2021-06-07T08:09:10Z</dcterms:modified>"),
+            "modified: {core}"
+        );
+        let app =
+            std::str::from_utf8(cont.get("docProps/app.xml").expect("app.xml written")).unwrap();
+        assert!(
+            app.contains("<Application>qdoc/1.0</Application>"),
+            "generator in app.xml: {app}"
+        );
         let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(ct.contains("/docProps/core.xml") && ct.contains("/docProps/app.xml"), "overrides registered: {ct}");
+        assert!(
+            ct.contains("/docProps/core.xml") && ct.contains("/docProps/app.xml"),
+            "overrides registered: {ct}"
+        );
         let rels = std::str::from_utf8(cont.get("_rels/.rels").unwrap()).unwrap();
-        assert!(rels.contains(r#"Target="docProps/core.xml""#) && rels.contains(r#"Target="docProps/app.xml""#), "rels registered: {rels}");
+        assert!(
+            rels.contains(r#"Target="docProps/core.xml""#)
+                && rels.contains(r#"Target="docProps/app.xml""#),
+            "rels registered: {rels}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let props = d2.doc_props();
         assert_eq!(props.get("title").map(String::as_str), Some("My Title"));
-        assert_eq!(props.get("author").map(String::as_str), Some("Ada Lovelace"));
-        assert_eq!(props.get("subject").map(String::as_str), Some("Analytical Engine"));
-        assert_eq!(props.get("keywords").map(String::as_str), Some("computing, history"));
-        assert_eq!(props.get("created").map(String::as_str), Some("2020-01-02T03:04:05Z"));
-        assert_eq!(props.get("modified").map(String::as_str), Some("2021-06-07T08:09:10Z"));
+        assert_eq!(
+            props.get("author").map(String::as_str),
+            Some("Ada Lovelace")
+        );
+        assert_eq!(
+            props.get("subject").map(String::as_str),
+            Some("Analytical Engine")
+        );
+        assert_eq!(
+            props.get("keywords").map(String::as_str),
+            Some("computing, history")
+        );
+        assert_eq!(
+            props.get("created").map(String::as_str),
+            Some("2020-01-02T03:04:05Z")
+        );
+        assert_eq!(
+            props.get("modified").map(String::as_str),
+            Some("2021-06-07T08:09:10Z")
+        );
         assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
         assert_eq!(d2.materialize().blocks[0].text, "body");
 
         let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        assert_eq!(d2.doc_props(), d3.doc_props(), "properties stable across a second round-trip");
+        assert_eq!(
+            d2.doc_props(),
+            d3.doc_props(),
+            "properties stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -1827,15 +2242,28 @@ mod tests {
 
         let mut d = Document::new();
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
-        assert_eq!(d.doc_prop("title").as_deref(), Some("Old"), "title imported from core.xml");
+        assert_eq!(
+            d.doc_prop("title").as_deref(),
+            Some("Old"),
+            "title imported from core.xml"
+        );
         d.set_doc_prop("title", "New");
 
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let out = DocxContainer::read(&exported).unwrap();
         let core_out = std::str::from_utf8(out.get("docProps/core.xml").unwrap()).unwrap();
-        assert!(core_out.contains("<dc:title>New</dc:title>"), "title updated: {core_out}");
-        assert!(!core_out.contains("<dc:title>Old</dc:title>"), "old title gone: {core_out}");
-        assert!(core_out.contains("revision>4</"), "unmodeled field preserved: {core_out}");
+        assert!(
+            core_out.contains("<dc:title>New</dc:title>"),
+            "title updated: {core_out}"
+        );
+        assert!(
+            !core_out.contains("<dc:title>Old</dc:title>"),
+            "old title gone: {core_out}"
+        );
+        assert!(
+            core_out.contains("revision>4</"),
+            "unmodeled field preserved: {core_out}"
+        );
     }
 
     #[test]
@@ -1845,8 +2273,14 @@ mod tests {
         d.splice_text(&p, 0, 0, "plain");
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
-        assert!(cont.get("docProps/core.xml").is_none(), "no core.xml for a doc with no properties");
-        assert!(cont.get("docProps/app.xml").is_none(), "no app.xml for a doc with no properties");
+        assert!(
+            cont.get("docProps/core.xml").is_none(),
+            "no core.xml for a doc with no properties"
+        );
+        assert!(
+            cont.get("docProps/app.xml").is_none(),
+            "no app.xml for a doc with no properties"
+        );
     }
 
     #[test]
@@ -1864,19 +2298,42 @@ mod tests {
 
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
-        let hdr = std::str::from_utf8(cont.get("word/header1.xml").expect("header1.xml written")).unwrap();
-        assert!(hdr.contains("<w:hdr") && hdr.contains("Title"), "header part holds the title: {hdr}");
-        let ftr = std::str::from_utf8(cont.get("word/footer1.xml").expect("footer1.xml written")).unwrap();
+        let hdr = std::str::from_utf8(cont.get("word/header1.xml").expect("header1.xml written"))
+            .unwrap();
+        assert!(
+            hdr.contains("<w:hdr") && hdr.contains("Title"),
+            "header part holds the title: {hdr}"
+        );
+        let ftr = std::str::from_utf8(cont.get("word/footer1.xml").expect("footer1.xml written"))
+            .unwrap();
         assert!(ftr.contains("<w:ftr"), "footer part is a w:ftr: {ftr}");
-        assert!(ftr.contains(r#"w:instr=" PAGE ""#), "PAGE field emitted: {ftr}");
+        assert!(
+            ftr.contains(r#"w:instr=" PAGE ""#),
+            "PAGE field emitted: {ftr}"
+        );
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains("<w:sectPr>"), "sectPr present: {document}");
-        assert!(document.contains(r#"<w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#), "header ref: {document}");
-        assert!(document.contains(r#"<w:footerReference w:type="default" r:id="rIdQdocFtr"/>"#), "footer ref: {document}");
+        assert!(
+            document.contains("<w:sectPr>"),
+            "sectPr present: {document}"
+        );
+        assert!(
+            document.contains(r#"<w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#),
+            "header ref: {document}"
+        );
+        assert!(
+            document.contains(r#"<w:footerReference w:type="default" r:id="rIdQdocFtr"/>"#),
+            "footer ref: {document}"
+        );
         let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(ct.contains("/word/header1.xml") && ct.contains("/word/footer1.xml"), "overrides registered: {ct}");
+        assert!(
+            ct.contains("/word/header1.xml") && ct.contains("/word/footer1.xml"),
+            "overrides registered: {ct}"
+        );
         let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
-        assert!(rels.contains(r#"Target="header1.xml""#) && rels.contains(r#"Target="footer1.xml""#), "rels registered: {rels}");
+        assert!(
+            rels.contains(r#"Target="header1.xml""#) && rels.contains(r#"Target="footer1.xml""#),
+            "rels registered: {rels}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
@@ -1886,17 +2343,39 @@ mod tests {
         assert_eq!(header[0].text, "Title");
         let footer = d2.footer();
         assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
-        assert_eq!(footer[0].text, format!("Page {}", FIELD_PLACEHOLDER), "placeholder kept: {:?}", footer[0].text);
-        let field = footer[0].marks.iter().find(|m| m.name == MARK_FIELD).expect("page-number field survives");
-        assert_eq!((field.start, field.end), (5, 6), "field spans the placeholder: {:?}", footer[0].marks);
+        assert_eq!(
+            footer[0].text,
+            format!("Page {}", FIELD_PLACEHOLDER),
+            "placeholder kept: {:?}",
+            footer[0].text
+        );
+        let field = footer[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_FIELD)
+            .expect("page-number field survives");
+        assert_eq!(
+            (field.start, field.end),
+            (5, 6),
+            "field spans the placeholder: {:?}",
+            footer[0].marks
+        );
         assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
 
         // Idempotent across a second round-trip (block ids are volatile; compare text+marks, not BlockView).
         let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        assert_eq!(norm_region(&d2.header()), norm_region(&d3.header()), "header stable across a second round-trip");
-        assert_eq!(norm_region(&d2.footer()), norm_region(&d3.footer()), "footer stable across a second round-trip");
+        assert_eq!(
+            norm_region(&d2.header()),
+            norm_region(&d3.header()),
+            "header stable across a second round-trip"
+        );
+        assert_eq!(
+            norm_region(&d2.footer()),
+            norm_region(&d3.footer()),
+            "footer stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -1922,7 +2401,9 @@ mod tests {
         let base = minimal_docx_styled("", body);
         let mut c = DocxContainer::read(&base).unwrap();
         c.set("word/header1.xml", header.as_bytes().to_vec());
-        let rels = std::str::from_utf8(c.get("word/_rels/document.xml.rels").unwrap()).unwrap().to_string();
+        let rels = std::str::from_utf8(c.get("word/_rels/document.xml.rels").unwrap())
+            .unwrap()
+            .to_string();
         let rels = rels.replace(
             "</Relationships>",
             r#"<Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>"#,
@@ -1935,8 +2416,20 @@ mod tests {
         let header = d.header();
         assert_eq!(header.len(), 1, "{header:?}");
         // "p. " + a single placeholder; the cached "7" result is dropped.
-        assert_eq!(header[0].text, format!("p. {}", FIELD_PLACEHOLDER), "complex field → one placeholder: {:?}", header[0].text);
-        assert!(header[0].marks.iter().any(|m| m.name == MARK_FIELD && m.start == 3 && m.end == 4), "field mark: {:?}", header[0].marks);
+        assert_eq!(
+            header[0].text,
+            format!("p. {}", FIELD_PLACEHOLDER),
+            "complex field → one placeholder: {:?}",
+            header[0].text
+        );
+        assert!(
+            header[0]
+                .marks
+                .iter()
+                .any(|m| m.name == MARK_FIELD && m.start == 3 && m.end == 4),
+            "field mark: {:?}",
+            header[0].marks
+        );
     }
 
     #[test]
@@ -1969,14 +2462,33 @@ mod tests {
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
         let snap = d.materialize();
         let p = &snap.blocks[0];
-        assert_eq!(p.text, format!("see {}ref", FIELD_PLACEHOLDER), "placeholder spliced inline: {:?}", p.text);
-        let nref = p.marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("note-ref mark present");
-        assert_eq!((nref.start, nref.end), (4, 5), "marker covers the placeholder: {:?}", p.marks);
+        assert_eq!(
+            p.text,
+            format!("see {}ref", FIELD_PLACEHOLDER),
+            "placeholder spliced inline: {:?}",
+            p.text
+        );
+        let nref = p
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_NOTE_REF)
+            .expect("note-ref mark present");
+        assert_eq!(
+            (nref.start, nref.end),
+            (4, 5),
+            "marker covers the placeholder: {:?}",
+            p.marks
+        );
         let nid = match &nref.value {
             MarkValue::Str(s) => s.clone(),
             other => panic!("note-ref value is the note id: {other:?}"),
         };
-        assert_eq!(snap.notes.len(), 1, "one note, separators skipped: {:?}", snap.notes);
+        assert_eq!(
+            snap.notes.len(),
+            1,
+            "one note, separators skipped: {:?}",
+            snap.notes
+        );
         assert_eq!(snap.notes[0].id, nid);
         assert_eq!(snap.notes[0].kind, "footnote");
         assert_eq!(snap.notes[0].blocks[0].text, "the footnote");
@@ -2003,44 +2515,92 @@ mod tests {
 
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
-        let ftn = std::str::from_utf8(cont.get("word/footnotes.xml").expect("footnotes.xml written")).unwrap();
+        let ftn = std::str::from_utf8(
+            cont.get("word/footnotes.xml")
+                .expect("footnotes.xml written"),
+        )
+        .unwrap();
         assert!(ftn.contains("a footnote"), "footnote body emitted: {ftn}");
-        let end = std::str::from_utf8(cont.get("word/endnotes.xml").expect("endnotes.xml written")).unwrap();
+        let end = std::str::from_utf8(cont.get("word/endnotes.xml").expect("endnotes.xml written"))
+            .unwrap();
         assert!(end.contains("an endnote"), "endnote body emitted: {end}");
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains("<w:footnoteReference"), "footnote reference emitted: {document}");
-        assert!(document.contains("<w:endnoteReference"), "endnote reference emitted: {document}");
+        assert!(
+            document.contains("<w:footnoteReference"),
+            "footnote reference emitted: {document}"
+        );
+        assert!(
+            document.contains("<w:endnoteReference"),
+            "endnote reference emitted: {document}"
+        );
         let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(ct.contains("/word/footnotes.xml") && ct.contains("/word/endnotes.xml"), "note parts in content-types: {ct}");
+        assert!(
+            ct.contains("/word/footnotes.xml") && ct.contains("/word/endnotes.xml"),
+            "note parts in content-types: {ct}"
+        );
         let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
-        assert!(rels.contains(r#"Target="footnotes.xml""#) && rels.contains(r#"Target="endnotes.xml""#), "note rels registered: {rels}");
+        assert!(
+            rels.contains(r#"Target="footnotes.xml""#) && rels.contains(r#"Target="endnotes.xml""#),
+            "note rels registered: {rels}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
-        assert_eq!(snap.blocks[0].text.chars().filter(|c| *c != '\u{FFFC}').collect::<String>(), "see ref");
-        let nref = snap.blocks[0].marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("footnote marker survives");
+        assert_eq!(
+            snap.blocks[0]
+                .text
+                .chars()
+                .filter(|c| *c != '\u{FFFC}')
+                .collect::<String>(),
+            "see ref"
+        );
+        let nref = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_NOTE_REF)
+            .expect("footnote marker survives");
         let f_id = match &nref.value {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("note-ref value"),
         };
         assert_eq!(snap.notes.len(), 2, "both notes survive: {:?}", snap.notes);
-        let foot = snap.notes.iter().find(|n| n.id == f_id).expect("footnote present by id");
+        let foot = snap
+            .notes
+            .iter()
+            .find(|n| n.id == f_id)
+            .expect("footnote present by id");
         assert_eq!(foot.kind, "footnote");
         assert_eq!(foot.blocks[0].text, "a footnote");
-        let end_note = snap.notes.iter().find(|n| n.kind == "endnote").expect("endnote present");
+        let end_note = snap
+            .notes
+            .iter()
+            .find(|n| n.kind == "endnote")
+            .expect("endnote present");
         assert_eq!(end_note.blocks[0].text, "an endnote");
 
         let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
         let kinds_texts = |snap: &DocSnapshot| {
-            let mut v: Vec<(String, String)> =
-                snap.notes.iter().map(|n| (n.kind.clone(), n.blocks.iter().map(|b| b.text.clone()).collect())).collect();
+            let mut v: Vec<(String, String)> = snap
+                .notes
+                .iter()
+                .map(|n| {
+                    (
+                        n.kind.clone(),
+                        n.blocks.iter().map(|b| b.text.clone()).collect(),
+                    )
+                })
+                .collect();
             v.sort();
             v
         };
-        assert_eq!(kinds_texts(&d2.materialize()), kinds_texts(&d3.materialize()), "notes stable across a second round-trip");
+        assert_eq!(
+            kinds_texts(&d2.materialize()),
+            kinds_texts(&d3.materialize()),
+            "notes stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -2074,9 +2634,22 @@ mod tests {
         DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
         let snap = d.materialize();
         let p = &snap.blocks[0];
-        assert_eq!(p.text, "fix this word", "comment markup not in text: {:?}", p.text);
-        let cm = p.marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment mark present");
-        assert_eq!((cm.start, cm.end), (4, 13), "marker spans 'this word': {:?}", p.marks);
+        assert_eq!(
+            p.text, "fix this word",
+            "comment markup not in text: {:?}",
+            p.text
+        );
+        let cm = p
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_COMMENT)
+            .expect("comment mark present");
+        assert_eq!(
+            (cm.start, cm.end),
+            (4, 13),
+            "marker spans 'this word': {:?}",
+            p.marks
+        );
         let cid = match &cm.value {
             MarkValue::Str(s) => s.clone(),
             other => panic!("comment value is the comment id: {other:?}"),
@@ -2102,29 +2675,62 @@ mod tests {
 
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
-        let cmts = std::str::from_utf8(cont.get("word/comments.xml").expect("comments.xml written")).unwrap();
-        assert!(cmts.contains(r#"w:author="Ada Lovelace""#), "author emitted: {cmts}");
+        let cmts =
+            std::str::from_utf8(cont.get("word/comments.xml").expect("comments.xml written"))
+                .unwrap();
+        assert!(
+            cmts.contains(r#"w:author="Ada Lovelace""#),
+            "author emitted: {cmts}"
+        );
         assert!(cmts.contains("note: fix"), "comment body emitted: {cmts}");
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains("<w:commentRangeStart"), "range start emitted: {document}");
-        assert!(document.contains("<w:commentRangeEnd"), "range end emitted: {document}");
-        assert!(document.contains("<w:commentReference"), "reference emitted: {document}");
+        assert!(
+            document.contains("<w:commentRangeStart"),
+            "range start emitted: {document}"
+        );
+        assert!(
+            document.contains("<w:commentRangeEnd"),
+            "range end emitted: {document}"
+        );
+        assert!(
+            document.contains("<w:commentReference"),
+            "reference emitted: {document}"
+        );
         let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(ct.contains("/word/comments.xml"), "comments part in content-types: {ct}");
+        assert!(
+            ct.contains("/word/comments.xml"),
+            "comments part in content-types: {ct}"
+        );
         let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
-        assert!(rels.contains(r#"Target="comments.xml""#), "comments rel registered: {rels}");
+        assert!(
+            rels.contains(r#"Target="comments.xml""#),
+            "comments rel registered: {rels}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
         assert_eq!(snap.blocks[0].text, "please fix this word now");
-        let cm = snap.blocks[0].marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment marker survives");
-        assert_eq!((cm.start, cm.end), (11, 20), "anchored range survives: {:?}", snap.blocks[0].marks);
+        let cm = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_COMMENT)
+            .expect("comment marker survives");
+        assert_eq!(
+            (cm.start, cm.end),
+            (11, 20),
+            "anchored range survives: {:?}",
+            snap.blocks[0].marks
+        );
         let new_id = match &cm.value {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("comment value"),
         };
-        let cmt = snap.comments.iter().find(|c| c.id == new_id).expect("comment present by id");
+        let cmt = snap
+            .comments
+            .iter()
+            .find(|c| c.id == new_id)
+            .expect("comment present by id");
         assert_eq!(cmt.author, "Ada Lovelace");
         assert_eq!(cmt.blocks[0].text, "note: fix");
         assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
@@ -2170,21 +2776,58 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains("<w:ins "), "ins wrapper emitted: {document}");
-        assert!(document.contains("<w:del "), "del wrapper emitted: {document}");
-        assert!(document.contains("<w:delText"), "deleted text uses delText: {document}");
-        assert!(document.contains(r#"w:author="Ada""#), "ins author emitted: {document}");
-        assert!(document.contains(r#"w:author="Bob""#), "del author emitted: {document}");
+        assert!(
+            document.contains("<w:ins "),
+            "ins wrapper emitted: {document}"
+        );
+        assert!(
+            document.contains("<w:del "),
+            "del wrapper emitted: {document}"
+        );
+        assert!(
+            document.contains("<w:delText"),
+            "deleted text uses delText: {document}"
+        );
+        assert!(
+            document.contains(r#"w:author="Ada""#),
+            "ins author emitted: {document}"
+        );
+        assert!(
+            document.contains(r#"w:author="Bob""#),
+            "del author emitted: {document}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
         // The deleted text is retained (struck), the inserted text is present.
-        assert_eq!(snap.blocks[0].text, "hello there world", "ins kept, del retained: {:?}", snap.blocks[0].text);
-        let im = snap.blocks[0].marks.iter().find(|m| m.name == MARK_INS).expect("ins mark survives");
-        assert_eq!((im.start, im.end), (5, 11), "ins range survives: {:?}", snap.blocks[0].marks);
-        let dm = snap.blocks[0].marks.iter().find(|m| m.name == MARK_DEL).expect("del mark survives");
-        assert_eq!((dm.start, dm.end), (12, 17), "del range survives: {:?}", snap.blocks[0].marks);
+        assert_eq!(
+            snap.blocks[0].text, "hello there world",
+            "ins kept, del retained: {:?}",
+            snap.blocks[0].text
+        );
+        let im = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_INS)
+            .expect("ins mark survives");
+        assert_eq!(
+            (im.start, im.end),
+            (5, 11),
+            "ins range survives: {:?}",
+            snap.blocks[0].marks
+        );
+        let dm = snap.blocks[0]
+            .marks
+            .iter()
+            .find(|m| m.name == MARK_DEL)
+            .expect("del mark survives");
+        assert_eq!(
+            (dm.start, dm.end),
+            (12, 17),
+            "del range survives: {:?}",
+            snap.blocks[0].marks
+        );
         let ins_id = match &im.value {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("ins value"),
@@ -2193,12 +2836,25 @@ mod tests {
             MarkValue::Str(s) => s.clone(),
             _ => panic!("del value"),
         };
-        assert_eq!(snap.changes.len(), 2, "both changes survive: {:?}", snap.changes);
-        let ic = snap.changes.iter().find(|c| c.id == ins_id).expect("ins change present");
+        assert_eq!(
+            snap.changes.len(),
+            2,
+            "both changes survive: {:?}",
+            snap.changes
+        );
+        let ic = snap
+            .changes
+            .iter()
+            .find(|c| c.id == ins_id)
+            .expect("ins change present");
         assert_eq!(ic.kind, crate::snapshot::ChangeKind::Ins);
         assert_eq!(ic.author, "Ada");
         assert_eq!(ic.range, Some((snap.blocks[0].id.clone(), 5, 11)));
-        let dc = snap.changes.iter().find(|c| c.id == del_id).expect("del change present");
+        let dc = snap
+            .changes
+            .iter()
+            .find(|c| c.id == del_id)
+            .expect("del change present");
         assert_eq!(dc.kind, crate::snapshot::ChangeKind::Del);
         assert_eq!(dc.author, "Bob");
         assert_eq!(dc.range, Some((snap.blocks[0].id.clone(), 12, 17)));
@@ -2207,7 +2863,10 @@ mod tests {
         d2.accept_change(&ins_id);
         d2.accept_change(&del_id);
         let after = d2.materialize();
-        assert_eq!(after.blocks[0].text, "hello there ", "accept-ins keeps text; accept-del removes 'world'");
+        assert_eq!(
+            after.blocks[0].text, "hello there ",
+            "accept-ins keeps text; accept-del removes 'world'"
+        );
         assert!(after.changes.is_empty(), "both changes resolved");
 
         let exported2 = DocxCodec.export(d.as_ref()).unwrap();
@@ -2217,14 +2876,24 @@ mod tests {
             let mut v: Vec<(crate::snapshot::ChangeKind, String, Option<(usize, usize)>)> = snap
                 .changes
                 .iter()
-                .map(|c| (c.kind, c.author.clone(), c.range.as_ref().map(|(_, s, e)| (*s, *e))))
+                .map(|c| {
+                    (
+                        c.kind,
+                        c.author.clone(),
+                        c.range.as_ref().map(|(_, s, e)| (*s, *e)),
+                    )
+                })
                 .collect();
             v.sort_by(|a, b| (a.2, &a.1).cmp(&(b.2, &b.1)));
             v
         };
         let mut d_re = Document::new();
         DocxCodec.import(&exported, &mut d_re.as_mut()).unwrap();
-        assert_eq!(summary(&d_re.materialize()), summary(&d3.materialize()), "changes stable across a second round-trip");
+        assert_eq!(
+            summary(&d_re.materialize()),
+            summary(&d3.materialize()),
+            "changes stable across a second round-trip"
+        );
     }
 
     #[test]
@@ -2259,16 +2928,29 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let out = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
-        assert!(document.contains("<w:sectPr>"), "sectPr emitted for columns: {document}");
-        assert!(document.contains(r#"<w:cols w:num="2""#), "w:cols num=2 in sectPr: {document}");
-        assert!(document.contains(r#"w:space="360""#), "w:cols space=360 twips (24px): {document}");
+        assert!(
+            document.contains("<w:sectPr>"),
+            "sectPr emitted for columns: {document}"
+        );
+        assert!(
+            document.contains(r#"<w:cols w:num="2""#),
+            "w:cols num=2 in sectPr: {document}"
+        );
+        assert!(
+            document.contains(r#"w:space="360""#),
+            "w:cols space=360 twips (24px): {document}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let (count, gap) = d2.columns();
         assert_eq!(count, 2, "column count survives .docx round-trip");
         assert_eq!(gap, Some(24.0), "column gap (px) survives .docx round-trip");
-        assert_eq!(d2.materialize().columns, 2, "snapshot surfaces the column count");
+        assert_eq!(
+            d2.materialize().columns,
+            2,
+            "snapshot surfaces the column count"
+        );
     }
 
     #[test]
@@ -2284,14 +2966,32 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let out = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
-        assert_eq!(document.matches("<w:sectPr>").count(), 1, "exactly one sectPr: {document}");
-        assert!(document.contains("<w:headerReference"), "header reference kept: {document}");
-        assert!(document.contains(r#"<w:cols w:num="3""#), "columns folded into the sectPr: {document}");
+        assert_eq!(
+            document.matches("<w:sectPr>").count(),
+            1,
+            "exactly one sectPr: {document}"
+        );
+        assert!(
+            document.contains("<w:headerReference"),
+            "header reference kept: {document}"
+        );
+        assert!(
+            document.contains(r#"<w:cols w:num="3""#),
+            "columns folded into the sectPr: {document}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
-        assert_eq!(d2.columns().0, 3, "column count survives alongside the header");
-        assert_eq!(d2.header()[0].text, "Header", "header survives alongside columns");
+        assert_eq!(
+            d2.columns().0,
+            3,
+            "column count survives alongside the header"
+        );
+        assert_eq!(
+            d2.header()[0].text,
+            "Header",
+            "header survives alongside columns"
+        );
     }
 
     #[test]
@@ -2304,7 +3004,10 @@ mod tests {
         let exported = DocxCodec.export(d.as_ref()).unwrap();
         let out = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
-        assert!(!document.contains("<w:cols"), "no w:cols for a single-column doc: {document}");
+        assert!(
+            !document.contains("<w:cols"),
+            "no w:cols for a single-column doc: {document}"
+        );
 
         let mut d2 = Document::new();
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();

@@ -25,8 +25,16 @@ impl FormatProvider for RtfCodec {
     }
 
     fn detect(&self, head: &[u8]) -> Confidence {
-        let s = head.iter().take_while(|b| b.is_ascii()).cloned().collect::<Vec<u8>>();
-        let trimmed = s.iter().skip_while(|b| b.is_ascii_whitespace()).cloned().collect::<Vec<u8>>();
+        let s = head
+            .iter()
+            .take_while(|b| b.is_ascii())
+            .cloned()
+            .collect::<Vec<u8>>();
+        let trimmed = s
+            .iter()
+            .skip_while(|b| b.is_ascii_whitespace())
+            .cloned()
+            .collect::<Vec<u8>>();
         if trimmed.starts_with(b"{\\rtf") {
             Confidence::High
         } else {
@@ -45,11 +53,11 @@ impl FormatProvider for RtfCodec {
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
         // Reusing `qdoc-rtf`'s writer here would need `qdoc` to depend on it — a cycle.
         Err(CodecError::Unsupported(
-            "RTF export is provided by the `qdoc-rtf` crate (editor), not the qdoc codec".to_string(),
+            "RTF export is provided by the `qdoc-rtf` crate (editor), not the qdoc codec"
+                .to_string(),
         ))
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
@@ -188,7 +196,6 @@ fn skip_one_fallback(chars: &[char], mut i: usize, n: usize) -> usize {
     i
 }
 
-
 /// Parses a `{\colortbl;\redR\greenG\blueB; …}` group into a 1-based list of `#rrggbb` strings; index 0 is the reserved auto entry.
 fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
     let mut out: Vec<Option<String>> = Vec::new();
@@ -199,9 +206,18 @@ fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
             Token::Control(w, p) => {
                 let v = p.unwrap_or(0).clamp(0, 255) as u32;
                 match w.as_str() {
-                    "red" => { r = v; saw_component = true; }
-                    "green" => { g = v; saw_component = true; }
-                    "blue" => { b = v; saw_component = true; }
+                    "red" => {
+                        r = v;
+                        saw_component = true;
+                    }
+                    "green" => {
+                        g = v;
+                        saw_component = true;
+                    }
+                    "blue" => {
+                        b = v;
+                        saw_component = true;
+                    }
                     _ => {}
                 }
             }
@@ -225,7 +241,6 @@ fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
     }
     out
 }
-
 
 /// Per-scope character formatting, pushed/popped on `{`/`}`.
 #[derive(Clone, Default)]
@@ -327,11 +342,51 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                 }
                 match sym {
                     '*' => skip_depth = Some(depth),
-                    '\\' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '\\'),
-                    '{' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '{'),
-                    '}' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '}'),
-                    '~' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '\u{a0}'),
-                    '_' => push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, '\u{2011}'),
+                    '\\' => push_char(
+                        doc,
+                        &mut prev_block,
+                        &mut cur_block,
+                        &mut cur_len,
+                        &mut need_new_block,
+                        &mut pending_bullet,
+                        '\\',
+                    ),
+                    '{' => push_char(
+                        doc,
+                        &mut prev_block,
+                        &mut cur_block,
+                        &mut cur_len,
+                        &mut need_new_block,
+                        &mut pending_bullet,
+                        '{',
+                    ),
+                    '}' => push_char(
+                        doc,
+                        &mut prev_block,
+                        &mut cur_block,
+                        &mut cur_len,
+                        &mut need_new_block,
+                        &mut pending_bullet,
+                        '}',
+                    ),
+                    '~' => push_char(
+                        doc,
+                        &mut prev_block,
+                        &mut cur_block,
+                        &mut cur_len,
+                        &mut need_new_block,
+                        &mut pending_bullet,
+                        '\u{a0}',
+                    ),
+                    '_' => push_char(
+                        doc,
+                        &mut prev_block,
+                        &mut cur_block,
+                        &mut cur_len,
+                        &mut need_new_block,
+                        &mut pending_bullet,
+                        '\u{2011}',
+                    ),
                     '-' => {} // optional hyphen: no visible glyph
                     _ => {}
                 }
@@ -364,7 +419,15 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                 }
                 // Decode the byte as Latin-1 (the common ANSI fallback): most documents using a
                 // different code page still escape ASCII as ASCII, so this is correct in the printable range.
-                push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, *b as char);
+                push_char(
+                    doc,
+                    &mut prev_block,
+                    &mut cur_block,
+                    &mut cur_len,
+                    &mut need_new_block,
+                    &mut pending_bullet,
+                    *b as char,
+                );
             }
             Token::Unicode(cu) => {
                 if skip_depth.is_some() {
@@ -373,7 +436,15 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
                 }
                 let u = (*cu as i64 & 0xffff) as u16;
                 let ch = char::from_u32(u as u32).unwrap_or('\u{fffd}');
-                push_char(doc, &mut prev_block, &mut cur_block, &mut cur_len, &mut need_new_block, &mut pending_bullet, ch);
+                push_char(
+                    doc,
+                    &mut prev_block,
+                    &mut cur_block,
+                    &mut cur_len,
+                    &mut need_new_block,
+                    &mut pending_bullet,
+                    ch,
+                );
             }
             Token::Text(s) => {
                 if skip_depth.is_some() {
@@ -494,23 +565,59 @@ fn push_text(
     *cur_len = end;
 
     if cs.bold {
-        pending.push(PendingMark { block: id.clone(), start, end, name: "strong", value: None });
+        pending.push(PendingMark {
+            block: id.clone(),
+            start,
+            end,
+            name: "strong",
+            value: None,
+        });
     }
     if cs.italic {
-        pending.push(PendingMark { block: id.clone(), start, end, name: "em", value: None });
+        pending.push(PendingMark {
+            block: id.clone(),
+            start,
+            end,
+            name: "em",
+            value: None,
+        });
     }
     if cs.underline {
-        pending.push(PendingMark { block: id.clone(), start, end, name: "underline", value: None });
+        pending.push(PendingMark {
+            block: id.clone(),
+            start,
+            end,
+            name: "underline",
+            value: None,
+        });
     }
     if cs.strike {
-        pending.push(PendingMark { block: id.clone(), start, end, name: "strike", value: None });
+        pending.push(PendingMark {
+            block: id.clone(),
+            start,
+            end,
+            name: "strike",
+            value: None,
+        });
     }
     if let Some(hex) = color_hex(colors, cs.color) {
-        pending.push(PendingMark { block: id.clone(), start, end, name: "color", value: Some(MarkVal::Str(hex)) });
+        pending.push(PendingMark {
+            block: id.clone(),
+            start,
+            end,
+            name: "color",
+            value: Some(MarkVal::Str(hex)),
+        });
     }
     if let Some(hp) = cs.fs_halfpt {
         let pt = (hp / 2).max(0) as i64;
-        pending.push(PendingMark { block: id, start, end, name: "fontSize", value: Some(MarkVal::Int(pt)) });
+        pending.push(PendingMark {
+            block: id,
+            start,
+            end,
+            name: "fontSize",
+            value: Some(MarkVal::Int(pt)),
+        });
     }
 }
 
@@ -584,8 +691,8 @@ fn handle_control(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::DocSnapshot;
     use crate::Document;
+    use crate::snapshot::DocSnapshot;
 
     fn import(src: &str) -> DocSnapshot {
         let mut d = Document::new();
@@ -603,7 +710,11 @@ mod tests {
     #[test]
     fn plain_paragraph_text() {
         let snap = import("{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Hello world\\par}}");
-        let paras: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "paragraph").collect();
+        let paras: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "paragraph")
+            .collect();
         assert_eq!(paras.len(), 1, "{snap:?}");
         assert_eq!(paras[0].text, "Hello world");
     }
@@ -611,16 +722,29 @@ mod tests {
     #[test]
     fn two_paragraphs_split_on_par() {
         let snap = import("{\\rtf1\\ansi\n{\\pard First\\par}{\\pard Second\\par}}");
-        let texts: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "paragraph").map(|b| b.text.clone()).collect();
+        let texts: Vec<_> = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "paragraph")
+            .map(|b| b.text.clone())
+            .collect();
         assert_eq!(texts, vec!["First".to_string(), "Second".to_string()]);
     }
 
     #[test]
     fn bold_run_yields_strong_mark() {
         let snap = import("{\\rtf1\\ansi\n{\\pard a{\\b bold}c\\par}}");
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("paragraph");
         assert_eq!(p.text, "aboldc");
-        let strong = p.marks.iter().find(|m| m.name == "strong").expect("strong mark present");
+        let strong = p
+            .marks
+            .iter()
+            .find(|m| m.name == "strong")
+            .expect("strong mark present");
         // The bold run is "bold" — chars 1..5.
         assert_eq!((strong.start, strong.end), (1, 5), "{:?}", p.marks);
     }
@@ -628,20 +752,55 @@ mod tests {
     #[test]
     fn bold_toggle_without_group() {
         let snap = import("{\\rtf1\\ansi\n{\\pard x\\b on\\b0 y\\par}}");
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("paragraph");
         assert_eq!(p.text, "xony");
-        let strong = p.marks.iter().find(|m| m.name == "strong").expect("strong mark");
-        assert_eq!((strong.start, strong.end), (1, 3), "covers 'on': {:?}", p.marks);
+        let strong = p
+            .marks
+            .iter()
+            .find(|m| m.name == "strong")
+            .expect("strong mark");
+        assert_eq!(
+            (strong.start, strong.end),
+            (1, 3),
+            "covers 'on': {:?}",
+            p.marks
+        );
     }
 
     #[test]
     fn italic_underline_strike_marks() {
         let snap = import("{\\rtf1\\ansi\n{\\pard {\\i it}{\\ul un}{\\strike st}\\par}}");
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("paragraph");
         assert_eq!(p.text, "itunst");
-        assert!(p.marks.iter().any(|m| m.name == "em" && m.start == 0 && m.end == 2), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "underline" && m.start == 2 && m.end == 4), "{:?}", p.marks);
-        assert!(p.marks.iter().any(|m| m.name == "strike" && m.start == 4 && m.end == 6), "{:?}", p.marks);
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "em" && m.start == 0 && m.end == 2),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "underline" && m.start == 2 && m.end == 4),
+            "{:?}",
+            p.marks
+        );
+        assert!(
+            p.marks
+                .iter()
+                .any(|m| m.name == "strike" && m.start == 4 && m.end == 6),
+            "{:?}",
+            p.marks
+        );
     }
 
     #[test]
@@ -650,10 +809,23 @@ mod tests {
         let snap = import(
             "{\\rtf1\\ansi{\\colortbl;\\red255\\green0\\blue0;}\n{\\pard {\\cf1 red}\\par}}",
         );
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("paragraph");
         assert_eq!(p.text, "red");
-        let color = p.marks.iter().find(|m| m.name == "color").expect("color mark");
-        assert_eq!(color.value, crate::document::MarkValue::Str("#ff0000".into()), "{:?}", p.marks);
+        let color = p
+            .marks
+            .iter()
+            .find(|m| m.name == "color")
+            .expect("color mark");
+        assert_eq!(
+            color.value,
+            crate::document::MarkValue::Str("#ff0000".into()),
+            "{:?}",
+            p.marks
+        );
         assert_eq!((color.start, color.end), (0, 3));
     }
 
@@ -661,16 +833,33 @@ mod tests {
     fn fs_maps_to_fontsize_in_points() {
         // `\fs40` = 40 half-points = 20pt.
         let snap = import("{\\rtf1\\ansi\n{\\pard {\\fs40 big}\\par}}");
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
-        let size = p.marks.iter().find(|m| m.name == "fontSize").expect("fontSize mark");
-        assert_eq!(size.value, crate::document::MarkValue::Int(20), "{:?}", p.marks);
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("paragraph");
+        let size = p
+            .marks
+            .iter()
+            .find(|m| m.name == "fontSize")
+            .expect("fontSize mark");
+        assert_eq!(
+            size.value,
+            crate::document::MarkValue::Int(20),
+            "{:?}",
+            p.marks
+        );
     }
 
     #[test]
     fn escapes_and_unicode_decode_to_text() {
         // literal `\\ \{ \}`, a hex-byte escape (é, Latin-1), and a Unicode escape (checkmark, U+2713).
         let snap = import("{\\rtf1\\ansi\n{\\pard a\\\\b\\{c\\} \\'e9 \\u10003?z\\par}}");
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph");
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("paragraph");
         assert_eq!(p.text, "a\\b{c} é ✓z");
     }
 
@@ -681,13 +870,21 @@ mod tests {
             "{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\generator qOS;}\n{\\pard Body\\par}}",
         );
         let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
-        assert_eq!(texts, vec!["Body".to_string()], "only body text survives: {snap:?}");
+        assert_eq!(
+            texts,
+            vec!["Body".to_string()],
+            "only body text survives: {snap:?}"
+        );
     }
 
     #[test]
     fn bullet_paragraph_becomes_list_item() {
         let snap = import("{\\rtf1\\ansi\n{\\pard\\bullet\\tab Item one\\par}}");
-        let li = snap.blocks.iter().find(|b| b.kind == "list_item").expect("list_item block");
+        let li = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "list_item")
+            .expect("list_item block");
         assert!(li.text.contains("Item one"), "got {:?}", li.text);
     }
 
@@ -705,9 +902,22 @@ mod tests {
         let rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fswiss Helvetica;}}{\\colortbl;}\n\
 {\\pard\\fs22 {\\fs22 Hello }{\\b\\fs22 world}{\\fs22  today}\\par}}";
         let snap = import(rtf);
-        let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("a paragraph survives");
+        let p = snap
+            .blocks
+            .iter()
+            .find(|b| b.kind == "paragraph")
+            .expect("a paragraph survives");
         assert_eq!(p.text, "Hello world today", "text round-trips: {snap:?}");
-        let strong = p.marks.iter().find(|m| m.name == "strong").expect("bold run survives");
-        assert_eq!(&p.text[strong.start..strong.end], "world", "bold covers the right run: {:?}", p.marks);
+        let strong = p
+            .marks
+            .iter()
+            .find(|m| m.name == "strong")
+            .expect("bold run survives");
+        assert_eq!(
+            &p.text[strong.start..strong.end],
+            "world",
+            "bold covers the right run: {:?}",
+            p.marks
+        );
     }
 }

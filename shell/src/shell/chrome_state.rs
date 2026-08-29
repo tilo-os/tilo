@@ -387,10 +387,7 @@ impl ChromeState {
 
     /// Called once per layout pass by the overlay host, so the
     /// placement rule can read the active strip's layout.
-    pub fn set_strip_viewport(
-        &mut self,
-        viewport: Option<crate::shell::placement::StripViewport>,
-    ) {
+    pub fn set_strip_viewport(&mut self, viewport: Option<crate::shell::placement::StripViewport>) {
         self.strip_viewport = viewport;
     }
 
@@ -398,16 +395,11 @@ impl ChromeState {
         self.strip_viewport.as_ref()
     }
 
-    pub fn push_peer_sync_request(
-        &mut self,
-        request: crate::shell::overlay_host::PeerSyncAction,
-    ) {
+    pub fn push_peer_sync_request(&mut self, request: crate::shell::overlay_host::PeerSyncAction) {
         self.peer_sync_requests.push(request);
     }
 
-    pub fn take_peer_sync_requests(
-        &mut self,
-    ) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
+    pub fn take_peer_sync_requests(&mut self) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_requests)
     }
 
@@ -499,13 +491,7 @@ impl ChromeState {
 
     /// Focus is four coordinates, not one; setting all four in one place
     /// stops callers getting a subset wrong differently.
-    pub fn focus_tab(
-        &mut self,
-        workspace: WorkspaceId,
-        strip: StripId,
-        group: GroupId,
-        tab: u64,
-    ) {
+    pub fn focus_tab(&mut self, workspace: WorkspaceId, strip: StripId, group: GroupId, tab: u64) {
         {
             let mut tree = self.tree_mut();
             tree.active = workspace;
@@ -611,10 +597,12 @@ impl ChromeState {
         Some(match &tab.tile {
             // A peer window carries an app id in the same namespace
             // `AppKind::app_id` maps the others into.
-            TileContent::Foreign { app_id, .. }
-            | TileContent::PeerWindow { app_id, .. } => app_id.clone(),
-            TileContent::AppPlaceholder { kind, .. }
-            | TileContent::Stub { kind, .. } => kind.app_id(),
+            TileContent::Foreign { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
+                app_id.clone()
+            }
+            TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
+                kind.app_id()
+            }
         })
     }
 
@@ -1111,9 +1099,7 @@ mod active_tab_tests {
 
     /// A tree with one strip/group holding `tile`, plus the ids to
     /// drive `grant_dropped_file_access` against it.
-    fn tree_with_single_tab(
-        tile: TileContent,
-    ) -> (WorkspaceTree, StripId, GroupId, u64) {
+    fn tree_with_single_tab(tile: TileContent) -> (WorkspaceTree, StripId, GroupId, u64) {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         let group_id: GroupId = 8;
@@ -1154,12 +1140,10 @@ mod active_tab_tests {
     /// `xdg_toplevel::set_app_id` value — not a re-derived display label.
     #[test]
     fn dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id() {
-        let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(
-            TileContent::Foreign {
-                app_id: "org.gimp.GIMP".into(),
-                surface_id: 77,
-            },
-        );
+        let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(TileContent::Foreign {
+            app_id: "org.gimp.GIMP".into(),
+            surface_id: 77,
+        });
         let ws_id = tree.active;
         let handle = Arc::new(RwLock::new(tree));
         let chrome = ChromeState::new_with_handle(handle);
@@ -1196,12 +1180,11 @@ mod active_tab_tests {
     /// reverse-DNS app-id, not the display label.
     #[test]
     fn dropped_file_grant_keyed_by_builtin_canonical_app_id() {
-        let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(
-            TileContent::AppPlaceholder {
+        let (tree, strip_id, group_id, tab_id) =
+            tree_with_single_tab(TileContent::AppPlaceholder {
                 kind: AppKind::Other("Editor".into()),
                 label: "notes.ts".into(),
-            },
-        );
+            });
         let ws_id = tree.active;
         let handle = Arc::new(RwLock::new(tree));
         let chrome = ChromeState::new_with_handle(handle);
@@ -1243,10 +1226,16 @@ mod active_tab_tests {
         st.bump();
 
         let (count, focused) = st.strip_focus();
-        assert!(count >= 4, "fixture should hold at least four strips, saw {count}");
+        assert!(
+            count >= 4,
+            "fixture should hold at least four strips, saw {count}"
+        );
         assert_eq!(focused, 0, "a fresh workspace focuses its first strip");
 
-        assert!(st.switch_strip(1), "moving down a strip should change focus");
+        assert!(
+            st.switch_strip(1),
+            "moving down a strip should change focus"
+        );
         assert_eq!(st.strip_focus().1, 1);
 
         assert!(st.switch_strip(1));
@@ -1273,7 +1262,8 @@ mod active_tab_tests {
             let mut tree = st.tree_mut();
             let ws = tree.active_workspace_mut().expect("a workspace");
             for n in 0..3 {
-                ws.strips.push(Strip::new(StripId(9100 + n as u64), format!("S{n}")));
+                ws.strips
+                    .push(Strip::new(StripId(9100 + n as u64), format!("S{n}")));
             }
         }
         let (count, _) = st.strip_focus();

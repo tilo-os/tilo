@@ -43,7 +43,10 @@ const LOGICAL_H: f64 = 1940.0;
 /// Render the showcase at a given device scale + themed with the given user
 /// UI-scale / text-scale, and write a PNG.
 fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: PathBuf) {
-    let theme = base.clone().with_ui_scale(ui_scale).with_text_scale(text_scale);
+    let theme = base
+        .clone()
+        .with_ui_scale(ui_scale)
+        .with_text_scale(text_scale);
 
     let mut state = State::new();
     let mut root = gallery_scene::build_showcase(&mut state, &theme);
@@ -76,7 +79,13 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: P
     // Composite the logical scene at the device scale — crisp physical raster.
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    root.draw(&mut scene, composite_transform(device_scale), &mut tr, &theme, &presence);
+    root.draw(
+        &mut scene,
+        composite_transform(device_scale),
+        &mut tr,
+        &theme,
+        &presence,
+    );
 
     let pw = physical_len(LOGICAL_W, device_scale).round() as u32;
     let ph = physical_len(LOGICAL_H, device_scale).round() as u32;
@@ -108,5 +117,11 @@ fn main() {
     shoot(&base, 1.0, 1.30, 1.0, dir.join("gallery-text-large.png"));
 
     // The composition: user UI-scale 1.25 AND a fractional 1.5 device scale.
-    shoot(&base, 1.25, 1.0, 1.5, dir.join("gallery-ui1.25-device1.5.png"));
+    shoot(
+        &base,
+        1.25,
+        1.0,
+        1.5,
+        dir.join("gallery-ui1.25-device1.5.png"),
+    );
 }

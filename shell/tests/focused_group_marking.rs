@@ -127,7 +127,11 @@ fn moving_the_pointer_to_a_sibling_moves_the_light() {
     let (t, s_a, s_b) = tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&t);
     tick(&mut host);
-    assert_eq!(lit(&mut host, [s_a, s_b]), vec![(s_a, G_A1)], "precondition");
+    assert_eq!(
+        lit(&mut host, [s_a, s_b]),
+        vec![(s_a, G_A1)],
+        "precondition"
+    );
 
     {
         let st = chrome.borrow();
@@ -148,7 +152,11 @@ fn moving_the_pointer_to_another_strip_moves_the_light() {
     let ws_id = t.active;
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&t);
     tick(&mut host);
-    assert_eq!(lit(&mut host, [s_a, s_b]), vec![(s_a, G_A1)], "precondition");
+    assert_eq!(
+        lit(&mut host, [s_a, s_b]),
+        vec![(s_a, G_A1)],
+        "precondition"
+    );
 
     {
         let st = chrome.borrow();

@@ -13,13 +13,13 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -66,7 +66,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, imager::app_root(), "dev.qos.imager"));
+        std::process::exit(ui::headless::run(
+            spec,
+            imager::app_root(),
+            "dev.qos.imager",
+        ));
     }
 
     let (mut state, autosave) = ui::persist::open("dev.qos.imager");

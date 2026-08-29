@@ -659,7 +659,9 @@ mod tests {
         assert_eq!(node.name.as_deref(), Some("Notifications"));
         assert_eq!(node.live, Some(Politeness::Assertive));
         assert!(node.value.is_none(), "an empty stack announces nothing");
-        chrome.borrow_mut().push_notification("New mail", "secret subject");
+        chrome
+            .borrow_mut()
+            .push_notification("New mail", "secret subject");
         let node = Widget::accessibility(&stack).unwrap();
         assert_eq!(node.value.as_deref(), Some("New mail. secret subject"));
         // Locked: no title/body/app reaches the a11y tree.

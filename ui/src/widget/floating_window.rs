@@ -44,7 +44,11 @@ enum Drag {
     /// `grab` = cursor offset from window origin.
     Move { grab: Point },
     /// `start` = window rect at press, `from` = cursor at press.
-    Resize { edge: Edge, start: Rect, from: Point },
+    Resize {
+        edge: Edge,
+        start: Rect,
+        from: Point,
+    },
 }
 
 pub struct FloatingWindow<C: Widget> {
@@ -131,8 +135,12 @@ impl<C: Widget> FloatingWindow<C> {
         self.bounds = bounds;
         if !self.placed && self.open {
             let (mut w, mut h) = self.initial_size;
-            w = w.min(bounds.width() - 32.0).max(MIN_WIDTH.min(bounds.width()));
-            h = h.min(bounds.height() - 32.0).max(MIN_HEIGHT.min(bounds.height()));
+            w = w
+                .min(bounds.width() - 32.0)
+                .max(MIN_WIDTH.min(bounds.width()));
+            h = h
+                .min(bounds.height() - 32.0)
+                .max(MIN_HEIGHT.min(bounds.height()));
             let cx = (bounds.x0 + bounds.x1) / 2.0;
             let y0 = (bounds.y0 + (bounds.height() - h) / 2.0).max(bounds.y0 + 8.0);
             self.rect = Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y0 + h);
@@ -182,7 +190,12 @@ impl<C: Widget> FloatingWindow<C> {
     }
 
     fn title_bar_rect(&self) -> Rect {
-        Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + TITLE_BAR_HEIGHT)
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + TITLE_BAR_HEIGHT,
+        )
     }
 
     fn apply_drag(&mut self, drag: Drag, pt: Point) {
@@ -242,7 +255,8 @@ impl<C: Widget> FloatingWindow<C> {
                 }
             },
         );
-        self.content.apply_layout(&taffy, node, Point::new(inner.x0, inner.y0));
+        self.content
+            .apply_layout(&taffy, node, Point::new(inner.x0, inner.y0));
         self.content_taffy = Some(taffy);
         self.content_node = Some(node);
     }
@@ -261,7 +275,14 @@ impl<C: Widget> FloatingWindow<C> {
         };
         let mut inner_handled = false;
         self.content.handle_event(
-            event, scale_factor, modifiers, state, path, &mut inner_handled, focus_target, node,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            &mut inner_handled,
+            focus_target,
+            node,
             taffy,
         );
     }
@@ -339,7 +360,13 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         );
 
         let body = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &body);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &body,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -374,11 +401,23 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         );
 
         let inner = self.content_area();
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &inner);
-        self.content.draw(scene, transform, text_renderer, theme, presence);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &inner,
+        );
+        self.content
+            .draw(scene, transform, text_renderer, theme, presence);
         scene.pop_layer();
 
-        let g = Rect::new(self.rect.x1 - 14.0, self.rect.y1 - 14.0, self.rect.x1 - 4.0, self.rect.y1 - 4.0);
+        let g = Rect::new(
+            self.rect.x1 - 14.0,
+            self.rect.y1 - 14.0,
+            self.rect.x1 - 4.0,
+            self.rect.y1 - 4.0,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -416,7 +455,14 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 // A move outside must not reach the content (the modal
                 // boundary), but this arms embedded fields' hover flag.
                 if self.content_area().contains(pt) {
-                    self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
+                    self.forward_to_content(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        focus_target,
+                    );
                 }
             }
             WindowEvent::MouseInput {
@@ -429,7 +475,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 // — which `Rect::contains` reports as outside — still
                 // starts a resize.
                 if let Some(edge) = self.resize_edge_at(pt) {
-                    self.drag = Some(Drag::Resize { edge, start: self.rect, from: pt });
+                    self.drag = Some(Drag::Resize {
+                        edge,
+                        start: self.rect,
+                        from: pt,
+                    });
                     *handled = true;
                     return;
                 }
@@ -449,14 +499,22 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } => {
                 if self.drag.is_some() {
                     self.drag = None;
                 }
                 *handled = true;
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 self.set_open(false);
@@ -478,7 +536,9 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         vec![&mut self.content]
     }
 
-    fn name(&self) -> &str { "FloatingWindow" }
+    fn name(&self) -> &str {
+        "FloatingWindow"
+    }
 
     fn modal_capture(&self) -> Option<Rect> {
         if self.open { Some(self.rect) } else { None }
@@ -515,7 +575,9 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         None
     }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 #[cfg(test)]
@@ -539,7 +601,10 @@ mod tests {
         ) -> NodeId {
             let n = taffy
                 .new_leaf(Style {
-                    size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
                     ..Default::default()
                 })
                 .unwrap();
@@ -555,7 +620,15 @@ mod tests {
                 origin.y + l.size.height as f64,
             );
         }
-        fn draw(&mut self, _s: &mut Scene, _t: Affine, _tr: &mut TextRenderer, _th: &Theme, _p: &PresenceCtx) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
         fn handle_event(
             &mut self,
             _e: &WindowEvent,
@@ -570,13 +643,20 @@ mod tests {
         ) {
             self.events.set(self.events.get() + 1);
         }
-        fn name(&self) -> &str { "Probe" }
-        fn get_rect(&self) -> Rect { self.rect }
+        fn name(&self) -> &str {
+            "Probe"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
     }
 
     fn laid_out(open: bool) -> (FloatingWindow<Probe>, std::rc::Rc<std::cell::Cell<usize>>) {
         let events = std::rc::Rc::new(std::cell::Cell::new(0));
-        let probe = Probe { events: events.clone(), rect: Rect::ZERO };
+        let probe = Probe {
+            events: events.clone(),
+            rect: Rect::ZERO,
+        };
         let mut w = FloatingWindow::new("Compose", probe).open(open);
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -605,10 +685,18 @@ mod tests {
         }
     }
     fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Pressed, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
     }
     fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Released, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
     }
     fn dispatch(w: &mut FloatingWindow<Probe>, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
@@ -617,7 +705,17 @@ mod tests {
         let mut ft = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        w.handle_event(e, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        w.handle_event(
+            e,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         handled
     }
 
@@ -625,7 +723,10 @@ mod tests {
     fn opens_centred_within_bounds() {
         let (w, _e) = laid_out(true);
         let r = w.window_rect();
-        assert!((r.center().x - 500.0).abs() < 2.0, "centred horizontally: {r:?}");
+        assert!(
+            (r.center().x - 500.0).abs() < 2.0,
+            "centred horizontally: {r:?}"
+        );
         assert!(r.x0 >= 0.0 && r.x1 <= 1000.0, "within bounds: {r:?}");
     }
 
@@ -636,11 +737,20 @@ mod tests {
         let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
         dispatch(&mut w, &cursor_at(grab));
         assert!(dispatch(&mut w, &left_press()), "title press consumed");
-        dispatch(&mut w, &cursor_at(Point::new(grab.x + 120.0, grab.y + 40.0)));
+        dispatch(
+            &mut w,
+            &cursor_at(Point::new(grab.x + 120.0, grab.y + 40.0)),
+        );
         dispatch(&mut w, &left_release());
         let moved = w.window_rect();
-        assert!((moved.x0 - (start.x0 + 120.0)).abs() < 2.0, "moved right by 120: {moved:?}");
-        assert!((moved.y0 - (start.y0 + 40.0)).abs() < 2.0, "moved down by 40: {moved:?}");
+        assert!(
+            (moved.x0 - (start.x0 + 120.0)).abs() < 2.0,
+            "moved right by 120: {moved:?}"
+        );
+        assert!(
+            (moved.y0 - (start.y0 + 40.0)).abs() < 2.0,
+            "moved down by 40: {moved:?}"
+        );
     }
 
     #[test]
@@ -650,10 +760,18 @@ mod tests {
         let corner = Point::new(start.x1, start.y1);
         dispatch(&mut w, &cursor_at(corner));
         assert!(dispatch(&mut w, &left_press()), "corner press consumed");
-        dispatch(&mut w, &cursor_at(Point::new(corner.x + 60.0, corner.y + 50.0)));
+        dispatch(
+            &mut w,
+            &cursor_at(Point::new(corner.x + 60.0, corner.y + 50.0)),
+        );
         dispatch(&mut w, &left_release());
         let grown = w.window_rect();
-        assert!(grown.width() > start.width() + 50.0, "wider: {} -> {}", start.width(), grown.width());
+        assert!(
+            grown.width() > start.width() + 50.0,
+            "wider: {} -> {}",
+            start.width(),
+            grown.width()
+        );
         assert!(grown.height() > start.height() + 40.0, "taller");
     }
 
@@ -664,11 +782,22 @@ mod tests {
         let corner = Point::new(start.x1, start.y1);
         dispatch(&mut w, &cursor_at(corner));
         dispatch(&mut w, &left_press());
-        dispatch(&mut w, &cursor_at(Point::new(start.x0 + 10.0, start.y0 + 10.0)));
+        dispatch(
+            &mut w,
+            &cursor_at(Point::new(start.x0 + 10.0, start.y0 + 10.0)),
+        );
         dispatch(&mut w, &left_release());
         let r = w.window_rect();
-        assert!(r.width() >= MIN_WIDTH - 0.5, "clamped to MIN_WIDTH: {}", r.width());
-        assert!(r.height() >= MIN_HEIGHT - 0.5, "clamped to MIN_HEIGHT: {}", r.height());
+        assert!(
+            r.width() >= MIN_WIDTH - 0.5,
+            "clamped to MIN_WIDTH: {}",
+            r.width()
+        );
+        assert!(
+            r.height() >= MIN_HEIGHT - 0.5,
+            "clamped to MIN_HEIGHT: {}",
+            r.height()
+        );
     }
 
     #[test]
@@ -681,15 +810,24 @@ mod tests {
         let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
         dispatch(&mut w, &cursor_at(grab));
         dispatch(&mut w, &left_press());
-        dispatch(&mut w, &cursor_at(Point::new(grab.x + 5000.0, grab.y + 5000.0)));
+        dispatch(
+            &mut w,
+            &cursor_at(Point::new(grab.x + 5000.0, grab.y + 5000.0)),
+        );
         dispatch(&mut w, &left_release());
         let r = w.window_rect();
-        assert!(r.x0 >= 0.0 && r.y0 >= 0.0, "origin stays on screen after a huge fling: {r:?}");
+        assert!(
+            r.x0 >= 0.0 && r.y0 >= 0.0,
+            "origin stays on screen after a huge fling: {r:?}"
+        );
         assert!(
             r.x0 <= 1000.0 - 80.0,
             "at least 80px of the window's left stays horizontally reachable: {r:?}"
         );
-        assert!(r.y0 <= 800.0, "the title bar stays within the viewport: {r:?}");
+        assert!(
+            r.y0 <= 800.0,
+            "the title bar stays within the viewport: {r:?}"
+        );
         assert!(
             r.x1 <= 1000.0 + 0.5 && r.y1 <= 800.0 + 0.5,
             "the window is clamped inside the viewport, not off the bottom-right: {r:?}"
@@ -699,7 +837,10 @@ mod tests {
         let grab2 = Point::new(r.x0 + 40.0, r.y0 + 10.0);
         dispatch(&mut w, &cursor_at(grab2));
         dispatch(&mut w, &left_press());
-        dispatch(&mut w, &cursor_at(Point::new(grab2.x - 5000.0, grab2.y - 5000.0)));
+        dispatch(
+            &mut w,
+            &cursor_at(Point::new(grab2.x - 5000.0, grab2.y - 5000.0)),
+        );
         dispatch(&mut w, &left_release());
         let r2 = w.window_rect();
         assert!(
@@ -717,9 +858,18 @@ mod tests {
         let title = Point::new(r.center().x, r.y0 + TITLE_BAR_HEIGHT / 2.0);
         assert_eq!(Widget::cursor_shape(&w, title), Some(CursorIcon::Grab));
         // Right / bottom edges + bottom-right corner → the matching resize cursors.
-        assert_eq!(Widget::cursor_shape(&w, Point::new(r.x1, r.center().y)), Some(CursorIcon::EwResize));
-        assert_eq!(Widget::cursor_shape(&w, Point::new(r.center().x, r.y1)), Some(CursorIcon::NsResize));
-        assert_eq!(Widget::cursor_shape(&w, Point::new(r.x1, r.y1)), Some(CursorIcon::NwseResize));
+        assert_eq!(
+            Widget::cursor_shape(&w, Point::new(r.x1, r.center().y)),
+            Some(CursorIcon::EwResize)
+        );
+        assert_eq!(
+            Widget::cursor_shape(&w, Point::new(r.center().x, r.y1)),
+            Some(CursorIcon::NsResize)
+        );
+        assert_eq!(
+            Widget::cursor_shape(&w, Point::new(r.x1, r.y1)),
+            Some(CursorIcon::NwseResize)
+        );
         // Deep in the content body → no claim (defers to the default arrow).
         assert_eq!(Widget::cursor_shape(&w, w.content_area().center()), None);
     }
@@ -760,7 +910,10 @@ mod tests {
         let before = events.get();
         let handled = dispatch(&mut w, &left_press());
         assert!(handled, "in-box press consumed");
-        assert!(events.get() > before, "in-box content press forwarded to content");
+        assert!(
+            events.get() > before,
+            "in-box content press forwarded to content"
+        );
     }
 
     #[test]
@@ -779,7 +932,15 @@ mod tests {
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
         w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let fills = scene.encoding().draw_tags.iter().filter(|t| **t == DrawTag::COLOR).count();
-        assert!(fills >= 3, "open window draws shadow+body+title chrome, got {fills}");
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(
+            fills >= 3,
+            "open window draws shadow+body+title chrome, got {fills}"
+        );
     }
 }

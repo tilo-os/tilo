@@ -52,7 +52,6 @@ pub fn load_bytes(dir: &Path) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,7 +89,10 @@ mod tests {
         // Only the production half — the tests below legitimately write a
         // legacy file to have something for `open_migrating` to import.
         let src = include_str!("storage.rs");
-        let production = src.split(["#[cfg", "(test)]"].concat().as_str()).next().unwrap();
+        let production = src
+            .split(["#[cfg", "(test)]"].concat().as_str())
+            .next()
+            .unwrap();
         for needle in [["fs::", "write("].concat(), ["fs::", "rename("].concat()] {
             assert!(
                 !production.contains(&needle),

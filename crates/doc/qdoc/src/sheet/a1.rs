@@ -15,7 +15,9 @@ pub fn col_to_index(letters: &str) -> Option<u32> {
         if !c.is_ascii_uppercase() {
             return None;
         }
-        idx = idx.checked_mul(26)?.checked_add((c as u32) - ('A' as u32) + 1)?;
+        idx = idx
+            .checked_mul(26)?
+            .checked_add((c as u32) - ('A' as u32) + 1)?;
     }
     Some(idx)
 }
@@ -62,7 +64,15 @@ mod tests {
 
     #[test]
     fn column_roundtrip() {
-        for (letters, idx) in [("A", 1u32), ("Z", 26), ("AA", 27), ("AZ", 52), ("BA", 53), ("ZZ", 702), ("AAA", 703)] {
+        for (letters, idx) in [
+            ("A", 1u32),
+            ("Z", 26),
+            ("AA", 27),
+            ("AZ", 52),
+            ("BA", 53),
+            ("ZZ", 702),
+            ("AAA", 703),
+        ] {
             assert_eq!(col_to_index(letters), Some(idx), "{letters} → {idx}");
             assert_eq!(index_to_col(idx), letters, "{idx} → {letters}");
         }
@@ -70,7 +80,12 @@ mod tests {
 
     #[test]
     fn ref_roundtrip() {
-        for (r, col, row) in [("A1", 1u32, 1u32), ("B2", 2, 2), ("AA10", 27, 10), ("XFD1048576", 16384, 1_048_576)] {
+        for (r, col, row) in [
+            ("A1", 1u32, 1u32),
+            ("B2", 2, 2),
+            ("AA10", 27, 10),
+            ("XFD1048576", 16384, 1_048_576),
+        ] {
             assert_eq!(parse_ref(r), Some((col, row)), "{r}");
             assert_eq!(make_ref(col, row), r, "({col},{row})");
         }

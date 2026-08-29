@@ -183,9 +183,7 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
         .map(str::to_string)
         // Older exports (and `flatpak override`d ones) carry no X-Flatpak; the path is the fallback
         // signal, and the app id is then the desktop-file id, how Flatpak names exports.
-        .or_else(|| {
-            is_flatpak_export_path(path).then(|| id.to_string())
-        });
+        .or_else(|| is_flatpak_export_path(path).then(|| id.to_string()));
     let source = match flatpak_id {
         Some(app_id) => EntrySource::Flatpak { app_id },
         None => EntrySource::Host,
@@ -202,11 +200,19 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
         path: path.to_path_buf(),
         entry_type,
         name,
-        generic_name: get("GenericName").map(|s| unescape(&s)).filter(|s| !s.is_empty()),
-        comment: get("Comment").map(|s| unescape(&s)).filter(|s| !s.is_empty()),
+        generic_name: get("GenericName")
+            .map(|s| unescape(&s))
+            .filter(|s| !s.is_empty()),
+        comment: get("Comment")
+            .map(|s| unescape(&s))
+            .filter(|s| !s.is_empty()),
         exec,
-        try_exec: raw("TryExec").map(unescape).filter(|s| !s.trim().is_empty()),
-        icon: get("Icon").map(|s| unescape(&s)).filter(|s| !s.trim().is_empty()),
+        try_exec: raw("TryExec")
+            .map(unescape)
+            .filter(|s| !s.trim().is_empty()),
+        icon: get("Icon")
+            .map(|s| unescape(&s))
+            .filter(|s| !s.trim().is_empty()),
         categories: string_list(raw("Categories")),
         mime_types: string_list(raw("MimeType")),
         keywords: string_list(get("Keywords").as_deref()),
@@ -230,10 +236,7 @@ fn is_flatpak_export_path(path: &Path) -> bool {
     s.contains("/flatpak/exports/")
 }
 
-fn parse_actions(
-    groups: &BTreeMap<String, Group>,
-    locales: &[String],
-) -> Vec<DesktopAction> {
+fn parse_actions(groups: &BTreeMap<String, Group>, locales: &[String]) -> Vec<DesktopAction> {
     let mut out = Vec::new();
     for (header, group) in groups {
         let Some(id) = header.strip_prefix("Desktop Action ") else {

@@ -33,7 +33,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::backend::{
-    yt_thumb_url, BackendError, BackendOutcome, BackendResult, PlaybackSource, YtBackend,
+    BackendError, BackendOutcome, BackendResult, PlaybackSource, YtBackend, yt_thumb_url,
 };
 use crate::model::{Channel, Video};
 
@@ -227,11 +227,7 @@ fn channel_from_json(v: &Value) -> Channel {
         name: str_field_any(v, &["channel", "uploader", "title"]),
         handle: {
             let h = str_field_any(v, &["uploader_id", "channel_id"]);
-            if h.is_empty() {
-                id.clone()
-            } else {
-                h
-            }
+            if h.is_empty() { id.clone() } else { h }
         },
         subscribers: u64_field(v, "channel_follower_count"),
         verified: v
@@ -336,7 +332,11 @@ fn playback_source_from_print(v: &Value) -> Option<PlaybackSource> {
     let acodec = str_field(v, "acodec");
     let quality = {
         let note = str_field(v, "format_note");
-        if note.is_empty() { str_field(v, "resolution") } else { note }
+        if note.is_empty() {
+            str_field(v, "resolution")
+        } else {
+            note
+        }
     };
     Some(PlaybackSource {
         url,
@@ -352,7 +352,10 @@ fn playback_source_from_print(v: &Value) -> Option<PlaybackSource> {
 // --- small JSON accessors ---------------------------------------------------
 
 fn str_field(v: &Value, key: &str) -> String {
-    v.get(key).and_then(|s| s.as_str()).unwrap_or("").to_string()
+    v.get(key)
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn str_field_any(v: &Value, keys: &[&str]) -> String {
@@ -435,7 +438,11 @@ fn age_label(age: i64, absolute: &str) -> String {
         14..=29 => format!("{} weeks ago", age / 7),
         30..=364 => {
             let months = (age / 30).max(1);
-            if months == 1 { "1 month ago".to_string() } else { format!("{months} months ago") }
+            if months == 1 {
+                "1 month ago".to_string()
+            } else {
+                format!("{months} months ago")
+            }
         }
         _ => absolute.to_string(),
     }
@@ -561,7 +568,10 @@ impl YtBackend for YtDlpBackend {
             }
             u.channel_seed = channel.id.clone();
         }
-        Ok(BackendResult::Channel { channel: Box::new(channel), uploads })
+        Ok(BackendResult::Channel {
+            channel: Box::new(channel),
+            uploads,
+        })
     }
 
     fn related(&self, _id: &str) -> BackendOutcome {
@@ -570,7 +580,10 @@ impl YtBackend for YtDlpBackend {
         Ok(BackendResult::Videos(Vec::new()))
     }
 
-    fn playlist(&self, id: &str) -> Result<(crate::model::Playlist, Vec<crate::model::Video>), BackendError> {
+    fn playlist(
+        &self,
+        id: &str,
+    ) -> Result<(crate::model::Playlist, Vec<crate::model::Video>), BackendError> {
         // yt-dlp extracts playlists reliably (unlike the current rustypipe
         // playlist parser). Flat-list the entries so it stays fast.
         let url = if id.starts_with("http") {
@@ -580,7 +593,14 @@ impl YtBackend for YtDlpBackend {
         };
         let end = format!("{LIST_LIMIT}");
         let v = self.run_json(
-            &["-J", "--flat-playlist", "--no-warnings", "--playlist-end", &end, &url],
+            &[
+                "-J",
+                "--flat-playlist",
+                "--no-warnings",
+                "--playlist-end",
+                &end,
+                &url,
+            ],
             Duration::from_secs(60),
         )?;
         let videos = videos_from_entries(&v, "Playlist");
@@ -588,7 +608,10 @@ impl YtBackend for YtDlpBackend {
             let got = str_field_any(&v, &["id"]);
             if got.is_empty() { id.to_string() } else { got }
         };
-        let thumbnail_url = videos.first().map(|x| x.thumbnail_url.clone()).unwrap_or_default();
+        let thumbnail_url = videos
+            .first()
+            .map(|x| x.thumbnail_url.clone())
+            .unwrap_or_default();
         let video_count = v
             .get("playlist_count")
             .and_then(|c| c.as_u64())
@@ -630,7 +653,17 @@ impl YtBackend for YtDlpBackend {
         const SELECTOR: &str = "best[protocol^=https][vcodec!=none][acodec!=none]/best[ext=mp4][protocol^=https]/best[protocol^=https]/best";
         let v = self.run_print(
             Some(SELECTOR),
-            &["url", "width", "height", "fps", "format_note", "resolution", "ext", "vcodec", "acodec"],
+            &[
+                "url",
+                "width",
+                "height",
+                "fps",
+                "format_note",
+                "resolution",
+                "ext",
+                "vcodec",
+                "acodec",
+            ],
             &url,
             Duration::from_secs(45),
         )?;
@@ -672,7 +705,10 @@ mod tests {
         assert_eq!(v.duration, 465);
         assert_eq!(v.views, 10_815_517);
         // Largest thumbnail is chosen.
-        assert_eq!(v.thumbnail_url, "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg");
+        assert_eq!(
+            v.thumbnail_url,
+            "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg"
+        );
     }
 
     /// A video with no thumbnails still gets a usable image: the canonical
@@ -681,7 +717,10 @@ mod tests {
     fn falls_back_to_hqdefault_thumbnail() {
         let entry = serde_json::json!({ "id": "abc123", "title": "T" });
         let v = video_from_json(&entry, "Search");
-        assert_eq!(v.thumbnail_url, "https://i.ytimg.com/vi/abc123/hqdefault.jpg");
+        assert_eq!(
+            v.thumbnail_url,
+            "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
+        );
     }
 
     /// The channel object's avatar + banner are lifted from `thumbnails` by

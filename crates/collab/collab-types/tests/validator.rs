@@ -9,12 +9,12 @@
 
 use std::time::{Duration, SystemTime};
 
-use ed25519_dalek::SigningKey;
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
     Clearance, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
     ValidationError, generate_keypair, sign_event, sign_op, validate_inbound_op,
 };
+use ed25519_dalek::SigningKey;
 
 fn t(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
@@ -101,12 +101,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn build_op(
-    f: &Fixture,
-    op_class: OpClass,
-    timestamp: SystemTime,
-    seq: u64,
-) -> SignedOp {
+fn build_op(f: &Fixture, op_class: OpClass, timestamp: SystemTime, seq: u64) -> SignedOp {
     let mut op = SignedOp::new_unsigned(
         b"payload".to_vec(),
         f.artifact,
@@ -129,7 +124,10 @@ fn happy_path_all_eight_pass() {
     let r = validate_inbound_op(&op, &mut f.state);
     assert!(r.is_ok(), "expected Ok, got {r:?}");
     // Seq map updated.
-    assert_eq!(f.state.last_seq_per_author.get(&f.author_pk).copied(), Some(1));
+    assert_eq!(
+        f.state.last_seq_per_author.get(&f.author_pk).copied(),
+        Some(1)
+    );
 }
 
 #[test]

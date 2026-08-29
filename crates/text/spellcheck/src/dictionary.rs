@@ -113,7 +113,11 @@ impl Dictionary {
                 by_len[len].push(normalized);
             }
         }
-        Dictionary { words: set, by_len, user_words: HashSet::new() }
+        Dictionary {
+            words: set,
+            by_len,
+            user_words: HashSet::new(),
+        }
     }
 
     /// Returns `true` if `word` is in the dictionary (built-in list **or** the
@@ -257,8 +261,14 @@ mod tests {
         assert!(d.contains("qos"), "added word is now known");
         assert!(d.contains("QOS"), "membership stays case-insensitive");
         // Re-adding is a no-op, and adding a built-in word records nothing.
-        assert!(!d.add_word("qos"), "re-adding an existing user word is a no-op");
-        assert!(!d.add_word("alpha"), "adding a built-in word records nothing");
+        assert!(
+            !d.add_word("qos"),
+            "re-adding an existing user word is a no-op"
+        );
+        assert!(
+            !d.add_word("alpha"),
+            "adding a built-in word records nothing"
+        );
     }
 
     #[test]

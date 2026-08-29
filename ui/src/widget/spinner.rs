@@ -8,15 +8,15 @@
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 
 use crate::color_compat::ColorCompat;
-use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::Widget;
 
 /// Sized to the concept's body text (14px line-height ≈ 20px) while leaving the
 /// dots large enough for the alpha ramp to read.
@@ -166,26 +166,32 @@ impl Widget for Spinner {
     ) {
     }
 
-    fn name(&self) -> &str { "Spinner" }
+    fn name(&self) -> &str {
+        "Spinner"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::Spinner).with_state(AccessState {
-                busy: true,
-                ..Default::default()
-            }),
-        )
+        Some(AccessNode::new(Role::Spinner).with_state(AccessState {
+            busy: true,
+            ..Default::default()
+        }))
     }
 
     /// The default defers to children (none here) and returns `false`, which
     /// would freeze the orbit at the first frame.
-    fn needs_animation_frame(&self) -> bool { true }
+    fn needs_animation_frame(&self) -> bool {
+        true
+    }
 
     /// `Rect::ZERO` sentinel for the first frame.
-    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
 }
 
 #[cfg(test)]
@@ -207,9 +213,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[node])
-            .unwrap();
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -255,9 +259,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[node])
-            .unwrap();
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -287,7 +289,9 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
         let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
-        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
         s.apply_layout(&taffy, node, Point::ZERO);
 
         let theme = Theme::dark().with_reduce_motion(reduce_motion);

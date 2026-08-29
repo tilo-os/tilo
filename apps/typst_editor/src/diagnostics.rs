@@ -57,15 +57,26 @@ impl DiagnosticsPanel {
     }
 
     pub fn error_count(&self) -> usize {
-        self.diags.iter().filter(|d| d.kind == DiagKind::Error).count()
+        self.diags
+            .iter()
+            .filter(|d| d.kind == DiagKind::Error)
+            .count()
     }
 
     pub fn warning_count(&self) -> usize {
-        self.diags.iter().filter(|d| d.kind == DiagKind::Warning).count()
+        self.diags
+            .iter()
+            .filter(|d| d.kind == DiagKind::Warning)
+            .count()
     }
 
     fn list_rect(&self) -> Rect {
-        Rect::new(self.rect.x0, self.rect.y0 + HEADER_H, self.rect.x1, self.rect.y1)
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 + HEADER_H,
+            self.rect.x1,
+            self.rect.y1,
+        )
     }
 
     fn max_scroll(&self) -> f64 {
@@ -96,10 +107,22 @@ impl DiagnosticsPanel {
         self.diags.get(i).and_then(|d| d.line)
     }
 
-    pub fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
         // Panel background + top border.
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &self.rect,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -161,7 +184,12 @@ impl DiagnosticsPanel {
                 DiagKind::Error => c.semantic.danger,
                 DiagKind::Warning => c.semantic.warning,
             };
-            let dot = Rect::new(list.x0 + 12.0, y + ROW_H * 0.5 - 4.0, list.x0 + 20.0, y + ROW_H * 0.5 + 4.0);
+            let dot = Rect::new(
+                list.x0 + 12.0,
+                y + ROW_H * 0.5 - 4.0,
+                list.x0 + 20.0,
+                y + ROW_H * 0.5 + 4.0,
+            );
             scene.fill(Fill::NonZero, transform, dot_color, None, &dot);
 
             // Location.

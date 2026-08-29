@@ -18,9 +18,9 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use collab_types::Ed25519PublicKey;
-use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2};
 use rand_core::{OsRng, RngCore};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -30,12 +30,12 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
-use crate::widget::identity_flow::{
-    IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome,
-    derive_pairing_code, derive_pairing_mac_key, format_pairing_code, verify_pairing_mac,
-};
 #[cfg(test)]
 use crate::widget::identity_flow::compute_pairing_mac;
+use crate::widget::identity_flow::{
+    IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
+    derive_pairing_mac_key, format_pairing_code, verify_pairing_mac,
+};
 use crate::widget::qr::QrWidget;
 
 /// Returned by `host_complete_dkg` — the new key material the host
@@ -503,8 +503,8 @@ impl Widget for AddDeviceHostScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use threshold_identity::ThresholdIdentity;
     use rand_core::OsRng;
+    use threshold_identity::ThresholdIdentity;
 
     fn fixture_host() -> (AddDeviceHostScreen, [u8; 16]) {
         let mut rng = OsRng;
@@ -531,7 +531,10 @@ mod tests {
         let json = s.payload_json().unwrap();
         let payload = PairingPayload::from_json_bytes(&json).unwrap();
         let derived = AddDeviceHostScreen::derive_code_from_payload(&payload).unwrap();
-        assert_eq!(format_pairing_code(derived), s.pairing_code_display().unwrap());
+        assert_eq!(
+            format_pairing_code(derived),
+            s.pairing_code_display().unwrap()
+        );
     }
 
     #[test]

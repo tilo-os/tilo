@@ -80,8 +80,6 @@ fn ws_topic(ws: WorkspaceId) -> gossipsub::IdentTopic {
     gossipsub::IdentTopic::new(format!("nirios/ws/{ws}"))
 }
 
-
-
 /// Returns peers in `peers` whose last-seen timestamp is older than `now
 /// - threshold`. Pure function so the eviction policy is unit-testable without spinning up a swarm.
 fn evict_stale(

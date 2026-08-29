@@ -127,11 +127,18 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
             .expect("timeout")
             .expect("channel closed");
         match env {
-            Envelope::Delta { workspace_id, delta, .. } => {
+            Envelope::Delta {
+                workspace_id,
+                delta,
+                ..
+            } => {
                 assert_eq!(workspace_id, 5);
                 got_payloads.push(delta);
             }
-            Envelope::Ready { workspace_id, pending_deltas } => {
+            Envelope::Ready {
+                workspace_id,
+                pending_deltas,
+            } => {
                 assert_eq!(workspace_id, 5);
                 assert_eq!(pending_deltas, 2);
                 got_ready = true;

@@ -11,13 +11,13 @@ use disks::DisksApp;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
+use ui::taffy::prelude::*;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
-use ui::taffy::prelude::*;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point};
 use ui::vello::peniko::Color;
+use ui::widget::Widget;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// A phone-width capture used to exercise the responsive overlay flap. Below

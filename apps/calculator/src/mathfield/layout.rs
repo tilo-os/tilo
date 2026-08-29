@@ -128,12 +128,7 @@ pub fn layout(row: &Row, tr: &mut TextRenderer, base_size: f32) -> Layout {
 
 /// Lay out a row, producing a fragment whose baseline is at local y = ascent.
 /// `steps` is the path prefix identifying this row in the tree.
-fn layout_row(
-    row: &Row,
-    steps: &[(usize, Slot)],
-    tr: &mut TextRenderer,
-    size: f32,
-) -> Frag {
+fn layout_row(row: &Row, steps: &[(usize, Slot)], tr: &mut TextRenderer, size: f32) -> Frag {
     let (mut ascent, mut descent) = metrics(size);
     // First pass: build each node's fragment and track the row's extents.
     let mut frags: Vec<(usize, NodeFrag)> = Vec::new();
@@ -185,7 +180,13 @@ fn layout_row(
         });
     }
 
-    Frag { boxes, gaps, width: pen, ascent, descent }
+    Frag {
+        boxes,
+        gaps,
+        width: pen,
+        ascent,
+        descent,
+    }
 }
 
 /// A node's fragment: its own boxes/gaps plus the row baseline relative to
@@ -217,7 +218,13 @@ fn layout_node(
                 baseline: ascent,
                 kind: BoxKind::Glyph { ch: *ch, size },
             };
-            NodeFrag { boxes: vec![b], gaps: vec![], width: w, ascent, descent }
+            NodeFrag {
+                boxes: vec![b],
+                gaps: vec![],
+                width: w,
+                ascent,
+                descent,
+            }
         }
         Node::Func { name, arg } => {
             let name_w = measure_name(tr, name, size);
@@ -242,7 +249,10 @@ fn layout_node(
                 w: name_w,
                 h: ascent + descent,
                 baseline: ascent,
-                kind: BoxKind::Name { text: name.clone(), size },
+                kind: BoxKind::Name {
+                    text: name.clone(),
+                    size,
+                },
             }];
             let mut gaps = Vec::new();
             let mut pen = name_w;
@@ -252,7 +262,10 @@ fn layout_node(
                 w: open,
                 h: body_h.max(ascent + descent),
                 baseline: row_ascent,
-                kind: BoxKind::Paren { open: true, size: paren_size },
+                kind: BoxKind::Paren {
+                    open: true,
+                    size: paren_size,
+                },
             });
             pen += open;
             let dy = total_ascent - inner.ascent;
@@ -274,7 +287,10 @@ fn layout_node(
                 w: close,
                 h: body_h.max(ascent + descent),
                 baseline: row_ascent,
-                kind: BoxKind::Paren { open: false, size: paren_size },
+                kind: BoxKind::Paren {
+                    open: false,
+                    size: paren_size,
+                },
             });
             pen += close;
             NodeFrag {
@@ -328,7 +344,13 @@ fn layout_node(
                 kind: BoxKind::Paren { open: false, size },
             });
             pen += close;
-            NodeFrag { boxes, gaps, width: pen, ascent: row_ascent, descent: row_descent }
+            NodeFrag {
+                boxes,
+                gaps,
+                width: pen,
+                ascent: row_ascent,
+                descent: row_descent,
+            }
         }
         Node::Sup { exp } => {
             // Exponent is raised and smaller, sitting above the row baseline.
@@ -353,7 +375,13 @@ fn layout_node(
                 gaps.push(g);
             }
             let width = inner.width.max(measure_glyph(tr, '2', exp_size));
-            NodeFrag { boxes, gaps, width, ascent, descent }
+            NodeFrag {
+                boxes,
+                gaps,
+                width,
+                ascent,
+                descent,
+            }
         }
         Node::Frac { num, den } => {
             let num_steps = child_steps(steps, idx, Slot::Num);
@@ -362,7 +390,11 @@ fn layout_node(
             let den_f = layout_row(den, &den_steps, tr, size);
             let pad = 6.0;
             let bar_pad = 4.0;
-            let width = num_f.width.max(den_f.width).max(measure_glyph(tr, '0', size)) + pad * 2.0;
+            let width = num_f
+                .width
+                .max(den_f.width)
+                .max(measure_glyph(tr, '0', size))
+                + pad * 2.0;
             let bar_thick = 1.6;
             let gap_above = 3.0;
             let gap_below = 3.0;
@@ -409,7 +441,13 @@ fn layout_node(
                 g.bottom += den_dy;
                 gaps.push(g);
             }
-            NodeFrag { boxes, gaps, width, ascent, descent }
+            NodeFrag {
+                boxes,
+                gaps,
+                width,
+                ascent,
+                descent,
+            }
         }
         Node::Sqrt { index, radicand } => {
             let rad_steps = child_steps(steps, idx, Slot::Radicand);
@@ -450,7 +488,10 @@ fn layout_node(
                 w: sign_w,
                 h: ascent + descent,
                 baseline: ascent,
-                kind: BoxKind::SqrtSign { over_w: radicand_w, size },
+                kind: BoxKind::SqrtSign {
+                    over_w: radicand_w,
+                    size,
+                },
             });
             pen += sign_w;
             let dy = ascent - inner.ascent;
@@ -466,7 +507,13 @@ fn layout_node(
                 gaps.push(g);
             }
             pen += inner.width + over_pad;
-            NodeFrag { boxes, gaps, width: pen, ascent, descent }
+            NodeFrag {
+                boxes,
+                gaps,
+                width: pen,
+                ascent,
+                descent,
+            }
         }
     }
 }

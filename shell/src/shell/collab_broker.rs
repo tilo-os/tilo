@@ -504,7 +504,10 @@ impl PeerTable {
     /// Snapshot the in-process subscribers so the sinks run without
     /// the registry lock held.
     fn local_subs(&self) -> Vec<Arc<RoomSubscription>> {
-        self.local_subs.lock().map(|g| g.clone()).unwrap_or_default()
+        self.local_subs
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// Mint the next peer id. Legacy accept + capnp accept both go
@@ -861,10 +864,7 @@ fn translate(
                         from_user_id: src_user_id.to_string(),
                     };
                     if compaction_evicted.is_some() {
-                        TranslatedAction::CompactionApplied {
-                            event,
-                            route,
-                        }
+                        TranslatedAction::CompactionApplied { event, route }
                     } else {
                         TranslatedAction::Fanout { event, route }
                     }
@@ -980,9 +980,10 @@ fn reader_loop(
         } = req
         {
             if let Ok(mut guard) = peer.route.lock() {
-                *guard = Some(CrdtRoute::app(app_id.clone(), cluster_id.to_string()).on_record(
-                    record.clone().unwrap_or_default(),
-                ));
+                *guard = Some(
+                    CrdtRoute::app(app_id.clone(), cluster_id.to_string())
+                        .on_record(record.clone().unwrap_or_default()),
+                );
             }
             if let Ok(mut guard) = peer.handle.lock() {
                 *guard = handle.clone().filter(|h| !h.trim().is_empty());
@@ -1022,10 +1023,7 @@ fn reader_loop(
                 // Forwarded as-is; the receiving broker re-addresses it.
                 publisher.presence(route, Transport::Json, frame.clone());
             }
-            (
-                None,
-                CollabRequest::SyncCRDT { .. } | CollabRequest::Presence { .. },
-            ) => {
+            (None, CollabRequest::SyncCRDT { .. } | CollabRequest::Presence { .. }) => {
                 tracing::debug!(
                     "collab_broker: not republishing a {} from peer-{}: no \
                      Hello, so the frame has no route",
@@ -1098,10 +1096,7 @@ fn reader_loop(
                     }
                 }
             }
-            TranslatedAction::CompactionApplied {
-                event,
-                route,
-            } => {
+            TranslatedAction::CompactionApplied { event, route } => {
                 // Compaction already applied locally in `translate`; fan
                 // the envelope out so peers replicate the same eviction.
                 table.fanout_to_route(&event, peer.id, &route);
@@ -1261,7 +1256,13 @@ pub fn spawn_full(
     // Built once and shared by both transports — two instances would
     // give "does a local edit leave this machine" two different answers.
     let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(socket_path, capnp_socket_path, peer_sync, identity, publisher)
+    spawn_inner(
+        socket_path,
+        capnp_socket_path,
+        peer_sync,
+        identity,
+        publisher,
+    )
 }
 
 /// [`spawn_full`] with the identity lookup supplied rather than built
@@ -1274,7 +1275,13 @@ pub fn spawn_full_with_identity(
     identity: Arc<LocalIdentity>,
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(socket_path, capnp_socket_path, peer_sync, identity, publisher)
+    spawn_inner(
+        socket_path,
+        capnp_socket_path,
+        peer_sync,
+        identity,
+        publisher,
+    )
 }
 
 /// Same broker, with the outbound half supplied by the caller — lets a
@@ -1434,11 +1441,8 @@ fn spawn_inner(
                             // Deliver only to apps that announced the same
                             // app+cluster; no local peer skipped by id since
                             // the update originated outside this host.
-                            let route = CrdtRoute::record(
-                                entry.app_id,
-                                entry.cluster_id,
-                                entry.record_id,
-                            );
+                            let route =
+                                CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
@@ -1467,11 +1471,8 @@ fn spawn_inner(
                                 "PROBE drain snapshot -> local fanout",
                             );
                             let event = CollabEvent::CRDTUpdate { data: entry.data };
-                            let route = CrdtRoute::record(
-                                entry.app_id,
-                                entry.cluster_id,
-                                entry.record_id,
-                            );
+                            let route =
+                                CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
@@ -1800,7 +1801,11 @@ fn remote_participant_id(
         };
         // Cluster scope: a roster is chrome traffic, every app in the
         // room is a legitimate audience.
-        table.fanout_to_route(&roster, u64::MAX, &CrdtRoute::cluster(cluster_id.to_string()));
+        table.fanout_to_route(
+            &roster,
+            u64::MAX,
+            &CrdtRoute::cluster(cluster_id.to_string()),
+        );
     }
     user_id
 }
@@ -1834,7 +1839,10 @@ mod tests {
             super::roster_announcement(None, Some("Xaver"), PEER),
             Some("Xaver".to_string()),
         );
-        assert_eq!(super::roster_announcement(Some("Xaver"), Some("Xaver"), PEER), None);
+        assert_eq!(
+            super::roster_announcement(Some("Xaver"), Some("Xaver"), PEER),
+            None
+        );
     }
 
     #[test]
@@ -1880,10 +1888,20 @@ mod tests {
 
         // Pointer first, then the delta the caret is drawn from.
         let from_presence = super::remote_participant_id(
-            "room-1", HANDLE, &room, &table, &mut labels, &mut announced,
+            "room-1",
+            HANDLE,
+            &room,
+            &table,
+            &mut labels,
+            &mut announced,
         );
         let from_delta = super::remote_participant_id(
-            "room-1", HANDLE, &room, &table, &mut labels, &mut announced,
+            "room-1",
+            HANDLE,
+            &room,
+            &table,
+            &mut labels,
+            &mut announced,
         );
 
         assert_eq!(
@@ -1937,7 +1955,12 @@ mod tests {
         let mut announced = HashMap::new();
         let mut say = || {
             super::remote_participant_id(
-                "room-1", HANDLE, &room, &table, &mut labels, &mut announced,
+                "room-1",
+                HANDLE,
+                &room,
+                &table,
+                &mut labels,
+                &mut announced,
             );
         };
 
@@ -2222,8 +2245,12 @@ mod tests {
 
         let report = ui::record::RecordId::for_file("/work/report.odt");
         let minutes = ui::record::RecordId::for_file("/work/minutes.odt");
-        let mut alice =
-            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &report);
+        let mut alice = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &report,
+        );
         let mut bob = connect_manager_on_record(
             &socket_path,
             "dev.qos.word-processor",
@@ -2297,12 +2324,8 @@ mod tests {
             TEST_CLUSTER,
             &record,
         );
-        let mut on_other = connect_manager_on_record(
-            &socket_path,
-            "dev.qos.word-processor",
-            TEST_CLUSTER,
-            &other,
-        );
+        let mut on_other =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &other);
         wait_for_peers(&handle, 2, Duration::from_millis(500));
         wait_for_announced(&handle, 2, Duration::from_millis(500));
         let _ = on_record.poll();
@@ -2362,8 +2385,8 @@ mod tests {
         let socket_path = temp_sock("json-shared-publisher");
         let sink = std::sync::Arc::new(RecordingSink::default());
         let publisher = PeerPublisher::new(sink.clone() as Arc<dyn PeerPublishSink>);
-        let handle = spawn_with_publisher(socket_path.clone(), None, publisher)
-            .expect("broker should bind");
+        let handle =
+            spawn_with_publisher(socket_path.clone(), None, publisher).expect("broker should bind");
 
         let record = ui::record::RecordId::for_file("/work/shared.odt");
         let mut app = connect_manager_on_record(
@@ -2416,8 +2439,12 @@ mod tests {
 
         let theirs = ui::record::RecordId::for_file("/work/theirs.odt");
         let mine = ui::record::RecordId::for_file("/work/mine.odt");
-        let mut on_theirs =
-            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &theirs);
+        let mut on_theirs = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &theirs,
+        );
         let mut on_mine =
             connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &mine);
         wait_for_peers(&handle, 2, Duration::from_millis(500));
@@ -2471,16 +2498,24 @@ mod tests {
         let shared = ui::record::RecordId::for_file("/work/shared.odt");
         let private = ui::record::RecordId::for_file("/work/private.odt");
 
-        let mut sender_shared =
-            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &shared);
+        let mut sender_shared = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &shared,
+        );
         let mut sender_private = connect_manager_on_record(
             &socket_path,
             "dev.qos.word-processor",
             TEST_CLUSTER,
             &private,
         );
-        let mut receiver =
-            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &shared);
+        let mut receiver = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &shared,
+        );
 
         wait_for_peers(&handle, 3, Duration::from_millis(500));
         wait_for_announced(&handle, 3, Duration::from_millis(500));
@@ -2491,7 +2526,9 @@ mod tests {
         let (_, shared_delta) = edited("shared_body", "everyone may read this");
         let (_, private_delta) = edited("private_body", "nobody else may read this");
         sender_shared.send(CollabRequest::SyncIncremental { data: shared_delta });
-        sender_private.send(CollabRequest::SyncIncremental { data: private_delta });
+        sender_private.send(CollabRequest::SyncIncremental {
+            data: private_delta,
+        });
 
         let mut received = automerge::AutoCommit::new();
         let applied = absorb(&mut receiver, &mut received);

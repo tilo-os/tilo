@@ -120,8 +120,7 @@ example.org##.sponsored
         let compiled = compile_filter_lists([FIXTURE]).expect("fixture compiles");
         assert!(compiled.rule_count >= 3, "got {}", compiled.rule_count);
 
-        let parsed: serde_json::Value =
-            serde_json::from_str(&compiled.json).expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&compiled.json).expect("valid JSON");
         let rules = parsed.as_array().expect("JSON array of rules");
         assert_eq!(rules.len(), compiled.rule_count);
 
@@ -156,8 +155,7 @@ example.org##.sponsored
 
     #[test]
     fn chunking_splits_rules_across_multiple_filters() {
-        let compiled =
-            compile_filter_lists_chunked([FIXTURE], 2).expect("fixture compiles");
+        let compiled = compile_filter_lists_chunked([FIXTURE], 2).expect("fixture compiles");
         assert!(compiled.rule_count >= 3);
         assert!(
             compiled.chunks.len() >= 2,
@@ -177,8 +175,7 @@ example.org##.sponsored
 
     #[test]
     fn single_chunk_when_under_cap() {
-        let compiled =
-            compile_filter_lists_chunked([FIXTURE], 10_000).expect("fixture compiles");
+        let compiled = compile_filter_lists_chunked([FIXTURE], 10_000).expect("fixture compiles");
         assert_eq!(compiled.chunks.len(), 1);
     }
 }

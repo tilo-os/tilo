@@ -17,8 +17,10 @@ use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h)))
-        .ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 /// A 40×40 logical square, top-left (10, 10).

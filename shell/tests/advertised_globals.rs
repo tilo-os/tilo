@@ -41,10 +41,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Seen {
 fn advertised_globals() -> Vec<String> {
     let event_loop: EventLoop<'static, shell::compositor::state::State> =
         EventLoop::try_new().expect("calloop");
-    let mut display: Display<shell::compositor::state::State> =
-        Display::new().expect("display");
-    let mut state =
-        shell::compositor::state::State::new(event_loop.handle(), display.handle());
+    let mut display: Display<shell::compositor::state::State> = Display::new().expect("display");
+    let mut state = shell::compositor::state::State::new(event_loop.handle(), display.handle());
 
     let (server_side, client_side) = UnixStream::pair().expect("socketpair");
     display
@@ -67,7 +65,9 @@ fn advertised_globals() -> Vec<String> {
     // the trailer — a second blocking dispatch would wait forever once the
     // globals arrive and the server has nothing more to send.
     let _ = queue.flush();
-    display.dispatch_clients(&mut state).expect("server dispatch");
+    display
+        .dispatch_clients(&mut state)
+        .expect("server dispatch");
     display.flush_clients().expect("flush");
     queue
         .blocking_dispatch(&mut seen)

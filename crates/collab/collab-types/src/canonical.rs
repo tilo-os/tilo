@@ -60,8 +60,8 @@ pub fn from_canonical_bytes<T>(bytes: &[u8]) -> Result<T, CanonicalError>
 where
     T: for<'de> serde::Deserialize<'de>,
 {
-    let (value, rest) = postcard::take_from_bytes(bytes)
-        .map_err(|e| CanonicalError::Deserialize(e.to_string()))?;
+    let (value, rest) =
+        postcard::take_from_bytes(bytes).map_err(|e| CanonicalError::Deserialize(e.to_string()))?;
     if !rest.is_empty() {
         return Err(CanonicalError::Deserialize(format!(
             "{} trailing bytes after value",

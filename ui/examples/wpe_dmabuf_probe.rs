@@ -33,12 +33,10 @@ fn main() {
         .or_else(|| adapters.first())
         .expect("no Vulkan adapter");
     println!("[probe] wgpu adapter: {}", adapter.get_info().name);
-    let (device, queue) = pollster::block_on(
-        adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("dmabuf-probe"),
-            ..Default::default()
-        }),
-    )
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("dmabuf-probe"),
+        ..Default::default()
+    }))
     .expect("request_device");
 
     // Bring up the engine and load a page.
@@ -48,9 +46,7 @@ fn main() {
         height: 600,
         scale_factor: 1.0,
     });
-    engine.send(WebViewCommand::Navigate(
-        "https://example.org".to_string(),
-    ));
+    engine.send(WebViewCommand::Navigate("https://example.org".to_string()));
 
     // Poll for an importable dmabuf frame.
     let deadline = Instant::now() + Duration::from_secs(25);

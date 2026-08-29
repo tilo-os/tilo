@@ -32,9 +32,7 @@ impl StateNotice {
             Self::NewerSchema { .. } => {
                 "Saved by a newer version of qOS. Nothing was changed.".into()
             }
-            Self::Unreadable { .. } => {
-                "The file could not be read. Nothing was changed.".into()
-            }
+            Self::Unreadable { .. } => "The file could not be read. Nothing was changed.".into(),
         }
     }
 
@@ -515,7 +513,10 @@ mod tests {
             .expect("write pre-versioning state");
 
         let (tree, notice) = load_or_default(&path);
-        assert!(notice.is_none(), "a pre-versioning file must not be refused");
+        assert!(
+            notice.is_none(),
+            "a pre-versioning file must not be refused"
+        );
         assert!(
             tree.workspaces.iter().any(|w| w.id.0 == 9),
             "the workspaces in a pre-versioning file must still be loaded"

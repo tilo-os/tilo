@@ -43,7 +43,9 @@ impl ChatPermissions {
     /// `--shots`, and any session the compositor hasn't handed a restricted
     /// context.
     pub fn permissive() -> Self {
-        Self { ctx: PermissionContext::permissive() }
+        Self {
+            ctx: PermissionContext::permissive(),
+        }
     }
 
     /// Adopt the context the compositor passed into `draw`.

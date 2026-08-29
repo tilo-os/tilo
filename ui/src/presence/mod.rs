@@ -1,12 +1,12 @@
+use crate::permissions::UserId;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use crate::permissions::UserId;
 
+mod geom;
 mod key;
 mod render;
-mod geom;
-pub use key::{PointerSpace, PresenceKey, PathSegment, SelectionRange};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
+pub use key::{PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use render::{
     PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_remote_cursors,
     draw_remote_presence, layout_peer_pills,
@@ -201,7 +201,9 @@ mod color_tests {
 
     #[test]
     fn hashed_ids_land_on_the_ring() {
-        for id in ["carol", "dave", "erin", "sara", "danah", "eve", "ada", "ade"] {
+        for id in [
+            "carol", "dave", "erin", "sara", "danah", "eve", "ada", "ade",
+        ] {
             let c = user_color(id);
             assert!(
                 PEER_PALETTE.contains(&c),
@@ -305,7 +307,11 @@ impl PresenceUser {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         let id = id.into();
         let color = user_color(&id);
-        Self { id, name: name.into(), color }
+        Self {
+            id,
+            name: name.into(),
+            color,
+        }
     }
 
     /// Uses the id itself as the display name until a roster entry supplies a nicer one.
@@ -467,7 +473,9 @@ impl PresenceCtx {
 }
 
 impl PresenceCtx {
-    pub fn empty() -> Self { Self::default() }
+    pub fn empty() -> Self {
+        Self::default()
+    }
 
     /// Declare the identities a frame *this* session published comes back
     /// stamped with, so its own presence is never painted as somebody else's.
@@ -637,7 +645,9 @@ impl PresenceCtx {
         if matches!(
             key,
             PresenceKey::Workspace { .. }
-                | PresenceKey::Pointer { space: PointerSpace::Desktop { .. } }
+                | PresenceKey::Pointer {
+                    space: PointerSpace::Desktop { .. }
+                }
         ) {
             self.register_presence(key, user);
         }
@@ -708,15 +718,27 @@ impl PresenceCtx {
     }
 
     pub fn pointer_for(&self, key: &PresenceKey, user: &UserId) -> Option<(f32, f32)> {
-        self.pointers.get(key)?.iter().find(|(u, _)| u == user).map(|(_, p)| *p)
+        self.pointers
+            .get(key)?
+            .iter()
+            .find(|(u, _)| u == user)
+            .map(|(_, p)| *p)
     }
 
     pub fn selection_for(&self, key: &PresenceKey, user: &UserId) -> Option<SelectionRange> {
-        self.selections.get(key)?.iter().find(|(u, _)| u == user).map(|(_, r)| *r)
+        self.selections
+            .get(key)?
+            .iter()
+            .find(|(u, _)| u == user)
+            .map(|(_, r)| *r)
     }
 
     pub fn caret_for(&self, key: &PresenceKey, user: &UserId) -> Option<usize> {
-        self.carets.get(key)?.iter().find(|(u, _)| u == user).map(|(_, c)| *c)
+        self.carets
+            .get(key)?
+            .iter()
+            .find(|(u, _)| u == user)
+            .map(|(_, c)| *c)
     }
 
     /// Seed or replace this user's colour override (see [`parse_hex_color`]
@@ -724,8 +746,12 @@ impl PresenceCtx {
     /// override, falling back to [`user_color`].
     pub fn set_color_override(&mut self, user: UserId, hex: &str) {
         match parse_hex_color(hex) {
-            Some(rgb) => { self.color_overrides.insert(user, rgb); }
-            None => { self.color_overrides.remove(&user); }
+            Some(rgb) => {
+                self.color_overrides.insert(user, rgb);
+            }
+            None => {
+                self.color_overrides.remove(&user);
+            }
         }
     }
 
@@ -855,9 +881,10 @@ impl PresenceCtx {
     /// The App polls this to keep requesting animation frames while a highlighter is still decaying.
     pub fn has_active_typing(&self, now: Instant) -> bool {
         let fade = TYPING_FADE;
-        self.typing.values().flatten().any(|m| {
-            now.saturating_duration_since(m.born) < fade
-        })
+        self.typing
+            .values()
+            .flatten()
+            .any(|m| now.saturating_duration_since(m.born) < fade)
     }
 
     /// Call once a frame.
@@ -902,10 +929,8 @@ impl PresenceCtx {
             if self.is_own_identity(&cursor.user_id) || !cursor.painted_by_window() {
                 continue;
             }
-            let target = vello::kurbo::Point::new(
-                cursor.position[0] as f64,
-                cursor.position[1] as f64,
-            );
+            let target =
+                vello::kurbo::Point::new(cursor.position[0] as f64, cursor.position[1] as f64);
             let Some(mist) = edge_mist_for(viewport, target) else {
                 continue;
             };
@@ -1055,9 +1080,7 @@ impl PresenceCtx {
                     // `eprintln!`, not `tracing`: an app installs no
                     // subscriber, so a `debug!` here would reach nobody.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!(
-                            "[app] own participant {user_id}: not painting it as a peer"
-                        );
+                        eprintln!("[app] own participant {user_id}: not painting it as a peer");
                     }
                     RemotePresenceEffect::PeerArrived
                 }
@@ -1097,16 +1120,19 @@ impl PresenceCtx {
                 // paints nothing.
                 if let Some(prev) = self.caret_for(&key, &uid)
                     && pos > prev
-                        && pos - prev <= TYPING_DERIVE_MAX_RUN
-                        && self.edit_landed_recently(now)
-                    {
-                        self.record_peer_typing(
-                            uid.clone(),
-                            key.clone(),
-                            SelectionRange { start: prev, end: pos },
-                            now,
-                        );
-                    }
+                    && pos - prev <= TYPING_DERIVE_MAX_RUN
+                    && self.edit_landed_recently(now)
+                {
+                    self.record_peer_typing(
+                        uid.clone(),
+                        key.clone(),
+                        SelectionRange {
+                            start: prev,
+                            end: pos,
+                        },
+                        now,
+                    );
+                }
                 self.set_caret(&key, uid, pos);
                 self.set_remote_caret(user_id, key, pos);
             }
@@ -1183,9 +1209,12 @@ pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     let bytes = s.as_bytes();
     match bytes.len() {
         3 => {
-            let r = u8::from_str_radix(std::str::from_utf8(&[bytes[0], bytes[0]]).ok()?, 16).ok()?;
-            let g = u8::from_str_radix(std::str::from_utf8(&[bytes[1], bytes[1]]).ok()?, 16).ok()?;
-            let b = u8::from_str_radix(std::str::from_utf8(&[bytes[2], bytes[2]]).ok()?, 16).ok()?;
+            let r =
+                u8::from_str_radix(std::str::from_utf8(&[bytes[0], bytes[0]]).ok()?, 16).ok()?;
+            let g =
+                u8::from_str_radix(std::str::from_utf8(&[bytes[1], bytes[1]]).ok()?, 16).ok()?;
+            let b =
+                u8::from_str_radix(std::str::from_utf8(&[bytes[2], bytes[2]]).ok()?, 16).ok()?;
             Some((r, g, b))
         }
         6 | 8 => {
@@ -1286,10 +1315,7 @@ mod color_override_tests {
     fn color_for_honours_override_when_set() {
         let mut ctx = PresenceCtx::empty();
         ctx.set_color_override(UserId("alice".into()), "#abcdef");
-        assert_eq!(
-            ctx.color_for(&UserId("alice".into())),
-            (0xab, 0xcd, 0xef)
-        );
+        assert_eq!(ctx.color_for(&UserId("alice".into())), (0xab, 0xcd, 0xef));
         assert_eq!(ctx.color_for(&UserId("bob".into())), user_color("bob"));
     }
 
@@ -1381,7 +1407,9 @@ mod string_id_wrapper_tests {
         let mut ctx = PresenceCtx::empty();
         let key = PresenceKey::Workspace { id: "home".into() };
         ctx.set_remote_selection("bob".into(), key.clone(), 3, 9);
-        let r = ctx.selection_for(&key, &UserId("bob".into())).expect("selection");
+        let r = ctx
+            .selection_for(&key, &UserId("bob".into()))
+            .expect("selection");
         assert_eq!((r.start, r.end), (3, 9));
     }
 
@@ -1403,8 +1431,10 @@ mod string_id_wrapper_tests {
         let b = PresenceKey::Tab { id: "bbb".into() };
         ctx.register_peer_at("alice".into(), a.clone());
         ctx.register_peer_at("alice".into(), b.clone());
-        assert!(ctx.peers_on(&a).is_empty(),
-            "peer must have been evicted from previous tab");
+        assert!(
+            ctx.peers_on(&a).is_empty(),
+            "peer must have been evicted from previous tab"
+        );
         assert_eq!(ctx.peers_on(&b), &[UserId("alice".into())]);
     }
 
@@ -1457,7 +1487,11 @@ mod string_id_wrapper_tests {
 
     #[test]
     fn presence_user_rgba_is_normalised() {
-        let u = PresenceUser { id: "x".into(), name: "x".into(), color: (255, 128, 0) };
+        let u = PresenceUser {
+            id: "x".into(),
+            name: "x".into(),
+            color: (255, 128, 0),
+        };
         let c = u.color_rgba(0.5);
         assert!((c[0] - 1.0).abs() < 1e-6);
         assert!((c[1] - 128.0 / 255.0).abs() < 1e-6);
@@ -1524,9 +1558,17 @@ mod string_id_wrapper_tests {
 
         ctx.set_display_name(UserId("peer@77".into()), "Xaver");
 
-        assert_eq!(ctx.remote_cursors.len(), 1, "naming a peer adds no second pointer");
+        assert_eq!(
+            ctx.remote_cursors.len(),
+            1,
+            "naming a peer adds no second pointer"
+        );
         assert_eq!(ctx.remote_cursors[0].label, "Xaver");
-        assert_eq!(ctx.remote_cursors[0].position, [10.0, 20.0], "and moves none");
+        assert_eq!(
+            ctx.remote_cursors[0].position,
+            [10.0, 20.0],
+            "and moves none"
+        );
     }
 
     /// And the other order: a name learned from the roster before the
@@ -1585,7 +1627,9 @@ mod string_id_wrapper_tests {
             "dropping this one would leave the relay dialect with no pointer at all",
         );
 
-        let widget = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+        let widget = PresenceKey::Widget {
+            path: vec![PathSegment::Index(0)],
+        };
         ctx.apply_remote_presence(
             "peer@88".into(),
             widget,
@@ -1623,7 +1667,10 @@ mod string_id_wrapper_tests {
         }
 
         let drawn = |ctx: &PresenceCtx| {
-            ctx.remote_cursors.iter().filter(|c| c.painted_by_window()).count()
+            ctx.remote_cursors
+                .iter()
+                .filter(|c| c.painted_by_window())
+                .count()
         };
         assert_eq!(
             drawn(&word_processor),
@@ -1692,9 +1739,16 @@ mod string_id_wrapper_tests {
         use std::time::Duration;
         let mut ctx = PresenceCtx::empty();
         let bob = UserId("bob".into());
-        let key = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+        let key = PresenceKey::Widget {
+            path: vec![PathSegment::Index(0)],
+        };
         let t0 = Instant::now();
-        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 3, end: 8 }, t0);
+        ctx.record_peer_typing(
+            bob.clone(),
+            key.clone(),
+            SelectionRange { start: 3, end: 8 },
+            t0,
+        );
 
         // Fresh: alpha ~1.0, the full range present.
         let fresh = ctx.active_typing(&bob, &key, t0);
@@ -1706,7 +1760,11 @@ mod string_id_wrapper_tests {
         let mid = t0 + TYPING_FADE / 2;
         let half = ctx.active_typing(&bob, &key, mid);
         assert_eq!(half.len(), 1);
-        assert!((half[0].1 - 0.5).abs() < 0.05, "alpha halves at mid-life, got {}", half[0].1);
+        assert!(
+            (half[0].1 - 0.5).abs() < 0.05,
+            "alpha halves at mid-life, got {}",
+            half[0].1
+        );
         assert!(ctx.has_active_typing(mid));
 
         // Past the window: gone from the read, and prune reclaims it.
@@ -1722,17 +1780,34 @@ mod string_id_wrapper_tests {
     fn typing_marks_coalesce_when_contiguous() {
         let mut ctx = PresenceCtx::empty();
         let bob = UserId("bob".into());
-        let key = PresenceKey::Widget { path: vec![PathSegment::Index(1)] };
+        let key = PresenceKey::Widget {
+            path: vec![PathSegment::Index(1)],
+        };
         let t0 = Instant::now();
-        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 0, end: 3 }, t0);
+        ctx.record_peer_typing(
+            bob.clone(),
+            key.clone(),
+            SelectionRange { start: 0, end: 3 },
+            t0,
+        );
         // A contiguous continuation (abuts the previous end) extends the span.
-        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 3, end: 6 }, t0);
+        ctx.record_peer_typing(
+            bob.clone(),
+            key.clone(),
+            SelectionRange { start: 3, end: 6 },
+            t0,
+        );
         let marks = ctx.active_typing(&bob, &key, t0);
         assert_eq!(marks.len(), 1, "contiguous typing coalesces into one span");
         assert_eq!((marks[0].0.start, marks[0].0.end), (0, 6));
 
         // A disjoint edit elsewhere in the same block stays separate.
-        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 40, end: 44 }, t0);
+        ctx.record_peer_typing(
+            bob.clone(),
+            key.clone(),
+            SelectionRange { start: 40, end: 44 },
+            t0,
+        );
         let marks = ctx.active_typing(&bob, &key, t0);
         assert_eq!(marks.len(), 2, "a far-away edit is its own span");
     }
@@ -1743,11 +1818,20 @@ mod string_id_wrapper_tests {
         let alice = UserId("alice".into());
         let key = PresenceKey::Tab { id: "t".into() };
         ctx.set_display_name(alice.clone(), "Alice");
-        ctx.record_peer_typing(alice.clone(), key.clone(), SelectionRange { start: 0, end: 2 }, Instant::now());
+        ctx.record_peer_typing(
+            alice.clone(),
+            key.clone(),
+            SelectionRange { start: 0, end: 2 },
+            Instant::now(),
+        );
         assert!(!ctx.active_typing(&alice, &key, Instant::now()).is_empty());
         ctx.unregister_peer("alice".into());
         assert!(ctx.active_typing(&alice, &key, Instant::now()).is_empty());
-        assert_eq!(ctx.display_name(&alice), "alice", "name reverts to id fallback");
+        assert_eq!(
+            ctx.display_name(&alice),
+            "alice",
+            "name reverts to id fallback"
+        );
     }
 
     #[test]
@@ -1786,7 +1870,9 @@ mod own_identity_tests {
     use crate::collaboration::PresencePayload;
 
     fn room() -> PresenceKey {
-        PresenceKey::Workspace { id: "room-1".into() }
+        PresenceKey::Workspace {
+            id: "room-1".into(),
+        }
     }
 
     fn mine() -> PresenceCtx {
@@ -1828,7 +1914,10 @@ mod own_identity_tests {
         );
         ctx.apply_remote_presence("peer@77".into(), room(), PresencePayload::Caret { pos: 3 });
 
-        assert_eq!(ctx.pointer_for(&room(), &UserId("peer@77".into())), Some((12.0, 34.0)));
+        assert_eq!(
+            ctx.pointer_for(&room(), &UserId("peer@77".into())),
+            Some((12.0, 34.0))
+        );
         assert_eq!(ctx.caret_for(&room(), &UserId("peer@77".into())), Some(3));
         assert_eq!(ctx.remote_cursors.len(), 1);
         assert_eq!(ctx.remote_cursors[0].user_id, "peer@77");
@@ -1882,7 +1971,11 @@ mod own_identity_tests {
         let mut ctx = PresenceCtx::empty();
         ctx.set_own_identity(["", "   "]);
         assert!(!ctx.is_own_identity(""));
-        ctx.apply_remote_presence("".into(), room(), PresencePayload::Pointer { x: 1.0, y: 2.0 });
+        ctx.apply_remote_presence(
+            "".into(),
+            room(),
+            PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        );
         assert_eq!(ctx.remote_cursors.len(), 1);
     }
 
@@ -1907,7 +2000,12 @@ mod own_identity_tests {
         let subset = crate::view::ViewSubset {
             scroll: vec![10.0],
             open_resource: None,
-            viewport: crate::view::ViewRect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 },
+            viewport: crate::view::ViewRect {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
             view_mode: None,
         };
         assert_eq!(
@@ -2002,7 +2100,9 @@ mod own_identity_tests {
         let t0 = Instant::now();
         let horizon = Duration::from_secs(4);
         let room = PresenceKey::Workspace { id: "r".into() };
-        let block = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+        let block = PresenceKey::Widget {
+            path: vec![PathSegment::Index(0)],
+        };
         let claude = UserId("peer@7".into());
         let xaver = UserId("peer@8".into());
 
@@ -2068,7 +2168,9 @@ mod own_identity_tests {
     fn a_desktop_pointer_registers_its_peer_and_an_in_app_one_does_not() {
         let t0 = Instant::now();
         let room = PresenceKey::Workspace { id: "r".into() };
-        let block = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+        let block = PresenceKey::Widget {
+            path: vec![PathSegment::Index(0)],
+        };
         let alice = UserId("peer@1".into());
         let bob = UserId("peer@2".into());
 
@@ -2135,7 +2237,9 @@ mod one_person_one_pointer_tests {
         let mut ctx = PresenceCtx::default();
         ctx.apply_remote_presence(
             "peer@7".into(),
-            PresenceKey::Widget { path: vec![PathSegment::Index(3)] },
+            PresenceKey::Widget {
+                path: vec![PathSegment::Index(3)],
+            },
             PresencePayload::Pointer { x: 10.0, y: 20.0 },
         );
         assert!(

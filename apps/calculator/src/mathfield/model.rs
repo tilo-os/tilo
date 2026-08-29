@@ -59,7 +59,10 @@ pub struct Path {
 
 impl Path {
     pub fn root(offset: usize) -> Self {
-        Path { steps: Vec::new(), offset }
+        Path {
+            steps: Vec::new(),
+            offset,
+        }
     }
 }
 
@@ -176,22 +179,20 @@ fn write_row(row: &Row, out: &mut String) {
                 write_row(den, out);
                 out.push(')');
             }
-            Node::Sqrt { index, radicand } => {
-                match index {
-                    Some(idx) => {
-                        out.push_str("root(");
-                        write_row(idx, out);
-                        out.push(',');
-                        write_row(radicand, out);
-                        out.push(')');
-                    }
-                    None => {
-                        out.push_str("sqrt(");
-                        write_row(radicand, out);
-                        out.push(')');
-                    }
+            Node::Sqrt { index, radicand } => match index {
+                Some(idx) => {
+                    out.push_str("root(");
+                    write_row(idx, out);
+                    out.push(',');
+                    write_row(radicand, out);
+                    out.push(')');
                 }
-            }
+                None => {
+                    out.push_str("sqrt(");
+                    write_row(radicand, out);
+                    out.push(')');
+                }
+            },
             Node::Paren { body } => {
                 out.push('(');
                 write_row(body, out);
@@ -210,11 +211,10 @@ fn write_row(row: &Row, out: &mut String) {
 
 /// Names rendered upright as function calls when reading a linear string.
 pub const FUNCS: &[&str] = &[
-    "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh",
-    "asinh", "acosh", "atanh", "exp", "ln", "log10", "log2", "log", "sqrt",
-    "cbrt", "abs", "sign", "sgn", "floor", "ceil", "round", "trunc", "fract",
-    "gamma", "fact", "mod", "atan2", "hypot", "max", "min", "root", "pow",
-    "rad", "deg",
+    "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+    "exp", "ln", "log10", "log2", "log", "sqrt", "cbrt", "abs", "sign", "sgn", "floor", "ceil",
+    "round", "trunc", "fract", "gamma", "fact", "mod", "atan2", "hypot", "max", "min", "root",
+    "pow", "rad", "deg",
 ];
 
 // ---------------------------------------------------------------------------
@@ -293,17 +293,26 @@ impl LinParser {
                         if name == "sqrt" {
                             let radicand = self.parse_row(&[')']);
                             self.expect(')');
-                            row.push(Node::Sqrt { index: None, radicand });
+                            row.push(Node::Sqrt {
+                                index: None,
+                                radicand,
+                            });
                         } else if name == "root" {
                             let index = self.parse_row(&[',', ')']);
                             if self.peek() == Some(',') {
                                 self.pos += 1;
                                 let radicand = self.parse_row(&[')']);
                                 self.expect(')');
-                                row.push(Node::Sqrt { index: Some(index), radicand });
+                                row.push(Node::Sqrt {
+                                    index: Some(index),
+                                    radicand,
+                                });
                             } else {
                                 self.expect(')');
-                                row.push(Node::Sqrt { index: None, radicand: index });
+                                row.push(Node::Sqrt {
+                                    index: None,
+                                    radicand: index,
+                                });
                             }
                         } else if FUNCS.contains(&name.as_str()) {
                             let arg = self.parse_row(&[')']);
@@ -443,7 +452,12 @@ mod tests {
         let e = parse("x^2");
         assert_eq!(
             e.root,
-            vec![Node::Char('x'), Node::Sup { exp: vec![Node::Char('2')] }]
+            vec![
+                Node::Char('x'),
+                Node::Sup {
+                    exp: vec![Node::Char('2')]
+                }
+            ]
         );
         assert_eq!(to_linear(&e), "x^(2)");
     }
@@ -464,8 +478,16 @@ mod tests {
     fn sqrt_builds_radical() {
         let e = parse("sqrt(x+1)");
         match &e.root[0] {
-            Node::Sqrt { index: None, radicand } => {
-                assert_eq!(to_linear(&MathExpr { root: radicand.clone() }), "x+1");
+            Node::Sqrt {
+                index: None,
+                radicand,
+            } => {
+                assert_eq!(
+                    to_linear(&MathExpr {
+                        root: radicand.clone()
+                    }),
+                    "x+1"
+                );
             }
             other => panic!("expected sqrt, got {other:?}"),
         }
@@ -489,16 +511,27 @@ mod tests {
         let e = parse("(x^2+1)/(x-3)");
         let linear = to_linear(&e);
         // engine must accept it
-        assert!(crate::engine::compile(&linear, false, false).is_ok(), "linear={linear}");
+        assert!(
+            crate::engine::compile(&linear, false, false).is_ok(),
+            "linear={linear}"
+        );
     }
 
     #[test]
     fn nested_root_index() {
         let e = parse("root(3,x)");
         match &e.root[0] {
-            Node::Sqrt { index: Some(i), radicand } => {
+            Node::Sqrt {
+                index: Some(i),
+                radicand,
+            } => {
                 assert_eq!(to_linear(&MathExpr { root: i.clone() }), "3");
-                assert_eq!(to_linear(&MathExpr { root: radicand.clone() }), "x");
+                assert_eq!(
+                    to_linear(&MathExpr {
+                        root: radicand.clone()
+                    }),
+                    "x"
+                );
             }
             other => panic!("expected indexed sqrt, got {other:?}"),
         }
@@ -506,7 +539,13 @@ mod tests {
 
     #[test]
     fn seeded_funcs_round_trip_through_engine() {
-        for s in ["sin(x)", "0.25*x^2-2", "1/x", "(x^2+1)/(x-3)", "sqrt(x^2+1)"] {
+        for s in [
+            "sin(x)",
+            "0.25*x^2-2",
+            "1/x",
+            "(x^2+1)/(x-3)",
+            "sqrt(x^2+1)",
+        ] {
             let linear = to_linear(&parse(s));
             assert!(
                 crate::engine::compile(&linear, false, false).is_ok(),

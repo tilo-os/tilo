@@ -33,14 +33,14 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use word_processor::{open_document, WordProcessorWidget};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::text_render::TextRenderer;
 use ui::{App, PresenceCtx, State, Theme, Widget};
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
+use word_processor::{WordProcessorWidget, open_document};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 
@@ -139,7 +139,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         // without an app saying so. `QUICK_APP_ID`/`QOS_USER_ID` name a
         // known replica; a sandboxed launch has neither, so the fallback has
         // to be sound on its own — see [`distinct_actor`].
-        let app_id = named_actor("wp").unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
+        let app_id =
+            named_actor("wp").unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
         ui::diag!("word-processor: automerge actor {app_id}");
         state
             .doc
@@ -219,7 +220,11 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
         let last = blocks.last().expect("a paragraph to append to");
         let at = last.text.chars().count();
         let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut peer, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut peer,
+            c: &c,
+            ids: &mut ids,
+        };
         dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
         let hash = qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
         if i == 0 {
@@ -248,10 +253,8 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
         }
     }
     // And the local author names theirs.
-    if let (Some(first), Some(last)) = (
-        session_three_start,
-        state.doc.get_heads().first().copied(),
-    ) {
+    if let (Some(first), Some(last)) = (session_three_start, state.doc.get_heads().first().copied())
+    {
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut state.doc, &start, Some(&end), "Headcount pass");
@@ -285,7 +288,12 @@ fn build(file: Option<&Path>) -> Result<(State, Box<dyn Widget>), Box<dyn Error>
 }
 
 /// Render a single headless frame to `out` (mirrors the other apps' `--shots`).
-fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) -> Result<(), Box<dyn Error>> {
+fn render_shot(
+    mut state: State,
+    mut widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    out: &Path,
+) -> Result<(), Box<dyn Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
@@ -304,7 +312,10 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
-            size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) },
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
+            },
             ..Default::default()
         },
         &[child],
@@ -314,7 +325,10 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
         let trr = &mut tr;
         taffy.compute_layout_with_measure(
             root,
-            taffy::Size { width: AvailableSpace::Definite(w as f32), height: AvailableSpace::Definite(h as f32) },
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {
                     unsafe { (*ptr).measure(known, available, trr) }
@@ -327,7 +341,14 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    widget.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+    widget.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &presence,
+        &permission,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

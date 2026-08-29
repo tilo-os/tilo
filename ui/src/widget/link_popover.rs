@@ -112,7 +112,9 @@ impl LinkPopover {
     }
 
     pub fn highlighted(&self) -> Option<&PageEntry> {
-        self.visible.get(self.cursor).and_then(|&i| self.items.get(i))
+        self.visible
+            .get(self.cursor)
+            .and_then(|&i| self.items.get(i))
     }
 
     pub fn visible_len(&self) -> usize {
@@ -124,8 +126,7 @@ impl LinkPopover {
     }
 
     pub fn height(&self) -> f64 {
-        PADDING_Y * 2.0
-            + ROW_HEIGHT * self.visible.len().clamp(1, MAX_VISIBLE_ROWS) as f64
+        PADDING_Y * 2.0 + ROW_HEIGHT * self.visible.len().clamp(1, MAX_VISIBLE_ROWS) as f64
     }
 
     pub fn rect(&self) -> Rect {
@@ -141,8 +142,7 @@ impl LinkPopover {
         let needle = self.filter.to_lowercase();
         self.visible.clear();
         for (i, e) in self.items.iter().enumerate() {
-            let matches = needle.is_empty()
-                || e.title.to_lowercase().contains(&needle);
+            let matches = needle.is_empty() || e.title.to_lowercase().contains(&needle);
             if matches {
                 self.visible.push(i);
             }
@@ -157,7 +157,13 @@ impl LinkPopover {
             return false;
         }
         let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    text,
+                    ..
+                },
             ..
         } = event
         else {
@@ -266,12 +272,7 @@ impl LinkPopover {
         for (i, &idx) in self.visible.iter().take(MAX_VISIBLE_ROWS).enumerate() {
             let row = &self.items[idx];
             let y0 = rect.y0 + PADDING_Y + i as f64 * ROW_HEIGHT;
-            let row_rect = Rect::new(
-                rect.x0 + 4.0,
-                y0,
-                rect.x1 - 4.0,
-                y0 + ROW_HEIGHT,
-            );
+            let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             if i == self.cursor {
                 let hl = RoundedRect::from_rect(row_rect, 4.0);
                 scene.fill(
@@ -282,8 +283,7 @@ impl LinkPopover {
                     &hl,
                 );
             }
-            let text_y = row_rect.y0
-                + (row_rect.height() - font_size as f64) / 2.0;
+            let text_y = row_rect.y0 + (row_rect.height() - font_size as f64) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
@@ -352,9 +352,7 @@ mod tests {
     fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -373,9 +371,18 @@ mod tests {
     fn seed_three() -> LinkPopover {
         let mut p = LinkPopover::new();
         p.set_items(vec![
-            PageEntry { id: Uuid::from_u128(1), title: "Welcome".into() },
-            PageEntry { id: Uuid::from_u128(2), title: "Roadmap".into() },
-            PageEntry { id: Uuid::from_u128(3), title: "Inbox".into() },
+            PageEntry {
+                id: Uuid::from_u128(1),
+                title: "Welcome".into(),
+            },
+            PageEntry {
+                id: Uuid::from_u128(2),
+                title: "Roadmap".into(),
+            },
+            PageEntry {
+                id: Uuid::from_u128(3),
+                title: "Inbox".into(),
+            },
         ]);
         p
     }

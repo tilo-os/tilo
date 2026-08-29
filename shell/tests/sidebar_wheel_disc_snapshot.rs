@@ -173,7 +173,6 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
     }
 }
 
-
 /// High contrast is the sharp case: it grounds everything on pure black,
 /// including the disc body's own hue, so the body is black on black and
 /// the rim is all that says the wheel exists — only reading pixels back
@@ -447,9 +446,7 @@ fn the_disc_takes_its_colours_from_the_theme() {
         // The channel the wedge pushes hardest must be the channel the
         // theme's own workspace colour leads with.
         let delta = [lit.0 - unlit.0, lit.1 - unlit.1, lit.2 - unlit.2];
-        let lead = |c: [i32; 3]| {
-            (0..3).max_by_key(|&i| c[i]).expect("three channels")
-        };
+        let lead = |c: [i32; 3]| (0..3).max_by_key(|&i| c[i]).expect("three channels");
         let want = theme.tokens.colors.categorical(0);
         let want_ch = lead([want.r() as i32, want.g() as i32, want.b() as i32]);
         assert_eq!(

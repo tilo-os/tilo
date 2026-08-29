@@ -42,7 +42,11 @@ impl Default for StatusBubble {
 
 impl StatusBubble {
     pub fn new() -> Self {
-        Self { linger: DEFAULT_LINGER, shown_at: None, hovered: false }
+        Self {
+            linger: DEFAULT_LINGER,
+            shown_at: None,
+            hovered: false,
+        }
     }
 
     pub fn with_linger(mut self, linger: Duration) -> Self {
@@ -96,7 +100,11 @@ impl StatusBubble {
 
     /// Hovered/hidden states need no frames.
     pub fn needs_frame(&self, now: Instant) -> bool {
-        !self.hovered && self.shown_at.map(|t| now.saturating_duration_since(t) < self.linger).unwrap_or(false)
+        !self.hovered
+            && self
+                .shown_at
+                .map(|t| now.saturating_duration_since(t) < self.linger)
+                .unwrap_or(false)
     }
 }
 
@@ -126,8 +134,20 @@ pub fn draw_pill(
     crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
 
     let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.overlay, None, &shape);
-    scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &shape);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.overlay,
+        None,
+        &shape,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &shape,
+    );
 
     let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
@@ -176,7 +196,10 @@ mod tests {
         assert!((b.alpha(t0) - 1.0).abs() < 1e-6, "fully opaque when fresh");
         // Mid-linger, before the fade tail: still fully opaque.
         assert!((b.alpha(t0 + Duration::from_millis(500)) - 1.0).abs() < 1e-6);
-        assert!(b.needs_frame(t0 + Duration::from_millis(500)), "counts down -> wants frames");
+        assert!(
+            b.needs_frame(t0 + Duration::from_millis(500)),
+            "counts down -> wants frames"
+        );
         // Into the fade tail: partial opacity.
         let a = b.alpha(t0 + Duration::from_millis(850));
         assert!(a > 0.0 && a < 1.0, "fades out across the tail: {a}");
@@ -191,11 +214,20 @@ mod tests {
         let t0 = Instant::now();
         b.set_hover(true, t0);
         // Pinned open regardless of time while the pointer stays over it.
-        assert!(b.is_visible(t0 + Duration::from_secs(60)), "hover pins the bubble open");
-        assert!(!b.needs_frame(t0 + Duration::from_secs(60)), "a pinned bubble needs no frames");
+        assert!(
+            b.is_visible(t0 + Duration::from_secs(60)),
+            "hover pins the bubble open"
+        );
+        assert!(
+            !b.needs_frame(t0 + Duration::from_secs(60)),
+            "a pinned bubble needs no frames"
+        );
         // Leaving starts a fresh linger.
         b.set_hover(false, t0 + Duration::from_secs(60));
-        assert!(b.is_visible(t0 + Duration::from_secs(60)), "still up right after leaving");
+        assert!(
+            b.is_visible(t0 + Duration::from_secs(60)),
+            "still up right after leaving"
+        );
         assert!(
             !b.is_visible(t0 + Duration::from_secs(60) + Duration::from_millis(1000)),
             "fades a linger after the pointer leaves"
@@ -211,7 +243,10 @@ mod tests {
         assert!(b.is_visible(t0 + Duration::from_millis(900)));
         // …then a new poke restarts the full linger.
         b.poke(t0 + Duration::from_millis(950));
-        assert!(b.is_visible(t0 + Duration::from_millis(1800)), "the second poke extended it");
+        assert!(
+            b.is_visible(t0 + Duration::from_millis(1800)),
+            "the second poke extended it"
+        );
         assert!(!b.is_visible(t0 + Duration::from_millis(1950)));
     }
 }

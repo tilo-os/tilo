@@ -51,7 +51,11 @@ pub fn contrast_ratio(a: Color, b: Color) -> f64 {
 pub fn composite_over(fg: Color, bg: Color) -> Color {
     let a = fg.a() as f64 / 255.0;
     let mix = |f: u8, b: u8| (f as f64 * a + b as f64 * (1.0 - a)).round() as u8;
-    Color::from_rgb8(mix(fg.r(), bg.r()), mix(fg.g(), bg.g()), mix(fg.b(), bg.b()))
+    Color::from_rgb8(
+        mix(fg.r(), bg.r()),
+        mix(fg.g(), bg.g()),
+        mix(fg.b(), bg.b()),
+    )
 }
 
 /// Pick the foreground (black or white) with the higher contrast against
@@ -77,14 +81,20 @@ pub struct SelectedStyle {
 impl SelectedStyle {
     /// Build a style whose foreground is the most-readable choice on `bg`.
     pub fn on(bg: Color) -> Self {
-        Self { bg, fg: readable_on(bg) }
+        Self {
+            bg,
+            fg: readable_on(bg),
+        }
     }
 
     /// Build a style for a translucent highlight `wash` layered over `base`,
     /// measuring contrast against the composited result the user sees.
     pub fn over(wash: Color, base: Color) -> Self {
         let bg = composite_over(wash, base);
-        Self { bg, fg: readable_on(bg) }
+        Self {
+            bg,
+            fg: readable_on(bg),
+        }
     }
 
     /// The WCAG contrast ratio of this style's text against its background.
@@ -111,7 +121,10 @@ mod tests {
     #[test]
     fn black_white_extreme_ratio_is_21() {
         let r = contrast_ratio(Color::BLACK, Color::WHITE);
-        assert!((r - 21.0).abs() < 0.01, "black/white should be 21:1, was {r}");
+        assert!(
+            (r - 21.0).abs() < 0.01,
+            "black/white should be 21:1, was {r}"
+        );
     }
 
     #[test]
@@ -135,12 +148,20 @@ mod tests {
         // always reads on an accent.
         let indigo_500 = Color::from_rgb8(99, 102, 241);
         let picked = readable_on(indigo_500);
-        let other = if picked == Color::WHITE { Color::BLACK } else { Color::WHITE };
+        let other = if picked == Color::WHITE {
+            Color::BLACK
+        } else {
+            Color::WHITE
+        };
         assert!(
             contrast_ratio(picked, indigo_500) >= contrast_ratio(other, indigo_500),
             "readable_on must pick the higher-contrast foreground"
         );
-        assert_eq!(picked, Color::BLACK, "black narrowly beats white on indigo-500");
+        assert_eq!(
+            picked,
+            Color::BLACK,
+            "black narrowly beats white on indigo-500"
+        );
     }
 
     #[test]

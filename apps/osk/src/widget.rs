@@ -50,10 +50,10 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout, InputPurpose, ShiftState, key_rects};
+use crate::futo::FutoSwipeModel;
+use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 use crate::predict::Predictor;
 use crate::suggest::{Suggestion, suggestion_rects};
-use crate::futo::FutoSwipeModel;
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
 
 /// The default swipe decoder: the real FUTO ExecuTorch model when its libs
@@ -728,12 +728,7 @@ fn draw_cell(
     let t = &theme.tokens;
     // Inset so adjacent cells have a visible gutter.
     let pad = (rect.height() * 0.06).clamp(2.0, 6.0);
-    let cell = Rect::new(
-        rect.x0 + pad,
-        rect.y0 + pad,
-        rect.x1 - pad,
-        rect.y1 - pad,
-    );
+    let cell = Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x1 - pad, rect.y1 - pad);
     let bg = if pressed {
         theme.bg_active
     } else if hovered {
@@ -1566,7 +1561,9 @@ mod tests {
         let mut centres: HashMap<char, Point> = HashMap::new();
         for (id, r) in osk.key_geometry() {
             let Some(k) = layout.key(*id) else { continue };
-            let KeyAction::Char(s) = &k.action else { continue };
+            let KeyAction::Char(s) = &k.action else {
+                continue;
+            };
             if let Some(c) = s.chars().next()
                 && c.is_alphabetic()
                 && s.chars().count() == 1
@@ -1604,7 +1601,10 @@ mod tests {
         // The suggestion bar shows the candidates, with "quick" present.
         let words: Vec<&str> = osk.suggestions().iter().map(|s| s.word.as_str()).collect();
         assert!(!words.is_empty(), "suggestion bar populated");
-        assert!(words.contains(&"quick"), "candidates include quick: {words:?}");
+        assert!(
+            words.contains(&"quick"),
+            "candidates include quick: {words:?}"
+        );
     }
 
     #[test]
@@ -1633,7 +1633,10 @@ mod tests {
         osk.activate_label("f");
         osk.activate_label("space");
         let chips: Vec<String> = osk.suggestions().iter().map(|s| s.word.clone()).collect();
-        assert!(chips.contains(&"the".to_string()), "next-word after 'of': {chips:?}");
+        assert!(
+            chips.contains(&"the".to_string()),
+            "next-word after 'of': {chips:?}"
+        );
         // Find and tap the "the" chip; it inserts "the ".
         let idx = chips.iter().position(|w| w == "the").unwrap();
         assert!(osk.activate_suggestion(idx));
@@ -1663,19 +1666,56 @@ mod tests {
             let mut handled = false;
             let mut focus = None;
             osk.handle_event(
-                &ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus,
-                NodeId::new(0), &TaffyTree::new(),
+                &ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                NodeId::new(0),
+                &TaffyTree::new(),
             );
         };
 
         // Press, a tiny jitter (1px), release — all on 'q'. This must type
         // exactly "q", NOT decode a swipe.
-        dispatch(&mut osk, WindowEvent::CursorMoved { device_id: device, position: (c.x, c.y).into() });
-        dispatch(&mut osk, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
-        dispatch(&mut osk, WindowEvent::CursorMoved { device_id: device, position: (c.x + 1.0, c.y + 0.5).into() });
-        dispatch(&mut osk, WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left });
+        dispatch(
+            &mut osk,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (c.x, c.y).into(),
+            },
+        );
+        dispatch(
+            &mut osk,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        dispatch(
+            &mut osk,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (c.x + 1.0, c.y + 0.5).into(),
+            },
+        );
+        dispatch(
+            &mut osk,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
 
-        assert_eq!(osk.pending_text(), "q", "short tap typed 'q', not a swiped word");
+        assert_eq!(
+            osk.pending_text(),
+            "q",
+            "short tap typed 'q', not a swiped word"
+        );
     }
 
     #[test]
@@ -1694,20 +1734,57 @@ mod tests {
             let mut handled = false;
             let mut focus = None;
             osk.handle_event(
-                &ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus,
-                NodeId::new(0), &TaffyTree::new(),
+                &ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                NodeId::new(0),
+                &TaffyTree::new(),
             );
         };
 
         // Hover the first key, press, drag along the whole path, release.
-        dispatch(&mut osk, WindowEvent::CursorMoved { device_id: device, position: (start.x, start.y).into() });
-        dispatch(&mut osk, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
+        dispatch(
+            &mut osk,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (start.x, start.y).into(),
+            },
+        );
+        dispatch(
+            &mut osk,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
         for p in &path {
-            dispatch(&mut osk, WindowEvent::CursorMoved { device_id: device, position: (p.x, p.y).into() });
+            dispatch(
+                &mut osk,
+                WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (p.x, p.y).into(),
+                },
+            );
         }
-        dispatch(&mut osk, WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left });
+        dispatch(
+            &mut osk,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
 
-        assert_eq!(osk.pending_text(), "the", "pointer swipe through t-h-e typed 'the'");
+        assert_eq!(
+            osk.pending_text(),
+            "the",
+            "pointer swipe through t-h-e typed 'the'"
+        );
     }
 
     #[test]
@@ -1766,7 +1843,11 @@ mod tests {
         let mut renderer = OffscreenRenderer::new(720, 360);
         renderer.render_png(&scene, Color::BLACK, &out);
         let bytes = std::fs::read(&out).unwrap();
-        assert!(bytes.len() > 1000, "rendered a non-trivial PNG ({} bytes)", bytes.len());
+        assert!(
+            bytes.len() > 1000,
+            "rendered a non-trivial PNG ({} bytes)",
+            bytes.len()
+        );
     }
 
     // --- auto-show / visibility ---------------------------------------

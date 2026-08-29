@@ -81,7 +81,10 @@ mod tests {
             model.recents[0],
             "value round-trips"
         );
-        assert!(grew < 40, "one-char model edit grew doc by {grew} bytes — diff regressed");
+        assert!(
+            grew < 40,
+            "one-char model edit grew doc by {grew} bytes — diff regressed"
+        );
     }
 
     #[test]
@@ -94,6 +97,9 @@ mod tests {
             MapsDoc::save(&mut doc, &model);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-saving the same model grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-saving the same model grew the document {a} -> {b}"
+        );
     }
 }

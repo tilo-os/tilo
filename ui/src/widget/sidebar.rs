@@ -395,7 +395,14 @@ impl SidebarDrawer {
     /// Paint the standard collapse affordance inside `rect`: a pill holding a
     /// side-panel glyph, tinted with the accent when the drawer is open. Purely
     /// theme-driven so the affordance reads the same across every app.
-    pub fn draw_toggle(&self, scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, hovered: bool) {
+    pub fn draw_toggle(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        hovered: bool,
+    ) {
         let c = &theme.tokens.colors;
         let open = self.is_open();
         let radius = (theme.tokens.radii.md as f64).min(rect.height() * 0.5);
@@ -409,14 +416,22 @@ impl SidebarDrawer {
         };
         let pill = RoundedRect::from_rect(rect, radius);
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
-        let border = if open { c.accent[ACCENT_IDX] } else { c.border_standard };
+        let border = if open {
+            c.accent[ACCENT_IDX]
+        } else {
+            c.border_standard
+        };
         scene.stroke(&Stroke::new(1.0), transform, border, None, &pill);
 
         // Panel glyph, centred: a rounded "window" with one edge filled to show
         // which side the drawer lives on.
         let g = glyph_box(rect);
         let gr = RoundedRect::from_rect(g, 2.5);
-        let outline = if open { c.accent[ACCENT_IDX] } else { c.text_dim };
+        let outline = if open {
+            c.accent[ACCENT_IDX]
+        } else {
+            c.text_dim
+        };
         scene.stroke(&Stroke::new(1.4), transform, outline, None, &gr);
         let bar_w = g.width() * 0.38;
         let bar = match self.side {
@@ -462,7 +477,12 @@ fn glyph_box(rect: Rect) -> Rect {
 fn mix(a: Color, b: Color, t: f64) -> Color {
     let t = t.clamp(0.0, 1.0);
     let lerp = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * t).round() as u8;
-    Color::from_rgba8(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()), 255)
+    Color::from_rgba8(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+        255,
+    )
 }
 
 fn with_alpha(c: Color, a: u8) -> Color {
@@ -563,7 +583,11 @@ mod tests {
 
     #[test]
     fn rail_leaves_a_thin_strip_when_collapsed_docked() {
-        let mut d = SidebarDrawer::new().left().docked_width(280.0).rail_width(56.0).closed();
+        let mut d = SidebarDrawer::new()
+            .left()
+            .docked_width(280.0)
+            .rail_width(56.0)
+            .closed();
         let content = d.resolve(wide());
         assert!(
             (content.x0 - wide().x0 - 56.0).abs() < 0.5,
@@ -610,8 +634,14 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(16));
         d.tick(false);
         let r = d.reveal();
-        assert!(r > 0.0 && r < 1.0, "after one ~16ms frame the flap is mid-slide (reveal {r})");
-        assert!(d.is_animating(), "a mid-slide drawer keeps requesting frames");
+        assert!(
+            r > 0.0 && r < 1.0,
+            "after one ~16ms frame the flap is mid-slide (reveal {r})"
+        );
+        assert!(
+            d.is_animating(),
+            "a mid-slide drawer keeps requesting frames"
+        );
 
         for _ in 0..300 {
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -620,7 +650,11 @@ mod tests {
                 break;
             }
         }
-        assert!((d.reveal() - 1.0).abs() < 0.01, "the slide settles fully open (reveal {})", d.reveal());
+        assert!(
+            (d.reveal() - 1.0).abs() < 0.01,
+            "the slide settles fully open (reveal {})",
+            d.reveal()
+        );
     }
 
     #[test]
@@ -630,7 +664,11 @@ mod tests {
         d.snap(false);
         d.open();
         d.tick(true);
-        assert_eq!(d.reveal(), 1.0, "reduced motion snaps the reveal to its target");
+        assert_eq!(
+            d.reveal(),
+            1.0,
+            "reduced motion snaps the reveal to its target"
+        );
         assert!(!d.is_animating());
     }
 
@@ -644,7 +682,16 @@ mod tests {
         let theme = Theme::dark();
         let mut scene = Scene::new();
         d.draw_scrim(&mut scene, Affine::IDENTITY);
-        d.draw_toggle(&mut scene, Affine::IDENTITY, &theme, Rect::new(10.0, 10.0, 54.0, 38.0), false);
-        assert!(scene.encoding().draw_tags.len() >= 3, "toggle + scrim must paint");
+        d.draw_toggle(
+            &mut scene,
+            Affine::IDENTITY,
+            &theme,
+            Rect::new(10.0, 10.0, 54.0, 38.0),
+            false,
+        );
+        assert!(
+            scene.encoding().draw_tags.len() >= 3,
+            "toggle + scrim must paint"
+        );
     }
 }

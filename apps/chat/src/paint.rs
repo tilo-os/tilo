@@ -17,7 +17,10 @@ pub fn fill_round(scene: &mut Scene, tf: Affine, rect: Rect, radius: f64, color:
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let r = radius.min(rect.width() * 0.5).min(rect.height() * 0.5).max(0.0);
+    let r = radius
+        .min(rect.width() * 0.5)
+        .min(rect.height() * 0.5)
+        .max(0.0);
     let shape = RoundedRect::from_rect(rect, r);
     scene.fill(Fill::NonZero, tf, color, None, &shape);
 }
@@ -34,7 +37,10 @@ pub fn stroke_round(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let r = radius.min(rect.width() * 0.5).min(rect.height() * 0.5).max(0.0);
+    let r = radius
+        .min(rect.width() * 0.5)
+        .min(rect.height() * 0.5)
+        .max(0.0);
     let shape = RoundedRect::from_rect(rect, r);
     scene.stroke(&Stroke::new(width), tf, color, None, &shape);
 }
@@ -111,7 +117,18 @@ pub fn label(
     x: f64,
     y: f64,
 ) -> (f32, f32) {
-    text(scene, tr, tf, s, size, color, x, y, TextWeight::Regular, None)
+    text(
+        scene,
+        tr,
+        tf,
+        s,
+        size,
+        color,
+        x,
+        y,
+        TextWeight::Regular,
+        None,
+    )
 }
 
 /// Push a rectangular clip layer; remember to `scene.pop_layer()`.
@@ -170,7 +187,11 @@ pub fn palette_color(theme: &Theme, idx: usize) -> Color {
 pub(crate) fn blend_toward(a: Color, b: Color, t: f64) -> Color {
     use ui::color_compat::ColorCompat;
     let t = t.clamp(0.0, 1.0) as f32;
-    let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    let lerp = |x: u8, y: u8| {
+        (x as f32 + (y as f32 - x as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     Color::from_rgb8(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
 }
 
@@ -196,8 +217,16 @@ pub fn legible_on(ink: Color, bg: Color, target: f64, fallback: Color) -> Color 
         return ink;
     }
     let bg_is_light = ui::a11y::relative_luminance(bg) >= 0.5;
-    let first = if bg_is_light { Color::BLACK } else { Color::WHITE };
-    let second = if bg_is_light { Color::WHITE } else { Color::BLACK };
+    let first = if bg_is_light {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    };
+    let second = if bg_is_light {
+        Color::WHITE
+    } else {
+        Color::BLACK
+    };
     let mut best = ink;
     let mut best_ratio = contrast_ratio(ink, bg);
     for toward in [first, second] {
@@ -213,7 +242,11 @@ pub fn legible_on(ink: Color, bg: Color, target: f64, fallback: Color) -> Color 
             }
         }
     }
-    if contrast_ratio(fallback, bg) > best_ratio { fallback } else { best }
+    if contrast_ratio(fallback, bg) > best_ratio {
+        fallback
+    } else {
+        best
+    }
 }
 
 /// Strengthen a tint until it stands `target` apart from the ground it sits on.

@@ -100,14 +100,16 @@ fn decode_samples(d: &[u8], fmt: u16, bits: u16, channels: u16) -> Option<Vec<f3
                 (1, 8) => (d[o] as f32 - 128.0) / 128.0,
                 (1, 16) => i16::from_le_bytes([d[o], d[o + 1]]) as f32 / 32768.0,
                 (1, 24) => {
-                    let mut x = (d[o] as i32) | ((d[o + 1] as i32) << 8) | ((d[o + 2] as i32) << 16);
+                    let mut x =
+                        (d[o] as i32) | ((d[o + 1] as i32) << 8) | ((d[o + 2] as i32) << 16);
                     if x & 0x0080_0000 != 0 {
                         x |= !0x00FF_FFFF;
                     }
                     x as f32 / 8_388_608.0
                 }
                 (1, 32) => {
-                    i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]) as f32 / 2_147_483_648.0
+                    i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]) as f32
+                        / 2_147_483_648.0
                 }
                 (3, 32) => f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]),
                 _ => return None,
@@ -163,7 +165,11 @@ impl Default for WaveformCache {
 impl WaveformCache {
     pub fn new() -> Self {
         let (tx, rx) = channel();
-        Self { map: HashMap::new(), tx, rx }
+        Self {
+            map: HashMap::new(),
+            tx,
+            rx,
+        }
     }
 
     /// Pull completed background computations into the cache. Call each `sync`.
@@ -197,7 +203,10 @@ impl WaveformCache {
 
     /// Compute `id`'s peaks synchronously (deterministic `--shots`/tests).
     pub fn warm_blocking(&mut self, id: MediaId, source: &MediaSource) {
-        if matches!(self.map.get(&id), Some(Slot::Ready(_)) | Some(Slot::Missing)) {
+        if matches!(
+            self.map.get(&id),
+            Some(Slot::Ready(_)) | Some(Slot::Missing)
+        ) {
             return;
         }
         let peaks = if source.is_decodable() {
@@ -275,7 +284,10 @@ mod tests {
         // The first-half buckets are clearly louder than the second-half ones.
         let first: f32 = peaks[..8].iter().sum();
         let second: f32 = peaks[8..].iter().sum();
-        assert!(first > second * 3.0, "loud half dominates ({first} vs {second})");
+        assert!(
+            first > second * 3.0,
+            "loud half dominates ({first} vs {second})"
+        );
     }
 
     #[test]
@@ -301,7 +313,10 @@ mod tests {
         cache.warm_blocking(id, &source);
         let peaks = cache.peaks(id).expect("warmed peaks");
         assert_eq!(peaks.len(), WAVE_BUCKETS);
-        assert!(peaks.iter().cloned().fold(0.0, f32::max) > 0.9, "a real signal is present");
+        assert!(
+            peaks.iter().cloned().fold(0.0, f32::max) > 0.9,
+            "a real signal is present"
+        );
         std::fs::remove_file(&f).ok();
     }
 
@@ -314,7 +329,10 @@ mod tests {
             hydration: crate::media::Hydration::Projected,
         };
         cache.request(id, &source);
-        assert!(!cache.has_pending(), "an un-hydrated source never spawns a compute");
+        assert!(
+            !cache.has_pending(),
+            "an un-hydrated source never spawns a compute"
+        );
         assert!(cache.peaks(id).is_none());
     }
 }

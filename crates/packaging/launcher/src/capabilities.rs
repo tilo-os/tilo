@@ -217,8 +217,13 @@ impl CapabilityPlan {
                 Scope::Device(device) => {
                     // `Read` is the floor of the verb ladder, so a grant
                     // phrased in any verb answers it.
-                    if !allows(&actor, &ResourceRef::Device(device.clone()), Verb::Read, caps, now)
-                    {
+                    if !allows(
+                        &actor,
+                        &ResourceRef::Device(device.clone()),
+                        Verb::Read,
+                        caps,
+                        now,
+                    ) {
                         continue;
                     }
                     if !devices.iter().any(|d| d == device) {
@@ -226,7 +231,13 @@ impl CapabilityPlan {
                     }
                 }
                 Scope::NetHost(host) => {
-                    if !allows(&actor, &ResourceRef::NetHost(host.clone()), Verb::Read, caps, now) {
+                    if !allows(
+                        &actor,
+                        &ResourceRef::NetHost(host.clone()),
+                        Verb::Read,
+                        caps,
+                        now,
+                    ) {
                         continue;
                     }
                     if !net_hosts.iter().any(|h| h == host) {
@@ -411,14 +422,19 @@ mod tests {
 
     #[test]
     fn no_capabilities_plans_nothing() {
-        let plan = CapabilityPlan::for_app_with("dev.qos.books", &[], Some(1000), fake_device_paths);
+        let plan =
+            CapabilityPlan::for_app_with("dev.qos.books", &[], Some(1000), fake_device_paths);
         assert_eq!(plan, CapabilityPlan::empty());
         assert!(plan.is_empty());
     }
 
     #[test]
     fn read_capability_plans_a_read_only_path_only() {
-        let caps = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read)];
+        let caps = vec![fs_grant(
+            "dev.qos.books",
+            "/var/workspace/books",
+            Verb::Read,
+        )];
         let plan =
             CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1000), fake_device_paths);
         assert_eq!(plan.ro_paths, vec![PathBuf::from("/var/workspace/books")]);
@@ -430,7 +446,11 @@ mod tests {
 
     #[test]
     fn write_capability_plans_a_read_write_path() {
-        let caps = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Write)];
+        let caps = vec![fs_grant(
+            "dev.qos.books",
+            "/var/workspace/books",
+            Verb::Write,
+        )];
         let plan =
             CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1000), fake_device_paths);
         assert_eq!(plan.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
@@ -439,7 +459,11 @@ mod tests {
 
     #[test]
     fn another_apps_capability_is_not_planned() {
-        let caps = vec![fs_grant("dev.qos.other", "/var/workspace/secrets", Verb::Write)];
+        let caps = vec![fs_grant(
+            "dev.qos.other",
+            "/var/workspace/secrets",
+            Verb::Write,
+        )];
         let plan =
             CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1000), fake_device_paths);
         assert_eq!(
@@ -542,8 +566,7 @@ mod tests {
             fs_grant("dev.qos.books", "relative/path", Verb::Write),
             fs_grant("dev.qos.books", "/", Verb::Write),
         ];
-        let plan =
-            CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1), fake_device_paths);
+        let plan = CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1), fake_device_paths);
         assert_eq!(
             plan,
             CapabilityPlan::empty(),
@@ -565,7 +588,6 @@ mod tests {
         std::fs::write(&wrong_shape, br#"{"subject":"nope"}"#).unwrap();
         assert!(load_capability_file(&wrong_shape).is_empty());
     }
-
 
     /// A workspace-scoped `Restrict` at `Verb::Read`: "see everything
     /// here, change nothing". The existing vocabulary, not a new one.
@@ -612,14 +634,19 @@ mod tests {
     // nothing is inferred — this module doesn't decide who may author.
     #[test]
     fn no_workspace_capability_leaves_participation_unscoped() {
-        let caps = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Write)];
+        let caps = vec![fs_grant(
+            "dev.qos.books",
+            "/var/workspace/books",
+            Verb::Write,
+        )];
         let plan =
             CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1_000), fake_device_paths);
         assert_eq!(plan.participation, Participation::Unscoped);
         assert!(plan.participation.carries_identity());
         assert_eq!(plan.participation.env_value(), None);
 
-        let none = CapabilityPlan::for_app_with("dev.qos.books", &[], Some(1_000), fake_device_paths);
+        let none =
+            CapabilityPlan::for_app_with("dev.qos.books", &[], Some(1_000), fake_device_paths);
         assert_eq!(none.participation, Participation::Unscoped);
     }
 
@@ -629,7 +656,11 @@ mod tests {
     #[test]
     fn read_only_participation_leaves_no_writable_bind() {
         let mut caps = read_only_participation("dev.qos.viewer");
-        caps.push(fs_grant("dev.qos.viewer", "/var/workspace/shared", Verb::Write));
+        caps.push(fs_grant(
+            "dev.qos.viewer",
+            "/var/workspace/shared",
+            Verb::Write,
+        ));
         let plan =
             CapabilityPlan::for_app_with("dev.qos.viewer", &caps, Some(1_000), fake_device_paths);
         assert_eq!(plan.participation, Participation::ReadOnly);
@@ -673,7 +704,11 @@ mod tests {
     fn well_formed_capability_file_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("caps.json");
-        let caps = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read)];
+        let caps = vec![fs_grant(
+            "dev.qos.books",
+            "/var/workspace/books",
+            Verb::Read,
+        )];
         std::fs::write(&path, serde_json::to_vec(&caps).unwrap()).unwrap();
         assert_eq!(load_capability_file(&path), caps);
     }

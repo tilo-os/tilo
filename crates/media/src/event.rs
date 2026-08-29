@@ -25,7 +25,12 @@ pub struct VideoFrame {
 impl VideoFrame {
     pub fn new(width: u32, height: u32, rgba: Vec<u8>, pts_ms: u64) -> Self {
         debug_assert_eq!(rgba.len(), width as usize * height as usize * 4);
-        Self { width, height, rgba: Arc::new(rgba), pts_ms }
+        Self {
+            width,
+            height,
+            rgba: Arc::new(rgba),
+            pts_ms,
+        }
     }
 }
 

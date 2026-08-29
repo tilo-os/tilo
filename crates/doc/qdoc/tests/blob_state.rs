@@ -11,8 +11,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use qdoc::blobstore::{self, BlobState, BlobStore, BlobTransport, MemoryBlobStore};
 use qdoc::Document;
+use qdoc::blobstore::{self, BlobState, BlobStore, BlobTransport, MemoryBlobStore};
 
 use crate::blobstore_fixture::serialised;
 

@@ -115,8 +115,7 @@ pub fn path_to_file_uri(path: &Path) -> String {
     out.push_str("file://");
     for b in s.as_bytes() {
         let c = *b;
-        let keep = c.is_ascii_alphanumeric()
-            || matches!(c, b'/' | b'-' | b'_' | b'.' | b'~');
+        let keep = c.is_ascii_alphanumeric() || matches!(c, b'/' | b'-' | b'_' | b'.' | b'~');
         if keep {
             out.push(c as char);
         } else {
@@ -148,7 +147,9 @@ mod tests {
 
     #[test]
     fn remote_uri_passes_through_and_has_no_path() {
-        let s = Source::Remote { url: "https://cdn.test/v.webm".into() };
+        let s = Source::Remote {
+            url: "https://cdn.test/v.webm".into(),
+        };
         assert_eq!(s.to_uri(), "https://cdn.test/v.webm");
         assert!(s.abs_path().is_none());
         assert!(s.is_ready(), "remote is always ready to stream");
@@ -183,6 +184,9 @@ mod tests {
     #[test]
     fn workspace_absolute_path_is_left_as_is() {
         let abs = Source::Workspace(PathBuf::from("/var/workspace/media/x.mov"));
-        assert_eq!(abs.abs_path().unwrap(), PathBuf::from("/var/workspace/media/x.mov"));
+        assert_eq!(
+            abs.abs_path().unwrap(),
+            PathBuf::from("/var/workspace/media/x.mov")
+        );
     }
 }

@@ -12,6 +12,8 @@ pub mod status_bar;
 pub mod toolbar;
 
 pub use page::PageGeometry;
-pub use shell::{ChromeRole, SelectionState, SelectionTier, fill_scrim, scrim_maps, selection_tier};
+pub use shell::{
+    ChromeRole, SelectionState, SelectionTier, fill_scrim, scrim_maps, selection_tier,
+};
 pub use status_bar::STATUS_BAR_HEIGHT;
-pub use toolbar::{LabelCue, ToolbarItem, TOOLBAR_HEIGHT};
+pub use toolbar::{LabelCue, TOOLBAR_HEIGHT, ToolbarItem};

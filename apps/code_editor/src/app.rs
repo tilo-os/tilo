@@ -39,9 +39,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ReadDoc};
-use ui::color_compat::ColorCompat;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -667,7 +667,11 @@ impl CodeApp {
         let cx = rect.x0 + rect.width() / 2.0;
         let cy = rect.y0 + rect.height() / 2.0;
         let half = 8.0;
-        let line_color = if self.sidebar_open() { c.text_primary } else { c.neutral[8] };
+        let line_color = if self.sidebar_open() {
+            c.text_primary
+        } else {
+            c.neutral[8]
+        };
         let stroke = Stroke::new(1.6);
         for dy in [-5.0, 0.0, 5.0] {
             scene.stroke(
@@ -675,7 +679,10 @@ impl CodeApp {
                 transform,
                 line_color,
                 None,
-                &Line::new(Point::new(cx - half, cy + dy), Point::new(cx + half, cy + dy)),
+                &Line::new(
+                    Point::new(cx - half, cy + dy),
+                    Point::new(cx + half, cy + dy),
+                ),
             );
         }
     }
@@ -807,7 +814,8 @@ impl CodeApp {
                 continue;
             }
             let idx = i.min(self.tabs.tabs().len());
-            self.tabs.insert_tab(idx, TabDescriptor::new(id, buf.name.clone()));
+            self.tabs
+                .insert_tab(idx, TabDescriptor::new(id, buf.name.clone()));
         }
 
         for buf in &self.session.open {
@@ -923,7 +931,11 @@ impl CodeApp {
             lsp_working: self.lsp_status.is_working(),
             notice: notice.text,
             notice_is_error: notice.is_error,
-            dirty: self.session.active_buffer().map(|b| b.dirty).unwrap_or(false),
+            dirty: self
+                .session
+                .active_buffer()
+                .map(|b| b.dirty)
+                .unwrap_or(false),
         });
         // Surface the floating status bubble only on a real change to the label
         // (a caret move, a save flip, an indexing tick) — refresh_status runs
@@ -1262,9 +1274,21 @@ impl CodeApp {
         let by = y0 + h - 20.0 - bh;
         let mut bx = x0 + w - 20.0 - bw;
         for (choice, label, style) in [
-            (ConflictChoice::Reload, "Reload", ui::widget::ButtonStyle::Primary),
-            (ConflictChoice::Overwrite, "Overwrite", ui::widget::ButtonStyle::Danger),
-            (ConflictChoice::Cancel, "Cancel", ui::widget::ButtonStyle::Neutral),
+            (
+                ConflictChoice::Reload,
+                "Reload",
+                ui::widget::ButtonStyle::Primary,
+            ),
+            (
+                ConflictChoice::Overwrite,
+                "Overwrite",
+                ui::widget::ButtonStyle::Danger,
+            ),
+            (
+                ConflictChoice::Cancel,
+                "Cancel",
+                ui::widget::ButtonStyle::Neutral,
+            ),
         ] {
             let rect = Rect::new(bx, by, bx + bw, by + bh);
             let face = ui::widget::ButtonFace::new(rect, label)
@@ -1541,7 +1565,11 @@ impl CodeApp {
     /// this app's equivalent of "search within this tab".
     fn drain_tab_bar(&mut self, doc: &AutoCommit) {
         let selected = self.tabs.active_id();
-        if let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == selected)
+        if let Some(idx) = self
+            .session
+            .open
+            .iter()
+            .position(|b| b.node as u64 == selected)
             && self.session.active != Some(idx)
         {
             self.session.active = Some(idx);
@@ -1678,8 +1706,16 @@ impl CodeApp {
         let mut bx = x0 + w - 20.0 - bw;
         for (choice, label, style) in [
             (CloseChoice::Save, "Save", ui::widget::ButtonStyle::Primary),
-            (CloseChoice::Discard, "Don't Save", ui::widget::ButtonStyle::Danger),
-            (CloseChoice::Cancel, "Cancel", ui::widget::ButtonStyle::Neutral),
+            (
+                CloseChoice::Discard,
+                "Don't Save",
+                ui::widget::ButtonStyle::Danger,
+            ),
+            (
+                CloseChoice::Cancel,
+                "Cancel",
+                ui::widget::ButtonStyle::Neutral,
+            ),
         ] {
             let rect = Rect::new(bx, by, bx + bw, by + bh);
             let face = ui::widget::ButtonFace::new(rect, label)
@@ -1857,7 +1893,11 @@ impl CodeApp {
         let Some(node) = self.session.active_buffer().map(|b| b.node) else {
             return;
         };
-        let Some(m) = self.find_current.and_then(|i| self.find_matches.get(i)).copied() else {
+        let Some(m) = self
+            .find_current
+            .and_then(|i| self.find_matches.get(i))
+            .copied()
+        else {
             return;
         };
         let Some(obj) = EditorDoc::buffer_text(doc, node) else {
@@ -1869,7 +1909,8 @@ impl CodeApp {
         };
         let replacement = self.find.replacement().to_string();
         EditorDoc::splice(doc, &obj, at, m.len, &replacement);
-        self.editor.move_caret_to(m.line, m.col + replacement.chars().count());
+        self.editor
+            .move_caret_to(m.line, m.col + replacement.chars().count());
         self.refresh_find(doc);
         let (line, col) = self.editor.primary_caret();
         self.focus_match(crate::find::next_from(&self.find_matches, line, col));
@@ -1959,7 +2000,9 @@ impl CodeApp {
             self.note("Open a file to jump to a line", true);
             return;
         }
-        let target = line_1based.saturating_sub(1).min(self.editor.line_count().saturating_sub(1));
+        let target = line_1based
+            .saturating_sub(1)
+            .min(self.editor.line_count().saturating_sub(1));
         self.editor.move_caret_to(target, 0);
     }
 
@@ -2005,7 +2048,12 @@ impl CodeApp {
                 search::Msg::Done { truncated, .. } => self.search_truncated = truncated,
             }
         }
-        if self.search_job.as_ref().map(|j| j.is_finished()).unwrap_or(false) {
+        if self
+            .search_job
+            .as_ref()
+            .map(|j| j.is_finished())
+            .unwrap_or(false)
+        {
             self.search_job = None;
         }
         self.push_search_state();
@@ -2308,7 +2356,10 @@ impl CodeApp {
             return;
         };
         let Some(path) = ui::portal::to_local_path(&url) else {
-            self.note(format!("Definition is outside this machine: {}", loc.uri), true);
+            self.note(
+                format!("Definition is outside this machine: {}", loc.uri),
+                true,
+            );
             return;
         };
         self.open_disk_file(&path);
@@ -2386,7 +2437,11 @@ impl CodeApp {
         self.drain_find_events(&mut doc.clone());
         self.refresh_find(doc);
         // Land on the first match so the current-match fill is visible.
-        self.focus_match(if self.find_matches.is_empty() { None } else { Some(0) });
+        self.focus_match(if self.find_matches.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
     }
 
     /// Run a real project-wide search and wait for it, so a single offscreen
@@ -2451,12 +2506,14 @@ impl CodeApp {
     /// Open the first file the tree found, so a shot of a real project shows a
     /// real buffer instead of the empty state.
     pub fn shots_open_first_file(&mut self) {
-        let first = self
-            .session
-            .project
-            .visible_rows()
-            .into_iter()
-            .find(|id| !self.session.project.get(*id).map(|n| n.is_folder()).unwrap_or(true));
+        let first = self.session.project.visible_rows().into_iter().find(|id| {
+            !self
+                .session
+                .project
+                .get(*id)
+                .map(|n| n.is_folder())
+                .unwrap_or(true)
+        });
         if let Some(id) = first {
             self.open_node(id);
         }
@@ -2759,7 +2816,10 @@ impl Widget for CodeApp {
                     },
                     flex_grow: 1.0,
                     flex_basis: Dimension::length(0.0),
-                    gap: Size { width: length(0.0), height: length(0.0) },
+                    gap: Size {
+                        width: length(0.0),
+                        height: length(0.0),
+                    },
                     ..Default::default()
                 },
                 &[sidebar_node, editor_col],
@@ -2780,7 +2840,10 @@ impl Widget for CodeApp {
                         width: Dimension::percent(1.0),
                         height: Dimension::percent(1.0),
                     },
-                    gap: Size { width: length(0.0), height: length(0.0) },
+                    gap: Size {
+                        width: length(0.0),
+                        height: length(0.0),
+                    },
                     ..Default::default()
                 },
                 &[content_node],
@@ -2885,23 +2948,32 @@ impl Widget for CodeApp {
                 self.overlay_sidebar_rect = Rect::ZERO;
                 self.hamburger_rect = Rect::ZERO;
                 if self.flap.reveal() > 0.001 {
-                    self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+                    self.sidebar
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
-                self.tabs.draw(scene, transform, text_renderer, theme, presence);
-                self.find.draw(scene, transform, text_renderer, theme, presence);
-                self.editor.draw(scene, transform, text_renderer, theme, presence);
+                self.tabs
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.find
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.editor
+                    .draw(scene, transform, text_renderer, theme, presence);
                 if self.panel_visible {
-                    self.panel.draw(scene, transform, text_renderer, theme, presence);
+                    self.panel
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
             }
             SplitLayout::Overlay => {
                 // Content spans the full width and is drawn first; the sidebar
                 // slides in over it behind a scrim.
-                self.tabs.draw(scene, transform, text_renderer, theme, presence);
-                self.find.draw(scene, transform, text_renderer, theme, presence);
-                self.editor.draw(scene, transform, text_renderer, theme, presence);
+                self.tabs
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.find
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.editor
+                    .draw(scene, transform, text_renderer, theme, presence);
                 if self.panel_visible {
-                    self.panel.draw(scene, transform, text_renderer, theme, presence);
+                    self.panel
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
                 // Scrim: opacity tracks the reveal (Adwaita-style dimming).
                 let reveal = self.flap.reveal();
@@ -2932,7 +3004,8 @@ impl Widget for CodeApp {
                 self.overlay_sidebar_rect = sidebar_rect;
                 if reveal > 0.001 {
                     self.sidebar.place_at(sidebar_rect);
-                    self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+                    self.sidebar
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
                 // The hamburger toggle sits at the tab bar's left edge.
                 self.draw_hamburger(scene, transform, theme);
@@ -2953,7 +3026,8 @@ impl Widget for CodeApp {
         // permanent bottom status strip.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
         // Palette floats on top.
-        self.palette.draw_overlay(scene, transform, text_renderer, theme);
+        self.palette
+            .draw_overlay(scene, transform, text_renderer, theme);
         // …and a conflict prompt above even that: it is a question that must be
         // answered before anything else can be done to the file.
         self.draw_conflict(scene, transform, text_renderer, theme);
@@ -3062,7 +3136,8 @@ impl Widget for CodeApp {
         } = event
         {
             // The hamburger toggle (drawn only in overlay mode).
-            if overlay && self.hamburger_rect.width() > 0.0
+            if overlay
+                && self.hamburger_rect.width() > 0.0
                 && self.hamburger_rect.contains(self.last_cursor)
             {
                 self.toggle_sidebar();
@@ -3164,7 +3239,15 @@ impl Widget for CodeApp {
             if let Some(n) = self.find_node {
                 let before = *handled;
                 self.find.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
                 );
                 self.drain_find_events(state);
                 if *handled && !before {
@@ -3193,8 +3276,15 @@ impl Widget for CodeApp {
                 let mut th = false;
                 let mut tf = None;
                 t.handle_event(
-                    event, scale_factor, modifiers, state, &tr, &mut th, &mut tf,
-                    NodeId::new(0), taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    &tr,
+                    &mut th,
+                    &mut tf,
+                    NodeId::new(0),
+                    taffy,
                 );
                 if th {
                     *handled = true;
@@ -3226,7 +3316,15 @@ impl Widget for CodeApp {
         if sidebar_active {
             if let Some(n) = self.sidebar_node {
                 self.sidebar.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
                 );
             }
         }
@@ -3250,19 +3348,43 @@ impl Widget for CodeApp {
 
         if let Some(n) = self.tabs_node {
             self.tabs.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
             );
         }
         if self.panel_visible {
             if let Some(n) = self.panel_node {
                 self.panel.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
                 );
             }
         }
         if let Some(n) = self.editor_node {
             self.editor.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
             );
         }
 
@@ -3342,7 +3464,9 @@ impl Widget for CodeApp {
     /// each findable there by name or path, alongside the actions the app
     /// exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::FileSearchProvider::new(&self.session))]
+        vec![Box::new(crate::search_provider::FileSearchProvider::new(
+            &self.session,
+        ))]
     }
 
     /// Open / focus the file a chosen palette row identifies. The row carries
@@ -3527,7 +3651,10 @@ mod tests {
     fn reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark() {
         let (mut app, mut doc) = synced_sample();
         let id = app.session.active_buffer().unwrap().node as u64;
-        assert!(!app.tabs.is_modified(id), "a freshly-opened buffer is clean");
+        assert!(
+            !app.tabs.is_modified(id),
+            "a freshly-opened buffer is clean"
+        );
 
         app.editor.insert_for_test(&mut doc, "X");
         app.ensure_buffers(&mut doc);
@@ -3767,7 +3894,10 @@ mod tests {
             .id;
         app.apply_tree_event(TreeEvent::OpenFile(prime));
         assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
-        assert!(!app.sidebar_open(), "opening a file dismisses the overlay flap");
+        assert!(
+            !app.sidebar_open(),
+            "opening a file dismisses the overlay flap"
+        );
     }
 
     #[test]
@@ -3822,8 +3952,13 @@ mod tests {
             detail: None,
             percentage: Some(37),
         };
-        let note = busy.analysis_note().expect("a working server explains itself");
-        assert!(note.contains("rust-analyzer"), "it names the server: {note}");
+        let note = busy
+            .analysis_note()
+            .expect("a working server explains itself");
+        assert!(
+            note.contains("rust-analyzer"),
+            "it names the server: {note}"
+        );
         assert!(note.contains("indexing"), "it names the task: {note}");
         assert!(note.contains("37%"), "it carries the progress: {note}");
         assert!(
@@ -3957,20 +4092,33 @@ mod tests {
 
         app.refresh_diagnostics(&doc);
         assert!(
-            app.panel.problems().iter().any(|d| d.message.contains("Unclosed")),
+            app.panel
+                .problems()
+                .iter()
+                .any(|d| d.message.contains("Unclosed")),
             "with nothing better answering, the scan reports the unbalanced bracket"
         );
 
         // Now let a server publish for this buffer — even an empty publish is
         // an answer, and it is the answer that counts.
-        let uri = app.lsp_uri.clone().unwrap_or_else(|| "file:///probe.rs".to_string());
+        let uri = app
+            .lsp_uri
+            .clone()
+            .unwrap_or_else(|| "file:///probe.rs".to_string());
         app.lsp_uri = Some(uri.clone());
         app.lsp_diagnostics.insert(uri, Vec::new());
         app.refresh_diagnostics(&doc);
         assert!(
-            !app.panel.problems().iter().any(|d| d.message.contains("Unclosed")),
+            !app.panel
+                .problems()
+                .iter()
+                .any(|d| d.message.contains("Unclosed")),
             "the scanner's guess yields to the compiler's answer: {:?}",
-            app.panel.problems().iter().map(|d| &d.message).collect::<Vec<_>>()
+            app.panel
+                .problems()
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 

@@ -1,14 +1,14 @@
-use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
-use vello::Scene;
-use vello::kurbo::{Affine, RoundedRect, Rect, Point, Stroke, BezPath};
-use vello::peniko::Color;
-use winit::event::{WindowEvent, MouseButton, ElementState};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Color;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 pub struct Checkbox {
     _id: String,
@@ -97,14 +97,21 @@ impl Widget for Checkbox {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
-            size: Size {
-                width: Dimension::length(24.0),
-                height: Dimension::length(24.0),
-            },
-            ..Default::default()
-        }).unwrap();
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(24.0),
+                    height: Dimension::length(24.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -119,13 +126,26 @@ impl Widget for Checkbox {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
         // Disabled widgets paint their (forced-idle) look under a reduced
         // group opacity so they read as non-interactive.
         let disabled = !self.enabled;
         if disabled {
             let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-            scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &clip);
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &clip,
+            );
         }
         let box_color = if self.is_checked {
             theme.accent_primary
@@ -137,7 +157,13 @@ impl Widget for Checkbox {
 
         let box_shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
 
-        scene.fill(vello::peniko::Fill::NonZero, transform, box_color, None, &box_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            box_color,
+            None,
+            &box_shape,
+        );
 
         let stroke_color = if self.is_focused {
             theme.border_focus
@@ -145,16 +171,24 @@ impl Widget for Checkbox {
             theme.tokens.colors.border_standard
         };
 
-        scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, stroke_color, None, &box_shape);
+        scene.stroke(
+            &Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
+            transform,
+            stroke_color,
+            None,
+            &box_shape,
+        );
 
         if self.is_checked {
             let mut path = BezPath::new();
             path.move_to(Point::new(self.rect.x0 + 6.0, self.rect.y0 + 12.0));
             path.line_to(Point::new(self.rect.x0 + 10.0, self.rect.y0 + 16.0));
             path.line_to(Point::new(self.rect.x0 + 18.0, self.rect.y0 + 6.0));
-            
+
             scene.stroke(
-                &Stroke::new(2.5).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round),
+                &Stroke::new(2.5)
+                    .with_caps(vello::kurbo::Cap::Round)
+                    .with_join(vello::kurbo::Join::Round),
                 transform,
                 theme.tokens.colors.ink_on_any(
                     &[box_color],
@@ -162,7 +196,7 @@ impl Widget for Checkbox {
                     crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
                 ),
                 None,
-                &path
+                &path,
             );
         }
 
@@ -171,9 +205,22 @@ impl Widget for Checkbox {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
         // Disabled: reject all input — no toggle, no hover feedback.
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -183,13 +230,19 @@ impl Widget for Checkbox {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. }
-                if self.is_hovered && *element_state == ElementState::Pressed =>
-            {
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } if self.is_hovered && *element_state == ElementState::Pressed => {
                 *handled = true;
                 *focus_target = Some(node_id);
                 let new_val = !self.is_checked;
-                let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
+                let _ = state.put(
+                    root,
+                    self.on_toggle_path.as_str(),
+                    automerge::ScalarValue::Boolean(new_val),
+                );
                 // Update the local cache now so accessibility() reflects the
                 // new state this same frame — otherwise the focus narration
                 // triggered by this click would speak the pre-click state.
@@ -199,7 +252,9 @@ impl Widget for Checkbox {
         }
     }
 
-    fn name(&self) -> &str { "Checkbox" }
+    fn name(&self) -> &str {
+        "Checkbox"
+    }
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id_override.as_deref().unwrap_or("checkbox"))
@@ -209,10 +264,18 @@ impl Widget for Checkbox {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
-    fn is_enabled(&self) -> bool { self.enabled }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -275,7 +338,9 @@ impl Widget for Checkbox {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -292,14 +357,22 @@ impl Widget for Checkbox {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(scope) = self.permission_scope()
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
         if let Some(key) = self.presence_key()
@@ -332,7 +405,10 @@ mod tests {
     fn with_enabled_false_is_reported_by_is_enabled() {
         let c = Checkbox::new("any", "path").with_enabled(false);
         assert!(!Widget::is_enabled(&c));
-        assert!(Widget::is_enabled(&Checkbox::new("any", "path")), "default is enabled");
+        assert!(
+            Widget::is_enabled(&Checkbox::new("any", "path")),
+            "default is enabled"
+        );
     }
 
     #[test]
@@ -378,10 +454,20 @@ mod tests {
         let root = automerge::ROOT;
         let mut c = Checkbox::new("any", "checked");
         assert!(!c.is_checked);
-        assert!(Widget::perform_action(&mut c, &Action::ToggleCheck, &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut c,
+            &Action::ToggleCheck,
+            &mut doc,
+            &root
+        ));
         assert!(c.is_checked, "ToggleCheck flips to checked");
         // Activate also toggles.
-        assert!(Widget::perform_action(&mut c, &Action::Activate, &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut c,
+            &Action::Activate,
+            &mut doc,
+            &root
+        ));
         assert!(!c.is_checked, "Activate flips back");
     }
 
@@ -391,7 +477,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mut c = Checkbox::new("any", "checked").with_enabled(false);
-        assert!(!Widget::perform_action(&mut c, &Action::ToggleCheck, &mut doc, &root));
+        assert!(!Widget::perform_action(
+            &mut c,
+            &Action::ToggleCheck,
+            &mut doc,
+            &root
+        ));
         assert!(!c.is_checked, "a disabled checkbox must not toggle");
     }
 
@@ -423,12 +514,33 @@ mod tests {
         let mut handled = false;
 
         c.handle_event(
-            &WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree,
+            &WindowEvent::CursorMoved {
+                device_id: device,
+                position: (10.0, 10.0).into(),
+            },
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
         );
         c.handle_event(
-            &WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree,
+            &WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
         );
 
         assert!(focus.is_none(), "disabled checkbox must not request focus");

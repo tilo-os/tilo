@@ -15,14 +15,14 @@ use std::path::PathBuf;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use ui::ActionPalette;
 use ui::icons::Icon;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{ActionInput, ActionSpec, EncodedAction, ExecutionLocus, Resource};
-use ui::search::{fuzzy_score, SearchProvider, SearchResult};
+use ui::search::{SearchProvider, SearchResult, fuzzy_score};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::ActionPalette;
 
 const WIDTH: u32 = 560;
 const MARGIN: f64 = 20.0;
@@ -45,8 +45,16 @@ fn action(id: &str, label: &str, desc: &str) -> ActionSpec {
 fn open_resource() -> Resource {
     Resource::new("doc:design-notes", "doc", "Design Notes")
         .with_action(action("rename", "Rename", "Give the document a new name"))
-        .with_action(action("share", "Share with a peer", "Invite someone to this workspace"))
-        .with_action(action("export", "Export as PDF", "Write a PDF alongside the source"))
+        .with_action(action(
+            "share",
+            "Share with a peer",
+            "Invite someone to this workspace",
+        ))
+        .with_action(action(
+            "export",
+            "Export as PDF",
+            "Write a PDF alongside the source",
+        ))
 }
 
 /// A folded-in searchable corpus — stands in for the contacts provider.

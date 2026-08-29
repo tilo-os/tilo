@@ -104,9 +104,7 @@ extern "C" fn converse(
     // this array and each `resp` with `free`, so it must come from the same
     // C allocator.
     let n = num_msg as usize;
-    let arr = unsafe {
-        libc::calloc(n, std::mem::size_of::<PamResponse>()) as *mut PamResponse
-    };
+    let arr = unsafe { libc::calloc(n, std::mem::size_of::<PamResponse>()) as *mut PamResponse };
     if arr.is_null() {
         return PAM_CONV_ERR;
     }

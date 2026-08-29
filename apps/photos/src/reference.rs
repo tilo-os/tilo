@@ -91,7 +91,10 @@ mod tests {
     fn the_open_photograph_resolves_to_its_own_address() {
         let doc = doc_with_image(PATH);
         let r = image_reference(&doc).expect("an open photograph is referenceable");
-        assert_eq!(r.resource_id().as_str(), "photos.image:/var/workspace/photos/harbour.png");
+        assert_eq!(
+            r.resource_id().as_str(),
+            "photos.image:/var/workspace/photos/harbour.png"
+        );
         assert_eq!(r.kind, IMAGE_KIND);
     }
 
@@ -104,7 +107,10 @@ mod tests {
         let r = image_reference(&doc).unwrap();
 
         let published = PhotosResources.resources(&doc);
-        let ids: Vec<String> = published.iter().map(|res| res.id.as_str().to_string()).collect();
+        let ids: Vec<String> = published
+            .iter()
+            .map(|res| res.id.as_str().to_string())
+            .collect();
 
         assert!(
             ids.contains(&r.resource_id().as_str().to_string()),

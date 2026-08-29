@@ -14,7 +14,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::model::{addr_to_a1, CellFormat};
+use crate::model::{CellFormat, addr_to_a1};
 use crate::xlsx::{ImportedCell, SheetTable};
 
 /// Read every sheet of an `.ods` document into tables (via calamine).
@@ -29,8 +29,8 @@ pub fn write_ods(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     let mut zip = zip::ZipWriter::new(file);
 
     // 1. `mimetype` MUST be the first entry and stored uncompressed.
-    let stored = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("mimetype", stored)?;
     zip.write_all(b"application/vnd.oasis.opendocument.spreadsheet")?;
 
@@ -122,7 +122,8 @@ fn cell_xml(cell: &Option<ImportedCell>) -> String {
             _ => "float",
         };
         if !matches!(cell.format, CellFormat::Text) {
-            let display = crate::model::format_value(&crate::model::CellValue::Number(n), cell.format);
+            let display =
+                crate::model::format_value(&crate::model::CellValue::Number(n), cell.format);
             return format!(
                 r#"<table:table-cell{style}{formula} office:value-type="{vt}" office:value="{val}"><text:p>{disp}</text:p></table:table-cell>"#,
                 style = style_attr,

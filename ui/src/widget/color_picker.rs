@@ -3,18 +3,18 @@
 //! `wants_pointer_capture`). All visuals pull colours from theme tokens —
 //! no literal palette values live in this file.
 
-use automerge::{AutoCommit, ObjId};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect, Point, RoundedRect, Stroke};
-use vello::peniko::Color;
-use winit::event::{WindowEvent, MouseButton, ElementState};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::color_compat::ColorCompat;
-use crate::widget::Widget;
-use crate::widget::TextInput;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::widget::TextInput;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Color;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// Geometry constants for the inner layout. Pulled out so the test fixture
 /// and the live layout agree on rect positions without poking taffy.
@@ -158,8 +158,12 @@ impl ColorPicker {
             self.g_slider_rect.y1 + SLIDER_GAP + SLIDER_HEIGHT,
         );
         if self.b_slider_rect.y1 > y1 {
-            self.b_slider_rect =
-                Rect::new(self.b_slider_rect.x0, self.b_slider_rect.y0, self.b_slider_rect.x1, y1);
+            self.b_slider_rect = Rect::new(
+                self.b_slider_rect.x0,
+                self.b_slider_rect.y0,
+                self.b_slider_rect.x1,
+                y1,
+            );
         }
 
         let text_h = 22.0;
@@ -201,11 +205,21 @@ impl ColorPicker {
     /// Six-digit `#RRGGBB` hex string for the current colour. Alpha is
     /// intentionally not encoded — the picker doesn't expose that channel.
     pub fn hex_string(&self) -> String {
-        format!("#{:02X}{:02X}{:02X}", self.color.r(), self.color.g(), self.color.b())
+        format!(
+            "#{:02X}{:02X}{:02X}",
+            self.color.r(),
+            self.color.g(),
+            self.color.b()
+        )
     }
 
     pub fn rgb_string(&self) -> String {
-        format!("rgb({}, {}, {})", self.color.r(), self.color.g(), self.color.b())
+        format!(
+            "rgb({}, {}, {})",
+            self.color.r(),
+            self.color.g(),
+            self.color.b()
+        )
     }
 
     /// Register a callback that fires whenever `color` mutates, after the
@@ -254,7 +268,11 @@ impl ColorPicker {
         let min = rf.min(gf).min(bf);
         let delta = max - min;
         let v = max;
-        let s = if max <= f32::EPSILON { 0.0 } else { delta / max };
+        let s = if max <= f32::EPSILON {
+            0.0
+        } else {
+            delta / max
+        };
         let h = if delta <= f32::EPSILON {
             0.0
         } else if max == rf {
@@ -315,8 +333,7 @@ impl ColorPicker {
 
     /// Hue from cursor y in the hue strip rect, 0..1 top to bottom.
     fn hue_from_point(&self, p: Point) -> f32 {
-        ((p.y - self.hue_strip_rect.y0) / self.hue_strip_rect.height())
-            .clamp(0.0, 1.0) as f32
+        ((p.y - self.hue_strip_rect.y0) / self.hue_strip_rect.height()).clamp(0.0, 1.0) as f32
     }
 
     fn channel_from_point(slider_rect: Rect, p: Point) -> f32 {
@@ -324,11 +341,21 @@ impl ColorPicker {
     }
 
     fn target_at(&self, p: Point) -> Option<DragTarget> {
-        if self.sv_rect.contains(p) { return Some(DragTarget::Sv); }
-        if self.hue_strip_rect.contains(p) { return Some(DragTarget::Hue); }
-        if self.r_slider_rect.contains(p) { return Some(DragTarget::R); }
-        if self.g_slider_rect.contains(p) { return Some(DragTarget::G); }
-        if self.b_slider_rect.contains(p) { return Some(DragTarget::B); }
+        if self.sv_rect.contains(p) {
+            return Some(DragTarget::Sv);
+        }
+        if self.hue_strip_rect.contains(p) {
+            return Some(DragTarget::Hue);
+        }
+        if self.r_slider_rect.contains(p) {
+            return Some(DragTarget::R);
+        }
+        if self.g_slider_rect.contains(p) {
+            return Some(DragTarget::G);
+        }
+        if self.b_slider_rect.contains(p) {
+            return Some(DragTarget::B);
+        }
         None
     }
 
@@ -372,14 +399,14 @@ impl ColorPicker {
     fn hue_stops(theme: &Theme) -> [Color; 8] {
         let c = &theme.tokens.colors;
         [
-            c.semantic.danger,                  // red-ish (top)
-            c.semantic.warning,                 // amber/orange
-            c.semantic.success,                 // green
-            c.semantic.info,                    // cyan/blue
-            c.accent[ACCENT_PRIMARY_IDX],       // indigo
+            c.semantic.danger,            // red-ish (top)
+            c.semantic.warning,           // amber/orange
+            c.semantic.success,           // green
+            c.semantic.info,              // cyan/blue
+            c.accent[ACCENT_PRIMARY_IDX], // indigo
             Color::WHITE,
             Color::BLACK,
-            c.semantic.danger,                  // wrap back to red
+            c.semantic.danger, // wrap back to red
         ]
     }
 }
@@ -391,14 +418,21 @@ impl Widget for ColorPicker {
         // (e.g. writing to an Automerge field on every change).
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
-            size: Size {
-                width: Dimension::length(PICKER_WIDTH as f32),
-                height: Dimension::length(PICKER_HEIGHT as f32),
-            },
-            ..Default::default()
-        }).unwrap();
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(PICKER_WIDTH as f32),
+                    height: Dimension::length(PICKER_HEIGHT as f32),
+                },
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -412,7 +446,14 @@ impl Widget for ColorPicker {
         self.apply_layout_external(Rect::new(x0, y0, x1, y1));
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
         let colors = &theme.tokens.colors;
         let radius_sm = theme.tokens.radii.sm as f64;
 
@@ -423,10 +464,22 @@ impl Widget for ColorPicker {
 
         // --- SV square ---
         let sv_shape = RoundedRect::from_rect(self.sv_rect, radius_sm);
-        scene.fill(vello::peniko::Fill::NonZero, transform, colors.surfaces.raised, None, &sv_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &sv_shape,
+        );
         // Faint overlay hinting the square responds to clicks.
         let sv_fill = Color::from_rgba8(self.color.r(), self.color.g(), self.color.b(), 96);
-        scene.fill(vello::peniko::Fill::NonZero, transform, sv_fill, None, &sv_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            sv_fill,
+            None,
+            &sv_shape,
+        );
         // The SV square carries the keyboard-focus ring for the whole
         // picker (see the no-bounding-box note above).
         let (sv_border_w, sv_border_c) = if self.is_focused {
@@ -434,7 +487,13 @@ impl Widget for ColorPicker {
         } else {
             (1.0, colors.border_standard)
         };
-        scene.stroke(&Stroke::new(sv_border_w), transform, sv_border_c, None, &sv_shape);
+        scene.stroke(
+            &Stroke::new(sv_border_w),
+            transform,
+            sv_border_c,
+            None,
+            &sv_shape,
+        );
 
         // SV cursor — a small ring at the (saturation, 1 - value) coordinate.
         let (_, sat, val) = self.current_hsv();
@@ -443,7 +502,13 @@ impl Widget for ColorPicker {
             self.sv_rect.y0 + (1.0 - val as f64) * self.sv_rect.height(),
         );
         let sv_ring = vello::kurbo::Circle::new(sv_cursor, KNOB_RADIUS);
-        scene.stroke(&Stroke::new(2.0), transform, colors.text_primary, None, &sv_ring);
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            colors.text_primary,
+            None,
+            &sv_ring,
+        );
 
         // --- Hue strip (8 horizontal bands from `hue_stops`) ---
         let stops = Self::hue_stops(theme);
@@ -458,7 +523,13 @@ impl Widget for ColorPicker {
             scene.fill(vello::peniko::Fill::NonZero, transform, *stop, None, &band);
         }
         let hue_shape = RoundedRect::from_rect(self.hue_strip_rect, radius_sm);
-        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &hue_shape);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &hue_shape,
+        );
 
         let (h, _, _) = self.current_hsv();
         let tick_y = self.hue_strip_rect.y0 + h as f64 * self.hue_strip_rect.height();
@@ -468,12 +539,30 @@ impl Widget for ColorPicker {
             self.hue_strip_rect.x1 + 2.0,
             tick_y + 1.0,
         );
-        scene.fill(vello::peniko::Fill::NonZero, transform, colors.text_primary, None, &tick);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.text_primary,
+            None,
+            &tick,
+        );
 
         // --- Preview swatch ---
         let preview_shape = RoundedRect::from_rect(self.preview_rect, radius_sm);
-        scene.fill(vello::peniko::Fill::NonZero, transform, self.color, None, &preview_shape);
-        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &preview_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            self.color,
+            None,
+            &preview_shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &preview_shape,
+        );
 
         // --- RGB sliders --- computed from RGB directly rather than
         // cached, since the slider has no separate 0..1 state.
@@ -489,7 +578,13 @@ impl Widget for ColorPicker {
             let track_y1 = track_y0 + TRACK_HEIGHT;
             let track = Rect::new(slider.x0, track_y0, slider.x1, track_y1);
             let track_shape = RoundedRect::from_rect(track, radius_sm);
-            scene.fill(vello::peniko::Fill::NonZero, transform, colors.surfaces.raised, None, &track_shape);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.surfaces.raised,
+                None,
+                &track_shape,
+            );
 
             let active = Rect::new(
                 track.x0,
@@ -498,20 +593,45 @@ impl Widget for ColorPicker {
                 track.y1,
             );
             let active_shape = RoundedRect::from_rect(active, radius_sm);
-            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &active_shape);
-            scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &track_shape);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &active_shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &track_shape,
+            );
 
             // Knob — filled at text_primary so it pops on any track fill.
             let knob_x = track.x0 + frac * track.width();
             let knob_y = slider.y0 + slider.height() / 2.0;
             let knob = vello::kurbo::Circle::new(Point::new(knob_x, knob_y), KNOB_RADIUS);
-            scene.fill(vello::peniko::Fill::NonZero, transform, colors.text_primary, None, &knob);
-            scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &knob);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.text_primary,
+                None,
+                &knob,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &knob,
+            );
         }
 
         // --- Hex input + RGB readout --- drawn here directly since
         // `hex_input` isn't in the taffy tree.
-        self.hex_input.draw(scene, transform, text_renderer, theme, _presence);
+        self.hex_input
+            .draw(scene, transform, text_renderer, theme, _presence);
 
         let text_size = theme.tokens.typography.scale.sm;
         let rgb_label = self.rgb_string();
@@ -549,8 +669,15 @@ impl Widget for ColorPicker {
         // was inside the input's rect.
         let prev_focus = *focus_target;
         self.hex_input.handle_event(
-            event, scale_factor, modifiers, state, root,
-            handled, focus_target, node_id, taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            root,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
         );
         if *focus_target != prev_focus && self.hex_input_rect.contains(self.last_cursor) {
             // Keep focus_target = Some(node_id) so the App's blur-then-
@@ -568,7 +695,11 @@ impl Widget for ColorPicker {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: el_state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: el_state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if *el_state == ElementState::Pressed {
                     // If the press already landed inside the hex input
                     // the input has claimed focus + handling — don't
@@ -591,9 +722,7 @@ impl Widget for ColorPicker {
                             self.sync_input();
                         }
                     }
-                } else if *el_state == ElementState::Released
-                    && self.drag_target.is_some()
-                {
+                } else if *el_state == ElementState::Released && self.drag_target.is_some() {
                     self.drag_target = None;
                     *handled = true;
                 }
@@ -628,13 +757,21 @@ impl Widget for ColorPicker {
         self.drag_target.is_some()
     }
 
-    fn name(&self) -> &str { "ColorPicker" }
+    fn name(&self) -> &str {
+        "ColorPicker"
+    }
 
-    fn test_id(&self) -> Option<&str> { Some("color_picker") }
+    fn test_id(&self) -> Option<&str> {
+        Some("color_picker")
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
-    fn is_focusable(&self) -> bool { true }
+    fn is_focusable(&self) -> bool {
+        true
+    }
     fn set_focus(&mut self, focused: bool) {
         if focused && self.hex_input_focus_pending {
             // Redirect the App's delivered focus onto the input; keep
@@ -649,7 +786,9 @@ impl Widget for ColorPicker {
             }
         }
     }
-    fn is_focused(&self) -> bool { self.is_focused }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
 
     /// The colour picker reports [`Role::ComboBox`] — a selector whose
     /// value is the chosen colour as its canonical `#RRGGBB` hex string.
@@ -674,8 +813,12 @@ impl Widget for ColorPicker {
 /// six hex digits after an optional `#`.
 fn parse_hex(s: &str) -> Option<Color> {
     let s = s.trim().trim_start_matches('#');
-    if !s.is_ascii() { return None; }
-    if s.len() != 6 { return None; }
+    if !s.is_ascii() {
+        return None;
+    }
+    if s.len() != 6 {
+        return None;
+    }
     let r = u8::from_str_radix(&s[0..2], 16).ok()?;
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
     let b = u8::from_str_radix(&s[4..6], 16).ok()?;
@@ -807,8 +950,7 @@ mod tests {
         dispatch(&mut p, &mouse_release());
 
         let after_tr = p.color();
-        let (_, s_tr, v_tr) =
-            ColorPicker::rgb_to_hsv(after_tr.r(), after_tr.g(), after_tr.b());
+        let (_, s_tr, v_tr) = ColorPicker::rgb_to_hsv(after_tr.r(), after_tr.g(), after_tr.b());
         assert!(
             s_tr > 0.8,
             "top-right SV click must yield high saturation — got s={}",
@@ -828,8 +970,7 @@ mod tests {
         dispatch(&mut p, &mouse_release());
 
         let after_bl = p.color();
-        let (_, s_bl, v_bl) =
-            ColorPicker::rgb_to_hsv(after_bl.r(), after_bl.g(), after_bl.b());
+        let (_, s_bl, v_bl) = ColorPicker::rgb_to_hsv(after_bl.r(), after_bl.g(), after_bl.b());
         assert!(
             s_bl < s_tr || v_bl < v_tr,
             "bottom-left SV click must lower saturation or value — \
@@ -868,16 +1009,11 @@ mod tests {
         let c = p.color();
         assert!(
             (c.r() as i32 - 255).abs() <= 5,
-            "expected r ≈ 255, got {}", c.r(),
+            "expected r ≈ 255, got {}",
+            c.r(),
         );
-        assert!(
-            c.g() <= 5,
-            "expected g ≈ 0, got {}", c.g(),
-        );
-        assert!(
-            c.b() <= 5,
-            "expected b ≈ 0, got {}", c.b(),
-        );
+        assert!(c.g() <= 5, "expected g ≈ 0, got {}", c.g(),);
+        assert!(c.b() <= 5, "expected b ≈ 0, got {}", c.b(),);
     }
 
     /// `hex_string` must always produce `#RRGGBB` in upper-case with
@@ -935,12 +1071,24 @@ mod tests {
         dispatch(&mut p, &mouse_release());
 
         let reported = p.take_changed().expect("a drag reports a colour change");
-        assert_eq!(reported, p.color(), "reported colour matches the live colour");
-        assert!((reported.r() as i32 - 255).abs() <= 5, "R went to ~255, got {}", reported.r());
+        assert_eq!(
+            reported,
+            p.color(),
+            "reported colour matches the live colour"
+        );
+        assert!(
+            (reported.r() as i32 - 255).abs() <= 5,
+            "R went to ~255, got {}",
+            reported.r()
+        );
         assert_eq!(p.take_changed(), None, "take_changed drains after one read");
 
         p.set_color(Color::from_rgba8(0x0a, 0x00, 0xff, 0xff));
-        assert_eq!(p.hex_string(), "#0A00FF", "set_color updates the hex readout");
+        assert_eq!(
+            p.hex_string(),
+            "#0A00FF",
+            "set_color updates the hex readout"
+        );
         assert_eq!(p.color().r(), 0x0a);
         assert_eq!(
             p.take_changed(),
@@ -984,8 +1132,8 @@ mod tests {
     fn parse_hex_rejects_non_ascii_six_byte_input() {
         // 6 bytes via UTF-8 multi-byte chars, not 6 chars.
         assert!(parse_hex("ä♥X").is_none());
-        assert!(parse_hex("##abc12").is_none());  // not 6 hex digits
-        assert!(parse_hex("#ABCDEF").is_some());  // sanity
-        assert!(parse_hex("#abcdef").is_some());  // lowercase
+        assert!(parse_hex("##abc12").is_none()); // not 6 hex digits
+        assert!(parse_hex("#ABCDEF").is_some()); // sanity
+        assert!(parse_hex("#abcdef").is_some()); // lowercase
     }
 }

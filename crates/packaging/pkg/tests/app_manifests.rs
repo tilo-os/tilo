@@ -43,8 +43,8 @@ fn manifest_path(app_dir: &Path) -> PathBuf {
 
 fn load(app_dir: &Path) -> Manifest {
     let path = manifest_path(app_dir);
-    let src = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let src =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     Manifest::from_toml_str(&src)
         .unwrap_or_else(|e| panic!("{} does not decode: {e}", path.display()))
 }
@@ -68,8 +68,7 @@ fn every_app_crate_ships_a_manifest() {
 fn every_manifest_passes_schema_validation() {
     for dir in app_dirs() {
         let m = load(&dir);
-        validate_manifest(&m)
-            .unwrap_or_else(|e| panic!("{} fails validation: {e}", dir.display()));
+        validate_manifest(&m).unwrap_or_else(|e| panic!("{} fails validation: {e}", dir.display()));
     }
 }
 
@@ -290,8 +289,7 @@ fn apps_declare_a_display_name_and_category() {
 fn every_shipped_manifest_passes_the_installers_own_validation() {
     for dir in app_dirs() {
         let m = load(&dir);
-        validate_manifest(&m).unwrap_or_else(|e| {
-            panic!("{}: refused by its own installer: {e}", dir.display())
-        });
+        validate_manifest(&m)
+            .unwrap_or_else(|e| panic!("{}: refused by its own installer: {e}", dir.display()));
     }
 }

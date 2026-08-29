@@ -33,21 +33,42 @@ const READ_ONLY: &str = "read-only file system";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Req {
-    Open { path: String },
-    Snapshot { ino: u64 },
+    Open {
+        path: String,
+    },
+    Snapshot {
+        ino: u64,
+    },
     /// Insert a block after `after` (or at the start), returning its id.
-    InsertBlock { ino: u64, after: Option<String>, kind: String },
-    RemoveBlock { ino: u64, block: String },
+    InsertBlock {
+        ino: u64,
+        after: Option<String>,
+        kind: String,
+    },
+    RemoveBlock {
+        ino: u64,
+        block: String,
+    },
     /// Splice text within a block (`del` chars deleted, `ins` inserted at `idx`).
-    Splice { ino: u64, block: String, idx: u64, del: i64, ins: String },
+    Splice {
+        ino: u64,
+        block: String,
+        idx: u64,
+        del: i64,
+        ins: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Resp {
-    Opened { ino: u64 },
+    Opened {
+        ino: u64,
+    },
     NotFound,
     Snapshot(qdoc::DocSnapshot),
-    Inserted { block: String },
+    Inserted {
+        block: String,
+    },
     Ok,
     Err(String),
     /// Pushed unsolicited when the workspace changed (re-`Snapshot` to refresh).
@@ -91,7 +112,11 @@ fn check(ns: &Namespace, enforcement: &Enforcement, ino: u64, access: Access) ->
 }
 
 /// Apply a request under the namespace lock: returns the reply and any CRDT delta to broadcast (empty for reads).
-fn apply(req: Req, namespace: &Arc<Mutex<Namespace>>, enforcement: &Enforcement) -> (Resp, Vec<u8>) {
+fn apply(
+    req: Req,
+    namespace: &Arc<Mutex<Namespace>>,
+    enforcement: &Enforcement,
+) -> (Resp, Vec<u8>) {
     let mut ns = namespace.lock().unwrap();
     match req {
         Req::Open { path } => {
@@ -134,16 +159,30 @@ fn apply(req: Req, namespace: &Arc<Mutex<Namespace>>, enforcement: &Enforcement)
             }
             let ok = ns.document_remove_block(ino, &block);
             let delta = ns.save_incremental();
-            let resp = if ok { Resp::Ok } else { Resp::Err("not a document".into()) };
+            let resp = if ok {
+                Resp::Ok
+            } else {
+                Resp::Err("not a document".into())
+            };
             (resp, delta)
         }
-        Req::Splice { ino, block, idx, del, ins } => {
+        Req::Splice {
+            ino,
+            block,
+            idx,
+            del,
+            ins,
+        } => {
             if let Err(resp) = check(&ns, enforcement, ino, Access::Write) {
                 return (resp, Vec::new());
             }
             let ok = ns.document_splice(ino, &block, idx as usize, del as isize, &ins);
             let delta = ns.save_incremental();
-            let resp = if ok { Resp::Ok } else { Resp::Err("not a document".into()) };
+            let resp = if ok {
+                Resp::Ok
+            } else {
+                Resp::Err("not a document".into())
+            };
             (resp, delta)
         }
     }
@@ -178,9 +217,7 @@ async fn handle_conn(
             if now != last {
                 last = now;
                 // Coalesce: drop the signal if the client is backed up (it re-reads latest next time); stop if it's gone.
-                if let Err(mpsc::error::TrySendError::Closed(_)) =
-                    push_tx.try_send(Resp::Changed)
-                {
+                if let Err(mpsc::error::TrySendError::Closed(_)) = push_tx.try_send(Resp::Changed) {
                     break;
                 }
             }
@@ -258,7 +295,9 @@ impl Client {
 
     async fn request(&mut self, req: &Req) -> std::io::Result<Resp> {
         let bytes = postcard::to_allocvec(req).map_err(std::io::Error::other)?;
-        self.stream.write_all(&(bytes.len() as u32).to_le_bytes()).await?;
+        self.stream
+            .write_all(&(bytes.len() as u32).to_le_bytes())
+            .await?;
         self.stream.write_all(&bytes).await?;
         loop {
             match read_msg(&mut self.stream).await? {
@@ -319,7 +358,13 @@ impl Client {
     }
 
     pub async fn remove_block(&mut self, ino: u64, block: &str) -> std::io::Result<()> {
-        applied(self.request(&Req::RemoveBlock { ino, block: block.into() }).await?)
+        applied(
+            self.request(&Req::RemoveBlock {
+                ino,
+                block: block.into(),
+            })
+            .await?,
+        )
     }
 
     /// Block until the workspace changes (a server-pushed `Changed`).
@@ -383,7 +428,9 @@ mod tests {
             let mut ns = namespace.lock().unwrap();
             let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
             let visible = ns.create_document(shared, "notes.md", "md", 1).unwrap();
-            let b = ns.document_insert_block(visible, None, "paragraph").unwrap();
+            let b = ns
+                .document_insert_block(visible, None, "paragraph")
+                .unwrap();
             ns.document_splice(visible, &b, 0, 0, "Shared");
             let secret_dir = ns.create_dir(ROOT_INO, "secret", 1).unwrap();
             let secret = ns.create_document(secret_dir, "plan.md", "md", 1).unwrap();
@@ -507,13 +554,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("ro.sock");
         let listener = UnixListener::bind(&sock).unwrap();
-        tokio::spawn(serve(listener, namespace.clone(), None, Some((acl.into(), ALICE))));
+        tokio::spawn(serve(
+            listener,
+            namespace.clone(),
+            None,
+            Some((acl.into(), ALICE)),
+        ));
         let mut c = Client::connect(&sock).await.unwrap();
 
         let ino = c.open("/shared/notes.md").await.unwrap().expect("opens");
         let snap = c.snapshot(ino).await.unwrap().expect("reads");
         assert!(
-            snap.blocks.iter().any(|b| b.text.contains("Shared paragraph")),
+            snap.blocks
+                .iter()
+                .any(|b| b.text.contains("Shared paragraph")),
             "read participation is participation: the real content is served"
         );
 
@@ -537,10 +591,17 @@ mod tests {
         let rw = WorkspaceAcl::from_capabilities(ALICE, &[write_cap], &[], None);
         let sock2 = dir.path().join("rw.sock");
         let listener2 = UnixListener::bind(&sock2).unwrap();
-        tokio::spawn(serve(listener2, namespace.clone(), None, Some((rw.into(), ALICE))));
+        tokio::spawn(serve(
+            listener2,
+            namespace.clone(),
+            None,
+            Some((rw.into(), ALICE)),
+        ));
         let mut w = Client::connect(&sock2).await.unwrap();
         let ino = w.open("/shared/notes.md").await.unwrap().expect("opens");
-        w.splice(ino, &block, 0, 0, "OURS ").await.expect("an authoring participant may edit");
+        w.splice(ino, &block, 0, 0, "OURS ")
+            .await
+            .expect("an authoring participant may edit");
         assert_ne!(
             namespace.lock().unwrap().heads(),
             heads,
@@ -551,7 +612,7 @@ mod tests {
     /// The full story: an editor on peer A edits through the control socket; it propagates over P2P; an editor on peer B sees it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn edit_via_control_reaches_a_remote_editor() {
-        use crate::sync::{bind_ephemeral_endpoint, fetch_remote_doc, Workspace};
+        use crate::sync::{Workspace, bind_ephemeral_endpoint, fetch_remote_doc};
         use crate::{ContentStore, Hydrator};
         use std::time::Duration;
 
@@ -566,28 +627,33 @@ mod tests {
             n.document_splice(ino, &b, 0, 0, "base");
             b
         };
-        let (ws_a, ticket) =
-            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone(), None)
-                .await
-                .unwrap();
+        let (ws_a, ticket) = Workspace::host(
+            ep_a.clone(),
+            look_a,
+            store_a.clone(),
+            hyd_a.clone(),
+            ns_a.clone(),
+            None,
+        )
+        .await
+        .unwrap();
 
         let (ep_b, look_b) = bind_ephemeral_endpoint().await.unwrap();
         let store_b = Arc::new(ContentStore::memory());
         let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
         let doc = fetch_remote_doc(&ep_b, ticket.node.clone()).await.unwrap();
         let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
-        let ws_b =
-            Workspace::join(
-                ep_b.clone(),
-                look_b,
-                store_b.clone(),
-                hyd_b.clone(),
-                ns_b.clone(),
-                ticket,
-                None,
-            )
-            .await
-            .unwrap();
+        let ws_b = Workspace::join(
+            ep_b.clone(),
+            look_b,
+            store_b.clone(),
+            hyd_b.clone(),
+            ns_b.clone(),
+            ticket,
+            None,
+        )
+        .await
+        .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         let sock_a = dir.path().join("a.sock");
@@ -622,7 +688,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(seen, "A's control-socket edit must reach B's editor over P2P");
+        assert!(
+            seen,
+            "A's control-socket edit must reach B's editor over P2P"
+        );
         let _ = (ws_a, ws_b); // keep the workspaces alive
     }
 }

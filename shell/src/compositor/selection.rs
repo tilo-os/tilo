@@ -616,8 +616,10 @@ impl State {
             // The two `request_*` helpers return distinct per-protocol error enums;
             // only the message matters here, so both collapse to a string.
             let requested = match pull.target {
-                Target::Clipboard => request_data_device_client_selection(&self.seat, mime, write_fd)
-                    .map_err(|e| e.to_string()),
+                Target::Clipboard => {
+                    request_data_device_client_selection(&self.seat, mime, write_fd)
+                        .map_err(|e| e.to_string())
+                }
                 Target::Primary => request_primary_client_selection(&self.seat, mime, write_fd)
                     .map_err(|e| e.to_string()),
             };
@@ -664,7 +666,6 @@ impl State {
     }
 }
 
-
 /// The clipboard `ui`'s in-process widgets use — they're linked into the
 /// compositor binary, not Wayland clients, and can't block on one (a client
 /// only answers once the compositor flushes, which can't happen mid-handler).
@@ -705,7 +706,6 @@ fn ui_target(target: ui::clipboard::ClipboardTarget) -> Target {
 pub fn install_host_clipboard(store: SharedSelection) {
     ui::clipboard::install_clipboard_backend(Arc::new(HostClipboard { store }));
 }
-
 
 impl SelectionHandler for State {
     /// Compositor selections carry no per-selection data — text lives in
@@ -808,7 +808,12 @@ fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
 }
 
 impl ClientDndGrabHandler for State {
-    fn started(&mut self, source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
+    fn started(
+        &mut self,
+        source: Option<WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: Seat<Self>,
+    ) {
         // Only the offer (mime list) is available here, not the payload — so this
         // reports the kind of thing being carried, not its name yet.
         let mimes = source
@@ -822,7 +827,9 @@ impl ClientDndGrabHandler for State {
             .unwrap_or_default();
         self.selection
             .dnd_label
-            .set(Some(crate::compositor::drag_feedback::label_for_mimes(&mimes)));
+            .set(Some(crate::compositor::drag_feedback::label_for_mimes(
+                &mimes,
+            )));
         // Then ask for the name from the URI list the source is already offering —
         // turns "Image" into "photo.png" on screen.
         if let Some(source) = source.as_ref() {
@@ -919,7 +926,10 @@ mod tests {
     fn chrome_copy_is_readable_immediately_and_queues_a_publish() {
         let s = store();
         set_mirror_text(&s, Target::Clipboard, "from chrome");
-        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("from chrome"));
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("from chrome")
+        );
         assert!(compositor_owns(&s, Target::Clipboard));
         assert!(s.lock().unwrap().clipboard.publish_pending);
         // Primary is a separate buffer and must not have been touched.
@@ -951,7 +961,10 @@ mod tests {
         let s = store();
         set_mirror_text(&s, Target::Clipboard, "ctrl-c text");
         set_mirror_text(&s, Target::Primary, "drag-selected text");
-        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("ctrl-c text"));
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("ctrl-c text")
+        );
         assert_eq!(
             mirror_text(&s, Target::Primary).as_deref(),
             Some("drag-selected text"),
@@ -983,15 +996,27 @@ mod tests {
 
     #[test]
     fn a_chrome_drag_offers_a_uri_list_and_the_single_files_bytes() {
-        let drag = ChromeDrag::new(vec![std::path::PathBuf::from("/var/workspace/Demo/my photo.png")]);
-        assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string(), "image/png".to_string()]);
-        assert_eq!(drag.uri_list(), "file:///var/workspace/Demo/my%20photo.png\r\n");
+        let drag = ChromeDrag::new(vec![std::path::PathBuf::from(
+            "/var/workspace/Demo/my photo.png",
+        )]);
+        assert_eq!(
+            drag.mime_types,
+            vec![URI_LIST_MIME.to_string(), "image/png".to_string()]
+        );
+        assert_eq!(
+            drag.uri_list(),
+            "file:///var/workspace/Demo/my%20photo.png\r\n"
+        );
         assert_eq!(
             drag.file_for_mime("image/png"),
             Some(std::path::Path::new("/var/workspace/Demo/my photo.png"))
         );
         assert_eq!(drag.file_for_mime("image/jpeg"), None, "not offered");
-        assert_eq!(drag.file_for_mime(URI_LIST_MIME), None, "the list is not a file");
+        assert_eq!(
+            drag.file_for_mime(URI_LIST_MIME),
+            None,
+            "the list is not a file"
+        );
     }
 
     #[test]
@@ -1009,7 +1034,10 @@ mod tests {
     fn unknown_extensions_travel_as_paths_only() {
         let drag = ChromeDrag::new(vec![std::path::PathBuf::from("/thing.qcow2")]);
         assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string()]);
-        assert_eq!(mime_for_path(std::path::Path::new("x.JPG")), Some("image/jpeg"));
+        assert_eq!(
+            mime_for_path(std::path::Path::new("x.JPG")),
+            Some("image/jpeg")
+        );
         assert_eq!(mime_for_path(std::path::Path::new("x")), None);
     }
 }

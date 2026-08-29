@@ -153,14 +153,22 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: PathBuf) -> Rect {
     let clip = Rect::new(0.0, 0.0, WIDTH as f64, h as f64);
 
     let mut scene = Scene::new();
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, Affine::IDENTITY, &clip);
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &clip,
+    );
     table.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     scene.pop_layer();
 
     let mut r = OffscreenRenderer::new(WIDTH, h);
     r.render_png(&scene, theme.bg_app, &out);
     println!("wrote {}", out.display());
-    table.scrollbar_thumb().expect("bar live in internal-scroll mode")
+    table
+        .scrollbar_thumb()
+        .expect("bar live in internal-scroll mode")
 }
 
 fn main() {
@@ -188,7 +196,11 @@ fn main() {
     );
     let track_top = HEADER_H as f64 + 2.0; // rect.y0(0) + HEADER + BAR_MARGIN
     let track_bottom = HEADER_H as f64 + BODY_VP as f64 - 2.0;
-    assert!((top.y0 - track_top).abs() < 1.0, "top thumb at track top: {}", top.y0);
+    assert!(
+        (top.y0 - track_top).abs() < 1.0,
+        "top thumb at track top: {}",
+        top.y0
+    );
     assert!(
         (bottom.y1 - track_bottom).abs() < 1.0,
         "bottom thumb at track bottom: {}",

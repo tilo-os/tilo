@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use capnp_rpc::{rpc_twoparty_capnp, twoparty, RpcSystem};
+use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::net::UnixListener;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 

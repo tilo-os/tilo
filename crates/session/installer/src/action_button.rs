@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -168,7 +168,13 @@ impl Widget for ActionButton {
 
         // Border: focus ring wins; secondary buttons keep a hairline.
         if self.is_focused && !self.disabled {
-            scene.stroke(&Stroke::new(2.0), transform, theme.border_focus, None, &shape);
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &shape,
+            );
         } else if !self.primary {
             scene.stroke(
                 &Stroke::new(1.0),

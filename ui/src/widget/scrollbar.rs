@@ -50,7 +50,11 @@ pub struct ScrollMetrics {
 
 impl ScrollMetrics {
     pub fn new(content: f64, viewport: f64, offset: f64) -> Self {
-        Self { content, viewport, offset }
+        Self {
+            content,
+            viewport,
+            offset,
+        }
     }
 
     /// The maximum reachable offset — how far the content can travel past
@@ -197,8 +201,8 @@ impl Scrollbar {
         if m.content <= 0.0 || track_len <= 0.0 {
             return None;
         }
-        let thumb_len = (m.viewport / m.content * track_len)
-            .clamp(self.min_thumb.min(track_len), track_len);
+        let thumb_len =
+            (m.viewport / m.content * track_len).clamp(self.min_thumb.min(track_len), track_len);
         let max_scroll = m.max_scroll();
         let frac = if max_scroll > 0.0 {
             (m.offset / max_scroll).clamp(0.0, 1.0)
@@ -233,7 +237,9 @@ impl Scrollbar {
         if self.drag.is_some() {
             return false;
         }
-        let over = self.thumb_rect(track, m).is_some_and(|t| t.contains(cursor));
+        let over = self
+            .thumb_rect(track, m)
+            .is_some_and(|t| t.contains(cursor));
         self.set_hover(over)
     }
 
@@ -301,11 +307,19 @@ mod tests {
     #[test]
     fn thumb_shrinks_as_content_grows() {
         let bar = Scrollbar::vertical();
-        let short = bar.thumb_rect(v_track(), ScrollMetrics::new(600.0, 300.0, 0.0)).unwrap();
-        let tall = bar.thumb_rect(v_track(), ScrollMetrics::new(1200.0, 300.0, 0.0)).unwrap();
+        let short = bar
+            .thumb_rect(v_track(), ScrollMetrics::new(600.0, 300.0, 0.0))
+            .unwrap();
+        let tall = bar
+            .thumb_rect(v_track(), ScrollMetrics::new(1200.0, 300.0, 0.0))
+            .unwrap();
         assert!(short.height() > tall.height());
         // 2× content → thumb ≈ half the 300-px track.
-        assert!((short.height() - 150.0).abs() < 1.0, "got {}", short.height());
+        assert!(
+            (short.height() - 150.0).abs() < 1.0,
+            "got {}",
+            short.height()
+        );
     }
 
     #[test]
@@ -373,7 +387,10 @@ mod tests {
         let below = Point::new(96.0, thumb.y1 + 5.0);
         match bar.press(v_track(), m, below) {
             PressOutcome::Page(o) => {
-                assert!((o - 300.0 * PAGE_FRACTION).abs() < 1.0, "page ≈ viewport*frac: {o}");
+                assert!(
+                    (o - 300.0 * PAGE_FRACTION).abs() < 1.0,
+                    "page ≈ viewport*frac: {o}"
+                );
             }
             other => panic!("expected Page, got {other:?}"),
         }
@@ -403,11 +420,16 @@ mod tests {
         let track = Rect::new(0.0, 92.0, 300.0, 100.0);
         let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
         let thumb = bar.thumb_rect(track, m).unwrap();
-        assert!((thumb.x0 - 0.0).abs() < 1e-6, "h-thumb starts at track left");
+        assert!(
+            (thumb.x0 - 0.0).abs() < 1e-6,
+            "h-thumb starts at track left"
+        );
         assert!(thumb.width() < track.width(), "h-thumb shorter than track");
         let mid = Point::new((thumb.x0 + thumb.x1) / 2.0, 96.0);
         assert_eq!(bar.press(track, m, mid), PressOutcome::Thumb);
-        let off = bar.drag_to(track, m, Point::new(mid.x + 100.0, 96.0)).unwrap();
+        let off = bar
+            .drag_to(track, m, Point::new(mid.x + 100.0, 96.0))
+            .unwrap();
         assert!(off > 0.0, "h-drag right increases offset: {off}");
     }
 
@@ -418,7 +440,10 @@ mod tests {
         let thumb = bar.thumb_rect(v_track(), m).unwrap();
         let on = Point::new(96.0, (thumb.y0 + thumb.y1) / 2.0);
         assert!(bar.update_hover(v_track(), m, on), "hover turns on");
-        assert!(!bar.update_hover(v_track(), m, on), "no change while still on");
+        assert!(
+            !bar.update_hover(v_track(), m, on),
+            "no change while still on"
+        );
         assert!(bar.is_hovered());
         let off = Point::new(96.0, thumb.y1 + 50.0);
         assert!(bar.update_hover(v_track(), m, off), "hover turns off");

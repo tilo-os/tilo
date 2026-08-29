@@ -116,7 +116,11 @@ impl DumpWriter {
         use std::io::Write;
         let _ = match self.format {
             DumpFormat::Jsonl => {
-                writeln!(self.file, "{}", serde_json::to_string(t).unwrap_or_default())
+                writeln!(
+                    self.file,
+                    "{}",
+                    serde_json::to_string(t).unwrap_or_default()
+                )
             }
             DumpFormat::Csv => {
                 if !self.header_written {
@@ -275,7 +279,10 @@ impl FrameProfiler {
 
     /// Drains the buffer. Empty when not in capture mode.
     pub fn take_capture(&mut self) -> Vec<FrameTiming> {
-        self.capture.as_mut().map(std::mem::take).unwrap_or_default()
+        self.capture
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     /// Discard captured frames (e.g. warmup) without stopping capture.
@@ -372,28 +379,47 @@ impl FrameProfiler {
         draw_line(
             scene,
             text,
-            &format!("frame {}  {:.1}ms  {:.0}fps", last.frame, ms(last.total_us), fps),
+            &format!(
+                "frame {}  {:.1}ms  {:.0}fps",
+                last.frame,
+                ms(last.total_us),
+                fps
+            ),
             head_color,
             &mut ty,
         );
         draw_line(
             scene,
             text,
-            &format!("mean {:.1}ms  max {:.1}ms  over {}/{}", ms(mean), ms(max), over, n),
+            &format!(
+                "mean {:.1}ms  max {:.1}ms  over {}/{}",
+                ms(mean),
+                ms(max),
+                over,
+                n
+            ),
             theme.text_primary,
             &mut ty,
         );
         draw_line(
             scene,
             text,
-            &format!("sync {:.2}  build {:.2}", ms(last.sync_us), ms(last.build_layout_us)),
+            &format!(
+                "sync {:.2}  build {:.2}",
+                ms(last.sync_us),
+                ms(last.build_layout_us)
+            ),
             theme.text_dim,
             &mut ty,
         );
         draw_line(
             scene,
             text,
-            &format!("apply {:.2}  draw {:.2}", ms(last.apply_layout_us), ms(last.draw_us)),
+            &format!(
+                "apply {:.2}  draw {:.2}",
+                ms(last.apply_layout_us),
+                ms(last.draw_us)
+            ),
             theme.text_dim,
             &mut ty,
         );
@@ -615,7 +641,10 @@ pub enum PerfStep {
     Frames(usize),
     /// Negative `dy` scrolls the content down. Each notch is one measured
     /// frame.
-    Scroll { dy: f64, count: usize },
+    Scroll {
+        dy: f64,
+        count: usize,
+    },
     /// One key press/release pair per character.
     Type(String),
     /// `Enter`, `Tab`, arrows, or a character.

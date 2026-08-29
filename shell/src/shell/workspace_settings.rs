@@ -1358,15 +1358,7 @@ pub fn draw_members_pane(
             row.row_rect.center().y + avatar_size / 2.0,
         );
         let name = short_id(&row.user);
-        draw_avatar(
-            scene,
-            transform,
-            avatar,
-            &name,
-            false,
-            text_renderer,
-            theme,
-        );
+        draw_avatar(scene, transform, avatar, &name, false, text_renderer, theme);
 
         // Person ids are hex keys; a name alone doesn't say which row is you.
         let mut text_limit = row.role_rect.x0 - 12.0;
@@ -1458,8 +1450,8 @@ pub fn draw_members_pane(
         );
         if role_interactive {
             let glyph = 12.0_f64;
-            let gx = (row.role_rect.x0 + 10.0 + rw as f64 + 6.0)
-                .min(row.role_rect.x1 - 6.0 - glyph);
+            let gx =
+                (row.role_rect.x0 + 10.0 + rw as f64 + 6.0).min(row.role_rect.x1 - 6.0 - glyph);
             draw_icon(
                 scene,
                 transform,
@@ -1508,7 +1500,10 @@ fn draw_authority_footnote(
         size,
         tokens.colors.text_dim,
         transform
-            * Affine::translate((pane_rect.x0 + PANE_PAD_X, pane_rect.y1 - PANE_PAD_TOP - 14.0)),
+            * Affine::translate((
+                pane_rect.x0 + PANE_PAD_X,
+                pane_rect.y1 - PANE_PAD_TOP - 14.0,
+            )),
         None,
     );
 }
@@ -1639,7 +1634,12 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
     let expiry_x0 = layout.choice_rect.x1 + gap;
     layout.expiry_rects = std::array::from_fn(|i| {
         let x0 = expiry_x0 + i as f64 * EXPIRY_SEGMENT_WIDTH;
-        Rect::new(x0, controls_y, x0 + EXPIRY_SEGMENT_WIDTH, controls_y + CONTROL_HEIGHT)
+        Rect::new(
+            x0,
+            controls_y,
+            x0 + EXPIRY_SEGMENT_WIDTH,
+            controls_y + CONTROL_HEIGHT,
+        )
     });
     layout.submit_rect = Rect::new(
         inner_x1 - SUBMIT_WIDTH,
@@ -1659,7 +1659,11 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
     let mut placed = 0usize;
     for (subject, cap) in &entries {
         let needs_header = last_kind != Some(subject.kind);
-        let header_h = if needs_header { SECTION_HEADER_HEIGHT } else { 0.0 };
+        let header_h = if needs_header {
+            SECTION_HEADER_HEIGHT
+        } else {
+            0.0
+        };
         let row_y0 = cursor_y + header_h;
         if row_y0 + ROW_HEIGHT > pane_rect.y1 - PANE_PAD_TOP {
             break;
@@ -1903,7 +1907,10 @@ pub fn draw_permissions_pane(
             draw_section_header(
                 scene,
                 transform,
-                Point::new(row.row_rect.x0, row.row_rect.y0 - SECTION_HEADER_HEIGHT + 6.0),
+                Point::new(
+                    row.row_rect.x0,
+                    row.row_rect.y0 - SECTION_HEADER_HEIGHT + 6.0,
+                ),
                 row.subject.kind.section_label(),
                 Some(group_counts(row.subject.kind)),
                 text_renderer,
@@ -2164,11 +2171,8 @@ mod members_pane_tests {
     fn ws_with_two_members() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from(7), "members-test");
         ws.set_owner(OWNER);
-        let cap = CapOverride::membership(
-            Subject::person(PEER),
-            ws.id.raw().to_string(),
-            Verb::Read,
-        );
+        let cap =
+            CapOverride::membership(Subject::person(PEER), ws.id.raw().to_string(), Verb::Read);
         ws.grant_as(&OWNER.to_string(), cap)
             .expect("owner may grant membership");
         ws
@@ -2258,7 +2262,10 @@ mod members_pane_tests {
             &PEER.to_string(),
             CapRole::Owner,
         );
-        assert!(edit.is_empty(), "a viewer must not be able to promote itself");
+        assert!(
+            edit.is_empty(),
+            "a viewer must not be able to promote itself"
+        );
         assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
     }
 
@@ -2284,7 +2291,10 @@ mod members_pane_tests {
             Verb::Write,
         );
         ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
-        assert_eq!(members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0))[1].grant_count, 1);
+        assert_eq!(
+            members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0))[1].grant_count,
+            1
+        );
 
         let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string());
         assert_eq!(edit.revoked.len(), 2, "membership + the file grant");
@@ -2448,7 +2458,12 @@ mod permissions_pane_tests {
             .expect("the workspace-scoped app grant has a row");
         assert_eq!(row.subject.kind, SubjectKind::App);
         assert_eq!(row.allows, "Administer this workspace");
-        assert!(apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id).revoked.len() == 1);
+        assert!(
+            apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id)
+                .revoked
+                .len()
+                == 1
+        );
         assert!(!ws.allows(
             &ws.actor_for_app("firefox"),
             &ResourceRef::Workspace,
@@ -2467,7 +2482,10 @@ mod permissions_pane_tests {
                 .all(|r| r.subject.kind == SubjectKind::App),
             "no person membership rows in the Permissions list"
         );
-        assert!(!members_pane_rows(&ws, pane()).is_empty(), "but Members has one");
+        assert!(
+            !members_pane_rows(&ws, pane()).is_empty(),
+            "but Members has one"
+        );
     }
 
     #[test]
@@ -2543,7 +2561,10 @@ mod permissions_pane_tests {
             Scope::Device("camera".into()),
             Scope::NetHost("*".into()),
             Scope::NetHost("example.com".into()),
-            Scope::Action { app: "notes".into(), action: "export".into() },
+            Scope::Action {
+                app: "notes".into(),
+                action: "export".into(),
+            },
             Scope::ResourceType(ArtifactKind::Note),
         ];
         let verbs = [
@@ -2705,7 +2726,11 @@ mod permissions_pane_tests {
             .iter()
             .filter(|c| matches!(&c.scope, Scope::Device(d) if d == "camera"))
             .collect::<Vec<_>>();
-        assert_eq!(camera.len(), 1, "the re-grant merges rather than duplicating");
+        assert_eq!(
+            camera.len(),
+            1,
+            "the re-grant merges rather than duplicating"
+        );
         assert_eq!(
             camera[0].expiry,
             Expiry::Never,
@@ -2769,12 +2794,7 @@ mod permissions_pane_tests {
         let target = layout.rows[0].cap_id.clone();
         let edit = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
         assert!(edit.is_empty());
-        assert_eq!(
-            permissions_pane_layout(&ws, pane())
-                .rows
-                .len(),
-            2
-        );
+        assert_eq!(permissions_pane_layout(&ws, pane()).rows.len(), 2);
     }
 
     #[test]

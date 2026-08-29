@@ -213,8 +213,7 @@ impl Layer {
         }
 
         let marker = self.path.join(MARKER);
-        std::fs::write(&marker, format!("{}\n", self.kind.as_str()))
-            .map_err(|e| io(&marker, e))?;
+        std::fs::write(&marker, format!("{}\n", self.kind.as_str())).map_err(|e| io(&marker, e))?;
         Ok(())
     }
 
@@ -229,7 +228,10 @@ impl Layer {
         }
         crate::guest::remove_dir_all_forced(&self.path);
         if self.path.exists() {
-            return Err(io(&self.path, std::io::Error::other("the layer directory survived removal")));
+            return Err(io(
+                &self.path,
+                std::io::Error::other("the layer directory survived removal"),
+            ));
         }
         Ok(())
     }
@@ -391,11 +393,16 @@ mod tests {
         std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
         std::fs::write(dir.path().join("usr/share/rpm/rpmdb.sqlite"), b"BASE-RPMDB").unwrap();
         std::fs::write(
-            dir.path().join("usr/lib/sysimage/libdnf5/transaction_history.sqlite"),
+            dir.path()
+                .join("usr/lib/sysimage/libdnf5/transaction_history.sqlite"),
             b"BASE-HISTORY",
         )
         .unwrap();
-        std::fs::write(dir.path().join("etc/passwd"), b"root:x:0:0::/root:/bin/bash\n").unwrap();
+        std::fs::write(
+            dir.path().join("etc/passwd"),
+            b"root:x:0:0::/root:/bin/bash\n",
+        )
+        .unwrap();
         dir
     }
 

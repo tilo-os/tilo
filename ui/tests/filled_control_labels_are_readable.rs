@@ -45,14 +45,36 @@ fn ground(theme: &Theme, fill: Color) -> Color {
 fn interacts() -> [(&'static str, ButtonInteract); 4] {
     [
         ("rest", ButtonInteract::default()),
-        ("hovered", ButtonInteract { hovered: true, ..Default::default() }),
-        ("pressed", ButtonInteract { pressed: true, ..Default::default() }),
-        ("focused", ButtonInteract { focused: true, ..Default::default() }),
+        (
+            "hovered",
+            ButtonInteract {
+                hovered: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "pressed",
+            ButtonInteract {
+                pressed: true,
+                ..Default::default()
+            },
+        ),
+        (
+            "focused",
+            ButtonInteract {
+                focused: true,
+                ..Default::default()
+            },
+        ),
     ]
 }
 
-const STYLES: [ButtonStyle; 4] =
-    [ButtonStyle::Neutral, ButtonStyle::Primary, ButtonStyle::Danger, ButtonStyle::Ghost];
+const STYLES: [ButtonStyle; 4] = [
+    ButtonStyle::Neutral,
+    ButtonStyle::Primary,
+    ButtonStyle::Danger,
+    ButtonStyle::Ghost,
+];
 
 #[test]
 fn every_button_style_label_clears_its_floor_in_every_theme() {
@@ -75,7 +97,11 @@ fn every_button_style_label_clears_its_floor_in_every_theme() {
             }
         }
     }
-    assert!(failures.is_empty(), "unreadable button labels:\n  {}", failures.join("\n  "));
+    assert!(
+        failures.is_empty(),
+        "unreadable button labels:\n  {}",
+        failures.join("\n  ")
+    );
 }
 
 /// Deriving the label per state would let it cross the floor mid-gesture and
@@ -104,7 +130,11 @@ fn a_button_label_holds_its_colour_across_interaction() {
 fn every_segment_label_clears_its_floor_in_every_theme() {
     let mut failures = Vec::new();
     for theme in themes() {
-        for style in [SegmentedStyle::Solid, SegmentedStyle::Pill, SegmentedStyle::Underline] {
+        for style in [
+            SegmentedStyle::Solid,
+            SegmentedStyle::Pill,
+            SegmentedStyle::Underline,
+        ] {
             for selected in [true, false] {
                 for hovered in [true, false] {
                     let (fill, label) = segment_colors(&theme, style, selected, hovered);
@@ -123,7 +153,11 @@ fn every_segment_label_clears_its_floor_in_every_theme() {
             }
         }
     }
-    assert!(failures.is_empty(), "unreadable segment labels:\n  {}", failures.join("\n  "));
+    assert!(
+        failures.is_empty(),
+        "unreadable segment labels:\n  {}",
+        failures.join("\n  ")
+    );
 }
 
 /// The knob is a shape, not text, so it answers to the non-text floor — but it
@@ -136,8 +170,20 @@ fn every_toggle_knob_stays_visible_on_its_track() {
         for on in [true, false] {
             for (state, interact) in [
                 ("rest", ToggleInteract::default()),
-                ("hovered", ToggleInteract { hovered: true, ..Default::default() }),
-                ("focused", ToggleInteract { focused: true, ..Default::default() }),
+                (
+                    "hovered",
+                    ToggleInteract {
+                        hovered: true,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "focused",
+                    ToggleInteract {
+                        focused: true,
+                        ..Default::default()
+                    },
+                ),
             ] {
                 let (track, knob, _border, _w) = toggle_face_colors(&theme, on, interact);
                 let ratio = contrast_ratio(knob, track);
@@ -152,7 +198,11 @@ fn every_toggle_knob_stays_visible_on_its_track() {
             }
         }
     }
-    assert!(failures.is_empty(), "invisible toggle knobs:\n  {}", failures.join("\n  "));
+    assert!(
+        failures.is_empty(),
+        "invisible toggle knobs:\n  {}",
+        failures.join("\n  ")
+    );
 }
 
 /// Hover must read as the same knob pressed harder, not as a different one.
@@ -166,7 +216,10 @@ fn a_toggle_knob_never_swaps_sides_under_the_pointer() {
             let (_, hovered, _, _) = toggle_face_colors(
                 &theme,
                 on,
-                ToggleInteract { hovered: true, ..Default::default() },
+                ToggleInteract {
+                    hovered: true,
+                    ..Default::default()
+                },
             );
             let lighter_than_track = |k: Color| {
                 contrast_ratio(k, Color::from_rgb8(255, 255, 255))

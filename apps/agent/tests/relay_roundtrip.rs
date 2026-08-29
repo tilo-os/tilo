@@ -24,12 +24,14 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
     use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     PermissionContext::from_capabilities(
         Actor::agent(name),
-        vec![CapOverride::grant(
-            Subject::agent(name),
-            Scope::App("word-processor".to_string()),
-            Verb::Write,
-        )
-        .with_id("invited")],
+        vec![
+            CapOverride::grant(
+                Subject::agent(name),
+                Scope::App("word-processor".to_string()),
+                Verb::Write,
+            )
+            .with_id("invited"),
+        ],
     )
 }
 
@@ -48,7 +50,11 @@ fn seed_document_as(actor: &str) -> AutoCommit {
     let c = qdoc::model::init(&mut doc, &automerge::ROOT);
     let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let h = dm.insert_block(None, "heading");
         dm.set_attr(&h, "level", 1i64);
         dm.splice_text(&h, 0, 0, "Launch plan");
@@ -74,12 +80,21 @@ fn seed_sequence_document() -> AutoCommit {
     let c = qdoc::model::init(&mut doc, &automerge::ROOT);
     let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let title = dm.insert_block(None, "paragraph");
         dm.splice_text(&title, 0, 0, "Launch plan");
         let img = dm.insert_block(Some(&title), "image");
         let p = dm.insert_block(Some(&img), "paragraph");
-        dm.splice_text(&p, 0, 0, "Scribe: give this a title, then caption the image");
+        dm.splice_text(
+            &p,
+            0,
+            0,
+            "Scribe: give this a title, then caption the image",
+        );
     }
     doc.commit();
     doc
@@ -93,11 +108,20 @@ fn seed_unanswerable_sequence_document() -> AutoCommit {
     let c = qdoc::model::init(&mut doc, &automerge::ROOT);
     let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let title = dm.insert_block(None, "paragraph");
         dm.splice_text(&title, 0, 0, "Launch plan");
         let p = dm.insert_block(Some(&title), "paragraph");
-        dm.splice_text(&p, 0, 0, "Scribe: give this a title and then juggle three plates");
+        dm.splice_text(
+            &p,
+            0,
+            0,
+            "Scribe: give this a title and then juggle three plates",
+        );
     }
     doc.commit();
     doc
@@ -120,7 +144,11 @@ fn seed_foreign() -> AutoCommit {
     let c = qdoc::model::init(&mut doc, &automerge::ROOT);
     let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let p = dm.insert_block(None, "paragraph");
         dm.splice_text(&p, 0, 0, "Home");
         let q = dm.insert_block(Some(&p), "paragraph");
@@ -154,7 +182,10 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
     }
     let started = Instant::now();
     while !sock.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -205,7 +236,8 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
     // Drive the peer exactly as the app would: answer the agent's Arrived
     // with a full snapshot, apply every incremental change to the replica,
     // and watch for the table.
-    peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    peer.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut saw_scribe_presence = false;
     let mut done = false;
@@ -220,16 +252,28 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                assert_eq!(user_id, "Scribe", "the relay names presence by the announced handle");
+                assert_eq!(
+                    user_id, "Scribe",
+                    "the relay names presence by the announced handle"
+                );
                 saw_scribe_presence = true;
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT { data: replica.save() }).unwrap();
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                    data: replica.save(),
+                })
+                .unwrap();
                 write_frame(&mut peer, &snap).unwrap();
             }
-            CollabEvent::RemotePresenceUpdate { user_id, payload: PresencePayload::Caret { .. }, .. } => {
+            CollabEvent::RemotePresenceUpdate {
+                user_id,
+                payload: PresencePayload::Caret { .. },
+                ..
+            } => {
                 assert_eq!(user_id, "Scribe");
             }
             CollabEvent::CRDTIncremental { data } => {
-                replica.load_incremental(&data).expect("apply the agent's change");
+                replica
+                    .load_incremental(&data)
+                    .expect("apply the agent's change");
                 let b = blocks(&replica);
                 let has_cells = b.iter().any(|x| x.kind == "cell");
                 let has_bullets = b.iter().any(|x| x.kind == "list_item");
@@ -241,8 +285,18 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
             _ => {}
         }
     }
-    assert!(saw_scribe_presence, "the agent must announce itself to the room");
-    assert!(done, "the peer's replica never became a table; blocks: {:?}", blocks(&replica).iter().map(|b| (b.kind.clone(), b.text.clone())).collect::<Vec<_>>());
+    assert!(
+        saw_scribe_presence,
+        "the agent must announce itself to the room"
+    );
+    assert!(
+        done,
+        "the peer's replica never became a table; blocks: {:?}",
+        blocks(&replica)
+            .iter()
+            .map(|b| (b.kind.clone(), b.text.clone()))
+            .collect::<Vec<_>>()
+    );
     assert!(agent.join().unwrap(), "the agent reports having acted");
 
     // The table, row-major, carries the bullets' cells; the heading stays.
@@ -334,7 +388,10 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
     }
     let started = Instant::now();
     while !sock.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     let room = Uuid::new_v4();
@@ -517,7 +574,10 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
     }
     let started = Instant::now();
     while !sock.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -576,7 +636,10 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
     }
     let started = Instant::now();
     while !sock.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -617,7 +680,8 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
             .expect("agent session")
     });
 
-    peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    peer.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
     while Instant::now() < deadline && !done {
@@ -627,15 +691,23 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
         let event: CollabEvent = serde_json::from_slice(&frame).expect("decode");
         match event {
             CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived, ..
+                payload: PresencePayload::Arrived,
+                ..
             } => {
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT { data: replica.save() }).unwrap();
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                    data: replica.save(),
+                })
+                .unwrap();
                 write_frame(&mut peer, &snap).unwrap();
             }
             CollabEvent::CRDTIncremental { data } => {
-                replica.load_incremental(&data).expect("apply the agent's change");
+                replica
+                    .load_incremental(&data)
+                    .expect("apply the agent's change");
                 let b = blocks(&replica);
-                let has_heading = b.iter().any(|x| x.kind == "heading" && x.text == "Launch plan");
+                let has_heading = b
+                    .iter()
+                    .any(|x| x.kind == "heading" && x.text == "Launch plan");
                 let has_caption = b.iter().any(|x| x.text == "Figure 1");
                 let has_instruction = b.iter().any(|x| x.text.starts_with("Scribe:"));
                 if has_heading && has_caption && !has_instruction {
@@ -648,7 +720,10 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
     assert!(
         done,
         "the sequence never finished both steps; blocks: {:?}",
-        blocks(&replica).iter().map(|b| (b.kind.clone(), b.text.clone())).collect::<Vec<_>>()
+        blocks(&replica)
+            .iter()
+            .map(|b| (b.kind.clone(), b.text.clone()))
+            .collect::<Vec<_>>()
     );
     assert!(agent.join().unwrap(), "the agent reports having acted");
 
@@ -683,7 +758,10 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
     }
     let started = Instant::now();
     while !sock.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -722,7 +800,8 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
             .expect("agent session")
     });
 
-    peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    peer.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
     while Instant::now() < deadline && !done {
@@ -732,13 +811,19 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
         let event: CollabEvent = serde_json::from_slice(&frame).expect("decode");
         match event {
             CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived, ..
+                payload: PresencePayload::Arrived,
+                ..
             } => {
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT { data: replica.save() }).unwrap();
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                    data: replica.save(),
+                })
+                .unwrap();
                 write_frame(&mut peer, &snap).unwrap();
             }
             CollabEvent::CRDTIncremental { data } => {
-                replica.load_incremental(&data).expect("apply the agent's change");
+                replica
+                    .load_incremental(&data)
+                    .expect("apply the agent's change");
                 let b = blocks(&replica);
                 if b.iter().any(|x| x.text.contains("juggle three plates")) {
                     done = true;
@@ -750,7 +835,10 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
     assert!(
         done,
         "the agent never answered the sequence; blocks: {:?}",
-        blocks(&replica).iter().map(|b| (b.kind.clone(), b.text.clone())).collect::<Vec<_>>()
+        blocks(&replica)
+            .iter()
+            .map(|b| (b.kind.clone(), b.text.clone()))
+            .collect::<Vec<_>>()
     );
     assert!(agent.join().unwrap(), "the agent reports having acted");
 
@@ -758,7 +846,10 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
     // refusal was written in place of the instruction rather than after
     // half the request had already been carried out.
     let b = blocks(&replica);
-    assert_eq!(b[0].kind, "paragraph", "the title step never ran: the whole sequence was refused first");
+    assert_eq!(
+        b[0].kind, "paragraph",
+        "the title step never ran: the whole sequence was refused first"
+    );
     assert_eq!(b[0].text, "Launch plan");
     assert!(
         b.iter().any(|x| x.text.starts_with("Scribe: I can't")),

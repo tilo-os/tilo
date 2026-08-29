@@ -277,7 +277,10 @@ impl ConnectionDraft {
         let port = if self.kind == ConnectionKind::Qos {
             0
         } else {
-            self.port.trim().parse::<u16>().unwrap_or(self.kind.default_port())
+            self.port
+                .trim()
+                .parse::<u16>()
+                .unwrap_or(self.kind.default_port())
         };
         Connection {
             id,

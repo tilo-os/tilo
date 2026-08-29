@@ -16,7 +16,7 @@
 //! trailing currency symbols, surrounding spaces, and a parenthesised
 //! negative (`(1,200)`) are all accepted.
 
-use crate::model::{date_to_serial, CellFormat, Currency, DateStyle, TimeStyle};
+use crate::model::{CellFormat, Currency, DateStyle, TimeStyle, date_to_serial};
 
 /// The outcome of inferring a freshly-typed literal.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,13 +56,13 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
             return Inferred {
                 raw: "TRUE".into(),
                 format: CellFormat::Boolean,
-            }
+            };
         }
         "FALSE" => {
             return Inferred {
                 raw: "FALSE".into(),
                 format: CellFormat::Boolean,
-            }
+            };
         }
         _ => {}
     }
@@ -169,7 +169,9 @@ fn has_grouping(s: &str) -> bool {
 /// to the symbol's canonical owner.
 fn strip_currency(s: &str, default_currency: Currency) -> Option<(Currency, &str)> {
     // Multi-char codes first (CHF, EUR) so they don't get mis-split.
-    for code in ["CHF", "EUR", "USD", "GBP", "JPY", "CAD", "AUD", "CNY", "INR"] {
+    for code in [
+        "CHF", "EUR", "USD", "GBP", "JPY", "CAD", "AUD", "CNY", "INR",
+    ] {
         if let Some(rest) = s.strip_prefix(code) {
             if let Some(c) = Currency::from_code(code) {
                 return Some((c, rest.trim_start()));
@@ -388,7 +390,10 @@ mod tests {
         let r = infer("03/15/2023");
         assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
         let n: f64 = r.raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(n, DateStyle::Iso), "2023-03-15");
+        assert_eq!(
+            crate::model::serial_to_date(n, DateStyle::Iso),
+            "2023-03-15"
+        );
     }
 
     #[test]
@@ -397,7 +402,10 @@ mod tests {
         let r = infer("25/03/2023");
         assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
         let n: f64 = r.raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(n, DateStyle::Iso), "2023-03-25");
+        assert_eq!(
+            crate::model::serial_to_date(n, DateStyle::Iso),
+            "2023-03-25"
+        );
     }
 
     #[test]

@@ -9,14 +9,18 @@
 //! and activate one with Enter to prove the real handler runs.
 
 use api_tester::ApiTesterApp;
+use ui::State;
 use ui::a11y::Role;
 use ui::headless::Driver;
-use ui::State;
 
 fn driver() -> Driver {
     // The demo build populates collections / environments / history / a
     // response so every control class is present.
-    Driver::new(State::new(), Box::new(ApiTesterApp::new_demo()), (1280, 800))
+    Driver::new(
+        State::new(),
+        Box::new(ApiTesterApp::new_demo()),
+        (1280, 800),
+    )
 }
 
 /// Every interactive control is a real focusable widget with an accessibility
@@ -34,39 +38,57 @@ fn every_control_is_a_focusable_accessible_node() {
         "method + environment pickers are ComboBoxes, got {roles:?}"
     );
     // The URL editor is a real text field.
-    assert!(roles.contains(&Role::TextInput), "URL editor is a TextInput: {roles:?}");
+    assert!(
+        roles.contains(&Role::TextInput),
+        "URL editor is a TextInput: {roles:?}"
+    );
     // The request tabs + the response-view switch are segmented groups.
     assert!(
         roles.iter().filter(|r| **r == Role::Group).count() >= 2,
         "request tabs + response view are Groups, got {roles:?}"
     );
     // Send + every sidebar/history row are buttons.
-    assert!(roles.contains(&Role::Button), "Send + rows are Buttons: {roles:?}");
+    assert!(
+        roles.contains(&Role::Button),
+        "Send + rows are Buttons: {roles:?}"
+    );
 
     // Labels / values a screen reader announces.
     assert!(
-        nodes.iter().any(|n| n.role == Role::Button && n.name.as_deref() == Some("Send")),
+        nodes
+            .iter()
+            .any(|n| n.role == Role::Button && n.name.as_deref() == Some("Send")),
         "the Send button carries its label"
     );
     assert!(
-        nodes.iter().any(|n| n.role == Role::ComboBox && n.value.as_deref() == Some("GET")),
+        nodes
+            .iter()
+            .any(|n| n.role == Role::ComboBox && n.value.as_deref() == Some("GET")),
         "the method picker announces the selected verb"
     );
     assert!(
-        nodes.iter().any(|n| n.role == Role::ComboBox && n.value.as_deref() == Some("Production")),
+        nodes
+            .iter()
+            .any(|n| n.role == Role::ComboBox && n.value.as_deref() == Some("Production")),
         "the environment picker announces the active environment"
     );
     assert!(
-        nodes.iter().any(|n| n.role == Role::Group && n.value.as_deref() == Some("Params")),
+        nodes
+            .iter()
+            .any(|n| n.role == Role::Group && n.value.as_deref() == Some("Params")),
         "the request-tab group announces the active tab"
     );
     assert!(
-        nodes.iter().any(|n| n.role == Role::Group && n.value.as_deref() == Some("Pretty")),
+        nodes
+            .iter()
+            .any(|n| n.role == Role::Group && n.value.as_deref() == Some("Pretty")),
         "the response-view group announces the active view"
     );
     // A saved-request row is an addressable, labelled button.
     assert!(
-        nodes.iter().any(|n| n.role == Role::Button && n.name.as_deref() == Some("GET List users")),
+        nodes
+            .iter()
+            .any(|n| n.role == Role::Button && n.name.as_deref() == Some("GET List users")),
         "a saved request is a focusable, labelled row"
     );
     // A collection header exposes its expanded state.
@@ -74,7 +96,11 @@ fn every_control_is_a_focusable_accessible_node() {
         .iter()
         .find(|n| n.name.as_deref() == Some("Users API, collection, 4 requests"))
         .expect("the collection header is an accessible row");
-    assert_eq!(coll.state.expanded, Some(true), "an expanded collection reports it");
+    assert_eq!(
+        coll.state.expanded,
+        Some(true),
+        "an expanded collection reports it"
+    );
 }
 
 /// Tab / Shift+Tab move keyboard focus between the real controls in tree
@@ -88,18 +114,36 @@ fn tab_traverses_every_control_in_order() {
     // The builder chrome comes first, top-left to top-right: method picker,
     // URL field, Send, then the request-tab group.
     let roles: Vec<Role> = stops.iter().map(|(r, _)| *r).collect();
-    assert_eq!(roles.first(), Some(&Role::ComboBox), "first stop is the method picker");
-    assert_eq!(roles.get(1), Some(&Role::TextInput), "second stop is the URL field");
+    assert_eq!(
+        roles.first(),
+        Some(&Role::ComboBox),
+        "first stop is the method picker"
+    );
+    assert_eq!(
+        roles.get(1),
+        Some(&Role::TextInput),
+        "second stop is the URL field"
+    );
     assert_eq!(roles.get(2), Some(&Role::Button), "third stop is Send");
     assert_eq!(stops[2].1.as_deref(), Some("Send"));
-    assert_eq!(roles.get(3), Some(&Role::Group), "fourth stop is the request tabs");
+    assert_eq!(
+        roles.get(3),
+        Some(&Role::Group),
+        "fourth stop is the request tabs"
+    );
 
     // Every focusable control is reached exactly once.
-    assert_eq!(stops.len(), d.focus_order().len(), "Tab visits every focusable node");
+    assert_eq!(
+        stops.len(),
+        d.focus_order().len(),
+        "Tab visits every focusable node"
+    );
 
     // Focus reaches into the sidebar rows.
     assert!(
-        stops.iter().any(|(r, n)| *r == Role::Button && n.as_deref() == Some("GET List users")),
+        stops
+            .iter()
+            .any(|(r, n)| *r == Role::Button && n.as_deref() == Some("GET List users")),
         "Tab reaches the saved-request rows"
     );
 
@@ -131,7 +175,9 @@ fn enter_activates_a_focused_row_through_the_real_handler() {
     // Expanded: its request rows are present.
     let before = d.focus_access_nodes();
     assert!(
-        before.iter().any(|n| n.name.as_deref() == Some("GET List users")),
+        before
+            .iter()
+            .any(|n| n.name.as_deref() == Some("GET List users")),
         "before activation the collection is expanded"
     );
 
@@ -141,12 +187,18 @@ fn enter_activates_a_focused_row_through_the_real_handler() {
     // Collapsed: the request rows are gone and the header reports it.
     let after = d.focus_access_nodes();
     assert!(
-        !after.iter().any(|n| n.name.as_deref() == Some("GET List users")),
+        !after
+            .iter()
+            .any(|n| n.name.as_deref() == Some("GET List users")),
         "Enter collapsed the collection, hiding its request rows"
     );
     let coll = after
         .iter()
         .find(|n| n.name.as_deref() == Some(target))
         .expect("the collection header is still present");
-    assert_eq!(coll.state.expanded, Some(false), "the header now reports collapsed");
+    assert_eq!(
+        coll.state.expanded,
+        Some(false),
+        "the header now reports collapsed"
+    );
 }

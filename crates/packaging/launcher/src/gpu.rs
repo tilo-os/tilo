@@ -260,11 +260,7 @@ fn manifests_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
 
 /// The single manifest under `dirs` whose `library_path` names
 /// `library`, or `Err(reason)` describing why there wasn't exactly one.
-fn unique_manifest_for(
-    dirs: &[PathBuf],
-    library: &str,
-    kind: &str,
-) -> Result<PathBuf, String> {
+fn unique_manifest_for(dirs: &[PathBuf], library: &str, kind: &str) -> Result<PathBuf, String> {
     let mut matches: Vec<PathBuf> = Vec::new();
     let mut scanned = 0usize;
     for path in manifests_in(dirs) {
@@ -380,11 +376,7 @@ mod tests {
     /// Build a fixture ICD tree. `egl` and `vulkan` are
     /// `(file_name, library_path)` pairs written as real manifests, so the
     /// production scanner parses real JSON off a real filesystem.
-    fn fixture(
-        dir: &Path,
-        egl: &[(&str, &str)],
-        vulkan: &[(&str, &str)],
-    ) -> IcdSearch {
+    fn fixture(dir: &Path, egl: &[(&str, &str)], vulkan: &[(&str, &str)]) -> IcdSearch {
         let egl_dir = dir.join("glvnd/egl_vendor.d");
         let vk_dir = dir.join("vulkan/icd.d");
         std::fs::create_dir_all(&egl_dir).unwrap();
@@ -392,9 +384,7 @@ mod tests {
         for (name, lib) in egl {
             std::fs::write(
                 egl_dir.join(name),
-                format!(
-                    r#"{{"file_format_version":"1.0.0","ICD":{{"library_path":"{lib}"}}}}"#
-                ),
+                format!(r#"{{"file_format_version":"1.0.0","ICD":{{"library_path":"{lib}"}}}}"#),
             )
             .unwrap();
         }
@@ -451,7 +441,8 @@ mod tests {
             .expect("VK_DRIVER_FILES derived");
         assert!(vk.1.ends_with("radeon_icd.x86_64.json"), "{vk:?}");
         assert!(
-            env.iter().any(|(k, v)| *k == VK_ICD_FILENAMES_ENV && *v == vk.1),
+            env.iter()
+                .any(|(k, v)| *k == VK_ICD_FILENAMES_ENV && *v == vk.1),
             "the pre-1.3.207 spelling must carry the same choice: {env:?}"
         );
         assert!(
@@ -596,7 +587,11 @@ mod tests {
         assert!(sel.is_empty());
         assert!(sel.env().is_empty());
         assert!(sel.manifest_files().is_empty());
-        assert!(sel.notes.iter().all(|n| n.contains("no ")), "{:?}", sel.notes);
+        assert!(
+            sel.notes.iter().all(|n| n.contains("no ")),
+            "{:?}",
+            sel.notes
+        );
     }
 
     /// Every file the env names must be bindable — the two lists derive

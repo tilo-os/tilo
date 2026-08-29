@@ -136,9 +136,24 @@ enum Slot {
 /// glyphs is `ui::icons` work, out of this app's scope.
 const TOOLBAR: &[(Hit, &str, Icon, Face)] = &[
     (Hit::Open, "photos-open", Icon::Folder, Face::Labelled),
-    (Hit::RotateLeft, "photos-rotate-left", Icon::RotateCw, Face::IconOnly),
-    (Hit::RotateRight, "photos-rotate-right", Icon::RotateCw, Face::IconOnly),
-    (Hit::CropToView, "photos-crop", Icon::Scissors, Face::IconOnly),
+    (
+        Hit::RotateLeft,
+        "photos-rotate-left",
+        Icon::RotateCw,
+        Face::IconOnly,
+    ),
+    (
+        Hit::RotateRight,
+        "photos-rotate-right",
+        Icon::RotateCw,
+        Face::IconOnly,
+    ),
+    (
+        Hit::CropToView,
+        "photos-crop",
+        Icon::Scissors,
+        Face::IconOnly,
+    ),
     (Hit::Reset, "photos-reset", Icon::Refresh, Face::IconOnly),
     (Hit::Copy, "photos-copy", Icon::Copy, Face::Labelled),
     (Hit::Save, "photos-save", Icon::Download, Face::Labelled),
@@ -390,7 +405,9 @@ impl PhotosApp {
     /// mapping is invariant under a zoom change, so pan stays exactly where it
     /// was — then send one wheel notch sized to land on `zoom` exactly.
     pub fn set_zoom(&mut self, zoom: f32) {
-        let Some(v) = self.viewer.as_mut() else { return };
+        let Some(v) = self.viewer.as_mut() else {
+            return;
+        };
         let rect = Widget::get_rect(v);
         if rect.width() <= 0.0 || rect.height() <= 0.0 || v.zoom() <= 0.0 {
             return;
@@ -413,7 +430,10 @@ impl PhotosApp {
         // `ui::widget::image_viewer`'s own tests use.
         let device_id = unsafe { std::mem::zeroed() };
         v.handle_event(
-            &winit::event::WindowEvent::CursorMoved { device_id, position: center },
+            &winit::event::WindowEvent::CursorMoved {
+                device_id,
+                position: center,
+            },
             1.0,
             &winit::event::Modifiers::default(),
             &mut doc,
@@ -498,9 +518,15 @@ impl PhotosApp {
     /// extension, so Save never silently overwrites the original.
     pub fn suggested_save_path(open: &OpenImage) -> String {
         let p = std::path::Path::new(&open.path);
-        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let stem = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let parent = p.parent().map(|s| s.to_path_buf()).unwrap_or_default();
-        parent.join(format!("{stem}-edited.png")).to_string_lossy().into_owned()
+        parent
+            .join(format!("{stem}-edited.png"))
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Apply `next` to the document as an undoable edit.
@@ -522,7 +548,10 @@ impl PhotosApp {
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
         if self.original.as_ref().map(|(p, _)| p.as_str()) != Some(open.path.as_str()) {
-            match crate::doc::bytes_of(&open).as_deref().and_then(pixels::decode) {
+            match crate::doc::bytes_of(&open)
+                .as_deref()
+                .and_then(pixels::decode)
+            {
                 Some(img) => self.original = Some((open.path.clone(), img)),
                 None => {
                     self.original = None;
@@ -887,7 +916,12 @@ impl Widget for PhotosApp {
         let layout = taffy.layout(node).unwrap();
         let x = origin.x + layout.location.x as f64;
         let y = origin.y + layout.location.y as f64;
-        self.rect = Rect::new(x, y, x + layout.size.width as f64, y + layout.size.height as f64);
+        self.rect = Rect::new(
+            x,
+            y,
+            x + layout.size.width as f64,
+            y + layout.size.height as f64,
+        );
         let here = Point::new(x, y);
 
         let children = taffy.children(node).unwrap();
@@ -913,8 +947,12 @@ impl Widget for PhotosApp {
                     let sl = taffy.layout(bn).unwrap();
                     let sx = bar_origin.x + sl.location.x as f64 + sl.size.width as f64 / 2.0;
                     let sy = bar_origin.y + sl.location.y as f64;
-                    self.separator_rects
-                        .push(Rect::new(sx, sy, sx + 1.0, sy + sl.size.height as f64));
+                    self.separator_rects.push(Rect::new(
+                        sx,
+                        sy,
+                        sx + 1.0,
+                        sy + sl.size.height as f64,
+                    ));
                 }
                 Slot::Spacer => {}
             }

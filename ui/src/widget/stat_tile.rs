@@ -65,7 +65,11 @@ impl Trend {
 fn tile_height(has_delta: bool, theme: &Theme) -> f64 {
     let caption = theme.tokens.typography.scale.sm as f64;
     let value = theme.tokens.typography.scale.x2l as f64;
-    let delta = if has_delta { 6.0 + theme.tokens.typography.scale.sm as f64 } else { 0.0 };
+    let delta = if has_delta {
+        6.0 + theme.tokens.typography.scale.sm as f64
+    } else {
+        0.0
+    };
     PAD * 2.0 + caption + 6.0 + value + delta
 }
 
@@ -88,8 +92,20 @@ fn paint_stat_tile(
         return;
     }
     let card = RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64);
-    scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &card);
-    scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &card);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.raised,
+        None,
+        &card,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.border_standard,
+        None,
+        &card,
+    );
 
     let caption_size = theme.tokens.typography.scale.sm;
     let value_size = theme.tokens.typography.scale.x2l;
@@ -204,7 +220,16 @@ impl StatTile {
         delta: Option<(&str, Trend)>,
     ) {
         paint_stat_tile(
-            scene, transform, text_renderer, theme, rect, caption, value, value_color, icon, delta,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rect,
+            caption,
+            value,
+            value_color,
+            icon,
+            delta,
         );
     }
 }
@@ -224,8 +249,14 @@ impl Widget for StatTile {
             .new_leaf(Style {
                 flex_grow: 1.0,
                 flex_basis: length(0.0_f32),
-                min_size: taffy::Size { width: length(120.0_f32), height: length(h) },
-                size: taffy::Size { width: percent(1.0_f32), height: length(h) },
+                min_size: taffy::Size {
+                    width: length(120.0_f32),
+                    height: length(h),
+                },
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: length(h),
+                },
                 ..Default::default()
             })
             .unwrap();
@@ -240,7 +271,10 @@ impl Widget for StatTile {
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let theme = Theme::dark();
-        taffy::Size { width: 160.0, height: tile_height(self.delta.is_some(), &theme) as f32 }
+        taffy::Size {
+            width: 160.0,
+            height: tile_height(self.delta.is_some(), &theme) as f32,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -291,9 +325,13 @@ impl Widget for StatTile {
         // Stat tiles are informational — no input handling.
     }
 
-    fn name(&self) -> &str { "StatTile" }
+    fn name(&self) -> &str {
+        "StatTile"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
@@ -321,7 +359,9 @@ mod tests {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut widgets: Vec<StatTile> = (0..tiles).map(|i| StatTile::new(format!("m{i}"), "1")).collect();
+        let mut widgets: Vec<StatTile> = (0..tiles)
+            .map(|i| StatTile::new(format!("m{i}"), "1"))
+            .collect();
         let mut nodes = Vec::new();
         for w in widgets.iter_mut() {
             nodes.push(w.build_layout(&mut taffy, &theme, &mut node_map));
@@ -331,18 +371,27 @@ mod tests {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Row,
-                    gap: taffy::Size { width: length(12.0_f32), height: length(0.0_f32) },
-                    size: taffy::Size { width: length(600.0_f32), height: length(120.0_f32) },
+                    gap: taffy::Size {
+                        width: length(12.0_f32),
+                        height: length(0.0_f32),
+                    },
+                    size: taffy::Size {
+                        width: length(600.0_f32),
+                        height: length(120.0_f32),
+                    },
                     ..Default::default()
                 },
                 &nodes,
             )
             .unwrap();
         taffy
-            .compute_layout(root, taffy::Size {
-                width: taffy::AvailableSpace::Definite(600.0),
-                height: taffy::AvailableSpace::Definite(120.0),
-            })
+            .compute_layout(
+                root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(600.0),
+                    height: taffy::AvailableSpace::Definite(120.0),
+                },
+            )
             .unwrap();
         for (w, n) in widgets.iter_mut().zip(nodes.iter()) {
             w.apply_layout(&taffy, *n, Point::ZERO);
@@ -356,7 +405,11 @@ mod tests {
         assert_eq!(rects.len(), 3);
         let w0 = rects[0].width();
         for r in &rects {
-            assert!((r.width() - w0).abs() < 1.0, "all tiles share width, got {} vs {w0}", r.width());
+            assert!(
+                (r.width() - w0).abs() < 1.0,
+                "all tiles share width, got {} vs {w0}",
+                r.width()
+            );
         }
         // Three tiles + 2×12px gaps must fit in 600px.
         assert!((w0 * 3.0 + 24.0 - 600.0).abs() < 2.0, "widths + gaps ≈ 600");
@@ -374,8 +427,14 @@ mod tests {
     #[test]
     fn trend_colors_are_semantic() {
         let theme = Theme::dark();
-        assert_eq!(Trend::Up.color(&theme), theme.tokens.colors.semantic.success);
-        assert_eq!(Trend::Down.color(&theme), theme.tokens.colors.semantic.danger);
+        assert_eq!(
+            Trend::Up.color(&theme),
+            theme.tokens.colors.semantic.success
+        );
+        assert_eq!(
+            Trend::Down.color(&theme),
+            theme.tokens.colors.semantic.danger
+        );
         assert_eq!(Trend::Flat.color(&theme), theme.text_dim);
         assert_eq!(Trend::Up.arrow(), Some(Icon::ChevronUp));
         assert_eq!(Trend::Flat.arrow(), None, "a flat trend draws no arrow");
@@ -386,8 +445,12 @@ mod tests {
         let theme = Theme::dark();
         let plain = StatTile::new("CPU", "42%");
         assert_eq!(plain.value_color(&theme), theme.text_primary);
-        let tinted = StatTile::new("CPU", "99%").with_value_color(theme.tokens.colors.semantic.danger);
-        assert_eq!(tinted.value_color(&theme), theme.tokens.colors.semantic.danger);
+        let tinted =
+            StatTile::new("CPU", "99%").with_value_color(theme.tokens.colors.semantic.danger);
+        assert_eq!(
+            tinted.value_color(&theme),
+            theme.tokens.colors.semantic.danger
+        );
     }
 
     #[test]
@@ -401,8 +464,16 @@ mod tests {
             .with_delta("12%", Trend::Up);
         t.rect = Rect::new(0.0, 0.0, 160.0, 100.0);
         t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let fills = scene.encoding().draw_tags.iter().filter(|x| **x == DrawTag::COLOR).count();
-        assert!(fills > 4, "card + caption + value + icon + delta ⇒ many fills, got {fills}");
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|x| **x == DrawTag::COLOR)
+            .count();
+        assert!(
+            fills > 4,
+            "card + caption + value + icon + delta ⇒ many fills, got {fills}"
+        );
     }
 
     #[test]
@@ -412,6 +483,10 @@ mod tests {
         let node = Widget::accessibility(&t).expect("stat tile exposes a11y");
         assert_eq!(node.role, Role::Group);
         assert_eq!(node.name.as_deref(), Some("CPU"));
-        assert_eq!(node.value.as_deref(), Some("42% (3%)"), "delta joins the announced value");
+        assert_eq!(
+            node.value.as_deref(),
+            Some("42% (3%)"),
+            "delta joins the announced value"
+        );
     }
 }

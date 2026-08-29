@@ -375,7 +375,10 @@ mod tests {
         let mut reopened = DocStore::open_for("dev.qos.autosave-growth").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
-        assert_eq!(loaded.text(&body).unwrap(), format!("seed{}", "y".repeat(50)));
+        assert_eq!(
+            loaded.text(&body).unwrap(),
+            format!("seed{}", "y".repeat(50))
+        );
     }
 
     /// Once the appended volume outgrows the compacted base, the writer must fold everything

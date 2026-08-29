@@ -71,7 +71,11 @@ pub struct View2d {
 
 impl Default for View2d {
     fn default() -> Self {
-        Self { cx: 0.0, cy: 0.0, scale: 64.0 }
+        Self {
+            cx: 0.0,
+            cy: 0.0,
+            scale: 64.0,
+        }
     }
 }
 
@@ -85,7 +89,11 @@ pub struct View3d {
 
 impl Default for View3d {
     fn default() -> Self {
-        Self { yaw: 0.62, pitch: 0.52, zoom: 1.0 }
+        Self {
+            yaw: 0.62,
+            pitch: 0.52,
+            zoom: 1.0,
+        }
     }
 }
 
@@ -151,9 +159,18 @@ impl CalcModel {
         // different heights so the Graph 3D shot shows multiple, distinctly
         // coloured surfaces (not a lone surface).
         m.surfaces = vec![
-            PlotFn { expr: DEFAULT_SURFACE.to_string(), visible: true },
-            PlotFn { expr: "0.05*(x^2+y^2)-3".into(), visible: true },
-            PlotFn { expr: "3-0.06*(x^2+y^2)".into(), visible: true },
+            PlotFn {
+                expr: DEFAULT_SURFACE.to_string(),
+                visible: true,
+            },
+            PlotFn {
+                expr: "0.05*(x^2+y^2)-3".into(),
+                visible: true,
+            },
+            PlotFn {
+                expr: "3-0.06*(x^2+y^2)".into(),
+                visible: true,
+            },
         ];
         m.active_surface = 0;
         m.mode = Mode::Graph2d;
@@ -169,17 +186,44 @@ impl CalcModel {
         m.expr = "sin(0.5)+cos(0.5)".to_string();
         m.ans = 1.0;
         m.history = vec![
-            HistoryEntry { expr: "12*(4+3)".into(), result: "84".into() },
-            HistoryEntry { expr: "sqrt(2)".into(), result: "1.4142135624".into() },
-            HistoryEntry { expr: "5!".into(), result: "120".into() },
-            HistoryEntry { expr: "log(2,1024)".into(), result: "10".into() },
-            HistoryEntry { expr: "2^10".into(), result: "1024".into() },
+            HistoryEntry {
+                expr: "12*(4+3)".into(),
+                result: "84".into(),
+            },
+            HistoryEntry {
+                expr: "sqrt(2)".into(),
+                result: "1.4142135624".into(),
+            },
+            HistoryEntry {
+                expr: "5!".into(),
+                result: "120".into(),
+            },
+            HistoryEntry {
+                expr: "log(2,1024)".into(),
+                result: "10".into(),
+            },
+            HistoryEntry {
+                expr: "2^10".into(),
+                result: "1024".into(),
+            },
         ];
         m.funcs = vec![
-            PlotFn { expr: "(x^2+1)/(x-3)".into(), visible: true },
-            PlotFn { expr: "0.25*x^2-2".into(), visible: true },
-            PlotFn { expr: "sqrt(x+6)".into(), visible: true },
-            PlotFn { expr: "sin(x)".into(), visible: true },
+            PlotFn {
+                expr: "(x^2+1)/(x-3)".into(),
+                visible: true,
+            },
+            PlotFn {
+                expr: "0.25*x^2-2".into(),
+                visible: true,
+            },
+            PlotFn {
+                expr: "sqrt(x+6)".into(),
+                visible: true,
+            },
+            PlotFn {
+                expr: "sin(x)".into(),
+                visible: true,
+            },
         ];
         m.active_fn = 0;
         m.memory = 42.0;
@@ -199,7 +243,12 @@ impl CalcModel {
 
     /// Evaluation context derived from the current model.
     pub fn ctx(&self) -> Ctx {
-        Ctx { deg: self.deg, ans: self.ans, mem: self.memory, ..Default::default() }
+        Ctx {
+            deg: self.deg,
+            ans: self.ans,
+            mem: self.memory,
+            ..Default::default()
+        }
     }
 
     /// Live preview of the current expression (grey under the input).
@@ -226,7 +275,10 @@ impl CalcModel {
         match engine::evaluate(&trimmed, &self.ctx()) {
             Ok(v) => {
                 let result = engine::format_number(v);
-                let entry = HistoryEntry { expr: trimmed, result: result.clone() };
+                let entry = HistoryEntry {
+                    expr: trimmed,
+                    result: result.clone(),
+                };
                 self.history.insert(0, entry.clone());
                 self.history.truncate(64);
                 self.ans = v;
@@ -332,9 +384,7 @@ impl Key {
             Key::Digit(_) | Key::Dot | Key::DoubleZero => KeyRole::Digit,
             Key::Equals => KeyRole::Accent,
             Key::Clear | Key::Backspace => KeyRole::Warm,
-            Key::Ins("+") | Key::Ins("-") | Key::Ins("*") | Key::Ins("/") => {
-                KeyRole::Operator
-            }
+            Key::Ins("+") | Key::Ins("-") | Key::Ins("*") | Key::Ins("/") => KeyRole::Operator,
             _ => KeyRole::Function,
         }
     }
@@ -413,33 +463,113 @@ impl KeypadLayout {
         match self {
             // 4 cols × 6 rows — the everyday essentials.
             KeypadLayout::Compact => vec![
-                Clear,       Backspace,   Ins("("),    Ins(")"),
-                Ins("sin("), Ins("cos("), Ins("^"),    Ins("sqrt("),
-                Digit('7'),  Digit('8'),  Digit('9'),  Ins("/"),
-                Digit('4'),  Digit('5'),  Digit('6'),  Ins("*"),
-                Digit('1'),  Digit('2'),  Digit('3'),  Ins("-"),
-                Digit('0'),  Dot,         Equals,      Ins("+"),
+                Clear,
+                Backspace,
+                Ins("("),
+                Ins(")"),
+                Ins("sin("),
+                Ins("cos("),
+                Ins("^"),
+                Ins("sqrt("),
+                Digit('7'),
+                Digit('8'),
+                Digit('9'),
+                Ins("/"),
+                Digit('4'),
+                Digit('5'),
+                Digit('6'),
+                Ins("*"),
+                Digit('1'),
+                Digit('2'),
+                Digit('3'),
+                Ins("-"),
+                Digit('0'),
+                Dot,
+                Equals,
+                Ins("+"),
             ],
             // 5 cols × 7 rows — essentials + common scientific keys.
             KeypadLayout::Standard => vec![
-                Clear,        Backspace,   Ins("("),    Ins(")"),    Ins("!"),
-                Ins("sin("),  Ins("cos("), Ins("tan("), Ins("pi"),   Ins("e"),
-                Ins("ln("),   Ins("^"),    Ins("sqrt("), Percent,    Ins("/"),
-                Wrap("(", ")^2"), Ins("1/("), Digit('7'), Digit('8'), Digit('9')
-                ,
-                Ins("*"),     ToggleSign,  Digit('4'),  Digit('5'),  Digit('6'),
-                Ins("-"),     Ans,         Digit('1'),  Digit('2'),  Digit('3'),
-                Ins("+"),     DoubleZero,  Digit('0'),  Dot,         Equals,
+                Clear,
+                Backspace,
+                Ins("("),
+                Ins(")"),
+                Ins("!"),
+                Ins("sin("),
+                Ins("cos("),
+                Ins("tan("),
+                Ins("pi"),
+                Ins("e"),
+                Ins("ln("),
+                Ins("^"),
+                Ins("sqrt("),
+                Percent,
+                Ins("/"),
+                Wrap("(", ")^2"),
+                Ins("1/("),
+                Digit('7'),
+                Digit('8'),
+                Digit('9'),
+                Ins("*"),
+                ToggleSign,
+                Digit('4'),
+                Digit('5'),
+                Digit('6'),
+                Ins("-"),
+                Ans,
+                Digit('1'),
+                Digit('2'),
+                Digit('3'),
+                Ins("+"),
+                DoubleZero,
+                Digit('0'),
+                Dot,
+                Equals,
             ],
             // 6 cols × 7 rows — the full scientific pad.
             KeypadLayout::Scientific => vec![
-                Clear, Backspace, Ins("("), Ins(")"), Ins("mod("), Ins("!"),
-                Ins("sin("), Ins("cos("), Ins("tan("), Ins("pi"), Ins("e"), Percent,
-                Ins("asin("), Ins("acos("), Ins("atan("), Ins("^"), Ins("sqrt("), Ins("/"),
-                Ins("ln("), Ins("log10("), Digit('7'), Digit('8'), Digit('9'), Ins("*"),
-                Ins("exp("), Ins("1/("), Digit('4'), Digit('5'), Digit('6'), Ins("-"),
-                Wrap("(", ")^2"), ToggleSign, Digit('1'), Digit('2'), Digit('3'), Ins("+"),
-                DoubleZero, Ans, Digit('0'), Dot, Ins(","), Equals,
+                Clear,
+                Backspace,
+                Ins("("),
+                Ins(")"),
+                Ins("mod("),
+                Ins("!"),
+                Ins("sin("),
+                Ins("cos("),
+                Ins("tan("),
+                Ins("pi"),
+                Ins("e"),
+                Percent,
+                Ins("asin("),
+                Ins("acos("),
+                Ins("atan("),
+                Ins("^"),
+                Ins("sqrt("),
+                Ins("/"),
+                Ins("ln("),
+                Ins("log10("),
+                Digit('7'),
+                Digit('8'),
+                Digit('9'),
+                Ins("*"),
+                Ins("exp("),
+                Ins("1/("),
+                Digit('4'),
+                Digit('5'),
+                Digit('6'),
+                Ins("-"),
+                Wrap("(", ")^2"),
+                ToggleSign,
+                Digit('1'),
+                Digit('2'),
+                Digit('3'),
+                Ins("+"),
+                DoubleZero,
+                Ans,
+                Digit('0'),
+                Dot,
+                Ins(","),
+                Equals,
             ],
         }
     }
@@ -667,9 +797,18 @@ mod tests {
                     "{layout:?} missing operator {op}"
                 );
             }
-            assert!(keys.iter().any(|k| matches!(k, Key::Equals)), "{layout:?} missing =");
-            assert!(keys.iter().any(|k| matches!(k, Key::Clear)), "{layout:?} missing AC");
-            assert!(keys.iter().any(|k| matches!(k, Key::Backspace)), "{layout:?} missing ⌫");
+            assert!(
+                keys.iter().any(|k| matches!(k, Key::Equals)),
+                "{layout:?} missing ="
+            );
+            assert!(
+                keys.iter().any(|k| matches!(k, Key::Clear)),
+                "{layout:?} missing AC"
+            );
+            assert!(
+                keys.iter().any(|k| matches!(k, Key::Backspace)),
+                "{layout:?} missing ⌫"
+            );
         }
     }
 }

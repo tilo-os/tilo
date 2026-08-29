@@ -18,18 +18,18 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::{Dispatcher, WifiNetworkInfo, WiredInfo};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Button, Row, Spacer, Text, TextInput, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::widgets::{card, card_with_action, caption, rows, value_row, El};
+use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
 
 pub const WIFI_ENABLED_KEY: &str = "network.wifi_enabled";
 pub const REFRESH_KEY: &str = "network.refresh";
@@ -119,7 +119,9 @@ type VpnLister = Arc<dyn Fn() -> Vec<VpnInfo> + Send + Sync>;
 fn read_vpn_connections() -> Vec<VpnInfo> {
     let run = |args: &[&str]| -> Option<String> {
         let out = Command::new("nmcli").args(args).output().ok()?;
-        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
     };
     let all = match run(&["-t", "-f", "NAME,TYPE", "connection", "show"]) {
         Some(s) => s,
@@ -133,7 +135,11 @@ fn read_vpn_connections() -> Vec<VpnInfo> {
 /// `NAME:TYPE`; a connection is a VPN when its type is `vpn` or
 /// `wireguard`. `active` lines are bare `NAME`s of up connections.
 pub fn parse_vpn_connections(all: &str, active: &str) -> Vec<VpnInfo> {
-    let active_names: Vec<&str> = active.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let active_names: Vec<&str> = active
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
     let mut out = Vec::new();
     for line in all.lines() {
         // NAME may itself contain no colon in practice; split on the LAST
@@ -305,10 +311,16 @@ impl NetworkPane {
         for v in &self.vpns {
             out.push(value_row(
                 &v.name,
-                if v.active { "Connected" } else { "Disconnected" },
+                if v.active {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                },
             ));
         }
-        out.push(caption("VPN profiles are managed with your network connections."));
+        out.push(caption(
+            "VPN profiles are managed with your network connections.",
+        ));
         out
     }
 
@@ -358,15 +370,13 @@ impl NetworkPane {
                 }
             }
         }
-        wifi_rows.push(Box::new(
-            Row::new()
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(Button::new(
-                    "settings.network.refresh",
-                    "\u{f0450}  Refresh",
-                    Some(REFRESH_KEY),
-                ))),
-        ));
+        wifi_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
+            Box::new(Button::new(
+                "settings.network.refresh",
+                "\u{f0450}  Refresh",
+                Some(REFRESH_KEY),
+            )),
+        )));
         wifi_rows.push(caption(
             "Wi-Fi scanning and connection are best-effort via nmcli; \
              secure networks prompt for a password before joining.",
@@ -448,10 +458,7 @@ impl NetworkPane {
         if let Some(dev) = &self.wired.device {
             out.push(value_row("Interface", dev));
         }
-        out.push(value_row(
-            "IPv4",
-            self.wired.ipv4.as_deref().unwrap_or("—"),
-        ));
+        out.push(value_row("IPv4", self.wired.ipv4.as_deref().unwrap_or("—")));
         out
     }
 
@@ -552,7 +559,9 @@ impl Widget for NetworkPane {
             let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
             match (self.lister)() {
                 Ok(nets) => self.networks = nets,
-                Err(e) => warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed"),
+                Err(e) => {
+                    warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed")
+                }
             }
             self.vpns = (self.vpn_lister)();
         }
@@ -779,7 +788,10 @@ mod tests {
                 "signal {signal} glyph U+{cp:04X} must be an MDI wifi-strength glyph"
             );
             // Never a Unicode block element (the old tofu bars).
-            assert!(!(0x2580..=0x259F).contains(&cp), "block-element bars are tofu");
+            assert!(
+                !(0x2580..=0x259F).contains(&cp),
+                "block-element bars are tofu"
+            );
         }
         // Distinct levels for 1..=4 so strength is legible at a glance.
         let levels: Vec<&str> = (1u8..=4).map(wifi_signal_glyph).collect();
@@ -815,7 +827,11 @@ mod tests {
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         // User flips the toggle off.
-        let _ = doc.put(&root, WIFI_ENABLED_KEY, automerge::ScalarValue::Boolean(false));
+        let _ = doc.put(
+            &root,
+            WIFI_ENABLED_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
         pane.sync(&mut doc, &root);
         assert_eq!(rec.calls(), vec!["set_wifi(false)"]);
     }
@@ -876,18 +892,28 @@ mod tests {
         calls: std::sync::Mutex<Vec<String>>,
     }
     impl Dispatcher for PwRecorder {
-        fn set_brightness(&self, _p: f32) -> Result<(), String> { Ok(()) }
-        fn set_volume(&self, _p: f32) -> Result<(), String> { Ok(()) }
-        fn set_wifi(&self, _e: bool) -> Result<(), String> { Ok(()) }
-        fn set_bluetooth(&self, _e: bool) -> Result<(), String> { Ok(()) }
-        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("connect_wifi({ssid}, pw={})", password.unwrap_or("<none>")));
+        fn set_brightness(&self, _p: f32) -> Result<(), String> {
             Ok(())
         }
-        fn set_power_profile(&self, _p: os_actions::PowerProfile) -> Result<(), String> { Ok(()) }
+        fn set_volume(&self, _p: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_wifi(&self, _e: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_bluetooth(&self, _e: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!(
+                "connect_wifi({ssid}, pw={})",
+                password.unwrap_or("<none>")
+            ));
+            Ok(())
+        }
+        fn set_power_profile(&self, _p: os_actions::PowerProfile) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     /// Clicking "Connect" on a SECURE network does not connect immediately —
@@ -1002,8 +1028,14 @@ mod tests {
     #[test]
     fn vpn_rows_reflect_configured_profiles() {
         let pane = NetworkPane::new_demo(sample_networks()).with_vpns(vec![
-            VpnInfo { name: "Work VPN".into(), active: true },
-            VpnInfo { name: "Home WG".into(), active: false },
+            VpnInfo {
+                name: "Work VPN".into(),
+                active: true,
+            },
+            VpnInfo {
+                name: "Home WG".into(),
+                active: false,
+            },
         ]);
         assert_eq!(pane.vpns().len(), 2);
         // 2 status rows + 1 caption.

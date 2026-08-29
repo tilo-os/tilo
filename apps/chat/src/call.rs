@@ -270,7 +270,13 @@ mod tests {
     #[test]
     fn allow_all_grants_everything() {
         let p = AllowAll;
-        for a in [CallAction::Join, CallAction::Leave, CallAction::Speak, CallAction::Camera, CallAction::ShareScreen] {
+        for a in [
+            CallAction::Join,
+            CallAction::Leave,
+            CallAction::Speak,
+            CallAction::Camera,
+            CallAction::ShareScreen,
+        ] {
             assert!(p.allows(a), "{a:?} should be allowed by AllowAll");
         }
     }
@@ -325,7 +331,10 @@ mod tests {
         assert!(!c.sharing, "leaving a call stops the local screen share");
         c.sharing = true;
         c.join("c_other");
-        assert!(!c.sharing, "joining a fresh call starts with no screen share");
+        assert!(
+            !c.sharing,
+            "joining a fresh call starts with no screen share"
+        );
     }
 
     #[test]
@@ -342,7 +351,11 @@ mod tests {
     #[test]
     fn fake_portal_hands_back_its_configured_source() {
         // The test seam the share flow is proven against.
-        let src = ScreenSource { node: 9, width: 640, height: 480 };
+        let src = ScreenSource {
+            node: 9,
+            width: 640,
+            height: 480,
+        };
         assert_eq!(FakePortal(Some(src)).request(), Some(src));
         assert_eq!(FakePortal(None).request(), None);
     }
@@ -372,7 +385,10 @@ mod sound {
     impl SoundEngine {
         pub fn new() -> Self {
             let live = init_backend();
-            SoundEngine { last_cue: None, live }
+            SoundEngine {
+                last_cue: None,
+                live,
+            }
         }
 
         /// Whether real audio output is available in this build + environment.

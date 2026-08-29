@@ -173,6 +173,9 @@ command    = "notes"
 launcher   = "/tmp/target/debug/qos-launcher"
 "#;
         let s: Sidecar = toml::from_str(text).expect("decode");
-        assert_eq!(s.launcher.as_deref(), Some(Path::new("/tmp/target/debug/qos-launcher")));
+        assert_eq!(
+            s.launcher.as_deref(),
+            Some(Path::new("/tmp/target/debug/qos-launcher"))
+        );
     }
 }

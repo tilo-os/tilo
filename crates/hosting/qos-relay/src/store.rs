@@ -75,9 +75,7 @@ impl WorkspaceStore {
     /// `pinned=false` skips creating `snapshot.automerge` — the
     /// caller does not intend to hold a persistent CRDT.
     pub fn open(state_root: &Path, workspace_id: u64, pinned: bool) -> Result<Self, StoreError> {
-        let root = state_root
-            .join("workspaces")
-            .join(workspace_id.to_string());
+        let root = state_root.join("workspaces").join(workspace_id.to_string());
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("pending"))?;
         Ok(Self {
@@ -169,11 +167,7 @@ impl WorkspaceStore {
         }
         let mut entries: Vec<_> = fs::read_dir(&dir)?
             .flatten()
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .ends_with(".delta")
-            })
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
             .collect();
         entries.sort_by_key(|e| e.file_name());
         let mut out = Vec::with_capacity(entries.len());
@@ -193,11 +187,7 @@ impl WorkspaceStore {
         }
         let n = fs::read_dir(&dir)?
             .flatten()
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .ends_with(".delta")
-            })
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
             .count();
         Ok(n as u32)
     }

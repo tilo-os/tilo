@@ -100,12 +100,10 @@ impl RelayConfig {
     /// Parses a config file at `path` (UTF-8 TOML); missing fields fall back
     /// to [`Default`]. Errors include the file path for multi-relay setups.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            anyhow::anyhow!("failed to read config at {}: {}", path.display(), e)
-        })?;
-        Self::parse(&text).map_err(|e| {
-            anyhow::anyhow!("failed to parse config at {}: {}", path.display(), e)
-        })
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read config at {}: {}", path.display(), e))?;
+        Self::parse(&text)
+            .map_err(|e| anyhow::anyhow!("failed to parse config at {}: {}", path.display(), e))
     }
 
     /// Parses TOML config from a string; used by tests and the `QOS_RELAY_CONFIG` env-var path.
@@ -129,9 +127,8 @@ impl RelayConfig {
         // Reject patterns that don't compile — surfaces typos at
         // startup instead of silently dropping every message.
         for pat in &self.topic_allowlist {
-            globset::Glob::new(pat).map_err(|e| {
-                anyhow::anyhow!("topic_allowlist pattern {pat:?} is invalid: {e}")
-            })?;
+            globset::Glob::new(pat)
+                .map_err(|e| anyhow::anyhow!("topic_allowlist pattern {pat:?} is invalid: {e}"))?;
         }
         Ok(())
     }

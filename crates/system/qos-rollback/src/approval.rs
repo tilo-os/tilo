@@ -277,19 +277,20 @@ pub fn issue(
             runner,
             "openssl",
             &argv![
-                "dgst", "-sha256",
-                "-sign", private_key_pem.as_os_str(),
-                "-out", sig_file.as_os_str(),
+                "dgst",
+                "-sha256",
+                "-sign",
+                private_key_pem.as_os_str(),
+                "-out",
+                sig_file.as_os_str(),
                 msg_file.as_os_str(),
             ],
             "signing a floor-advance approval",
         )?;
-        let sig = std::fs::read(&sig_file)
-            .with_context(|| format!("reading {}", sig_file.display()))?;
-        let target_floor = u64::try_from(
-            i128::from(target_counter) - i128::from(request.base),
-        )
-        .context("target counter maps to a negative floor generation")?;
+        let sig =
+            std::fs::read(&sig_file).with_context(|| format!("reading {}", sig_file.display()))?;
+        let target_floor = u64::try_from(i128::from(target_counter) - i128::from(request.base))
+            .context("target counter maps to a negative floor generation")?;
         out.push(Approval {
             version: SCHEMA_VERSION,
             nv_index: request.nv_index,
@@ -330,9 +331,10 @@ pub fn load_all(dir: &Path) -> Result<Vec<Approval>> {
         if p.extension().is_none_or(|e| e != "json") {
             continue;
         }
-        match std::fs::read_to_string(&p).map_err(anyhow::Error::from).and_then(|t| {
-            serde_json::from_str::<Approval>(&t).map_err(anyhow::Error::from)
-        }) {
+        match std::fs::read_to_string(&p)
+            .map_err(anyhow::Error::from)
+            .and_then(|t| serde_json::from_str::<Approval>(&t).map_err(anyhow::Error::from))
+        {
             Ok(a) => out.push(a),
             Err(e) => eprintln!("qos-rollback: ignoring {}: {e:#}", p.display()),
         }
@@ -343,7 +345,9 @@ pub fn load_all(dir: &Path) -> Result<Vec<Approval>> {
 
 /// The approval for one specific counter value, if the device holds it.
 pub fn find(approvals: &[Approval], target_counter: u64) -> Option<&Approval> {
-    approvals.iter().find(|a| a.target_counter == target_counter)
+    approvals
+        .iter()
+        .find(|a| a.target_counter == target_counter)
 }
 
 /// Remove a spent approval's file. Best effort — the TPM has already made it useless, so a
@@ -411,7 +415,10 @@ mod tests {
         };
         let e = a.validate_for(0x01D9_1100, &other).unwrap_err().to_string();
         assert!(e.contains("different NV index Name"), "{e}");
-        let e = a.validate_for(0x01D9_1200, &name()).unwrap_err().to_string();
+        let e = a
+            .validate_for(0x01D9_1200, &name())
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("NV index"), "{e}");
     }
 
@@ -419,13 +426,19 @@ mod tests {
     fn validation_catches_a_tampered_target() {
         let mut a = approval_for(5);
         a.target_counter = 9;
-        let e = a.validate_for(0x01D9_1100, &name()).unwrap_err().to_string();
+        let e = a
+            .validate_for(0x01D9_1100, &name())
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("does not match its stated target"), "{e}");
     }
 
     #[test]
     fn the_safe_bound_is_the_newest_enrolled_generation() {
-        let floor = counter::FloorState { counter: 10, base: 5 };
+        let floor = counter::FloorState {
+            counter: 10,
+            base: 5,
+        };
         let r = build_request(1, &name(), floor, &[8, 7, 6], 3).unwrap();
         assert_eq!(r.floor_generation, 5);
         assert_eq!(r.safe_target_floor, 8);
@@ -433,7 +446,10 @@ mod tests {
 
     #[test]
     fn with_nothing_enrolled_the_safe_bound_is_the_current_floor() {
-        let floor = counter::FloorState { counter: 10, base: 5 };
+        let floor = counter::FloorState {
+            counter: 10,
+            base: 5,
+        };
         let r = build_request(1, &name(), floor, &[], 3).unwrap();
         assert_eq!(r.safe_target_floor, 5);
     }

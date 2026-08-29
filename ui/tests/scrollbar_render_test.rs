@@ -7,12 +7,12 @@
 //! Skips gracefully when no wgpu adapter is available, matching the other
 //! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
-use std::collections::HashMap;
 use crate::support::offscreen::OffscreenRenderer;
+use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -24,7 +24,10 @@ const H: u32 = 300;
 const BG: [u8; 4] = [0x0f, 0x17, 0x2a, 0xff];
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h))).ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 /// Tall column of left-aligned text, far taller than the viewport so the
@@ -32,7 +35,9 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 fn tall_child() -> Box<dyn Widget> {
     let mut col = Column::new().with_intrinsic_height();
     for i in 0..60 {
-        col = col.push(Box::new(Text::new(&format!("Row number {i} of the scrolling list"))));
+        col = col.push(Box::new(Text::new(&format!(
+            "Row number {i} of the scrolling list"
+        ))));
     }
     Box::new(col)
 }
@@ -118,7 +123,10 @@ fn scrollbar_paints_along_right_edge() {
 
     if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
-        for (name, buf) in [("scrollbar_on", &rgba_with), ("scrollbar_off", &rgba_without)] {
+        for (name, buf) in [
+            ("scrollbar_on", &rgba_with),
+            ("scrollbar_off", &rgba_without),
+        ] {
             let path = format!("{dir}/{name}.png");
             let mut png = Vec::new();
             {

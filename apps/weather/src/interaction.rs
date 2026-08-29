@@ -47,7 +47,11 @@ impl EntryAction {
     /// **first** entry is also the action bound to swipe-left — keeping the
     /// gesture and the menu's primary item in sync by construction.
     pub fn menu_for_entry() -> [EntryAction; 3] {
-        [EntryAction::Delete, EntryAction::MoveToTop, EntryAction::Refresh]
+        [
+            EntryAction::Delete,
+            EntryAction::MoveToTop,
+            EntryAction::Refresh,
+        ]
     }
 
     /// The action a left-swipe resolves to. Defined in terms of the menu so
@@ -85,7 +89,13 @@ pub struct PointerPress {
 
 impl PointerPress {
     pub fn new(index: usize, at: Point) -> Self {
-        Self { index, origin: at, current: at, moved: false, vertical: None }
+        Self {
+            index,
+            origin: at,
+            current: at,
+            moved: false,
+            vertical: None,
+        }
     }
 
     /// Update with the latest pointer position; classify the axis on the
@@ -129,7 +139,11 @@ pub struct ContextMenu {
 
 impl ContextMenu {
     pub fn for_entry(index: usize, anchor: Point) -> Self {
-        Self { index, anchor, items: EntryAction::menu_for_entry().to_vec() }
+        Self {
+            index,
+            anchor,
+            items: EntryAction::menu_for_entry().to_vec(),
+        }
     }
 }
 

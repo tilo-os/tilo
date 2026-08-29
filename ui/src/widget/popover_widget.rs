@@ -29,7 +29,12 @@ use crate::widget::Widget;
 /// opposite if `viewport` would clip it. See
 /// [`PopoverWidget::resolved_side`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PopoverSide { Above, Below, Left, Right }
+pub enum PopoverSide {
+    Above,
+    Below,
+    Left,
+    Right,
+}
 
 impl PopoverSide {
     fn opposite(self) -> Self {
@@ -116,24 +121,39 @@ impl<C: Widget> PopoverWidget<C> {
 
     /// Resolved popover body rect after flip logic. Returns `Rect::ZERO`
     /// before the first layout pass.
-    pub fn rect(&self) -> Rect { self.rect }
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
 
     /// Equal to the side passed to `new` unless the popover would have
     /// clipped past `viewport`, in which case it's the opposite.
-    pub fn resolved_side(&self) -> PopoverSide { self.resolved_side }
+    pub fn resolved_side(&self) -> PopoverSide {
+        self.resolved_side
+    }
 
     /// Intrinsic body dimensions, derived from the inner content's `measure`.
     fn body_size(&mut self, text_renderer: &mut TextRenderer) -> (f64, f64) {
         let measured = self.content.measure(
-            taffy::Size { width: None, height: None },
+            taffy::Size {
+                width: None,
+                height: None,
+            },
             taffy::Size {
                 width: taffy::AvailableSpace::MaxContent,
                 height: taffy::AvailableSpace::MaxContent,
             },
             text_renderer,
         );
-        let w = if measured.width > 0.0 { measured.width as f64 } else { FALLBACK_BODY_W };
-        let h = if measured.height > 0.0 { measured.height as f64 } else { FALLBACK_BODY_H };
+        let w = if measured.width > 0.0 {
+            measured.width as f64
+        } else {
+            FALLBACK_BODY_W
+        };
+        let h = if measured.height > 0.0 {
+            measured.height as f64
+        } else {
+            FALLBACK_BODY_H
+        };
         (w, h)
     }
 
@@ -202,7 +222,9 @@ impl<C: Widget> PopoverWidget<C> {
         );
         let mut inner_taffy = TaffyTree::<()>::new();
         let mut inner_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let content_node = self.content.build_layout(&mut inner_taffy, theme, &mut inner_map);
+        let content_node = self
+            .content
+            .build_layout(&mut inner_taffy, theme, &mut inner_map);
         let _ = inner_taffy.compute_layout_with_measure(
             content_node,
             taffy::Size {
@@ -247,28 +269,40 @@ impl<C: Widget> PopoverWidget<C> {
             PopoverSide::Below => {
                 // Body is below the anchor → arrow points up, sitting on
                 // top edge of the body.
-                let cx = body.center().x.clamp(body.x0 + ARROW_SIZE_PX, body.x1 - ARROW_SIZE_PX);
+                let cx = body
+                    .center()
+                    .x
+                    .clamp(body.x0 + ARROW_SIZE_PX, body.x1 - ARROW_SIZE_PX);
                 path.move_to(Point::new(cx - ARROW_SIZE_PX, body.y0));
                 path.line_to(Point::new(cx + ARROW_SIZE_PX, body.y0));
                 path.line_to(Point::new(cx, body.y0 - ARROW_SIZE_PX));
                 path.close_path();
             }
             PopoverSide::Above => {
-                let cx = body.center().x.clamp(body.x0 + ARROW_SIZE_PX, body.x1 - ARROW_SIZE_PX);
+                let cx = body
+                    .center()
+                    .x
+                    .clamp(body.x0 + ARROW_SIZE_PX, body.x1 - ARROW_SIZE_PX);
                 path.move_to(Point::new(cx - ARROW_SIZE_PX, body.y1));
                 path.line_to(Point::new(cx + ARROW_SIZE_PX, body.y1));
                 path.line_to(Point::new(cx, body.y1 + ARROW_SIZE_PX));
                 path.close_path();
             }
             PopoverSide::Right => {
-                let cy = body.center().y.clamp(body.y0 + ARROW_SIZE_PX, body.y1 - ARROW_SIZE_PX);
+                let cy = body
+                    .center()
+                    .y
+                    .clamp(body.y0 + ARROW_SIZE_PX, body.y1 - ARROW_SIZE_PX);
                 path.move_to(Point::new(body.x0, cy - ARROW_SIZE_PX));
                 path.line_to(Point::new(body.x0, cy + ARROW_SIZE_PX));
                 path.line_to(Point::new(body.x0 - ARROW_SIZE_PX, cy));
                 path.close_path();
             }
             PopoverSide::Left => {
-                let cy = body.center().y.clamp(body.y0 + ARROW_SIZE_PX, body.y1 - ARROW_SIZE_PX);
+                let cy = body
+                    .center()
+                    .y
+                    .clamp(body.y0 + ARROW_SIZE_PX, body.y1 - ARROW_SIZE_PX);
                 path.move_to(Point::new(body.x1, cy - ARROW_SIZE_PX));
                 path.line_to(Point::new(body.x1, cy + ARROW_SIZE_PX));
                 path.line_to(Point::new(body.x1 + ARROW_SIZE_PX, cy));
@@ -342,12 +376,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         // Drop shadow: 4 concentric outset rings at low alpha, same
         // pattern as `TabBar::draw_pill_inner`.
         let shadow_y_offset = 6.0_f64;
-        let shadow_rings: [(f64, f32); 4] = [
-            (2.0, 0.20),
-            (5.0, 0.12),
-            (9.0, 0.06),
-            (14.0, 0.02),
-        ];
+        let shadow_rings: [(f64, f32); 4] = [(2.0, 0.20), (5.0, 0.12), (9.0, 0.06), (14.0, 0.02)];
         for (spread, alpha) in shadow_rings {
             let shadow_rect = Rect::new(
                 body.x0 - spread,
@@ -381,7 +410,8 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &arrow);
 
         // Drawn after the chrome so content paints on top of the body fill.
-        self.content.draw(scene, transform, text_renderer, theme, presence);
+        self.content
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -401,10 +431,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(
-                    position.x / scale_factor,
-                    position.y / scale_factor,
-                );
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -422,9 +449,13 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         }
     }
 
-    fn name(&self) -> &str { "PopoverWidget" }
+    fn name(&self) -> &str {
+        "PopoverWidget"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 #[cfg(test)]
@@ -444,7 +475,10 @@ mod tests {
         fn new(w: f32, h: f32) -> Self {
             Self {
                 rect: Rect::ZERO,
-                intrinsic: taffy::Size { width: w, height: h },
+                intrinsic: taffy::Size {
+                    width: w,
+                    height: h,
+                },
             }
         }
     }
@@ -519,11 +553,16 @@ mod tests {
             _focus_target: &mut Option<NodeId>,
             _node_id: NodeId,
             _taffy: &TaffyTree<()>,
-        ) {}
+        ) {
+        }
 
-        fn name(&self) -> &str { "TestContent" }
+        fn name(&self) -> &str {
+            "TestContent"
+        }
 
-        fn get_rect(&self) -> Rect { self.rect }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
     }
 
     fn synth_device() -> DeviceId {
@@ -541,7 +580,9 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = p.build_layout(&mut taffy, &theme, &mut node_map);
         let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
-        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
         p.apply_layout(&taffy, node, Point::ZERO);
     }
 
@@ -645,14 +686,34 @@ mod tests {
             device_id: synth_device(),
             position: winit::dpi::PhysicalPosition::new(outside.x, outside.y),
         };
-        p.handle_event(&cursor_evt, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus_target, node, &tree);
+        p.handle_event(
+            &cursor_evt,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
 
         let press_evt = WindowEvent::MouseInput {
             device_id: synth_device(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        p.handle_event(&press_evt, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus_target, node, &tree);
+        p.handle_event(
+            &press_evt,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
 
         assert_eq!(
             *dismiss_count.borrow(),

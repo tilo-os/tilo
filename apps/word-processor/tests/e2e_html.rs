@@ -5,8 +5,8 @@
 
 use std::path::PathBuf;
 
-use word_processor::{open_document, WordProcessorWidget, WpFormat};
 use ui::Widget;
+use word_processor::{WordProcessorWidget, WpFormat, open_document};
 
 fn temp_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -21,7 +21,11 @@ fn render_doc_to_html() -> String {
     let c = qdoc::model::init(&mut state.doc, &state.root);
     let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
     {
-        let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut state.doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let h = dm.insert_block(None, "heading");
         dm.set_attr(&h, "level", 1_i64);
         dm.splice_text(&h, 0, 0, "Report");
@@ -56,12 +60,27 @@ fn open_html_recovers_headings_bold_link() {
     assert_eq!(first.attrs.get("level"), Some(&qdoc::AttrVal::Int(1)));
 
     // The paragraph survives with the bold run and the link mark.
-    let p = snap.blocks.iter().find(|b| b.kind == "paragraph").expect("paragraph survives");
+    let p = snap
+        .blocks
+        .iter()
+        .find(|b| b.kind == "paragraph")
+        .expect("paragraph survives");
     assert_eq!(p.text, "See bold and a link here");
-    let strong = p.marks.iter().find(|m| m.name == "strong").expect("bold run survives");
+    let strong = p
+        .marks
+        .iter()
+        .find(|m| m.name == "strong")
+        .expect("bold run survives");
     assert_eq!(&p.text[strong.start..strong.end], "bold", "{:?}", p.marks);
-    let link = p.marks.iter().find(|m| m.name == "link").expect("link survives");
-    assert_eq!(link.value, qdoc::document::MarkValue::Str("https://qos.dev/".into()));
+    let link = p
+        .marks
+        .iter()
+        .find(|m| m.name == "link")
+        .expect("link survives");
+    assert_eq!(
+        link.value,
+        qdoc::document::MarkValue::Str("https://qos.dev/".into())
+    );
     assert_eq!(&p.text[link.start..link.end], "a link", "{:?}", p.marks);
 
     std::fs::remove_file(&path).ok();

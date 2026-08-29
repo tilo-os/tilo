@@ -23,9 +23,9 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::gpu::RenderContext;
 use pollster::FutureExt;
 use vello::peniko::Color;
-use crate::gpu::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
 /// Ensures only ONE `wgpu::Instance` per process — constructing several in

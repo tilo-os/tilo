@@ -1,8 +1,8 @@
 //! End-to-end persistence: build a workspace with several pages,
 //! save it to a tmpdir, reload, and assert nothing got lost.
 
-use notes::storage::{load_workspace, save_workspace};
 use notes::Workspace;
+use notes::storage::{load_workspace, save_workspace};
 use tempfile::TempDir;
 
 #[test]
@@ -39,7 +39,10 @@ fn three_page_workspace_roundtrips_through_disk() {
 fn missing_workspace_file_loads_as_none() {
     let tmp = TempDir::new().unwrap();
     let res = load_workspace(tmp.path()).unwrap();
-    assert!(res.is_none(), "fresh tmpdir should produce a None workspace");
+    assert!(
+        res.is_none(),
+        "fresh tmpdir should produce a None workspace"
+    );
 }
 
 #[test]

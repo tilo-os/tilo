@@ -103,7 +103,11 @@ impl Icon {
                     &[(0.2, 0.45), (0.2, 0.9), (0.8, 0.9), (0.8, 0.45)],
                     false,
                 );
-                line(scene, &[(0.42, 0.9), (0.42, 0.62), (0.58, 0.62), (0.58, 0.9)], false);
+                line(
+                    scene,
+                    &[(0.42, 0.9), (0.42, 0.62), (0.58, 0.62), (0.58, 0.9)],
+                    false,
+                );
             }
             IconKind::Fire => {
                 let mut p = BezPath::new();
@@ -152,9 +156,8 @@ impl Icon {
                 let half = 0.20_f64; // angular half-width of each tooth (rad)
                 for k in 0..n {
                     let a = std::f64::consts::TAU * k as f64 / n as f64;
-                    let pt = |ang: f64, r: f64| {
-                        Point::new(c.x + ang.cos() * r, c.y + ang.sin() * r)
-                    };
+                    let pt =
+                        |ang: f64, r: f64| Point::new(c.x + ang.cos() * r, c.y + ang.sin() * r);
                     let mut p = BezPath::new();
                     p.move_to(pt(a - half, r_body));
                     p.line_to(pt(a - half, r_tooth));
@@ -163,8 +166,20 @@ impl Icon {
                     p.close_path();
                     scene.fill(Fill::NonZero, transform, self.color, None, &p);
                 }
-                scene.stroke(&stroke, transform, self.color, None, &Circle::new(c, r_body));
-                scene.stroke(&stroke, transform, self.color, None, &Circle::new(c, b.width() * 0.11));
+                scene.stroke(
+                    &stroke,
+                    transform,
+                    self.color,
+                    None,
+                    &Circle::new(c, r_body),
+                );
+                scene.stroke(
+                    &stroke,
+                    transform,
+                    self.color,
+                    None,
+                    &Circle::new(c, b.width() * 0.11),
+                );
             }
             IconKind::Search => {
                 scene.stroke(
@@ -187,7 +202,13 @@ impl Icon {
                 p.line_to(u(0.3, 0.78));
                 p.close_path();
                 scene.fill(Fill::NonZero, transform, self.color, None, &p);
-                let base = RoundedRect::new(u(0.12, 0.45).x, u(0.12, 0.45).y, u(0.3, 0.88).x, u(0.3, 0.88).y, sw);
+                let base = RoundedRect::new(
+                    u(0.12, 0.45).x,
+                    u(0.12, 0.45).y,
+                    u(0.3, 0.88).x,
+                    u(0.3, 0.88).y,
+                    sw,
+                );
                 scene.fill(Fill::NonZero, transform, self.color, None, &base);
             }
             IconKind::Dislike => {
@@ -203,7 +224,13 @@ impl Icon {
                 p.line_to(d(0.3, 0.78));
                 p.close_path();
                 scene.fill(Fill::NonZero, transform, self.color, None, &p);
-                let base = RoundedRect::new(d(0.12, 0.45).x, d(0.3, 0.88).y, d(0.3, 0.88).x, d(0.12, 0.45).y, sw);
+                let base = RoundedRect::new(
+                    d(0.12, 0.45).x,
+                    d(0.3, 0.88).y,
+                    d(0.3, 0.88).x,
+                    d(0.12, 0.45).y,
+                    sw,
+                );
                 scene.fill(Fill::NonZero, transform, self.color, None, &base);
             }
             IconKind::Bell => {
@@ -225,10 +252,20 @@ impl Icon {
                 scene.fill(Fill::NonZero, transform, self.color, None, &tri);
             }
             IconKind::Pause => {
-                scene.fill(Fill::NonZero, transform, self.color, None,
-                    &Rect::new(u(0.3, 0.2).x, u(0.3, 0.2).y, u(0.43, 0.8).x, u(0.43, 0.8).y));
-                scene.fill(Fill::NonZero, transform, self.color, None,
-                    &Rect::new(u(0.57, 0.2).x, u(0.57, 0.2).y, u(0.7, 0.8).x, u(0.7, 0.8).y));
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    self.color,
+                    None,
+                    &Rect::new(u(0.3, 0.2).x, u(0.3, 0.2).y, u(0.43, 0.8).x, u(0.43, 0.8).y),
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    self.color,
+                    None,
+                    &Rect::new(u(0.57, 0.2).x, u(0.57, 0.2).y, u(0.7, 0.8).x, u(0.7, 0.8).y),
+                );
             }
             IconKind::Check => {
                 line(scene, &[(0.2, 0.55), (0.42, 0.78), (0.82, 0.25)], false);
@@ -255,7 +292,13 @@ impl Icon {
                 tri.line_to(u(0.66, 0.82));
                 tri.line_to(u(0.85, 0.72));
                 tri.close_path();
-                scene.fill(vello::peniko::Fill::NonZero, transform, self.color, None, &tri);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    self.color,
+                    None,
+                    &tri,
+                );
             }
             IconKind::Shield => {
                 let mut p = BezPath::new();
@@ -289,7 +332,13 @@ impl Icon {
                 p.curve_to(u(0.65, 0.78), u(0.35, 0.78), u(0.12, 0.5));
                 p.close_path();
                 scene.stroke(&stroke, transform, self.color, None, &p);
-                scene.fill(Fill::NonZero, transform, self.color, None, &Circle::new(u(0.5, 0.5), b.width() * 0.12));
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    self.color,
+                    None,
+                    &Circle::new(u(0.5, 0.5), b.width() * 0.12),
+                );
             }
             IconKind::Skip => {
                 let mut tri = BezPath::new();
@@ -298,8 +347,18 @@ impl Icon {
                 tri.line_to(u(0.6, 0.5));
                 tri.close_path();
                 scene.fill(Fill::NonZero, transform, self.color, None, &tri);
-                scene.fill(Fill::NonZero, transform, self.color, None,
-                    &Rect::new(u(0.66, 0.22).x, u(0.66, 0.22).y, u(0.78, 0.78).x, u(0.78, 0.78).y));
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    self.color,
+                    None,
+                    &Rect::new(
+                        u(0.66, 0.22).x,
+                        u(0.66, 0.22).y,
+                        u(0.78, 0.78).x,
+                        u(0.78, 0.78).y,
+                    ),
+                );
             }
             IconKind::Menu => {
                 line(scene, &[(0.18, 0.3), (0.82, 0.3)], false);
@@ -460,7 +519,13 @@ impl Widget for Switch {
         };
         scene.fill(Fill::NonZero, transform, bg, None, &track);
         if self.hovered {
-            scene.stroke(&Stroke::new(2.0), transform, theme.border_focus, None, &track);
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &track,
+            );
         }
         let r = self.rect.height() / 2.0 - 3.0;
         let cx = if self.on {

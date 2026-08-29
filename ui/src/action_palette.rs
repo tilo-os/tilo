@@ -32,13 +32,13 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::search::{fuzzy_score, SearchGroup, SearchProvider, SearchResult};
+use crate::search::{SearchGroup, SearchProvider, SearchResult, fuzzy_score};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use qos_actions::{
-    dispatch, flatten, ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction,
-    Resource,
+    ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction, Resource, dispatch,
+    flatten,
 };
 
 /// The group header for the focused app's exported actions.
@@ -324,7 +324,10 @@ impl ActionPalette {
         for provider in &self.providers {
             for hit in provider.search(query) {
                 let row_id = format!("{NAV_PREFIX}{}", hit.action_id);
-                index.insert(row_id.clone(), RowResolution::Navigate(hit.action_id.clone()));
+                index.insert(
+                    row_id.clone(),
+                    RowResolution::Navigate(hit.action_id.clone()),
+                );
                 let mut r = SearchResult::new(hit.kind.clone(), hit.title.clone(), row_id)
                     .with_score(hit.score);
                 if let Some(sub) = &hit.subtitle {
@@ -391,8 +394,10 @@ impl ActionPalette {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.field.draw(scene, transform, text_renderer, theme, presence);
-        self.results.draw(scene, transform, text_renderer, theme, presence);
+        self.field
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.results
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     /// Feed a keyboard event to the open palette; returns whether consumed.
@@ -544,7 +549,10 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
                 g.results.push(r);
             }
         } else {
-            groups.push(SearchGroup { kind: r.kind.clone(), results: vec![r] });
+            groups.push(SearchGroup {
+                kind: r.kind.clone(),
+                results: vec![r],
+            });
         }
     }
     groups
@@ -554,7 +562,7 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ReadDoc, ScalarValue, ROOT};
+    use automerge::{ROOT, ReadDoc, ScalarValue};
     use qos_actions::{
         Action, ActionError, ActionRegistry, ActionSpec, Doc, ExecutionLocus, LocalTransport,
     };
@@ -570,7 +578,11 @@ mod tests {
     const NOTE_TYPE: &str = "test.note";
     impl Action for Note {
         fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-            doc.put(&ROOT, self.key.as_str(), ScalarValue::Str(self.value.as_str().into()))?;
+            doc.put(
+                &ROOT,
+                self.key.as_str(),
+                ScalarValue::Str(self.value.as_str().into()),
+            )?;
             Ok(())
         }
     }
@@ -589,7 +601,10 @@ mod tests {
                     "mark",
                     "Mark done",
                     NOTE_TYPE,
-                    &Note { key: "marked".into(), value: "yes".into() },
+                    &Note {
+                        key: "marked".into(),
+                        value: "yes".into(),
+                    },
                 )
                 .unwrap(),
             )
@@ -600,8 +615,14 @@ mod tests {
                 "e.g. Widget",
                 ExecutionLocus::ClientLocal,
                 |s: &str| {
-                    EncodedAction::encode(NOTE_TYPE, &Note { key: "name".into(), value: s.into() })
-                        .unwrap()
+                    EncodedAction::encode(
+                        NOTE_TYPE,
+                        &Note {
+                            key: "name".into(),
+                            value: s.into(),
+                        },
+                    )
+                    .unwrap()
                 },
             ))
     }
@@ -631,8 +652,14 @@ mod tests {
         p.open();
 
         let groups: Vec<String> = p.results.groups().iter().map(|g| g.kind.clone()).collect();
-        assert!(groups.contains(&ACTIONS_KIND.to_string()), "Actions group present: {groups:?}");
-        assert!(groups.contains(&"People".to_string()), "content group present: {groups:?}");
+        assert!(
+            groups.contains(&ACTIONS_KIND.to_string()),
+            "Actions group present: {groups:?}"
+        );
+        assert!(
+            groups.contains(&"People".to_string()),
+            "content group present: {groups:?}"
+        );
 
         let labels = p.result_labels();
         assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
@@ -664,11 +691,16 @@ mod tests {
             .expect("dispatch ok");
         assert!(matches!(d, Dispatched::AppliedLocal(_)));
         assert_eq!(
-            doc.get(&ROOT, "marked").unwrap().and_then(|(v, _)| v.to_str().map(str::to_string)),
+            doc.get(&ROOT, "marked")
+                .unwrap()
+                .and_then(|(v, _)| v.to_str().map(str::to_string)),
             Some("yes".to_string()),
         );
         assert!(!p.is_open(), "an immediate action closes the palette");
-        assert!(p.take_navigation().is_none(), "an action is not a navigation");
+        assert!(
+            p.take_navigation().is_none(),
+            "an action is not a navigation"
+        );
     }
 
     /// Activating a CONTENT row queues a navigation (its opaque id), NOT a
@@ -717,7 +749,10 @@ mod tests {
             .expect("rename row");
         p.set_cursor(idx);
         p.activate_selected();
-        assert!(p.in_argument_mode(), "a prompted action opens the argument step");
+        assert!(
+            p.in_argument_mode(),
+            "a prompted action opens the argument step"
+        );
         assert!(p.is_open(), "still open while collecting the argument");
 
         // Type the argument into the field and confirm.
@@ -734,7 +769,9 @@ mod tests {
             .expect("dispatch ok");
         assert!(matches!(d, Dispatched::AppliedLocal(_)));
         assert_eq!(
-            doc.get(&ROOT, "name").unwrap().and_then(|(v, _)| v.to_str().map(str::to_string)),
+            doc.get(&ROOT, "name")
+                .unwrap()
+                .and_then(|(v, _)| v.to_str().map(str::to_string)),
             Some("Sprocket".to_string()),
             "the action carries the typed argument",
         );
@@ -744,8 +781,9 @@ mod tests {
         // SAFETY: `handle_key` only reads `logical_key` + `state`.
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;

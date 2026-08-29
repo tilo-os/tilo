@@ -155,7 +155,10 @@ pub struct LastAction {
 
 impl LastAction {
     pub fn new(resource: impl Into<String>, at: i64) -> Self {
-        Self { resource: resource.into(), at }
+        Self {
+            resource: resource.into(),
+            at,
+        }
     }
 
     /// Whether `ts` is close enough to this action for it to be the unstated
@@ -295,7 +298,9 @@ fn waiting(m: &Message) -> bool {
 /// agent that answers a summons over several turns — a wait, then the work —
 /// leaves one message per turn under the same question.
 pub fn record_of<'a>(messages: &'a [Message], me: &str, parent: &str) -> Option<&'a Message> {
-    messages.iter().rfind(|m| m.author == me && m.parent.as_deref() == Some(parent))
+    messages
+        .iter()
+        .rfind(|m| m.author == me && m.parent.as_deref() == Some(parent))
 }
 
 /// The next thing in the room addressed to the agent that it has not answered.
@@ -356,9 +361,10 @@ fn subject_of(message: &Message, last: Option<&LastAction>, _now: i64) -> Subjec
         // exactly the sort of answer nobody can reason about.
         //
         // One boundary, so there is one thing to state and one thing to test.
-        Some(l) if l.within(message.ts, RECENCY_SECS) => {
-            Subject::Recent { resource: l.resource.clone(), age: (message.ts - l.at).abs() }
-        }
+        Some(l) if l.within(message.ts, RECENCY_SECS) => Subject::Recent {
+            resource: l.resource.clone(),
+            age: (message.ts - l.at).abs(),
+        },
         _ => Subject::Nothing,
     }
 }
@@ -394,7 +400,12 @@ mod tests {
     fn mentioning(mut m: Message) -> Message {
         let at = m.text.find('@').expect("a mention in the fixture");
         let len = m.text[at..].find(' ').unwrap_or(m.text.len() - at);
-        m.mentions = vec![Mention { user: ME.into(), start: at, len, is_agent: true }];
+        m.mentions = vec![Mention {
+            user: ME.into(),
+            start: at,
+            len,
+            is_agent: true,
+        }];
         m
     }
 
@@ -421,7 +432,10 @@ mod tests {
     #[test]
     fn the_request_is_the_body_without_the_token_that_addressed_it() {
         let m = mentioning(msg("m1", "u_ada", "@Claude crop this square", 100));
-        assert_eq!(asked_of(&m, ME, NAME, Address::Mentioned), "crop this square");
+        assert_eq!(
+            asked_of(&m, ME, NAME, Address::Mentioned),
+            "crop this square"
+        );
         let n = msg("m2", "u_ada", "Claude: crop this square", 100);
         assert_eq!(asked_of(&n, ME, NAME, Address::Named), "crop this square");
     }
@@ -429,8 +443,11 @@ mod tests {
     #[test]
     fn a_carried_address_beats_anything_recent() {
         let mut m = mentioning(msg("m1", "u_ada", "@Claude crop this", 100));
-        m.reference =
-            Some(ResourceRef::whole("files.entry", "files.entry:/var/workspace/harbour.png", "harbour.png"));
+        m.reference = Some(ResourceRef::whole(
+            "files.entry",
+            "files.entry:/var/workspace/harbour.png",
+            "harbour.png",
+        ));
         let last = LastAction::new("word-processor.block:blk_1", 99);
         let s = subject_of(&m, Some(&last), 100);
         assert_eq!(
@@ -444,7 +461,10 @@ mod tests {
     fn recency_bounds_the_inferred_subject_on_both_sides() {
         let m = mentioning(msg("m1", "u_ada", "@Claude do that again", 1_000));
         let near = LastAction::new("word-processor.block:blk_1", 1_000 - RECENCY_SECS + 1);
-        assert_eq!(subject_of(&m, Some(&near), 1_000).resource(), Some("word-processor.block:blk_1"));
+        assert_eq!(
+            subject_of(&m, Some(&near), 1_000).resource(),
+            Some("word-processor.block:blk_1")
+        );
         let far = LastAction::new("word-processor.block:blk_1", 1_000 - RECENCY_SECS - 1);
         assert_eq!(
             subject_of(&m, Some(&far), 1_000),
@@ -468,9 +488,15 @@ mod tests {
     fn a_summons_the_agent_took_but_has_not_finished_still_counts_as_answered() {
         let mut reply = msg("m2", ME, "", 101);
         reply.parent = Some("m1".into());
-        reply.work = Some(chat::model::AgentWork::new(chat::model::AgentWorkState::Taken, 101));
+        reply.work = Some(chat::model::AgentWork::new(
+            chat::model::AgentWorkState::Taken,
+            101,
+        ));
         let done = answered(&[msg("m1", "u_ada", "@Claude x", 100), reply], ME);
-        assert!(done.contains("m1"), "an in-flight record is not untouched work");
+        assert!(
+            done.contains("m1"),
+            "an in-flight record is not untouched work"
+        );
     }
 
     /// The one state that is not an answer: nothing has been dispatched and
@@ -479,10 +505,17 @@ mod tests {
     fn a_wait_is_not_an_answer_and_the_summons_stays_open() {
         let mut reply = msg("m2", ME, "", 101);
         reply.parent = Some("m1".into());
-        reply.work =
-            Some(chat::model::AgentWork::new(chat::model::AgentWorkState::Waiting { app: "Photos".into() }, 101));
+        reply.work = Some(chat::model::AgentWork::new(
+            chat::model::AgentWorkState::Waiting {
+                app: "Photos".into(),
+            },
+            101,
+        ));
         let done = answered(&[msg("m1", "u_ada", "@Claude x", 100), reply], ME);
-        assert!(!done.contains("m1"), "a wait must not permanently close the summons it belongs to");
+        assert!(
+            !done.contains("m1"),
+            "a wait must not permanently close the summons it belongs to"
+        );
     }
 
     #[test]
@@ -498,7 +531,10 @@ mod tests {
 
         let done: HashSet<String> = ["m1".to_string()].into_iter().collect();
         let s = next_summons(&msgs, ME, NAME, None, 300, &done).expect("the next one");
-        assert_eq!(s.message, "m2", "answered ones are skipped, the rest keep their order");
+        assert_eq!(
+            s.message, "m2",
+            "answered ones are skipped, the rest keep their order"
+        );
     }
 
     #[test]
@@ -525,7 +561,11 @@ mod tests {
         reply.parent = Some("m1".into());
         let mut someone_elses = msg("m3", "u_bob", "congrats", 102);
         someone_elses.parent = Some("m1".into());
-        let msgs = [msg("m1", "u_ada", "@Claude x", 100), reply.clone(), someone_elses];
+        let msgs = [
+            msg("m1", "u_ada", "@Claude x", 100),
+            reply.clone(),
+            someone_elses,
+        ];
         let found = record_of(&msgs, ME, "m1").expect("the agent's own reply");
         assert_eq!(found.id, "m2");
         assert!(record_of(&msgs, ME, "nonexistent").is_none());

@@ -181,7 +181,10 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> io::Result<()> {
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        format!("socket {} did not appear within {timeout:?}", path.display()),
+        format!(
+            "socket {} did not appear within {timeout:?}",
+            path.display()
+        ),
     ))
 }
 
@@ -250,10 +253,7 @@ mod tests {
     #[test]
     fn proxy_socket_path_uses_uid_and_pid() {
         let p = proxy_socket_path(1000, 4242);
-        assert_eq!(
-            p,
-            PathBuf::from("/run/user/1000/qos/dbus-proxy/4242.sock")
-        );
+        assert_eq!(p, PathBuf::from("/run/user/1000/qos/dbus-proxy/4242.sock"));
     }
 
     #[test]

@@ -68,7 +68,8 @@ impl Storage {
     /// Atomic-rename write of the server-identity file.
     pub fn save_identity(&self, ident: &ServerIdentity) -> Result<(), StorageError> {
         let path = self.handshake_path();
-        let body = toml::to_string_pretty(ident).map_err(|e| StorageError::Encode(e.to_string()))?;
+        let body =
+            toml::to_string_pretty(ident).map_err(|e| StorageError::Encode(e.to_string()))?;
         atomic_write(&path, body.as_bytes())
     }
 
@@ -139,8 +140,8 @@ impl Storage {
     /// Atomic-rename write of one entry.
     pub fn save_entry(&self, entry: &RegistryEntry) -> Result<(), StorageError> {
         let path = self.entry_path(&entry.package_id);
-        let body = serde_json::to_vec_pretty(entry)
-            .map_err(|e| StorageError::Encode(e.to_string()))?;
+        let body =
+            serde_json::to_vec_pretty(entry).map_err(|e| StorageError::Encode(e.to_string()))?;
         atomic_write(&path, &body)
     }
 

@@ -62,8 +62,8 @@ use crate::compositor::render_node::{ProbeError, RenderNode};
 use crate::compositor::selection::SelectionState;
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
-use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::input_firewall::{Denial, RemoteInputFirewall};
+use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
 use crate::wayland::color_management::ColorManagerState;
 
@@ -92,7 +92,7 @@ fn load_display_scale() -> f64 {
         .and_then(|d| d.get("scale"))
         .and_then(|s| s.as_f64())
     {
-    // Clamp to the Settings control's range (100%-200%, with margin) so an out-of-band value can't wedge the UI.
+        // Clamp to the Settings control's range (100%-200%, with margin) so an out-of-band value can't wedge the UI.
         Some(scale) if (0.5..=3.0).contains(&scale) => scale,
         _ => 1.0,
     }
@@ -578,9 +578,9 @@ impl State {
             session.deposit_captured_dmabuf(dmabuf);
             let emitted = session.encode_next_frame(std::time::Instant::now());
             if emitted.is_some() {
-            // Encoder actually consumed the DMABUF. Only *now* do we bump
-            // the tracker's `dmabuf_direct_count` — the metric reflects
-            // real zero-copy, not "DMABUF-shaped but rejected and fell back to SHM".
+                // Encoder actually consumed the DMABUF. Only *now* do we bump
+                // the tracker's `dmabuf_direct_count` — the metric reflects
+                // real zero-copy, not "DMABUF-shaped but rejected and fell back to SHM".
                 self.surface_tracker.note_capture_path(
                     surface_id,
                     crate::compositor::surface_readback::CapturePath::DmabufDirect,
@@ -782,8 +782,8 @@ impl State {
                 let Some(pointer) = self.seat.get_pointer() else {
                     return false;
                 };
-                let mut frame = AxisFrame::new(time)
-                    .source(smithay::backend::input::AxisSource::Continuous);
+                let mut frame =
+                    AxisFrame::new(time).source(smithay::backend::input::AxisSource::Continuous);
                 if dx != 0.0 {
                     frame = frame.value(smithay::backend::input::Axis::Horizontal, dx);
                 }
@@ -833,13 +833,7 @@ impl State {
     /// Deliver a raw keycode press/release to the seat keyboard. Shared by
     /// the RemoteDesktop keycode + keysym paths; passed straight through to
     /// smithay's `KeyboardHandle::input`, the same convention `network::wayland::WaylandServer::handle_input` and [`Self::apply_remote_input`]'s `Key` arm use.
-    fn inject_seat_key(
-        &mut self,
-        keycode: u32,
-        pressed: bool,
-        serial: Serial,
-        time: u32,
-    ) -> bool {
+    fn inject_seat_key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
         };
@@ -848,14 +842,10 @@ impl State {
         } else {
             KeyState::Released
         };
-        let _: Option<()> = keyboard.input(
-            self,
-            keycode.into(),
-            key_state,
-            serial,
-            time,
-            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
-        );
+        let _: Option<()> =
+            keyboard.input(self, keycode.into(), key_state, serial, time, |_, _, _| {
+                smithay::input::keyboard::FilterResult::<()>::Forward
+            });
         true
     }
 
@@ -956,7 +946,7 @@ impl RemoteInputSink for State {
             InputEvent::PointerEnter { surface: target } => {
                 // Grab keyboard focus for the peer's virtual seat.
                 let prev = self.remote_seats.seat_mut(peer).enter(target);
-                    // Only flip the physical seat's keyboard focus if the target changed — noisy re-enters otherwise stomp focus state.
+                // Only flip the physical seat's keyboard focus if the target changed — noisy re-enters otherwise stomp focus state.
                 if prev != Some(target) {
                     if let (Some(resolver), Some(keyboard)) =
                         (&self.surface_resolver, self.seat.get_keyboard())
@@ -967,7 +957,7 @@ impl RemoteInputSink for State {
                 }
             }
             InputEvent::PointerLeave { surface: _ } => {
-                    // Release the peer's grab, only clearing keyboard focus if this peer actually held it — an unentered `PointerLeave` is a no-op.
+                // Release the peer's grab, only clearing keyboard focus if this peer actually held it — an unentered `PointerLeave` is a no-op.
                 let prev = self.remote_seats.seat_mut(peer).leave();
                 if prev.is_some() {
                     if let Some(keyboard) = self.seat.get_keyboard() {
@@ -1009,22 +999,22 @@ impl RemoteInputSink for State {
 pub struct ClientState {
     /// Smithay's per-client compositor bookkeeping (transaction queue, scale).
     pub compositor_state: CompositorClientState,
-/// A number unique to this connection for the compositor's lifetime.
-///
-/// A Wayland object id is only unique *within* a client: two clients each
-/// get id 10 for their first `wl_surface`. The compositor keys tabs, share
-/// sessions and input routing off a flat `SurfaceId` space, so a bare
-/// protocol id would collide across clients. [`surface_id`] composes this
-/// index with the protocol id to keep that space flat. Starts at 1: index 0 is reserved for "the client could not be determined" (an already-dead resource).
+    /// A number unique to this connection for the compositor's lifetime.
+    ///
+    /// A Wayland object id is only unique *within* a client: two clients each
+    /// get id 10 for their first `wl_surface`. The compositor keys tabs, share
+    /// sessions and input routing off a flat `SurfaceId` space, so a bare
+    /// protocol id would collide across clients. [`surface_id`] composes this
+    /// index with the protocol id to keep that space flat. Starts at 1: index 0 is reserved for "the client could not be determined" (an already-dead resource).
     pub index: u32,
-/// Whether this connection arrived on the compositor's **privileged**
-/// socket rather than the public one.
-///
-/// The only thing it gates is the clipboard-manager protocol pair
-/// (`zwlr_data_control_manager_v1`/`ext_data_control_manager_v1`), which
-/// hands its holder every selection on the seat with no focus requirement
-/// — see [`crate::compositor::selection`]. A *socket* privilege, not a flag
-/// a client can ask for: the sandbox launcher bind-mounts only the public socket into a sandbox.
+    /// Whether this connection arrived on the compositor's **privileged**
+    /// socket rather than the public one.
+    ///
+    /// The only thing it gates is the clipboard-manager protocol pair
+    /// (`zwlr_data_control_manager_v1`/`ext_data_control_manager_v1`), which
+    /// hands its holder every selection on the seat with no focus requirement
+    /// — see [`crate::compositor::selection`]. A *socket* privilege, not a flag
+    /// a client can ask for: the sandbox launcher bind-mounts only the public socket into a sandbox.
     pub privileged: bool,
 }
 
@@ -1137,14 +1127,14 @@ impl CompositorHandler for State {
                         Err(
                             crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported,
                         ) => {
-                        // The tentative path is `DmabufDirect`. Pull the
-                        // Dmabuf off the wl_buffer via smithay's dmabuf-role
-                        // lookup and stash it on the tracker —
-                        // `tick_share_session_for_surface` drains it via
-                        // `take_latest_dmabuf` the same tick.
-                        //
-                        // If `get_dmabuf` fails despite detection saying
-                        // "not shm" (an unrecognised buffer type, e.g. `wl_drm`), the tracker slot stays empty this tick — the frame is dropped and no counter bumped, correct for "we don't know how to handle this buffer at all".
+                            // The tentative path is `DmabufDirect`. Pull the
+                            // Dmabuf off the wl_buffer via smithay's dmabuf-role
+                            // lookup and stash it on the tracker —
+                            // `tick_share_session_for_surface` drains it via
+                            // `take_latest_dmabuf` the same tick.
+                            //
+                            // If `get_dmabuf` fails despite detection saying
+                            // "not shm" (an unrecognised buffer type, e.g. `wl_drm`), the tracker slot stays empty this tick — the frame is dropped and no counter bumped, correct for "we don't know how to handle this buffer at all".
                             match smithay::wayland::dmabuf::get_dmabuf(buffer) {
                                 Ok(dmabuf) => {
                                     self.surface_tracker
@@ -1400,16 +1390,16 @@ impl XdgShellHandler for State {
     }
 }
 
-    /// Who draws the frame around a toplevel. On qOS, the compositor —
-    /// always, and to every client that asks.
-    ///
-    /// States the shell's model, not a preference: a window lives in a
-    /// tab, so title/controls/border are the compositor's to draw.
-    /// `ServerSide` is the answer regardless of what was requested.
-    ///
-    /// The sharper reason is size: a client that decorates itself
-    /// subtracts a title bar from its given size — configured 670x668,
-    /// every winit app committed 670x633, a 35px band of empty tab under every window.
+/// Who draws the frame around a toplevel. On qOS, the compositor —
+/// always, and to every client that asks.
+///
+/// States the shell's model, not a preference: a window lives in a
+/// tab, so title/controls/border are the compositor's to draw.
+/// `ServerSide` is the answer regardless of what was requested.
+///
+/// The sharper reason is size: a client that decorates itself
+/// subtracts a title bar from its given size — configured 670x668,
+/// every winit app committed 670x633, a 35px band of empty tab under every window.
 impl XdgDecorationHandler for State {
     /// The client has asked for a decoration object — the first point the
     /// compositor can state a mode. Stating it here matters: this configure
@@ -1580,7 +1570,12 @@ mod tick_hook_tests {
         }
     }
 
-    fn out(id: u32, position: (i32, i32), size: (u32, u32), scale: f32) -> crate::compositor::backend::Output {
+    fn out(
+        id: u32,
+        position: (i32, i32),
+        size: (u32, u32),
+        scale: f32,
+    ) -> crate::compositor::backend::Output {
         crate::compositor::backend::Output {
             id: crate::compositor::backend::OutputId(id),
             position,

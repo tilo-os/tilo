@@ -97,7 +97,9 @@ fn render_default(size: u32) -> Vec<u8> {
 }
 
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+    (a as f32 + (b as f32 - a as f32) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 #[cfg(test)]
@@ -106,7 +108,10 @@ mod tests {
 
     #[test]
     fn default_icon_builds() {
-        assert!(default_icon().is_some(), "generated qOS default icon must build");
+        assert!(
+            default_icon().is_some(),
+            "generated qOS default icon must build"
+        );
     }
 
     #[test]
@@ -117,7 +122,11 @@ mod tests {
             let i = ((y * SIZE + x) * 4) as usize;
             [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
         };
-        assert_eq!(at(SIZE / 2, SIZE / 2)[3], 255, "centre pixel must be opaque");
+        assert_eq!(
+            at(SIZE / 2, SIZE / 2)[3],
+            255,
+            "centre pixel must be opaque"
+        );
         assert_eq!(at(0, 0)[3], 0, "extreme corner must be transparent");
     }
 

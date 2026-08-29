@@ -238,8 +238,7 @@ impl WeatherModel {
     /// selects it.
     pub fn add_location(&mut self, loc: SavedLocation) -> usize {
         if let Some(idx) = self.locations.iter().position(|l| {
-            (l.latitude - loc.latitude).abs() < 0.05
-                && (l.longitude - loc.longitude).abs() < 0.05
+            (l.latitude - loc.latitude).abs() < 0.05 && (l.longitude - loc.longitude).abs() < 0.05
         }) {
             self.selected = idx;
             return idx;
@@ -326,7 +325,8 @@ mod tests {
     fn select_relative_wraps() {
         let mut m = WeatherModel::default();
         m.locations.push(loc());
-        m.locations.push(SavedLocation::new("B", "", "C", "CC", 10.0, 10.0, "auto"));
+        m.locations
+            .push(SavedLocation::new("B", "", "C", "CC", 10.0, 10.0, "auto"));
         m.selected = 0;
         m.select_relative(-1);
         assert_eq!(m.selected, 1, "wrap to last");
@@ -338,7 +338,8 @@ mod tests {
     fn remove_keeps_selection_valid() {
         let mut m = WeatherModel::default();
         m.locations.push(loc());
-        m.locations.push(SavedLocation::new("B", "", "C", "CC", 10.0, 10.0, "auto"));
+        m.locations
+            .push(SavedLocation::new("B", "", "C", "CC", 10.0, 10.0, "auto"));
         m.selected = 1;
         m.remove_location(1);
         assert_eq!(m.selected, 0);
@@ -355,7 +356,11 @@ mod tests {
         m.locations = vec![a, b, c];
         m.selected = 2; // "C" is in view.
         m.remove_location(0); // delete "A" above it.
-        assert_eq!(m.selected_location().unwrap().id, c_id, "selection tracks the place, not the slot");
+        assert_eq!(
+            m.selected_location().unwrap().id,
+            c_id,
+            "selection tracks the place, not the slot"
+        );
     }
 
     #[test]

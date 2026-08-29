@@ -294,7 +294,11 @@ mod tests {
             t0 + 2 * interval,
             "a late frame must not drag the deadline grid with it"
         );
-        assert_eq!(clock.skipped_deadlines(), 0, "one late frame missed no deadline");
+        assert_eq!(
+            clock.skipped_deadlines(),
+            0,
+            "one late frame missed no deadline"
+        );
     }
 
     #[test]
@@ -356,7 +360,10 @@ mod tests {
             "an unchanged interval must report no change so callers don't log every tick"
         );
         clock.note_presented(pending);
-        assert_eq!(clock.next_deadline(), pending + Duration::from_micros(6_944));
+        assert_eq!(
+            clock.next_deadline(),
+            pending + Duration::from_micros(6_944)
+        );
     }
 
     #[test]
@@ -467,7 +474,15 @@ mod tests {
         );
         assert_eq!(parse_refresh_override(Some(" 30 ")), interval_from_hz(30));
         // Rejected: the override must never be able to wedge the loop.
-        for bad in [None, Some(""), Some("0"), Some("-60"), Some("2000"), Some("nan"), Some("abc")] {
+        for bad in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("-60"),
+            Some("2000"),
+            Some("nan"),
+            Some("abc"),
+        ] {
             assert_eq!(
                 parse_refresh_override(bad),
                 None,
@@ -486,7 +501,10 @@ mod tests {
         let mut now = t0;
         let mut presents = Vec::new();
         for _ in 0..600 {
-            assert!(clock.due(now), "the loop must be due when it wakes on deadline");
+            assert!(
+                clock.due(now),
+                "the loop must be due when it wakes on deadline"
+            );
             now += work;
             presents.push(now);
             clock.note_presented(now);

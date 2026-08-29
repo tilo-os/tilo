@@ -210,7 +210,10 @@ impl PrintSpooler for LpSpooler {
 
 /// `lpstat -d` → the system default destination, if there is one.
 fn lpstat_default() -> Option<String> {
-    let out = std::process::Command::new("lpstat").arg("-d").output().ok()?;
+    let out = std::process::Command::new("lpstat")
+        .arg("-d")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -705,9 +708,7 @@ fn opt_copies(settings: &HashMap<String, OwnedValue>) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portal::{
-        CallerMap, GrantStoreHandle, PromptQueueHandle, PromptResolver,
-    };
+    use crate::portal::{CallerMap, GrantStoreHandle, PromptQueueHandle, PromptResolver};
     use crate::shell::state::{Workspace, WorkspaceId};
     use std::io::Write;
 
@@ -720,11 +721,8 @@ mod tests {
             GrantStoreHandle::test_with_workspace(Workspace::test_default(WorkspaceId(90), "pr"));
         let map = CallerMap::new();
         map.force_caller_for_tests(PortalCaller::new(ws_id, app));
-        let mut ctx = PortalContext::new_with_null_spawners(
-            store,
-            PromptQueueHandle::new(resolver),
-            map,
-        );
+        let mut ctx =
+            PortalContext::new_with_null_spawners(store, PromptQueueHandle::new(resolver), map);
         ctx.print_spooler = spooler;
         (ctx, ws_id)
     }
@@ -1071,7 +1069,7 @@ mod tests {
         // The backend reads the spooler off the context, so a test that
         // injects one must actually see it — guards against a future refactor hard-wiring `LpSpooler` inside the backend.
         let rec = Arc::new(RecordingSpooler::with_destinations(vec![
-            "Injected".to_string()
+            "Injected".to_string(),
         ]));
         let (ctx, _ws) = ctx_with(
             PrintSpoolerHandle::new(rec),

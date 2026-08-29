@@ -28,9 +28,9 @@ use std::time::Duration;
 
 use shell::portal::{
     self, CallerMap, FilePickerQueue, FilePickerSpawnerHandle, GrantStoreHandle,
-    MockScreenCastProvisioner, NullFilePickerSpawner, PortalCaller, PortalContext,
+    MockScreenCastProvisioner, NullFilePickerSpawner, OBJECT_PATH, PortalCaller, PortalContext,
     PromptQueueHandle, PromptResolver, RemoteInputInjectorHandle,
-    ScreenCastStreamProvisionerHandle, OBJECT_PATH,
+    ScreenCastStreamProvisionerHandle,
 };
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{Capability, Workspace, WorkspaceId, WorkspaceTree};
@@ -72,9 +72,8 @@ async fn access_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'sta
         .serve_at(OBJECT_PATH, portal::AccessBackend::new(ctx))
         .expect("serve_at");
     let client_builder = Builder::unix_stream(client_sock).p2p();
-    let (server, client) =
-        futures_util::try_join!(server_builder.build(), client_builder.build())
-            .expect("p2p connection pair");
+    let (server, client) = futures_util::try_join!(server_builder.build(), client_builder.build())
+        .expect("p2p connection pair");
     let proxy = Proxy::new(
         &client,
         "org.freedesktop.impl.portal.desktop.qos",
@@ -243,7 +242,12 @@ async fn a_session_grant_answers_and_persists() {
         .expect("workspace")
         .app_capabilities(&APP.to_string())
         .into_iter()
-        .any(|c| matches!(Capability::from_capability(c), Some(Capability::Camera { .. })));
+        .any(|c| {
+            matches!(
+                Capability::from_capability(c),
+                Some(Capability::Camera { .. })
+            )
+        });
     assert!(
         has_camera,
         "a Session answer must persist the capability on the workspace"

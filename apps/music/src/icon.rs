@@ -40,7 +40,13 @@ pub enum Icon {
 }
 
 fn stroke(scene: &mut Scene, t: Affine, color: Color, w: f64, path: &BezPath) {
-    scene.stroke(&Stroke::new(w).with_caps(vello::kurbo::Cap::Round), t, color, None, path);
+    scene.stroke(
+        &Stroke::new(w).with_caps(vello::kurbo::Cap::Round),
+        t,
+        color,
+        None,
+        path,
+    );
 }
 
 /// Draw `icon` centred at `center` within a `size`×`size` box.
@@ -63,8 +69,18 @@ pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, 
         Icon::Pause => {
             let bw = s * 0.20;
             let bh = s * 0.78;
-            let r1 = vello::kurbo::Rect::new(cx - s * 0.30, cy - bh / 2.0, cx - s * 0.30 + bw, cy + bh / 2.0);
-            let r2 = vello::kurbo::Rect::new(cx + s * 0.10, cy - bh / 2.0, cx + s * 0.10 + bw, cy + bh / 2.0);
+            let r1 = vello::kurbo::Rect::new(
+                cx - s * 0.30,
+                cy - bh / 2.0,
+                cx - s * 0.30 + bw,
+                cy + bh / 2.0,
+            );
+            let r2 = vello::kurbo::Rect::new(
+                cx + s * 0.10,
+                cy - bh / 2.0,
+                cx + s * 0.10 + bw,
+                cy + bh / 2.0,
+            );
             scene.fill(Fill::NonZero, t, color, None, &r1);
             scene.fill(Fill::NonZero, t, color, None, &r2);
         }
@@ -107,15 +123,31 @@ pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, 
                 (cx - half * 0.15 + r * 0.7, cy - half * 0.15 + r * 0.7),
                 (cx + half * 0.7, cy + half * 0.7),
             );
-            scene.stroke(&Stroke::new(lw).with_caps(vello::kurbo::Cap::Round), t, color, None, &handle);
+            scene.stroke(
+                &Stroke::new(lw).with_caps(vello::kurbo::Cap::Round),
+                t,
+                color,
+                None,
+                &handle,
+            );
         }
         Icon::Songs | Icon::Queue => {
             for (i, frac) in [(-0.6f64), 0.0, 0.6].iter().enumerate() {
                 let y = cy + half * frac;
                 let x1 = cx - half * 0.75;
-                let x2 = if icon == Icon::Queue && i == 2 { cx + half * 0.1 } else { cx + half * 0.75 };
+                let x2 = if icon == Icon::Queue && i == 2 {
+                    cx + half * 0.1
+                } else {
+                    cx + half * 0.75
+                };
                 let l = Line::new((x1, y), (x2, y));
-                scene.stroke(&Stroke::new(lw).with_caps(vello::kurbo::Cap::Round), t, color, None, &l);
+                scene.stroke(
+                    &Stroke::new(lw).with_caps(vello::kurbo::Cap::Round),
+                    t,
+                    color,
+                    None,
+                    &l,
+                );
             }
         }
         Icon::Albums | Icon::Disc => {
@@ -140,7 +172,13 @@ pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, 
             for frac in [-0.6f64, -0.1, 0.4] {
                 let y = cy + half * frac;
                 let l = Line::new((cx - half * 0.75, y), (cx + half * 0.3, y));
-                scene.stroke(&Stroke::new(lw).with_caps(vello::kurbo::Cap::Round), t, color, None, &l);
+                scene.stroke(
+                    &Stroke::new(lw).with_caps(vello::kurbo::Cap::Round),
+                    t,
+                    color,
+                    None,
+                    &l,
+                );
             }
             // little note at the right
             let note = Circle::new(Point::new(cx + half * 0.45, cy + half * 0.55), half * 0.2);
@@ -153,14 +191,25 @@ pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, 
         }
         Icon::Download | Icon::Downloaded => {
             let arrow = Line::new((cx, cy - half * 0.7), (cx, cy + half * 0.2));
-            scene.stroke(&Stroke::new(lw).with_caps(vello::kurbo::Cap::Round), t, color, None, &arrow);
+            scene.stroke(
+                &Stroke::new(lw).with_caps(vello::kurbo::Cap::Round),
+                t,
+                color,
+                None,
+                &arrow,
+            );
             let mut head = BezPath::new();
             head.move_to((cx - half * 0.35, cy - half * 0.15));
             head.line_to((cx, cy + half * 0.25));
             head.line_to((cx + half * 0.35, cy - half * 0.15));
             stroke(scene, t, color, lw, &head);
             if icon == Icon::Downloaded {
-                let tray = vello::kurbo::Rect::new(cx - half * 0.7, cy + half * 0.45, cx + half * 0.7, cy + half * 0.7);
+                let tray = vello::kurbo::Rect::new(
+                    cx - half * 0.7,
+                    cy + half * 0.45,
+                    cx + half * 0.7,
+                    cy + half * 0.7,
+                );
                 scene.fill(Fill::NonZero, t, color, None, &tray);
             } else {
                 let mut tray = BezPath::new();
@@ -198,7 +247,7 @@ pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, 
             let arc = vello::kurbo::Arc::new(
                 Point::new(cx, cy),
                 (r, r),
-                -1.0,            // start angle (radians)
+                -1.0,                       // start angle (radians)
                 std::f64::consts::PI * 1.7, // sweep
                 0.0,
             );
@@ -219,7 +268,13 @@ pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, 
             stroke(scene, t, color, lw, &a);
             if icon == Icon::RepeatOne {
                 let one = Line::new((cx, cy - half * 0.24), (cx, cy + half * 0.24));
-                scene.stroke(&Stroke::new(lw * 1.2).with_caps(vello::kurbo::Cap::Round), t, color, None, &one);
+                scene.stroke(
+                    &Stroke::new(lw * 1.2).with_caps(vello::kurbo::Cap::Round),
+                    t,
+                    color,
+                    None,
+                    &one,
+                );
             }
         }
         Icon::Heart | Icon::HeartFilled => {
@@ -285,8 +340,20 @@ pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, 
         Icon::Plus => {
             let hl = Line::new((cx - half * 0.7, cy), (cx + half * 0.7, cy));
             let vl = Line::new((cx, cy - half * 0.7), (cx, cy + half * 0.7));
-            scene.stroke(&Stroke::new(lw).with_caps(vello::kurbo::Cap::Round), t, color, None, &hl);
-            scene.stroke(&Stroke::new(lw).with_caps(vello::kurbo::Cap::Round), t, color, None, &vl);
+            scene.stroke(
+                &Stroke::new(lw).with_caps(vello::kurbo::Cap::Round),
+                t,
+                color,
+                None,
+                &hl,
+            );
+            scene.stroke(
+                &Stroke::new(lw).with_caps(vello::kurbo::Cap::Round),
+                t,
+                color,
+                None,
+                &vl,
+            );
         }
         Icon::ChevronLeft => {
             let mut p = BezPath::new();
@@ -311,7 +378,13 @@ pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, 
                 (cx + half * 0.04, cy - half * 0.6),
                 (cx + half * 0.5, cy - half * 0.4),
             );
-            scene.stroke(&Stroke::new(lw).with_caps(vello::kurbo::Cap::Round), t, color, None, &flag);
+            scene.stroke(
+                &Stroke::new(lw).with_caps(vello::kurbo::Cap::Round),
+                t,
+                color,
+                None,
+                &flag,
+            );
         }
     }
 }

@@ -26,19 +26,19 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::{Dispatcher, PowerProfile};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, ProgressBar, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{PowerActionPref, PowerPrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row, value_row, El};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
 
 pub const PROFILE_KEY: &str = "power.profile";
 pub const AUTO_SUSPEND_KEY: &str = "power.auto_suspend";
@@ -60,20 +60,33 @@ const SUSPEND_OPTIONS: &[(&str, u32)] = &[
 ];
 
 fn suspend_label(minutes: u32) -> &'static str {
-    SUSPEND_OPTIONS.iter().find(|(_, m)| *m == minutes).map(|(l, _)| *l).unwrap_or("15 minutes")
+    SUSPEND_OPTIONS
+        .iter()
+        .find(|(_, m)| *m == minutes)
+        .map(|(l, _)| *l)
+        .unwrap_or("15 minutes")
 }
 
 fn suspend_from_label(label: &str) -> Option<u32> {
-    SUSPEND_OPTIONS.iter().find(|(l, _)| *l == label).map(|(_, m)| *m)
+    SUSPEND_OPTIONS
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, m)| *m)
 }
 
 /// The action options offered for the lid / power-key / critical-battery
 /// dropdowns, in display order.
-const ACTION_OPTIONS: &[PowerActionPref] =
-    &[PowerActionPref::Suspend, PowerActionPref::Lock, PowerActionPref::Ignore];
+const ACTION_OPTIONS: &[PowerActionPref] = &[
+    PowerActionPref::Suspend,
+    PowerActionPref::Lock,
+    PowerActionPref::Ignore,
+];
 
 fn action_options() -> Vec<String> {
-    ACTION_OPTIONS.iter().map(|a| a.display().to_string()).collect()
+    ACTION_OPTIONS
+        .iter()
+        .map(|a| a.display().to_string())
+        .collect()
 }
 
 /// The power-profile options, as `(display label, profile)`. The label is what
@@ -85,7 +98,11 @@ const PROFILES: &[(&str, PowerProfile)] = &[
 ];
 
 fn profile_label(p: PowerProfile) -> &'static str {
-    PROFILES.iter().find(|(_, pp)| *pp == p).map(|(l, _)| *l).unwrap_or("Balanced")
+    PROFILES
+        .iter()
+        .find(|(_, pp)| *pp == p)
+        .map(|(l, _)| *l)
+        .unwrap_or("Balanced")
 }
 
 fn profile_from_label(label: &str) -> Option<PowerProfile> {
@@ -112,7 +129,10 @@ fn blank_label(minutes: u32) -> &'static str {
 }
 
 fn blank_from_label(label: &str) -> Option<u32> {
-    BLANK_OPTIONS.iter().find(|(l, _)| *l == label).map(|(_, m)| *m)
+    BLANK_OPTIONS
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, m)| *m)
 }
 
 /// A snapshot of the machine's power supply, read from
@@ -176,7 +196,13 @@ impl BatteryInfo {
             .min(100);
         let status = read_trim(&dir.join("status")).unwrap_or_else(|| "Unknown".to_string());
         let cycle_count = read_trim(&dir.join("cycle_count")).and_then(|s| s.parse::<u32>().ok());
-        Self { present: true, capacity, status, cycle_count, on_ac }
+        Self {
+            present: true,
+            capacity,
+            status,
+            cycle_count,
+            on_ac,
+        }
     }
 
     /// A friendly one-line summary of the charge state.
@@ -194,7 +220,10 @@ impl BatteryInfo {
 }
 
 fn read_trim(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Power pane widget.
@@ -312,7 +341,8 @@ impl PowerPane {
 
         // --- Session-idle card (durable preferences).
         let blank_opts: Vec<String> = BLANK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
-        let suspend_opts: Vec<String> = SUSPEND_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
+        let suspend_opts: Vec<String> =
+            SUSPEND_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
         let idle = card(
             "Automatic power saving",
             rows(vec![
@@ -557,7 +587,15 @@ impl Widget for PowerPane {
             && let Some(&cn) = children.first()
         {
             c.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
             );
         }
     }
@@ -626,7 +664,10 @@ mod tests {
     #[test]
     fn profile_label_and_from_label_round_trip() {
         assert_eq!(profile_label(PowerProfile::Saver), "Power Saver");
-        assert_eq!(profile_from_label("Performance"), Some(PowerProfile::Performance));
+        assert_eq!(
+            profile_from_label("Performance"),
+            Some(PowerProfile::Performance)
+        );
         assert_eq!(profile_from_label("Nonsense"), None);
     }
 
@@ -714,7 +755,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, AUTO_SUSPEND_KEY, automerge::ScalarValue::Boolean(false));
+        let _ = doc.put(
+            &root,
+            AUTO_SUSPEND_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
         let _ = doc.put(&root, BLANK_KEY, "30 minutes");
         pane.sync(&mut doc, &root);
         assert!(!pane.prefs().auto_suspend);

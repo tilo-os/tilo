@@ -24,7 +24,7 @@
 //! of a merged secret.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
 use crate::model::{Account, AccountId, Algorithm};
 
@@ -124,7 +124,9 @@ impl AuthDoc {
 
         let mut out = Vec::new();
         for key in doc.keys(&accounts) {
-            let Ok(id) = key.parse::<AccountId>() else { continue };
+            let Ok(id) = key.parse::<AccountId>() else {
+                continue;
+            };
             let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&accounts, key.as_str())
             else {
                 continue;
@@ -194,7 +196,7 @@ fn int_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{demo_accounts, Algorithm};
+    use crate::model::{Algorithm, demo_accounts};
 
     #[test]
     fn round_trips_a_full_account() {
@@ -234,7 +236,10 @@ mod tests {
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
         a.merge(&mut b_loaded).unwrap();
 
-        let issuers: Vec<_> = AuthDoc::list_accounts(&a).into_iter().map(|x| x.issuer).collect();
+        let issuers: Vec<_> = AuthDoc::list_accounts(&a)
+            .into_iter()
+            .map(|x| x.issuer)
+            .collect();
         assert!(issuers.contains(&acc_a[0].issuer));
         assert!(issuers.contains(&acc_a[1].issuer));
     }

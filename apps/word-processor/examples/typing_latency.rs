@@ -39,7 +39,11 @@ fn press(ch: char) -> WindowEvent {
     ev.state = ElementState::Pressed;
     ev.repeat = false;
     ev.text = Some(s);
-    WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false }
+    WindowEvent::KeyboardInput {
+        device_id: unsafe { std::mem::zeroed() },
+        event: ev,
+        is_synthetic: false,
+    }
 }
 
 /// A document on disk with `paragraphs` paragraphs in it, opened the way a
@@ -292,7 +296,9 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .cloned()
     };
-    let chars = arg("--chars").and_then(|v| v.parse().ok()).unwrap_or(300usize);
+    let chars = arg("--chars")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300usize);
     let rate = arg("--rate").and_then(|v| v.parse().ok()).unwrap_or(8.0f64);
 
     println!(
@@ -319,6 +325,10 @@ fn main() {
     println!("\ntyping at a person's pace: what reaches the screen, frame by frame\n");
     for paragraphs in [0usize, 4, 16] {
         let per_frame = paced_burst_profile(paragraphs, chars.min(120), rate);
-        report_bursts(&format!("{paragraphs} paragraph(s) of body"), &per_frame, rate);
+        report_bursts(
+            &format!("{paragraphs} paragraph(s) of body"),
+            &per_frame,
+            rate,
+        );
     }
 }

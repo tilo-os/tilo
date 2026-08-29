@@ -47,7 +47,7 @@ use qos_actions::{
 
 use crate::doc::SheetsDoc;
 use crate::model::{
-    col_to_letters, letters_to_col, Addr, CellFormat, Currency, DateStyle, TimeStyle,
+    Addr, CellFormat, Currency, DateStyle, TimeStyle, col_to_letters, letters_to_col,
 };
 use crate::settings::DocSettings;
 
@@ -114,7 +114,10 @@ pub enum SheetsAction {
     SetCells { sheet: usize, cells: Vec<CellWrite> },
     /// Set the format of a batch of cells in one change — range formatting from
     /// the Format menu or the palette. One undo boundary for the whole range.
-    SetFormats { sheet: usize, cells: Vec<FormatWrite> },
+    SetFormats {
+        sheet: usize,
+        cells: Vec<FormatWrite>,
+    },
     /// Append a new blank sheet named `name`.
     AddSheet { name: String },
     /// Insert a new blank sheet named `name` at index `at` (clamped to the end).
@@ -182,13 +185,23 @@ impl Action for SheetsAction {
                 for w in cells {
                     SheetsDoc::set_cell_raw(doc, *sheet, (w.col, w.row), &w.raw);
                     if let Some(f) = &w.fmt {
-                        SheetsDoc::set_cell_format(doc, *sheet, (w.col, w.row), CellFormat::from_str(f));
+                        SheetsDoc::set_cell_format(
+                            doc,
+                            *sheet,
+                            (w.col, w.row),
+                            CellFormat::from_str(f),
+                        );
                     }
                 }
             }
             SheetsAction::SetFormats { sheet, cells } => {
                 for w in cells {
-                    SheetsDoc::set_cell_format(doc, *sheet, (w.col, w.row), CellFormat::from_str(&w.fmt));
+                    SheetsDoc::set_cell_format(
+                        doc,
+                        *sheet,
+                        (w.col, w.row),
+                        CellFormat::from_str(&w.fmt),
+                    );
                 }
             }
             SheetsAction::AddSheet { name } => {
@@ -214,7 +227,9 @@ impl Action for SheetsAction {
             }
             SheetsAction::InsertRow { sheet, at } => {
                 let at = *at;
-                restructure(doc, *sheet, |(c, r)| Some((c, if r >= at { r + 1 } else { r })));
+                restructure(doc, *sheet, |(c, r)| {
+                    Some((c, if r >= at { r + 1 } else { r }))
+                });
             }
             SheetsAction::DeleteRow { sheet, at } => {
                 let at = *at;
@@ -230,7 +245,9 @@ impl Action for SheetsAction {
             }
             SheetsAction::InsertColumn { sheet, at } => {
                 let at = *at;
-                restructure(doc, *sheet, |(c, r)| Some((if c >= at { c + 1 } else { c }, r)));
+                restructure(doc, *sheet, |(c, r)| {
+                    Some((if c >= at { c + 1 } else { c }, r))
+                });
             }
             SheetsAction::DeleteColumn { sheet, at } => {
                 let at = *at;
@@ -331,7 +348,12 @@ pub fn encode(action: &SheetsAction) -> EncodedAction {
 /// Write a cell's raw value/formula, optionally setting its format in the same
 /// action (smart-typed entry carries its inferred format; `None` leaves the
 /// existing format untouched). An empty `raw` clears the cell.
-pub fn set_cell_action(sheet: usize, addr: Addr, raw: &str, fmt: Option<CellFormat>) -> SheetsAction {
+pub fn set_cell_action(
+    sheet: usize,
+    addr: Addr,
+    raw: &str,
+    fmt: Option<CellFormat>,
+) -> SheetsAction {
     SheetsAction::SetCell {
         sheet,
         col: addr.0,
@@ -390,11 +412,16 @@ pub fn set_formats_action(
 }
 
 pub fn add_sheet_action(name: &str) -> SheetsAction {
-    SheetsAction::AddSheet { name: name.to_string() }
+    SheetsAction::AddSheet {
+        name: name.to_string(),
+    }
 }
 
 pub fn insert_sheet_action(at: usize, name: &str) -> SheetsAction {
-    SheetsAction::InsertSheet { at, name: name.to_string() }
+    SheetsAction::InsertSheet {
+        at,
+        name: name.to_string(),
+    }
 }
 
 pub fn delete_sheet_action(idx: usize) -> SheetsAction {
@@ -402,7 +429,10 @@ pub fn delete_sheet_action(idx: usize) -> SheetsAction {
 }
 
 pub fn rename_sheet_action(idx: usize, name: &str) -> SheetsAction {
-    SheetsAction::RenameSheet { idx, name: name.to_string() }
+    SheetsAction::RenameSheet {
+        idx,
+        name: name.to_string(),
+    }
 }
 
 pub fn move_sheet_action(from: usize, to: usize) -> SheetsAction {
@@ -503,7 +533,11 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         ));
 
         // Delete the whole sheet (a no-op on the workbook's last sheet).
-        sheet = sheet.with_action(immediate_spec("delete", "Delete sheet", &delete_sheet_action(idx)));
+        sheet = sheet.with_action(immediate_spec(
+            "delete",
+            "Delete sheet",
+            &delete_sheet_action(idx),
+        ));
 
         // Insert a blank row above a given 1-based row number (default: the top).
         sheet = sheet.with_action(ActionSpec::prompted(
@@ -595,13 +629,20 @@ mod tests {
         let budget = SheetsDoc::add_sheet(&mut doc, "Budget");
         SheetsDoc::set_cell_raw(&mut doc, budget, (0, 0), "Rent");
         SheetsDoc::set_cell_raw(&mut doc, budget, (1, 0), "1200");
-        SheetsDoc::set_cell_format(&mut doc, budget, (1, 0), CellFormat::Currency(Currency::USD));
+        SheetsDoc::set_cell_format(
+            &mut doc,
+            budget,
+            (1, 0),
+            CellFormat::Currency(Currency::USD),
+        );
         SheetsDoc::add_sheet(&mut doc, "Sales");
         doc
     }
 
     fn ctx_from(doc: &mut AutoCommit) -> SheetsResourceCtx {
-        SheetsResourceCtx { sheet_names: SheetsDoc::sheet_names(doc) }
+        SheetsResourceCtx {
+            sheet_names: SheetsDoc::sheet_names(doc),
+        }
     }
 
     /// Ctrl+K on Sheets yields the workbook root exporting "New sheet" and a
@@ -634,8 +675,14 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("New sheet")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Rename sheet")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete sheet")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Rename sheet")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete sheet")),
+            "{labels:?}"
+        );
     }
 
     /// A cell write through the action mutates the document.
@@ -660,7 +707,11 @@ mod tests {
         assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Budget"]);
         // The last sheet cannot be deleted away.
         dispatch(&mut doc, &delete_sheet_action(0));
-        assert_eq!(SheetsDoc::sheet_count(&mut doc), 1, "a workbook keeps one sheet");
+        assert_eq!(
+            SheetsDoc::sheet_count(&mut doc),
+            1,
+            "a workbook keeps one sheet"
+        );
     }
 
     /// Inserting a row above the value cell shifts it down; delete shifts back.
@@ -693,8 +744,15 @@ mod tests {
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads.clone(), None, None);
 
-        assert_eq!(SheetsDoc::sheet_count(&mut state.doc), before + 1, "the action added a sheet");
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert_eq!(
+            SheetsDoc::sheet_count(&mut state.doc),
+            before + 1,
+            "the action added a sheet"
+        );
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         // Ctrl+Z reverts exactly this action.
         state.undo(None, None).expect("an undo entry to pop");
@@ -714,14 +772,22 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = set_cell_action(0, (2, 4), "converge", None);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (2, 4)), "converge");
     }
 
@@ -736,14 +802,22 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = insert_row_action(0, 0);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "restructure replayed identically");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "restructure replayed identically"
+        );
         assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (0, 1)), "Rent");
     }
 
@@ -755,7 +829,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = set_cells_action(
             0,
@@ -769,7 +847,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "the whole batch replayed identically");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "the whole batch replayed identically"
+        );
         assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (0, 5)), "=A1+1");
         assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (1, 5)), "42");
         let snap = SheetsDoc::snapshot_sheet(&mut b, 0, Currency::USD);
@@ -790,18 +872,27 @@ mod tests {
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&delete_sheet_action(0));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "delete is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "delete is one source of truth"
+        );
 
         // Rename spec == rename builder for the same name.
         let rename_spec = sheet.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename_spec, "Q1");
         let from_builder = encode(&rename_sheet_action(0, "Q1"));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
 
         // Insert-row spec builds an InsertRow at the parsed (1-based → 0-based) row.
         let insert_spec = sheet.actions.iter().find(|a| a.id == "insert-row").unwrap();
         let from_spec = prompted_encode(insert_spec, "5");
         let from_builder = encode(&insert_row_action(0, 4));
-        assert_eq!(from_spec.payload, from_builder.payload, "insert-row is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "insert-row is one source of truth"
+        );
     }
 }

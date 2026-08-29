@@ -1,5 +1,5 @@
+use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use std::collections::HashMap;
-use fluent::{FluentBundle, FluentResource, FluentArgs, FluentValue};
 use unic_langid::LanguageIdentifier;
 
 /// An owned value to interpolate into a localized message. Owned (rather than a
@@ -25,13 +25,19 @@ impl ArgValue {
 }
 
 impl From<&str> for ArgValue {
-    fn from(s: &str) -> Self { ArgValue::Text(s.to_string()) }
+    fn from(s: &str) -> Self {
+        ArgValue::Text(s.to_string())
+    }
 }
 impl From<String> for ArgValue {
-    fn from(s: String) -> Self { ArgValue::Text(s) }
+    fn from(s: String) -> Self {
+        ArgValue::Text(s)
+    }
 }
 impl From<&String> for ArgValue {
-    fn from(s: &String) -> Self { ArgValue::Text(s.clone()) }
+    fn from(s: &String) -> Self {
+        ArgValue::Text(s.clone())
+    }
 }
 
 macro_rules! arg_from_number {
@@ -69,14 +75,16 @@ impl I18nManager {
             bundles: HashMap::new(),
             current_locale: lang_id.clone(),
         };
-        
+
         let mut bundle = FluentBundle::new(vec![lang_id]);
         // Don't wrap interpolated variables in Unicode bidi isolation marks
         // (FSI/PDI) — we render to a single run, so "Count is { $n }" should
         // read "Count is 5", not "Count is \u{2068}5\u{2069}".
         bundle.set_use_isolating(false);
-        manager.bundles.insert(manager.current_locale.clone(), bundle);
-        
+        manager
+            .bundles
+            .insert(manager.current_locale.clone(), bundle);
+
         MANAGER.with(|m| {
             *m.borrow_mut() = Some(manager);
         });
@@ -85,7 +93,7 @@ impl I18nManager {
     pub fn add_resource(locale: &str, ftl_source: String) {
         let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
         let res = FluentResource::try_new(ftl_source).expect("Failed to parse an FTL resource.");
-        
+
         MANAGER.with(|m| {
             if let Some(mgr) = m.borrow_mut().as_mut() {
                 let bundle = mgr.bundles.entry(lang_id.clone()).or_insert_with(|| {
@@ -93,7 +101,9 @@ impl I18nManager {
                     b.set_use_isolating(false);
                     b
                 });
-                bundle.add_resource(res).expect("Failed to add FTL resource to the bundle.");
+                bundle
+                    .add_resource(res)
+                    .expect("Failed to add FTL resource to the bundle.");
             }
         });
     }
@@ -115,7 +125,9 @@ impl I18nManager {
                 && let Some(pattern) = msg.value()
             {
                 let mut errors = vec![];
-                return bundle.format_pattern(pattern, args, &mut errors).to_string();
+                return bundle
+                    .format_pattern(pattern, args, &mut errors)
+                    .to_string();
             }
             key.to_string()
         })

@@ -16,18 +16,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::{BtDeviceInfo, Dispatcher};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::widgets::{card_with_action, caption, rows, El};
+use crate::widgets::{El, caption, card_with_action, rows};
 
 pub const BT_ENABLED_KEY: &str = "bluetooth.enabled";
 
@@ -121,11 +121,7 @@ impl BluetoothPane {
     /// Test / `--shots` builder: inject the connect/disconnect control and,
     /// optionally, a lister that reflects the post-toggle device state, so the
     /// real connect path is exercised without touching `bluetoothctl`.
-    pub fn with_bt_control(
-        mut self,
-        bt: Arc<dyn BtControl>,
-        lister: BtLister,
-    ) -> Self {
+    pub fn with_bt_control(mut self, bt: Arc<dyn BtControl>, lister: BtLister) -> Self {
         self.bt = bt;
         self.lister = lister;
         self
@@ -142,7 +138,9 @@ impl BluetoothPane {
 
         let mut device_rows: Vec<El> = Vec::new();
         if self.devices.is_empty() {
-            device_rows.push(caption("No paired devices yet. Pair a device to see it here."));
+            device_rows.push(caption(
+                "No paired devices yet. Pair a device to see it here.",
+            ));
         } else {
             for dev in &self.devices {
                 let battery_str = if dev.battery > 0 {
@@ -152,7 +150,11 @@ impl BluetoothPane {
                 };
                 let key = connect_key(&dev.name);
                 let cta_id = format!("settings.bluetooth.connect.{}", dev.name);
-                let cta_label = if dev.connected { "Disconnect" } else { "Connect" };
+                let cta_label = if dev.connected {
+                    "Disconnect"
+                } else {
+                    "Connect"
+                };
                 // Name + action inline on the top line (a single leading Text
                 // keeps the button on the same line); the connection status on
                 // its own line beneath.
@@ -225,7 +227,14 @@ impl Widget for BluetoothPane {
         let targets: Vec<(String, String, bool, String)> = self
             .devices
             .iter()
-            .map(|d| (d.name.clone(), d.mac.clone(), d.connected, connect_key(&d.name)))
+            .map(|d| {
+                (
+                    d.name.clone(),
+                    d.mac.clone(),
+                    d.connected,
+                    connect_key(&d.name),
+                )
+            })
             .collect();
         let mut toggled_any = false;
         for (name, mac, connected, key) in targets {
@@ -418,7 +427,10 @@ mod tests {
             Ok(())
         }
         fn disconnect(&self, mac: &str) -> Result<(), String> {
-            self.calls.lock().unwrap().push(format!("disconnect({mac})"));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("disconnect({mac})"));
             Ok(())
         }
     }
@@ -448,7 +460,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, BT_ENABLED_KEY, automerge::ScalarValue::Boolean(false));
+        let _ = doc.put(
+            &root,
+            BT_ENABLED_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
         pane.sync(&mut doc, &root);
         assert_eq!(rec.calls(), vec!["set_bluetooth(false)"]);
     }
@@ -462,8 +478,18 @@ mod tests {
         let bt = Arc::new(RecordingBt::default());
         // After the disconnect the radio reports AirPods as no longer connected.
         let after = vec![
-            BtDeviceInfo { name: "AirPods Pro".into(), mac: "AA:BB:CC:DD:EE:01".into(), battery: 80, connected: false },
-            BtDeviceInfo { name: "Magic Mouse".into(), mac: "AA:BB:CC:DD:EE:02".into(), battery: 0, connected: false },
+            BtDeviceInfo {
+                name: "AirPods Pro".into(),
+                mac: "AA:BB:CC:DD:EE:01".into(),
+                battery: 80,
+                connected: false,
+            },
+            BtDeviceInfo {
+                name: "Magic Mouse".into(),
+                mac: "AA:BB:CC:DD:EE:02".into(),
+                battery: 0,
+                connected: false,
+            },
         ];
         let lister: BtLister = {
             let a = after.clone();
@@ -487,9 +513,15 @@ mod tests {
             bt.calls.lock().unwrap().as_slice(),
             ["disconnect(AA:BB:CC:DD:EE:01)"]
         );
-        assert!(pane.take_structure_dirty(), "a toggle re-reads the list → rebuild");
         assert!(
-            !pane.devices().iter().any(|d| d.name == "AirPods Pro" && d.connected),
+            pane.take_structure_dirty(),
+            "a toggle re-reads the list → rebuild"
+        );
+        assert!(
+            !pane
+                .devices()
+                .iter()
+                .any(|d| d.name == "AirPods Pro" && d.connected),
             "the re-read reflects the disconnected state: {:?}",
             pane.devices()
         );

@@ -361,40 +361,37 @@ impl MathField {
                 self.editor.move_right(false);
                 false
             }
-            WKey::Character(s) if ctrl => {
-                match s.as_str() {
-                    "a" | "A" => {
-                        self.editor.select_all();
-                        false
+            WKey::Character(s) if ctrl => match s.as_str() {
+                "a" | "A" => {
+                    self.editor.select_all();
+                    false
+                }
+                "c" | "C" => {
+                    if let Some(lin) = self.editor.selected_linear() {
+                        ui::clipboard_copy(&lin);
                     }
-                    "c" | "C" => {
-                        if let Some(lin) = self.editor.selected_linear() {
-                            ui::clipboard_copy(&lin);
-                        }
-                        false
+                    false
+                }
+                "x" | "X" => {
+                    if let Some(lin) = self.editor.selected_linear() {
+                        ui::clipboard_copy(&lin);
+                        self.editor.delete_selection();
+                        return true;
                     }
-                    "x" | "X" => {
-                        if let Some(lin) = self.editor.selected_linear() {
-                            ui::clipboard_copy(&lin);
-                            self.editor.delete_selection();
+                    false
+                }
+                "v" | "V" => {
+                    if let Some(paste) = ui::clipboard_paste() {
+                        let cleaned: String = paste.chars().filter(|c| !c.is_control()).collect();
+                        if !cleaned.is_empty() {
+                            self.editor.paste_linear(&cleaned);
                             return true;
                         }
-                        false
                     }
-                    "v" | "V" => {
-                        if let Some(paste) = ui::clipboard_paste() {
-                            let cleaned: String =
-                                paste.chars().filter(|c| !c.is_control()).collect();
-                            if !cleaned.is_empty() {
-                                self.editor.paste_linear(&cleaned);
-                                return true;
-                            }
-                        }
-                        false
-                    }
-                    _ => false,
+                    false
                 }
-            }
+                _ => false,
+            },
             WKey::Character(s) => {
                 let mut changed = false;
                 for ch in s.chars() {

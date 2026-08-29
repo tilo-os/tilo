@@ -109,7 +109,9 @@ pub enum PackError {
     ManifestEncode(#[from] crate::manifest::ManifestParseError),
     #[error("publisher identity in manifest does not match signing identity")]
     IdentityMismatch,
-    #[error("true-threshold signing is not implemented at pack time; use the multi-device ceremony to produce an aggregated signature and pass it to `pack_with_signature`")]
+    #[error(
+        "true-threshold signing is not implemented at pack time; use the multi-device ceremony to produce an aggregated signature and pass it to `pack_with_signature`"
+    )]
     ThresholdSigningUnsupported,
     #[error("threshold-internal error: {0}")]
     ThresholdInternal(String),

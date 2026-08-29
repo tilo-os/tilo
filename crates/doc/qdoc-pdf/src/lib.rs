@@ -73,13 +73,25 @@ const TABLE_PAD: f32 = 4.0; // cell text padding
 /// per page and serialized at the end so the writer stays a single pass.
 enum Op {
     /// Show `text` at baseline `(x, y)` in font `bold?` at `size` pt.
-    Text { x: f32, y: f32, size: f32, bold: bool, text: String },
+    Text {
+        x: f32,
+        y: f32,
+        size: f32,
+        bold: bool,
+        text: String,
+    },
     /// Stroke a 1pt line from `(x1,y1)` to `(x2,y2)`.
     Line { x1: f32, y1: f32, x2: f32, y2: f32 },
     /// Stroke a rectangle outline at `(x,y)` (lower-left) sized `w`×`h`.
     Rect { x: f32, y: f32, w: f32, h: f32 },
     /// Paint image XObject `name` into the box `(x,y,w,h)` (lower-left origin).
-    Image { name: String, x: f32, y: f32, w: f32, h: f32 },
+    Image {
+        name: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
 }
 
 /// One page under construction: a cursor descending from the top margin
@@ -92,7 +104,10 @@ struct Page {
 
 impl Page {
     fn new() -> Self {
-        Self { ops: Vec::new(), images: Vec::new() }
+        Self {
+            ops: Vec::new(),
+            images: Vec::new(),
+        }
     }
 }
 
@@ -110,7 +125,12 @@ struct Layout {
 
 impl Layout {
     fn new() -> Self {
-        let mut l = Layout { writer: PdfWriter::new(), pages: Vec::new(), y: CONTENT_TOP, next_img: 0 };
+        let mut l = Layout {
+            writer: PdfWriter::new(),
+            pages: Vec::new(),
+            y: CONTENT_TOP,
+            next_img: 0,
+        };
         l.new_page();
         l
     }
@@ -137,7 +157,13 @@ impl Layout {
         self.ensure(leading);
         // Baseline sits ~`size` below the cursor's top (approx ascent).
         let baseline = self.y - size * 0.8;
-        self.cur().ops.push(Op::Text { x, y: baseline, size, bold, text: text.to_string() });
+        self.cur().ops.push(Op::Text {
+            x,
+            y: baseline,
+            size,
+            bold,
+            text: text.to_string(),
+        });
         self.y -= leading;
     }
 
@@ -236,7 +262,8 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
     } else {
         "\u{2022}".to_string() // bullet
     };
-    let marker_w = metrics::text_width(&metrics::HELVETICA, &pdf::to_winansi(&marker), BODY_SIZE) + 4.0;
+    let marker_w =
+        metrics::text_width(&metrics::HELVETICA, &pdf::to_winansi(&marker), BODY_SIZE) + 4.0;
     let text_indent = indent + marker_w;
     let avail = (MARGIN + TEXT_W) - text_indent;
     let lines = wrap(&block.text, avail.max(40.0), BODY_SIZE, false);
@@ -244,10 +271,22 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
     // Marker on the first line, hung to the left of the wrapped text.
     layout.ensure(BODY_LEADING);
     let first_y_top = layout.y;
-    layout.line(lines.first().map(String::as_str).unwrap_or(""), text_indent, BODY_SIZE, BODY_LEADING, false);
+    layout.line(
+        lines.first().map(String::as_str).unwrap_or(""),
+        text_indent,
+        BODY_SIZE,
+        BODY_LEADING,
+        false,
+    );
     // Place the marker at the same baseline as the first text line.
     let baseline = first_y_top - BODY_SIZE * 0.8;
-    layout.cur().ops.push(Op::Text { x: indent, y: baseline, size: BODY_SIZE, bold: false, text: marker });
+    layout.cur().ops.push(Op::Text {
+        x: indent,
+        y: baseline,
+        size: BODY_SIZE,
+        bold: false,
+        text: marker,
+    });
     for line in lines.iter().skip(1) {
         layout.line(line, text_indent, BODY_SIZE, BODY_LEADING, false);
     }
@@ -278,13 +317,21 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
     // Rows are child blocks, each row's children its cells. Tolerates
     // the alternate flat-cells-with-`cols`-attr shape.
     let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block.children.iter().map(|row| row.children.iter().collect()).collect()
+        block
+            .children
+            .iter()
+            .map(|row| row.children.iter().collect())
+            .collect()
     } else if !block.children.is_empty() {
         let cols = match block.attrs.get("cols") {
             Some(AttrVal::Int(n)) => (*n).max(1) as usize,
             _ => block.children.len().max(1),
         };
-        block.children.chunks(cols).map(|c| c.iter().collect()).collect()
+        block
+            .children
+            .chunks(cols)
+            .map(|c| c.iter().collect())
+            .collect()
     } else {
         Vec::new()
     };
@@ -304,7 +351,12 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         // Cell grid + text.
         for (ci, cell) in row.iter().enumerate() {
             let x = MARGIN + ci as f32 * col_w;
-            layout.cur().ops.push(Op::Rect { x, y: bottom, w: col_w, h: row_h });
+            layout.cur().ops.push(Op::Rect {
+                x,
+                y: bottom,
+                w: col_w,
+                h: row_h,
+            });
             let text = clip_to_width(&cell.text, col_w - 2.0 * TABLE_PAD, BODY_SIZE);
             let baseline = top - TABLE_PAD - BODY_SIZE * 0.8;
             layout.cur().ops.push(Op::Text {
@@ -318,7 +370,12 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         // Outline any missing trailing cells so the grid stays rectangular.
         for ci in row.len()..ncols {
             let x = MARGIN + ci as f32 * col_w;
-            layout.cur().ops.push(Op::Rect { x, y: bottom, w: col_w, h: row_h });
+            layout.cur().ops.push(Op::Rect {
+                x,
+                y: bottom,
+                w: col_w,
+                h: row_h,
+            });
         }
         layout.y -= row_h;
     }
@@ -335,9 +392,14 @@ struct DecodedImage {
 }
 
 fn decode_image(bytes: &[u8]) -> Result<DecodedImage, DocPdfError> {
-    let img = image::load_from_memory(bytes).map_err(|_| DocPdfError::ImageDecode(String::new()))?;
+    let img =
+        image::load_from_memory(bytes).map_err(|_| DocPdfError::ImageDecode(String::new()))?;
     let rgb = img.to_rgb8();
-    Ok(DecodedImage { width: rgb.width(), height: rgb.height(), rgb: rgb.into_raw() })
+    Ok(DecodedImage {
+        width: rgb.width(),
+        height: rgb.height(),
+        rgb: rgb.into_raw(),
+    })
 }
 
 fn place_image(layout: &mut Layout, img: DecodedImage) {
@@ -365,7 +427,13 @@ fn place_image(layout: &mut Layout, img: DecodedImage) {
     );
     let obj = layout.writer.add_stream(&dict, &compressed);
     layout.cur().images.push((name.clone(), obj));
-    layout.cur().ops.push(Op::Image { name, x: MARGIN, y: bottom, w, h });
+    layout.cur().ops.push(Op::Image {
+        name,
+        x: MARGIN,
+        y: bottom,
+        w,
+        h,
+    });
     layout.y -= h;
     layout.gap(PARA_GAP);
 }
@@ -377,13 +445,34 @@ fn placeholder(layout: &mut Layout, label: &str) {
     layout.ensure(h);
     let top = layout.y;
     let bottom = top - h;
-    layout.cur().ops.push(Op::Rect { x: MARGIN, y: bottom, w: TEXT_W, h });
+    layout.cur().ops.push(Op::Rect {
+        x: MARGIN,
+        y: bottom,
+        w: TEXT_W,
+        h,
+    });
     // Diagonal cross to read clearly as a placeholder.
-    layout.cur().ops.push(Op::Line { x1: MARGIN, y1: bottom, x2: MARGIN + TEXT_W, y2: top });
-    layout.cur().ops.push(Op::Line { x1: MARGIN, y1: top, x2: MARGIN + TEXT_W, y2: bottom });
+    layout.cur().ops.push(Op::Line {
+        x1: MARGIN,
+        y1: bottom,
+        x2: MARGIN + TEXT_W,
+        y2: top,
+    });
+    layout.cur().ops.push(Op::Line {
+        x1: MARGIN,
+        y1: top,
+        x2: MARGIN + TEXT_W,
+        y2: bottom,
+    });
     let baseline = top - h / 2.0;
     let label = clip_to_width(label, TEXT_W - 8.0, BODY_SIZE);
-    layout.cur().ops.push(Op::Text { x: MARGIN + 6.0, y: baseline, size: BODY_SIZE, bold: false, text: label });
+    layout.cur().ops.push(Op::Text {
+        x: MARGIN + 6.0,
+        y: baseline,
+        size: BODY_SIZE,
+        bold: false,
+        text: label,
+    });
     layout.y -= h;
     layout.gap(PARA_GAP);
 }
@@ -394,7 +483,11 @@ fn placeholder(layout: &mut Layout, label: &str) {
 /// source split lines; over-long single words are hard-broken so they
 /// never overflow the text column.
 fn wrap(text: &str, max_w: f32, size: f32, bold: bool) -> Vec<String> {
-    let table = if bold { &metrics::HELVETICA_BOLD } else { &metrics::HELVETICA };
+    let table = if bold {
+        &metrics::HELVETICA_BOLD
+    } else {
+        &metrics::HELVETICA
+    };
     let mut out = Vec::new();
     for src_line in text.split('\n') {
         if src_line.is_empty() {
@@ -403,7 +496,11 @@ fn wrap(text: &str, max_w: f32, size: f32, bold: bool) -> Vec<String> {
         }
         let mut line = String::new();
         for word in src_line.split(' ') {
-            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            let candidate = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
             let w = metrics::text_width(table, &pdf::to_winansi(&candidate), size);
             if w <= max_w || line.is_empty() {
                 if w <= max_w {
@@ -443,7 +540,8 @@ fn hard_break(word: &str, max_w: f32, size: f32, table: &[u16; 256]) -> Vec<Stri
     let mut cur = String::new();
     for ch in word.chars() {
         let candidate = format!("{cur}{ch}");
-        if metrics::text_width(table, &pdf::to_winansi(&candidate), size) > max_w && !cur.is_empty() {
+        if metrics::text_width(table, &pdf::to_winansi(&candidate), size) > max_w && !cur.is_empty()
+        {
             chunks.push(std::mem::take(&mut cur));
             cur.push(ch);
         } else {
@@ -496,7 +594,9 @@ fn finish(mut layout: Layout) -> Vec<u8> {
     for page in pages {
         let content = serialize_ops(&page.ops);
         let content_data = pdf::flate(&content);
-        let content_obj = layout.writer.add_stream(" /Filter /FlateDecode", &content_data);
+        let content_obj = layout
+            .writer
+            .add_stream(" /Filter /FlateDecode", &content_data);
 
         // Per-page resources: fonts always; XObjects when images were placed.
         let mut xobjects = String::new();
@@ -520,7 +620,11 @@ fn finish(mut layout: Layout) -> Vec<u8> {
     }
 
     // Fill in the pages tree now that we have the kids.
-    let kids = page_objs.iter().map(|o| format!("{} 0 R", o.0)).collect::<Vec<_>>().join(" ");
+    let kids = page_objs
+        .iter()
+        .map(|o| format!("{} 0 R", o.0))
+        .collect::<Vec<_>>()
+        .join(" ");
     let pages_body = format!(
         "<< /Type /Pages /Count {} /Kids [{}] >>",
         page_objs.len(),
@@ -528,14 +632,14 @@ fn finish(mut layout: Layout) -> Vec<u8> {
     );
     layout.writer.set(pages_obj, pages_body.into_bytes());
 
-    let catalog = layout.writer.add(format!("<< /Type /Catalog /Pages {} 0 R >>", pages_obj.0).into_bytes());
+    let catalog = layout
+        .writer
+        .add(format!("<< /Type /Catalog /Pages {} 0 R >>", pages_obj.0).into_bytes());
     layout.writer.finish(catalog)
 }
 
 fn font_dict(base: &str) -> String {
-    format!(
-        "<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /WinAnsiEncoding >>"
-    )
+    format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /WinAnsiEncoding >>")
 }
 
 /// Serialize a page's ops into a PDF content stream.
@@ -544,9 +648,15 @@ fn serialize_ops(ops: &[Op]) -> Vec<u8> {
     let mut s = Vec::new();
     for op in ops {
         match op {
-            Op::Text { x, y, size, bold, text } => {
+            Op::Text {
+                x,
+                y,
+                size,
+                bold,
+                text,
+            } => {
                 let font = if *bold { "F2" } else { "F1" };
-                let _ = write!(s, "BT /{font} {size} Tf {x:.2} {y:.2} Td (", );
+                let _ = write!(s, "BT /{font} {size} Tf {x:.2} {y:.2} Td (",);
                 s.extend_from_slice(&escape_pdf_text(text));
                 let _ = write!(s, ") Tj ET\n");
             }

@@ -86,7 +86,7 @@ impl ActionHost {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ReadDoc, ScalarValue, ROOT};
+    use automerge::{ROOT, ReadDoc, ScalarValue};
     use qos_actions::{ActionError, Doc, ExecutionLocus};
     use serde::{Deserialize, Serialize};
 
@@ -113,24 +113,57 @@ mod tests {
     fn dispatch_applies_the_action_to_the_doc() {
         let mut doc = AutoCommit::new();
         let mut host = ActionHost::new();
-        host.dispatch(&mut doc, PUT_TYPE, &Put { key: "score".into(), value: 42 });
-        assert_eq!(doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(), Some(42));
+        host.dispatch(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "score".into(),
+                value: 42,
+            },
+        );
+        assert_eq!(
+            doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(),
+            Some(42)
+        );
     }
 
     #[test]
     fn brackets_one_undo_boundary_across_several_actions() {
         let mut doc = AutoCommit::new();
         // A pre-existing app write; the bracket must start *after* it.
-        doc.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
+        doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
+            .unwrap();
         let heads_before_actions = doc.get_heads();
 
         let mut host = ActionHost::new();
-        host.dispatch(&mut doc, PUT_TYPE, &Put { key: "a".into(), value: 1 });
-        host.dispatch(&mut doc, PUT_TYPE, &Put { key: "b".into(), value: 2 });
+        host.dispatch(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "a".into(),
+                value: 1,
+            },
+        );
+        host.dispatch(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "b".into(),
+                value: 2,
+            },
+        );
 
-        let committed = host.take_committed().expect("first dispatch armed the boundary");
-        assert_eq!(committed, heads_before_actions, "bracket covers only the actions");
-        assert!(host.take_committed().is_none(), "reading clears the boundary");
+        let committed = host
+            .take_committed()
+            .expect("first dispatch armed the boundary");
+        assert_eq!(
+            committed, heads_before_actions,
+            "bracket covers only the actions"
+        );
+        assert!(
+            host.take_committed().is_none(),
+            "reading clears the boundary"
+        );
     }
 
     #[test]
@@ -138,9 +171,14 @@ mod tests {
         let mut doc = AutoCommit::new();
         let mut host = ActionHost::new();
         assert!(host.last_dispatched().is_none());
-        let action = Put { key: "k".into(), value: 7 };
+        let action = Put {
+            key: "k".into(),
+            value: 7,
+        };
         host.dispatch(&mut doc, PUT_TYPE, &action);
-        let enc = host.last_dispatched().expect("dispatch recorded the action");
+        let enc = host
+            .last_dispatched()
+            .expect("dispatch recorded the action");
         assert_eq!(enc, &EncodedAction::encode(PUT_TYPE, &action).unwrap());
     }
 }

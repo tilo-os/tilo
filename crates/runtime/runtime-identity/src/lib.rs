@@ -75,8 +75,13 @@ enum LoadFailure {
     ReadFailed(io::Error),
     JsonMalformed(serde_json::Error),
     UnknownSchemaVersion(u32),
-    SecretSizeMismatch { got: usize },
-    PublicKeyMismatch { derived: [u8; 32], recorded: [u8; 32] },
+    SecretSizeMismatch {
+        got: usize,
+    },
+    PublicKeyMismatch {
+        derived: [u8; 32],
+        recorded: [u8; 32],
+    },
 }
 
 impl std::fmt::Display for LoadFailure {
@@ -217,8 +222,7 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
 /// Same as [`load`] but reads from a caller-specified path — for tests, or
 /// apps that resolve the identity path themselves.
 pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
-    let bytes = fs::read(&path)
-        .map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
+    let bytes = fs::read(&path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     load_from_bytes(&bytes)
 }
 
@@ -233,9 +237,10 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
 
     let ti = record.threshold_identity;
     if ti.secret_bytes.len() != 32 {
-        return Err(
-            LoadFailure::SecretSizeMismatch { got: ti.secret_bytes.len() }.into_not_available(),
-        );
+        return Err(LoadFailure::SecretSizeMismatch {
+            got: ti.secret_bytes.len(),
+        }
+        .into_not_available());
     }
 
     let signing_key = if ti.single_device {
@@ -405,7 +410,9 @@ mod tests {
         let sig_bytes = ident.sign(msg).expect("sign");
         let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
         let verifier = VerifyingKey::from_bytes(&vk.to_bytes()).unwrap();
-        verifier.verify(msg, &sig).expect("verification should succeed");
+        verifier
+            .verify(msg, &sig)
+            .expect("verification should succeed");
     }
 
     /// A record whose secret does not derive its recorded public key must not

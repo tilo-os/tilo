@@ -66,7 +66,15 @@ impl FormatProvider for DocxCodec {
         }
         // Resolve each `r:embed` rel id to its media part's bytes for the body parser to store.
         let image_map = content::build_image_map(&container);
-        content::parse_body(&document, &reg, &foot_map, &end_map, &comment_map, &image_map, doc)?;
+        content::parse_body(
+            &document,
+            &reg,
+            &foot_map,
+            &end_map,
+            &comment_map,
+            &image_map,
+            doc,
+        )?;
         // Document properties from `docProps/core.xml` + `docProps/app.xml` into `meta.props`.
         if let Some(core_xml) = container.get("docProps/core.xml") {
             meta::import_core(core_xml, doc);

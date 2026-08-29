@@ -22,7 +22,10 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
     // Depth of `dc:*`/`meta:*` metadata children whose text must not become body content.
     let mut in_meta = 0i32;
 
-    let open_block = |doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize| {
+    let open_block = |doc: &mut DocMut,
+                      prev: &mut Option<String>,
+                      cur: &mut Option<String>,
+                      cur_len: &mut usize| {
         if let Some(id) = doc.insert_comment_block(&comment_id, prev.as_deref(), "paragraph") {
             *prev = Some(id.clone());
             *cur = Some(id);
@@ -46,7 +49,9 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"dc:creator" | b"dc:date" | b"meta:date-string" => in_meta += 1,
-                b"text:p" | b"text:h" if in_meta == 0 => open_block(doc, &mut prev, &mut cur, &mut cur_len),
+                b"text:p" | b"text:h" if in_meta == 0 => {
+                    open_block(doc, &mut prev, &mut cur, &mut cur_len)
+                }
                 _ => {}
             },
             Event::Empty(e) if in_meta == 0 && cur.is_some() => match e.name().as_ref() {
@@ -57,7 +62,11 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
                         .attributes()
                         .flatten()
                         .find(|a| a.key.as_ref() == b"text:c")
-                        .and_then(|a| a.unescape_value().ok().and_then(|v| v.parse::<usize>().ok()))
+                        .and_then(|a| {
+                            a.unescape_value()
+                                .ok()
+                                .and_then(|v| v.parse::<usize>().ok())
+                        })
                         .unwrap_or(1)
                         .min(256);
                     append(doc, &cur, &mut cur_len, &" ".repeat(n));
@@ -67,7 +76,9 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
             Event::Text(t) if in_meta == 0 && cur.is_some() => {
                 if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
-                    if !txt.is_empty() && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r'])) {
+                    if !txt.is_empty()
+                        && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r']))
+                    {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
                 }
@@ -90,7 +101,10 @@ pub(super) fn annotation_name(raw: &str) -> Option<String> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) | Ok(Event::Empty(e))
-                if matches!(e.name().as_ref(), b"office:annotation" | b"office:annotation-end") =>
+                if matches!(
+                    e.name().as_ref(),
+                    b"office:annotation" | b"office:annotation-end"
+                ) =>
             {
                 return e
                     .attributes()
@@ -188,7 +202,10 @@ pub(super) fn render_annotation_start(comment: &CommentView) -> String {
 
 /// Empty `<office:annotation-end/>` XML closing a comment's range; `office:name` matches the opening annotation's.
 pub(super) fn render_annotation_end(comment: &CommentView) -> String {
-    format!(r#"<office:annotation-end office:name="{}"/>"#, escape_attr(&comment.id))
+    format!(
+        r#"<office:annotation-end office:name="{}"/>"#,
+        escape_attr(&comment.id)
+    )
 }
 
 /// Escape a string for use inside a double-quoted XML attribute value.

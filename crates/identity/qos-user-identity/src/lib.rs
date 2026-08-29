@@ -69,9 +69,6 @@ pub mod persist;
 pub mod revocation;
 
 pub use canonical::CanonicalError;
-pub use persist::{
-    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, load_or_create_device_key,
-};
 pub use cert::{
     DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError, sign_device_cert,
     verify_device_cert, verify_device_cert_at,
@@ -82,6 +79,9 @@ pub use directory::{
 pub use enrollment::{
     ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken, decode_enrollment_token,
     encode_enrollment_token, mint_enrollment_token, verify_enrollment_token,
+};
+pub use persist::{
+    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, load_or_create_device_key,
 };
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
@@ -137,7 +137,10 @@ impl UserIdentity {
     /// the *root secret*; the `UserIdentity` carries only the
     /// public half + display metadata. Persist the `SigningKey`
     /// separately (encrypted at rest, ideally sealed to a TPM).
-    pub fn generate(label: impl Into<String>, created_at_ns: u64) -> (ed25519_dalek::SigningKey, Self) {
+    pub fn generate(
+        label: impl Into<String>,
+        created_at_ns: u64,
+    ) -> (ed25519_dalek::SigningKey, Self) {
         use ed25519_dalek::SigningKey;
         use rand::rngs::OsRng;
 

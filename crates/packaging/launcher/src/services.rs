@@ -243,7 +243,6 @@ pub fn to_service_binds(resolved: &[ResolvedService]) -> Vec<crate::sandbox::Ser
         .collect()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,7 +293,10 @@ mod tests {
         svcs.insert("collab".to_string(), "required@1".to_string());
         let err = resolve_service_binds(&svcs, false)
             .expect_err("a required service that does not answer must fail the launch");
-        assert!(matches!(err, ServiceError::OpenFailed { .. }), "got {err:?}");
+        assert!(
+            matches!(err, ServiceError::OpenFailed { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -304,8 +306,7 @@ mod tests {
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
         // Kept alive for the duration of the call, so `connect` succeeds.
-        let _listener =
-            std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let _listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), "optional@1".to_string());
@@ -412,7 +413,11 @@ mod tests {
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
-        assert_eq!(resolved.len(), 1, "the one live service must be handed over");
+        assert_eq!(
+            resolved.len(),
+            1,
+            "the one live service must be handed over"
+        );
 
         let (mut served, _) = listener
             .accept()

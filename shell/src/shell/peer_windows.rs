@@ -188,9 +188,9 @@ pub fn opened_for_the_room(
                 }
                 let hosts = match &tab.tile {
                     TileContent::Foreign { app_id: a, .. } => a.eq_ignore_ascii_case(app_id),
-                    TileContent::PeerWindow { app_id: a, note, .. } => {
-                        !note.is_empty() && a.eq_ignore_ascii_case(app_id)
-                    }
+                    TileContent::PeerWindow {
+                        app_id: a, note, ..
+                    } => !note.is_empty() && a.eq_ignore_ascii_case(app_id),
                     _ => false,
                 };
                 if hosts {
@@ -446,7 +446,11 @@ mod tests {
     fn a_note_is_what_marks_a_window_answered() {
         let (mut tree, tab) = tree_with_peer_window(room_owned_by("quinten"));
         assert!(any_pending(&tree), "an unexamined peer window is pending");
-        assert!(set_note(&mut tree, tab, "Not installed on this machine".into()));
+        assert!(set_note(
+            &mut tree,
+            tab,
+            "Not installed on this machine".into()
+        ));
         assert!(
             !any_pending(&tree),
             "a peer window that has been answered for must not be examined again"

@@ -162,12 +162,9 @@ mod tests {
             },
             ..Default::default()
         };
-        let err = crate::run::run_with_captured(
-            &manifest,
-            std::path::Path::new("/nonexistent"),
-            &opts,
-        )
-        .expect_err("the second door into the sandbox builder is closed too");
+        let err =
+            crate::run::run_with_captured(&manifest, std::path::Path::new("/nonexistent"), &opts)
+                .expect_err("the second door into the sandbox builder is closed too");
         assert!(matches!(err, RunError::HostAppNotAPackage { .. }));
     }
 
@@ -181,7 +178,8 @@ mod tests {
         )
         .expect_err("nothing has that id");
         assert!(
-            err.to_string().contains("dev.qos.definitely-not-installed-anywhere"),
+            err.to_string()
+                .contains("dev.qos.definitely-not-installed-anywhere"),
             "the error must name what could not be found: {err}"
         );
     }

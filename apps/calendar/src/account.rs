@@ -19,7 +19,9 @@
 
 use std::path::Path;
 
-use accounts::{Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId, SecretVault};
+use accounts::{
+    Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId, SecretVault,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::model::Palette;
@@ -88,7 +90,8 @@ impl CalDavConfig {
         }
         if self.server_url.trim().is_empty() {
             out.push(("server_url", "Server URL is required".into()));
-        } else if !self.server_url.starts_with("http://") && !self.server_url.starts_with("https://")
+        } else if !self.server_url.starts_with("http://")
+            && !self.server_url.starts_with("https://")
         {
             out.push(("server_url", "Server URL must start with http(s)://".into()));
         }
@@ -156,7 +159,12 @@ impl CalendarAccount {
         } else {
             config.username.clone()
         };
-        Self { id, config, calendars: Vec::new(), collapsed: false }
+        Self {
+            id,
+            config,
+            calendars: Vec::new(),
+            collapsed: false,
+        }
     }
 
     /// Display label for the account header: the display name, falling back to
@@ -266,7 +274,10 @@ impl AccountStore {
 
     /// Load under an explicit config root — the seam tests use.
     pub fn load_from_settings_in(config_root: &Path) -> Self {
-        Self::from_shared(&SharedStore::load_in(config_root), &SecretVault::open_in(config_root))
+        Self::from_shared(
+            &SharedStore::load_in(config_root),
+            &SecretVault::open_in(config_root),
+        )
     }
 
     fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {
@@ -292,7 +303,10 @@ impl AccountStore {
             if acct.config.password.is_empty() {
                 vault.remove(&id);
             } else {
-                vault.put(&id, &accounts::Secret::password(acct.config.password.clone()));
+                vault.put(
+                    &id,
+                    &accounts::Secret::password(acct.config.password.clone()),
+                );
             }
         }
         shared.save_in(config_root)?;
@@ -422,10 +436,16 @@ mod tests {
 
         let store_json =
             std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
-        assert!(!store_json.contains("hunter2"), "password must not reach the shared store JSON");
+        assert!(
+            !store_json.contains("hunter2"),
+            "password must not reach the shared store JSON"
+        );
 
         let back = AccountStore::load_from_settings_in(&root);
-        assert_eq!(back.accounts[0].config.password, "hunter2", "password rehydrates from the vault");
+        assert_eq!(
+            back.accounts[0].config.password, "hunter2",
+            "password rehydrates from the vault"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -442,7 +462,10 @@ mod tests {
 
     #[test]
     fn autofill_recognises_known_provider() {
-        let mut c = CalDavConfig { username: "a@icloud.com".into(), ..Default::default() };
+        let mut c = CalDavConfig {
+            username: "a@icloud.com".into(),
+            ..Default::default()
+        };
         assert!(c.autofill_from_username());
         assert!(c.server_url.contains("icloud.com"));
     }

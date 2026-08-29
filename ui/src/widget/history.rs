@@ -45,7 +45,11 @@ pub struct HistoryAuthor {
 }
 
 impl HistoryAuthor {
-    pub fn new(name: impl Into<String>, avatar_hue: f32, identity_short: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        avatar_hue: f32,
+        identity_short: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             avatar_hue: avatar_hue.rem_euclid(360.0),
@@ -118,10 +122,7 @@ impl HistoryFilter {
     pub fn matches(&self, entry: &HistoryEntry) -> bool {
         if !self.authors.is_empty() {
             let needle = entry.author.name.to_lowercase();
-            let any = self
-                .authors
-                .iter()
-                .any(|a| needle == a.to_lowercase());
+            let any = self.authors.iter().any(|a| needle == a.to_lowercase());
             if !any {
                 return false;
             }
@@ -168,16 +169,16 @@ pub fn op_class_is_revertible(op: OpClass) -> bool {
 /// ASCII/Unicode-symbol fallbacks over pictographic emoji.
 pub fn op_class_glyph(op: OpClass) -> &'static str {
     match op {
-        OpClass::Splice => "\u{00b1}",     // ±
-        OpClass::Move => "\u{2195}",       // ↕
-        OpClass::EditMeta => "\u{270e}",   // ✎
+        OpClass::Splice => "\u{00b1}",   // ±
+        OpClass::Move => "\u{2195}",     // ↕
+        OpClass::EditMeta => "\u{270e}", // ✎
         OpClass::Comment => "#",
         OpClass::Tombstone => "\u{2715}",  // ✕
         OpClass::Restore => "\u{21b6}",    // ↶
         OpClass::Govern => "\u{2605}",     // ★
         OpClass::Compaction => "\u{2702}", // ✂ — host-driven horizon
         // Ring reads as a compliance seal, not a lock (banned emoji).
-        OpClass::Redact => "\u{229A}",     // ⊚ — redaction seal
+        OpClass::Redact => "\u{229A}", // ⊚ — redaction seal
     }
 }
 
@@ -390,6 +391,10 @@ mod tests {
         // require at least 5 unique values out of 7 samples.
         seen.sort();
         seen.dedup();
-        assert!(seen.len() >= 5, "hues collapsed to {} unique colours", seen.len());
+        assert!(
+            seen.len() >= 5,
+            "hues collapsed to {} unique colours",
+            seen.len()
+        );
     }
 }

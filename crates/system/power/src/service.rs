@@ -61,10 +61,7 @@ pub fn lid_edge_effect(prev: Option<bool>, now: bool, policy: &PowerPolicy) -> E
 
 /// Map battery-threshold events to the compositor signals + whether to auto-suspend. Pure:
 /// this is what [`PowerService::run`] applies for real.
-pub fn battery_reaction(
-    events: &[BatteryEvent],
-    policy: &PowerPolicy,
-) -> (Vec<PowerSignal>, bool) {
+pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<PowerSignal>, bool) {
     let mut signals = Vec::new();
     let mut suspend = false;
     for ev in events {
@@ -399,9 +396,17 @@ mod tests {
     #[test]
     fn monitor_plus_reaction_full_discharge() {
         use crate::battery::BatteryState;
-        let p = PowerPolicy { low_battery_percent: 15, critical_battery_percent: 5, ..Default::default() };
+        let p = PowerPolicy {
+            low_battery_percent: 15,
+            critical_battery_percent: 5,
+            ..Default::default()
+        };
         let mut mon = BatteryMonitor::new();
-        let disch = |pct| BatterySnapshot { present: true, percent: pct, state: BatteryState::Discharging };
+        let disch = |pct| BatterySnapshot {
+            present: true,
+            percent: pct,
+            state: BatteryState::Discharging,
+        };
 
         // Healthy: nothing.
         let (s, _) = battery_reaction(&mon.evaluate(&disch(40), &p), &p);

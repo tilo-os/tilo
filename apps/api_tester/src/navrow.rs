@@ -222,7 +222,11 @@ impl Widget for NavRow {
                     scene,
                     &self.label,
                     theme.tokens.typography.scale.sm,
-                    if *selected { c.text_primary } else { c.text_dim },
+                    if *selected {
+                        c.text_primary
+                    } else {
+                        c.text_dim
+                    },
                     t * Affine::translate((r.x0 + 64.0, y + 8.0)),
                     Some((inner_w - 72.0) as f32),
                 );
@@ -342,9 +346,7 @@ impl Widget for NavRow {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        let mut state = AccessState::new()
-            .focusable(true)
-            .focused(self.is_focused);
+        let mut state = AccessState::new().focusable(true).focused(self.is_focused);
         match &self.kind {
             NavKind::Collection { expanded, .. } => {
                 state = state.expanded(*expanded);
@@ -361,12 +363,7 @@ impl Widget for NavRow {
         )
     }
 
-    fn perform_action(
-        &mut self,
-        action: &Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
+    fn perform_action(&mut self, action: &Action, _state: &mut AutoCommit, _path: &ObjId) -> bool {
         if matches!(action, Action::Activate) {
             self.activate();
             true

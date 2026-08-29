@@ -261,8 +261,11 @@ is definitely not a scam.",
         m.starred = false;
         mb.insert(m);
     }
-    if let Some(mut m) = parse_eml(RAW_WITH_PDF.as_bytes(), SAMPLE_NOW_MIN - 7 * 60, Folder::Inbox)
-    {
+    if let Some(mut m) = parse_eml(
+        RAW_WITH_PDF.as_bytes(),
+        SAMPLE_NOW_MIN - 7 * 60,
+        Folder::Inbox,
+    ) {
         m.read = true;
         mb.insert(m);
     }
@@ -313,7 +316,10 @@ pub fn sample_account_store() -> AccountStore {
     let mut a1 = Account::new(work);
     a1.tint = 3;
     a1.collapsed = true;
-    AccountStore { accounts: vec![a0, a1], active: 0 }
+    AccountStore {
+        accounts: vec![a0, a1],
+        active: 0,
+    }
 }
 
 /// A plain text/plain message, parsed live by mail-parser.
@@ -395,7 +401,11 @@ mod tests {
     #[test]
     fn corpus_is_populated_across_folders() {
         let mb = sample_mailbox();
-        assert!(mb.count(Folder::Inbox) >= 8, "inbox: {}", mb.count(Folder::Inbox));
+        assert!(
+            mb.count(Folder::Inbox) >= 8,
+            "inbox: {}",
+            mb.count(Folder::Inbox)
+        );
         assert!(mb.count(Folder::Sent) >= 2);
         assert!(mb.count(Folder::Archive) >= 1);
         assert!(mb.count(Folder::Junk) >= 1);
@@ -415,10 +425,11 @@ mod tests {
         assert_eq!(radia.attachments.len(), 1);
         assert_eq!(radia.attachments[0].filename, "spanning-tree.pdf");
         // The Margaret message was parsed from plain MIME.
-        assert!(mb
-            .messages
-            .values()
-            .any(|m| m.from.email == "margaret@apollo.example"));
+        assert!(
+            mb.messages
+                .values()
+                .any(|m| m.from.email == "margaret@apollo.example")
+        );
     }
 
     #[test]
@@ -430,7 +441,10 @@ mod tests {
             .values()
             .find(|m| m.from.email == "radia@spanning.example")
             .unwrap();
-        assert!(radia.attachments[0].is_downloadable(), "parsed attachment carries bytes");
+        assert!(
+            radia.attachments[0].is_downloadable(),
+            "parsed attachment carries bytes"
+        );
         assert!(!radia.attachments[0].content.is_empty());
         // A hand-built projected attachment has metadata only (not downloaded).
         let gantt = mb
@@ -439,7 +453,10 @@ mod tests {
             .flat_map(|m| m.attachments.iter())
             .find(|a| a.filename == "rollout-gantt.pdf")
             .unwrap();
-        assert!(!gantt.is_downloadable(), "projected attachment has no bytes yet");
+        assert!(
+            !gantt.is_downloadable(),
+            "projected attachment has no bytes yet"
+        );
     }
 
     #[test]

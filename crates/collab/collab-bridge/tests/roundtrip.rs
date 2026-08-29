@@ -22,7 +22,10 @@ use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_bridge::service::BridgeCollabService;
-use collab_bridge::upstream::{ContextSnapshot, DropOldest, OpEnvelope, OpKind, PresenceEnvelope, ScrollbackReply, UpstreamHandle};
+use collab_bridge::upstream::{
+    ContextSnapshot, DropOldest, OpEnvelope, OpKind, PresenceEnvelope, ScrollbackReply,
+    UpstreamHandle,
+};
 use collab_bridge::wire::{
     CollabEvent, CollabRequest, Collaborator, PointerSpace, PresenceKey, PresencePayload,
 };
@@ -126,7 +129,10 @@ fn handle_from_stream(stream: UnixStream) -> UpstreamHandle {
                 continue;
             };
             match event {
-                CollabEvent::SignedCRDTIncremental { envelope, from_user_id } => {
+                CollabEvent::SignedCRDTIncremental {
+                    envelope,
+                    from_user_id,
+                } => {
                     let bytes = postcard::to_stdvec(&*envelope).unwrap();
                     let _ = op_tx.send(OpEnvelope {
                         op_bytes: bytes,
@@ -151,7 +157,11 @@ fn handle_from_stream(stream: UnixStream) -> UpstreamHandle {
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     presence_task.push(PresenceEnvelope::Cursor { user_id, x, y });
                 }
-                CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+                CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    key,
+                    payload,
+                } => {
                     let key_bytes = postcard::to_stdvec(&key).unwrap();
                     presence_task.push(PresenceEnvelope::Update {
                         user_id,
@@ -159,11 +169,25 @@ fn handle_from_stream(stream: UnixStream) -> UpstreamHandle {
                         payload,
                     });
                 }
-                CollabEvent::Context { collaborators, permissions } => {
-                    let _ = context_tx.send(ContextSnapshot { collaborators, permissions });
+                CollabEvent::Context {
+                    collaborators,
+                    permissions,
+                } => {
+                    let _ = context_tx.send(ContextSnapshot {
+                        collaborators,
+                        permissions,
+                    });
                 }
-                CollabEvent::ScrollbackBatch { artifact, ops, exhausted } => {
-                    let _ = scrollback_tx.send(ScrollbackReply { artifact, ops, exhausted });
+                CollabEvent::ScrollbackBatch {
+                    artifact,
+                    ops,
+                    exhausted,
+                } => {
+                    let _ = scrollback_tx.send(ScrollbackReply {
+                        artifact,
+                        ops,
+                        exhausted,
+                    });
                 }
             }
         }
@@ -171,13 +195,7 @@ fn handle_from_stream(stream: UnixStream) -> UpstreamHandle {
 
     // `UpstreamHandle`'s fields are private, so tests construct one through
     // `UpstreamHandle::new_for_test` rather than directly.
-    UpstreamHandle::new_for_test(
-        writer,
-        op_rx,
-        presence,
-        context_rx,
-        scrollback_rx,
-    )
+    UpstreamHandle::new_for_test(writer, op_rx, presence, context_rx, scrollback_rx)
 }
 
 /// Stands up the bridge in front of a fake upstream. Returns the
@@ -230,10 +248,12 @@ async fn stand_up_bridge() -> (CollabClient, Captured, Rc<dyn Fn(CollabEvent)>) 
     (collab, fake.captured, fake.inject)
 }
 
-
 #[test]
 fn publish_cursor_arrives_upstream_as_pointer_presence() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
         let (collab, captured, _inject) = stand_up_bridge().await;
@@ -248,20 +268,30 @@ fn publish_cursor_arrives_upstream_as_pointer_presence() {
         }
 
         let cap = captured.borrow();
-        assert!(matches!(cap[0], CollabRequest::Hello { .. }), "first frame is Hello");
-        let pointer = cap.iter().find_map(|r| match r {
-            CollabRequest::Presence { payload: PresencePayload::Pointer { x, y }, .. } => {
-                Some((*x, *y))
-            }
-            _ => None,
-        }).expect("bridge emitted a Pointer Presence upstream");
+        assert!(
+            matches!(cap[0], CollabRequest::Hello { .. }),
+            "first frame is Hello"
+        );
+        let pointer = cap
+            .iter()
+            .find_map(|r| match r {
+                CollabRequest::Presence {
+                    payload: PresencePayload::Pointer { x, y },
+                    ..
+                } => Some((*x, *y)),
+                _ => None,
+            })
+            .expect("bridge emitted a Pointer Presence upstream");
         assert_eq!(pointer, (1.0, 2.0));
     });
 }
 
 #[test]
 fn publish_pointer_carries_the_publishers_own_coordinate_space() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
         let (collab, captured, _inject) = stand_up_bridge().await;
@@ -269,10 +299,15 @@ fn publish_pointer_carries_the_publishers_own_coordinate_space() {
         let presence = channel.presence().await.unwrap();
 
         let key = PresenceKey::Pointer {
-            space: PointerSpace::Surface { surface: "word-processor".into() },
+            space: PointerSpace::Surface {
+                surface: "word-processor".into(),
+            },
         };
         let key_bytes = postcard::to_stdvec(&key).unwrap();
-        presence.publish_pointer(&key_bytes, 1.0, 2.0).await.unwrap();
+        presence
+            .publish_pointer(&key_bytes, 1.0, 2.0)
+            .await
+            .unwrap();
 
         for _ in 0..8 {
             tokio::task::yield_now().await;
@@ -299,11 +334,17 @@ fn publish_pointer_carries_the_publishers_own_coordinate_space() {
 
 #[test]
 fn keyed_pointer_reaches_the_sdk_as_pointer_not_cursor() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
         let (collab, _captured, inject) = stand_up_bridge().await;
-        let channel = collab.join_channel("chan-ptr-rx", b"identity").await.unwrap();
+        let channel = collab
+            .join_channel("chan-ptr-rx", b"identity")
+            .await
+            .unwrap();
         let presence = channel.presence().await.unwrap();
         let stream = presence.subscribe_all().await.unwrap();
         for _ in 0..4 {
@@ -311,7 +352,9 @@ fn keyed_pointer_reaches_the_sdk_as_pointer_not_cursor() {
         }
 
         let key = PresenceKey::Pointer {
-            space: PointerSpace::Desktop { room: "room-1".into() },
+            space: PointerSpace::Desktop {
+                room: "room-1".into(),
+            },
         };
         (inject)(CollabEvent::RemotePresenceUpdate {
             user_id: "alice".into(),
@@ -325,7 +368,10 @@ fn keyed_pointer_reaches_the_sdk_as_pointer_not_cursor() {
             .unwrap();
         assert_eq!(ev.user_id, "alice");
         // `Pointer`, not `Cursor`: a receiver must tell apart a position that knows its space from one that doesn't.
-        assert_eq!(ev.payload, SdkPresencePayload::Pointer { x: 230.0, y: 34.0 });
+        assert_eq!(
+            ev.payload,
+            SdkPresencePayload::Pointer { x: 230.0, y: 34.0 }
+        );
         let decoded: PresenceKey = postcard::from_bytes(&ev.key_bytes).unwrap();
         assert_eq!(decoded, key);
     });
@@ -333,7 +379,10 @@ fn keyed_pointer_reaches_the_sdk_as_pointer_not_cursor() {
 
 #[test]
 fn subscribe_context_delivers_upstream_context_events() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
         let (collab, _captured, inject) = stand_up_bridge().await;
@@ -377,17 +426,26 @@ fn subscribe_context_delivers_upstream_context_events() {
         assert_eq!(snap.collaborators[1].user_id, "bob");
         // Both facts must survive the projection: losing either leaves a client
         // unable to tell an agent from a person, or to find itself in the roster.
-        assert!(snap.collaborators[0].is_self, "alice is this machine's own row");
+        assert!(
+            snap.collaborators[0].is_self,
+            "alice is this machine's own row"
+        );
         assert!(!snap.collaborators[0].is_agent, "alice is a person");
         assert!(!snap.collaborators[1].is_self, "bob is somebody else");
         assert!(snap.collaborators[1].is_agent, "bob is an agent");
-        assert_eq!(snap.permissions, vec!["write".to_string(), "share".to_string()]);
+        assert_eq!(
+            snap.permissions,
+            vec!["write".to_string(), "share".to_string()]
+        );
     });
 }
 
 #[test]
 fn subscribe_all_delivers_presence_updates_with_keyed_variants() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
         let (collab, _captured, inject) = stand_up_bridge().await;
@@ -430,7 +488,10 @@ fn subscribe_all_delivers_presence_updates_with_keyed_variants() {
 
 #[test]
 fn signed_ops_are_never_dropped_even_under_presence_flood() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
         let (collab, _captured, inject) = stand_up_bridge().await;
@@ -480,7 +541,11 @@ fn signed_ops_are_never_dropped_even_under_presence_flood() {
                 .await
                 .expect("signed op arrives")
                 .unwrap();
-            assert_eq!(ev.from_user_id, format!("author-{i}"), "op {i} attribution preserved");
+            assert_eq!(
+                ev.from_user_id,
+                format!("author-{i}"),
+                "op {i} attribution preserved"
+            );
             // Op body is postcard(SignedOp); we only check non-empty since per-field assertions belong in collab-types.
             assert!(!ev.op.is_empty(), "op {i} not empty");
         }
@@ -493,7 +558,10 @@ fn signed_ops_are_never_dropped_even_under_presence_flood() {
 
 #[test]
 fn upstream_close_surfaces_as_error_on_next_op_read() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
         // Stand up a bridge whose upstream opener returns Err; the SDK's next call

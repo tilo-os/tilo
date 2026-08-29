@@ -427,7 +427,10 @@ impl Build<'_> {
     /// A presentational widget (`accessibility() == None`) is collapsed
     /// out and its children reparented — matching the AccessKit bridge.
     fn visit_widget(&mut self, w: &dyn Widget, parent_children: &mut Vec<SemanticId>) {
-        let taffy_id = self.ptr_to_taffy.get(&(w as *const dyn Widget as *const ())).copied();
+        let taffy_id = self
+            .ptr_to_taffy
+            .get(&(w as *const dyn Widget as *const ()))
+            .copied();
         match w.accessibility() {
             Some(access) => {
                 let id = match taffy_id {
@@ -467,7 +470,11 @@ impl Build<'_> {
                     id: id.clone(),
                     role: access.role,
                     name: access.name.clone(),
-                    value: if access.state.protected { None } else { access.value.clone() },
+                    value: if access.state.protected {
+                        None
+                    } else {
+                        access.value.clone()
+                    },
                     state,
                     bounds: Some(w.get_rect()),
                     actions,
@@ -487,7 +494,12 @@ impl Build<'_> {
     }
 
     /// A table row/cell — has no backing widget.
-    fn visit_synthetic(&mut self, parent: &SemanticId, index: usize, access: &AccessNode) -> SemanticId {
+    fn visit_synthetic(
+        &mut self,
+        parent: &SemanticId,
+        index: usize,
+        access: &AccessNode,
+    ) -> SemanticId {
         let id = SemanticId::synthetic(parent, index);
         let mut children: Vec<SemanticId> = Vec::new();
         for (i, child) in access.children.iter().enumerate() {
@@ -498,7 +510,11 @@ impl Build<'_> {
             id: id.clone(),
             role: access.role,
             name: access.name.clone(),
-            value: if access.state.protected { None } else { access.value.clone() },
+            value: if access.state.protected {
+                None
+            } else {
+                access.value.clone()
+            },
             state: access.state,
             bounds: None,
             actions: verbs_for(access),
@@ -542,7 +558,12 @@ impl Build<'_> {
     fn resource_action(&mut self, node_id: &SemanticId, spec: &ActionSpec) -> SemanticAction {
         let kind = match &spec.input {
             ActionInput::Immediate(enc) => SemanticActionKind::App(enc.clone()),
-            ActionInput::Prompted { prompt, placeholder, collects, build } => {
+            ActionInput::Prompted {
+                prompt,
+                placeholder,
+                collects,
+                build,
+            } => {
                 self.prompted
                     .insert((node_id.clone(), spec.id.clone()), build.clone());
                 SemanticActionKind::AppPrompted {
@@ -576,7 +597,13 @@ mod tests {
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
         let node = root.build_layout(&mut taffy, &theme, &mut node_map);
         taffy
-            .compute_layout(node, taffy::Size { width: taffy::AvailableSpace::Definite(800.0), height: taffy::AvailableSpace::Definite(600.0) })
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
             .unwrap();
         root.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
         node_map
@@ -594,18 +621,35 @@ mod tests {
         // The root pre-exists from `new()`, so it registers as updated,
         // not added, once it gains children.
         assert!(first.removed.is_empty());
-        assert!(first.added.len() >= 2, "the two buttons are added, got {:?}", first.added);
-        let ids_first: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-        assert!(ids_first.len() >= 3, "root + two buttons, got {ids_first:?}");
         assert!(
-            ids_first.iter().filter(|id| id.as_str().starts_with('w')).count() >= 2,
+            first.added.len() >= 2,
+            "the two buttons are added, got {:?}",
+            first.added
+        );
+        let ids_first: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+        assert!(
+            ids_first.len() >= 3,
+            "root + two buttons, got {ids_first:?}"
+        );
+        assert!(
+            ids_first
+                .iter()
+                .filter(|id| id.as_str().starts_with('w'))
+                .count()
+                >= 2,
             "buttons get taffy-derived widget ids, got {ids_first:?}"
         );
 
         let second = tree.refresh(&col, &node_map, None, &[]);
-        assert!(second.is_empty(), "a stable frame yields no delta, got {second:?}");
+        assert!(
+            second.is_empty(),
+            "a stable frame yields no delta, got {second:?}"
+        );
         let ids_second: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-        assert_eq!(ids_first, ids_second, "node identity + order survive a refresh");
+        assert_eq!(
+            ids_first, ids_second,
+            "node identity + order survive a refresh"
+        );
     }
 
     #[test]
@@ -632,10 +676,22 @@ mod tests {
 
         let delta = tree.refresh(&col, &node_map, Some(first_button_taffy), &[]);
         let after = tree.node(&focused_id).expect("button node still present");
-        assert!(after.state.focused, "focus state reflected on the retained node");
-        assert_eq!(before.id, after.id, "identity preserved across the state change");
-        assert!(delta.updated.contains(&focused_id), "the focused node is in the delta, got {delta:?}");
-        assert!(delta.added.is_empty() && delta.removed.is_empty(), "only state changed");
+        assert!(
+            after.state.focused,
+            "focus state reflected on the retained node"
+        );
+        assert_eq!(
+            before.id, after.id,
+            "identity preserved across the state change"
+        );
+        assert!(
+            delta.updated.contains(&focused_id),
+            "the focused node is in the delta, got {delta:?}"
+        );
+        assert!(
+            delta.added.is_empty() && delta.removed.is_empty(),
+            "only state changed"
+        );
     }
 
     #[test]
@@ -646,13 +702,18 @@ mod tests {
         let map2 = layout(&mut two);
         let mut tree = SemanticTree::new();
         tree.refresh(&two, &map2, None, &[]);
-        let baseline: std::collections::HashSet<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+        let baseline: std::collections::HashSet<SemanticId> =
+            tree.iter().map(|n| n.id.clone()).collect();
 
         let mut one = Column::new().push(Box::new(Button::new("a", "Alpha", None)));
         let map1 = layout(&mut one);
         let delta = tree.refresh(&one, &map1, None, &[]);
-        assert!(!delta.removed.is_empty(), "dropping a button reports a removal, got {delta:?}");
-        let now: std::collections::HashSet<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+        assert!(
+            !delta.removed.is_empty(),
+            "dropping a button reports a removal, got {delta:?}"
+        );
+        let now: std::collections::HashSet<SemanticId> =
+            tree.iter().map(|n| n.id.clone()).collect();
         assert!(now.len() < baseline.len(), "the tree shrank");
     }
 
@@ -662,9 +723,21 @@ mod tests {
         let node_map = layout(&mut btn);
         let mut tree = SemanticTree::new();
         tree.refresh(&btn, &node_map, None, &[]);
-        let node = tree.iter().find(|n| n.name.as_deref() == Some("Go")).expect("button node");
-        assert!(node.action("activate").is_some(), "a button affords activate");
-        assert!(node.action("focus").is_some(), "a focusable button affords focus");
-        assert!(matches!(node.action("activate").unwrap().kind, SemanticActionKind::Verb(Action::Activate)));
+        let node = tree
+            .iter()
+            .find(|n| n.name.as_deref() == Some("Go"))
+            .expect("button node");
+        assert!(
+            node.action("activate").is_some(),
+            "a button affords activate"
+        );
+        assert!(
+            node.action("focus").is_some(),
+            "a focusable button affords focus"
+        );
+        assert!(matches!(
+            node.action("activate").unwrap().kind,
+            SemanticActionKind::Verb(Action::Activate)
+        ));
     }
 }

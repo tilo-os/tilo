@@ -14,13 +14,13 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -53,10 +53,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `open_migrating` so existing history is merged into the shared store on
     // first launch rather than orphaned; the merge is idempotent.
     let (state, autosave) = match chat::storage::data_dir() {
-        Some(dir) => ui::persist::open_migrating(
-            "dev.qos.chat",
-            &chat::storage::workspace_path(&dir),
-        ),
+        Some(dir) => {
+            ui::persist::open_migrating("dev.qos.chat", &chat::storage::workspace_path(&dir))
+        }
         None => ui::persist::open("dev.qos.chat"),
     };
     let mut app = ui::App::new(state, chat::app_root()).with_autosave(autosave);

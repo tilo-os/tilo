@@ -167,7 +167,10 @@ mod tests {
         let elapsed = started.elapsed();
 
         let err = result.expect_err("a command outliving the deadline must not report success");
-        assert!(err.contains("timed out"), "expected a timeout error, got: {err}");
+        assert!(
+            err.contains("timed out"),
+            "expected a timeout error, got: {err}"
+        );
         assert!(
             elapsed < DEFAULT_TIMEOUT * 2,
             "run_capture returned after {elapsed:?}, past its own {DEFAULT_TIMEOUT:?} \

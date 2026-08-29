@@ -42,12 +42,20 @@ fn dump() {
     for s in &g.playback_streams {
         println!(
             "  id={} serial={} app={:?} -> sink node {:?} vol={:?} label={:?}",
-            s.id, s.serial, s.app, s.target_id, s.volume, s.label(),
+            s.id,
+            s.serial,
+            s.app,
+            s.target_id,
+            s.volume,
+            s.label(),
         );
     }
     println!("== record streams ==");
     for s in &g.record_streams {
-        println!("  id={} app={:?} <- source node {:?}", s.id, s.app, s.target_id);
+        println!(
+            "  id={} app={:?} <- source node {:?}",
+            s.id, s.app, s.target_id
+        );
     }
 }
 
@@ -59,7 +67,10 @@ fn main() {
         Some("route") => {
             let stream: u32 = args[1].parse().unwrap();
             let serial: u32 = args[2].parse().unwrap();
-            println!("route stream {stream} -> serial {serial}: {:?}", ctl.route_stream(stream, serial));
+            println!(
+                "route stream {stream} -> serial {serial}: {:?}",
+                ctl.route_stream(stream, serial)
+            );
         }
         Some("unroute") => {
             let stream: u32 = args[1].parse().unwrap();

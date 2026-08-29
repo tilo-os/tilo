@@ -1,5 +1,5 @@
-use ui::widget::{StripView, STRIP_COOLDOWN_MS};
 use std::time::Duration;
+use ui::widget::{STRIP_COOLDOWN_MS, StripView};
 
 #[test]
 fn wheel_paginate_cooldown_blocks_second_call() {

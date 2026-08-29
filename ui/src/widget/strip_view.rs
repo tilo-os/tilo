@@ -1,13 +1,13 @@
-use automerge::{AutoCommit, ObjId};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{WindowEvent, MouseScrollDelta};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use std::time::{Duration, Instant};
-use crate::widget::Widget;
+use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::presence::PresenceCtx;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId};
+use std::time::{Duration, Instant};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{MouseScrollDelta, WindowEvent};
 
 pub const STRIP_COOLDOWN_MS: u64 = 600;
 
@@ -21,7 +21,11 @@ pub struct StripView {
 
 impl StripView {
     pub fn new(strip_names: Vec<String>, active_index: usize) -> Self {
-        let clamped = if strip_names.is_empty() { 0 } else { active_index.min(strip_names.len() - 1) };
+        let clamped = if strip_names.is_empty() {
+            0
+        } else {
+            active_index.min(strip_names.len() - 1)
+        };
         Self {
             strip_names,
             active_index: clamped,
@@ -31,16 +35,25 @@ impl StripView {
         }
     }
 
-    pub fn active_index(&self) -> usize { self.active_index }
-    pub fn strip_names(&self) -> &[String] { &self.strip_names }
+    pub fn active_index(&self) -> usize {
+        self.active_index
+    }
+    pub fn strip_names(&self) -> &[String] {
+        &self.strip_names
+    }
 
     /// Returns `true` if the paginate applied. `direction` is +1 or -1.
     pub fn try_paginate(&mut self, direction: i32, now_since_start: Duration) -> bool {
         let now_ms = now_since_start.as_millis();
         if let Some(last) = self.last_paginate_ms
-            && now_ms.saturating_sub(last) < STRIP_COOLDOWN_MS as u128 { return false; }
+            && now_ms.saturating_sub(last) < STRIP_COOLDOWN_MS as u128
+        {
+            return false;
+        }
         let new_idx = self.active_index as i64 + direction as i64;
-        if new_idx < 0 || new_idx >= self.strip_names.len() as i64 { return false; }
+        if new_idx < 0 || new_idx >= self.strip_names.len() as i64 {
+            return false;
+        }
         self.active_index = new_idx as usize;
         self.last_paginate_ms = Some(now_ms);
         true
@@ -49,11 +62,25 @@ impl StripView {
 
 impl Widget for StripView {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         // Zero-height leaf — this widget's job is scroll-wheel pagination,
         // not rendering; visible strip UI lives on the real window-groups
         // the shell tiles next to it.
-        let node = taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::length(0.0) }, flex_shrink: 0.0, ..Default::default() }).unwrap();
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(0.0),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -66,11 +93,29 @@ impl Widget for StripView {
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
     }
-    fn draw(&mut self, _scene: &mut Scene, _transform: Affine, _tr: &mut TextRenderer, _theme: &Theme, _presence: &PresenceCtx) {
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _tr: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
         // Invisible — real strip chrome lives in the shell's window-group
         // layout + top-bar.
     }
-    fn handle_event(&mut self, event: &WindowEvent, _scale: f64, _m: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _focus: &mut Option<NodeId>, _n: NodeId, _t: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        _scale: f64,
+        _m: &winit::event::Modifiers,
+        _s: &mut AutoCommit,
+        _p: &ObjId,
+        handled: &mut bool,
+        _focus: &mut Option<NodeId>,
+        _n: NodeId,
+        _t: &TaffyTree<()>,
+    ) {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let sign = match delta {
                 MouseScrollDelta::LineDelta(_x, y) => -y.signum() as i32,
@@ -78,10 +123,16 @@ impl Widget for StripView {
             };
             if sign != 0 {
                 let now = Instant::now().duration_since(self.start);
-                if self.try_paginate(sign, now) { *handled = true; }
+                if self.try_paginate(sign, now) {
+                    *handled = true;
+                }
             }
         }
     }
-    fn name(&self) -> &str { "StripView" }
-    fn get_rect(&self) -> Rect { self.rect }
+    fn name(&self) -> &str {
+        "StripView"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }

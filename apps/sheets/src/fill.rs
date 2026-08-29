@@ -24,9 +24,7 @@
 //! returns the cells to write, so it is exercised in isolation by the unit
 //! tests here and through the real fill-handle event path in `app`.
 
-use crate::model::{
-    date_to_serial, serial_to_ymd, CellFormat, CellValue,
-};
+use crate::model::{CellFormat, CellValue, date_to_serial, serial_to_ymd};
 
 /// One source cell handed to the fill engine: the stored raw input, the
 /// computed value (used to recognise numeric / date series), and the display
@@ -41,7 +39,11 @@ pub struct FillCell {
 impl FillCell {
     /// Convenience constructor for tests and callers.
     pub fn new(raw: impl Into<String>, value: CellValue, fmt: CellFormat) -> Self {
-        Self { raw: raw.into(), value, fmt }
+        Self {
+            raw: raw.into(),
+            value,
+            fmt,
+        }
     }
 
     fn is_formula(&self) -> bool {
@@ -165,7 +167,10 @@ fn date_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
             (0..count)
                 .map(|j| {
                     let serial = add_months(y, m, d, months * (j as i64 + 1));
-                    FillOut { raw: num_to_raw(serial), fmt: CellFormat::Date(style) }
+                    FillOut {
+                        raw: num_to_raw(serial),
+                        fmt: CellFormat::Date(style),
+                    }
                 })
                 .collect(),
         );
@@ -176,7 +181,10 @@ fn date_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
             .map(|j| {
                 let p = len + j;
                 let serial = series_at(&serials, p).round();
-                FillOut { raw: num_to_raw(serial), fmt: CellFormat::Date(style) }
+                FillOut {
+                    raw: num_to_raw(serial),
+                    fmt: CellFormat::Date(style),
+                }
             })
             .collect(),
     )
@@ -190,15 +198,36 @@ fn name_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     const MONTHS_LONG: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June", "July", "August", "September",
-        "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
     const DAYS_SHORT: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const DAYS_LONG: [&str; 7] = [
-        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
     ];
 
-    for list in [&MONTHS_SHORT[..], &MONTHS_LONG[..], &DAYS_SHORT[..], &DAYS_LONG[..]] {
+    for list in [
+        &MONTHS_SHORT[..],
+        &MONTHS_LONG[..],
+        &DAYS_SHORT[..],
+        &DAYS_LONG[..],
+    ] {
         if let Some(idxs) = match_names(pattern, list) {
             let n = list.len() as i64;
             let step = mod_series_step(&idxs, n);
@@ -337,7 +366,10 @@ fn monthly_step(serials: &[f64]) -> Option<i64> {
     if step == 0 {
         return None;
     }
-    months.windows(2).all(|w| w[1] - w[0] == step).then_some(step)
+    months
+        .windows(2)
+        .all(|w| w[1] - w[0] == step)
+        .then_some(step)
 }
 
 /// Add `add` months to `(y, m, d)` and return the resulting Excel serial,
@@ -356,11 +388,7 @@ fn days_in_month(y: i64, m: u32) -> u32 {
         4 | 6 | 9 | 11 => 30,
         2 => {
             let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-            if leap {
-                29
-            } else {
-                28
-            }
+            if leap { 29 } else { 28 }
         }
         _ => 30,
     }
@@ -375,9 +403,7 @@ fn match_names(pattern: &[FillCell], list: &[&str]) -> Option<Vec<i64>> {
     for c in pattern {
         let s = c.display();
         let s = s.trim();
-        let idx = list
-            .iter()
-            .position(|name| name.eq_ignore_ascii_case(s))?;
+        let idx = list.iter().position(|name| name.eq_ignore_ascii_case(s))?;
         out.push(idx as i64);
     }
     Some(out)
@@ -393,11 +419,7 @@ fn mod_series_step(idxs: &[i64], wrap: i64) -> i64 {
     let consistent = idxs
         .windows(2)
         .all(|w| (w[1] - w[0]).rem_euclid(wrap) == step);
-    if consistent && step != 0 {
-        step
-    } else {
-        1
-    }
+    if consistent && step != 0 { step } else { 1 }
 }
 
 /// Split a string into `(prefix, trailing_integer, digit_width)`, or `None`
@@ -420,7 +442,7 @@ fn split_trailing_number(s: &str) -> Option<(String, i64, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DateStyle, CellFormat, CellValue};
+    use crate::model::{CellFormat, CellValue, DateStyle};
 
     fn num(n: f64) -> FillCell {
         FillCell::new(num_to_raw(n), CellValue::Number(n), CellFormat::General)
@@ -448,16 +470,25 @@ mod tests {
             CellValue::Number(0.0),
             CellFormat::General,
         )];
-        assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["=A2", "=A3", "=A4"]);
+        assert_eq!(
+            raws(&extend_series(&pat, 3, 0, 1)),
+            vec!["=A2", "=A3", "=A4"]
+        );
         // Filled right instead → =B1, =C1, =D1.
-        assert_eq!(raws(&extend_series(&pat, 3, 1, 0)), vec!["=B1", "=C1", "=D1"]);
+        assert_eq!(
+            raws(&extend_series(&pat, 3, 1, 0)),
+            vec!["=B1", "=C1", "=D1"]
+        );
         // An absolute reference stays put on the copy.
         let anch = [FillCell::new(
             "=$A$1+B1",
             CellValue::Number(0.0),
             CellFormat::General,
         )];
-        assert_eq!(raws(&extend_series(&anch, 2, 0, 1)), vec!["=$A$1+B2", "=$A$1+B3"]);
+        assert_eq!(
+            raws(&extend_series(&anch, 2, 0, 1)),
+            vec!["=$A$1+B2", "=$A$1+B3"]
+        );
     }
 
     #[test]
@@ -497,13 +528,22 @@ mod tests {
         }
         let s0: f64 = out[0].raw.parse().unwrap();
         let s1: f64 = out[1].raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(s0, DateStyle::Iso), "2024-01-02");
-        assert_eq!(crate::model::serial_to_date(s1, DateStyle::Iso), "2024-01-03");
+        assert_eq!(
+            crate::model::serial_to_date(s0, DateStyle::Iso),
+            "2024-01-02"
+        );
+        assert_eq!(
+            crate::model::serial_to_date(s1, DateStyle::Iso),
+            "2024-01-03"
+        );
         // Two dates a week apart continue weekly.
         let pat = [date(2024, 1, 1), date(2024, 1, 8)];
         let out = extend_series(&pat, 1, 0, 1);
         let s: f64 = out[0].raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(s, DateStyle::Iso), "2024-01-15");
+        assert_eq!(
+            crate::model::serial_to_date(s, DateStyle::Iso),
+            "2024-01-15"
+        );
     }
 
     #[test]
@@ -513,8 +553,14 @@ mod tests {
         let out = extend_series(&pat, 2, 0, 1);
         let s0: f64 = out[0].raw.parse().unwrap();
         let s1: f64 = out[1].raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(s0, DateStyle::Iso), "2024-03-15");
-        assert_eq!(crate::model::serial_to_date(s1, DateStyle::Iso), "2024-04-15");
+        assert_eq!(
+            crate::model::serial_to_date(s0, DateStyle::Iso),
+            "2024-03-15"
+        );
+        assert_eq!(
+            crate::model::serial_to_date(s1, DateStyle::Iso),
+            "2024-04-15"
+        );
         // Month-end clamps: a day-31 monthly cadence (Oct 31, Dec 31 — step of
         // two months) continues to Feb 29 (leap) and Apr 30, each clamped into
         // its shorter month.
@@ -522,8 +568,14 @@ mod tests {
         let out = extend_series(&pat, 2, 0, 1);
         let s0: f64 = out[0].raw.parse().unwrap();
         let s1: f64 = out[1].raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(s0, DateStyle::Iso), "2024-02-29");
-        assert_eq!(crate::model::serial_to_date(s1, DateStyle::Iso), "2024-04-30");
+        assert_eq!(
+            crate::model::serial_to_date(s0, DateStyle::Iso),
+            "2024-02-29"
+        );
+        assert_eq!(
+            crate::model::serial_to_date(s1, DateStyle::Iso),
+            "2024-04-30"
+        );
     }
 
     #[test]

@@ -7,9 +7,9 @@
 //! here once.
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
-use crate::shell::tab_documents::tab_body;
 use crate::shell::search::{ResourceKind, SearchContext, SearchResult};
 use crate::shell::state::{AppKind, GroupId, StripId, TabId, TileContent, WorkspaceId};
+use crate::shell::tab_documents::tab_body;
 
 /// Top of the shared score scale — a title prefix. See [`match_score`].
 pub const MAX_SCORE: i32 = 110;
@@ -66,8 +66,7 @@ pub fn query_text_app(
                         continue;
                     }
                     let title_lower = t.title.to_lowercase();
-                    let body = tab_body(ctx.chrome.records(), t.id, body_key)
-                        .unwrap_or_default();
+                    let body = tab_body(ctx.chrome.records(), t.id, body_key).unwrap_or_default();
                     let body_lower = body.to_lowercase();
                     let Some((score, snippet)) =
                         match_score(&needle_lower, &title_lower, &body_lower, &body)
@@ -155,7 +154,5 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
 
 /// Enter on a result: switch workspace/strip/group and activate the tab.
 fn focus_tab(chrome: &Chrome, workspace: WorkspaceId, strip: StripId, group: GroupId, tab: TabId) {
-    chrome
-        .borrow_mut()
-        .focus_tab(workspace, strip, group, tab);
+    chrome.borrow_mut().focus_tab(workspace, strip, group, tab);
 }

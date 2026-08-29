@@ -19,7 +19,7 @@
 use std::io::{Cursor, Read, Write};
 
 use crate::model::{
-    Background, Deck, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign, SLIDE_H, SLIDE_W,
+    Background, Deck, Element, ElementKind, Layout, PaletteKind, SLIDE_H, SLIDE_W, Slide, TextAlign,
 };
 
 /// Physical page size we map the 1280×720 slide space onto (16:9, 25.4 cm
@@ -41,8 +41,8 @@ pub fn write_odp(deck: &Deck) -> std::io::Result<Vec<u8>> {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     // The `mimetype` entry must be first and stored uncompressed per the ODF
     // packaging spec, so a reader can sniff the type from the archive header.
-    let stored = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     let deflated = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     zip.start_file("mimetype", stored)?;
@@ -108,7 +108,11 @@ fn push_model_attrs(s: &mut String, el: &Element) {
     push_attr(s, "qslides:font-size", &fmt_f64(el.font_size));
     push_attr(s, "qslides:align", el.align.as_str());
     push_attr(s, "qslides:bold", if el.bold { "true" } else { "false" });
-    push_attr(s, "qslides:italic", if el.italic { "true" } else { "false" });
+    push_attr(
+        s,
+        "qslides:italic",
+        if el.italic { "true" } else { "false" },
+    );
     push_attr(s, "qslides:radius", &fmt_f64(el.radius));
     push_attr(s, "qslides:z", &el.z.to_string());
     push_attr(s, "qslides:src", &el.src);
@@ -219,7 +223,9 @@ fn manifest_xml() -> String {
 }
 
 fn xml_text(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn xml_attr(s: &str) -> String {
@@ -257,12 +263,13 @@ pub fn read_odp(bytes: &[u8]) -> std::io::Result<Deck> {
     zip.by_name("content.xml")
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
         .read_to_string(&mut content)?;
-    parse_content(&content)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "no slides in content.xml"))
+    parse_content(&content).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "no slides in content.xml")
+    })
 }
 
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 
 /// A draw object whose `qslides:kind` attribute is present carries the whole
 /// model element in its attributes; text bodies additionally come from nested
@@ -345,7 +352,13 @@ fn parse_content(xml: &str) -> Option<Deck> {
                     &attr(&e, b"qslides:background").unwrap_or_else(|| "surface".into()),
                 );
                 let notes = attr(&e, b"qslides:notes").unwrap_or_default();
-                slides.push(Slide { id, layout, background, notes, elements: Vec::new() });
+                slides.push(Slide {
+                    id,
+                    layout,
+                    background,
+                    notes,
+                    elements: Vec::new(),
+                });
             }
             b"text:p" if cur_text_el.is_some() => {
                 in_text_p = true;
@@ -368,7 +381,11 @@ fn parse_content(xml: &str) -> Option<Deck> {
     if slides.is_empty() {
         return None;
     }
-    Some(Deck { title, palette, slides })
+    Some(Deck {
+        title,
+        palette,
+        slides,
+    })
 }
 
 fn element_from_attrs(e: &quick_xml::events::BytesStart, kind: &str) -> Element {
@@ -392,7 +409,9 @@ fn element_from_attrs(e: &quick_xml::events::BytesStart, kind: &str) -> Element 
         bold: boolean(b"qslides:bold"),
         italic: boolean(b"qslides:italic"),
         radius: num(b"qslides:radius", 0.0),
-        z: f(b"qslides:z").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0),
+        z: f(b"qslides:z")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0),
     }
 }
 
@@ -406,7 +425,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{seed_deck, ElementKind};
+    use crate::model::{ElementKind, seed_deck};
 
     /// The core requirement: a deck written to `.odp` and read back is
     /// byte-for-byte the same model (geometry, text, colours, z-order, every

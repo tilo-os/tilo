@@ -92,7 +92,13 @@ impl KeyboardView {
     ) {
         let cap = RoundedRect::from_rect(key, (theme.radius_standard * 0.6).max(2.0));
         scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &cap);
-        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &cap);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &cap,
+        );
 
         let font = ((key.height() * 0.42) as f32).clamp(8.0, 16.0);
 
@@ -183,7 +189,13 @@ impl Widget for KeyboardView {
         // raised key caps pop.
         let board = RoundedRect::from_rect(self.rect, theme.radius_standard);
         scene.fill(Fill::NonZero, transform, theme.bg_app, None, &board);
-        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &board);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &board,
+        );
 
         let inner_w = self.rect.width() - 2.0 * PAD;
         let inner_h = self.rect.height() - 2.0 * PAD;
@@ -254,7 +266,9 @@ mod tests {
     fn doc_with_keymap(value: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        let obj = doc.put_object(&root, "installer.keymap", ObjType::Text).unwrap();
+        let obj = doc
+            .put_object(&root, "installer.keymap", ObjType::Text)
+            .unwrap();
         let _ = doc.splice_text(&obj, 0, 0, value);
         (doc, root)
     }

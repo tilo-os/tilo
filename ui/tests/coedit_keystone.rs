@@ -19,12 +19,12 @@ use std::thread;
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ROOT, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::{PermissionContext, UserId};
-use ui::presence::{PresenceCtx, PresenceKey, PathSegment};
+use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
@@ -33,8 +33,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use taffy::prelude::*;
 use std::collections::HashMap;
+use taffy::prelude::*;
 
 const W: u32 = 480;
 const H: u32 = 120;
@@ -73,7 +73,12 @@ impl std::fmt::Debug for Drawn {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.0.hash(&mut h);
-        write!(f, "Drawn({} bytes, digest {:016x})", self.0.len(), h.finish())
+        write!(
+            f,
+            "Drawn({} bytes, digest {:016x})",
+            self.0.len(),
+            h.finish()
+        )
     }
 }
 
@@ -221,7 +226,9 @@ fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> 
 /// Presence key is `Widget { path }`, so a remote caret published under
 /// the same key paints into this widget's local render.
 fn render_presence_probe(path: Vec<PathSegment>, presence: &PresenceCtx) -> LocalRender {
-    let input = TextInput::new(path).with_font_size(28.0).with_plain_chrome();
+    let input = TextInput::new(path)
+        .with_font_size(28.0)
+        .with_plain_chrome();
     let mut throwaway = AutoCommit::new();
     render_widget(input, &mut throwaway, presence)
 }
@@ -254,13 +261,16 @@ fn non_background_pixels(rgba: &[u8]) -> usize {
 /// irrelevant.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn two_peers(tag: &str) -> (CollaborationManager, CollaborationManager, std::path::PathBuf) {
+fn two_peers(
+    tag: &str,
+) -> (
+    CollaborationManager,
+    CollaborationManager,
+    std::path::PathBuf,
+) {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    let sock = std::env::temp_dir().join(format!(
-        "quick-coedit-{tag}-{}.sock",
-        std::process::id()
-    ));
+    let sock = std::env::temp_dir().join(format!("quick-coedit-{tag}-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock);
     let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind broker socket");
     thread::spawn(move || ui::collaboration::broker::serve(listener));

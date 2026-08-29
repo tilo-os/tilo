@@ -67,14 +67,9 @@ fn parse_args() -> Option<Config> {
         match a.as_str() {
             "--listen" => listen = args.next().map(PathBuf::from),
             "--upstream" => upstream = args.next().map(PathBuf::from),
-            "--latency-ms" => {
-                latency_ms = args.next().and_then(|v| v.parse().ok()).unwrap_or(0)
-            }
+            "--latency-ms" => latency_ms = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             "--throughput-bps" => {
-                throughput_bps = args
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(u64::MAX)
+                throughput_bps = args.next().and_then(|v| v.parse().ok()).unwrap_or(u64::MAX)
             }
             "-h" | "--help" => {
                 print_usage();
@@ -107,10 +102,7 @@ fn main() {
     let listener = match UnixListener::bind(&cfg.listen) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!(
-                "qos-collab-link: bind {} failed: {e}",
-                cfg.listen.display()
-            );
+            eprintln!("qos-collab-link: bind {} failed: {e}", cfg.listen.display());
             std::process::exit(1);
         }
     };
@@ -209,18 +201,13 @@ fn handle_connection(id: u64, client: UnixStream, cfg: Arc<Config>) {
                                     break;
                                 }
                                 Ok(n) => {
-                                    if tx
-                                        .send((Instant::now(), buf[..n].to_vec()))
-                                        .is_err()
-                                    {
+                                    if tx.send((Instant::now(), buf[..n].to_vec())).is_err() {
                                         reader_alive.store(false, Ordering::Relaxed);
                                         break;
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!(
-                                        "qos-collab-link[{id}]/{reader_label}: read: {e}"
-                                    );
+                                    eprintln!("qos-collab-link[{id}]/{reader_label}: read: {e}");
                                     reader_alive.store(false, Ordering::Relaxed);
                                     break;
                                 }
@@ -248,8 +235,8 @@ fn handle_connection(id: u64, client: UnixStream, cfg: Arc<Config>) {
                             let earned = if bytes_per_sec == u64::MAX {
                                 BUCKET_BYTES
                             } else {
-                                ((bytes_per_sec as u128 * elapsed.as_nanos())
-                                    / 1_000_000_000) as u64
+                                ((bytes_per_sec as u128 * elapsed.as_nanos()) / 1_000_000_000)
+                                    as u64
                             };
                             tokens = (tokens.saturating_add(earned)).min(BUCKET_BYTES);
                             last_refill = now;

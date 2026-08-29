@@ -109,10 +109,7 @@ fn push_copy(
     if ns.child_id_named(parent, &cname).is_some() {
         return; // already resolved
     }
-    if out
-        .iter()
-        .any(|c| c.parent_id == parent && c.name == cname)
-    {
+    if out.iter().any(|c| c.parent_id == parent && c.name == cname) {
         return; // already queued this pass
     }
     out.push(ContentConflict {
@@ -162,7 +159,9 @@ mod tests {
 
         let winner = a.entry_at("doc").unwrap().hash.unwrap();
         assert_ne!(winner, loser);
-        let copy = a.entry_at(&conflict_name("doc", &loser)).expect("conflict copy");
+        let copy = a
+            .entry_at(&conflict_name("doc", &loser))
+            .expect("conflict copy");
         assert_eq!(copy.hash, Some(loser));
         assert!(detect(&a).is_empty(), "idempotent");
     }

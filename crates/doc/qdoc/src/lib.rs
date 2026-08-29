@@ -19,18 +19,22 @@ pub mod snapshot;
 
 pub use codecs::safety::ZipLimits;
 pub use codecs::{
-    builtin_registry, is_supported_ext, is_supported_sheet_ext, sheet_provider_for_ext, supported_extensions, DocxCodec, HtmlCodec, MarkdownCodec, OdsCodec, OdtCodec, RtfCodec,
-    SheetProvider, XlsxCodec,
+    DocxCodec, HtmlCodec, MarkdownCodec, OdsCodec, OdtCodec, RtfCodec, SheetProvider, XlsxCodec,
+    builtin_registry, is_supported_ext, is_supported_sheet_ext, sheet_provider_for_ext,
+    supported_extensions,
 };
 pub use diff::{
-    diff_snapshots, diff_workbooks, AttrChange, BlockDiff, BlockOp, CellChange, CellOp, DiffSummary, DocDiff, PropChange, RunOp, SheetChange, SheetDiff, SheetDiffSummary, SheetOp, TextRun,
+    AttrChange, BlockDiff, BlockOp, CellChange, CellOp, DiffSummary, DocDiff, PropChange, RunOp,
+    SheetChange, SheetDiff, SheetDiffSummary, SheetOp, TextRun, diff_snapshots, diff_workbooks,
 };
-pub use document::{author_runs, DocError, Document, MarkSpan};
+pub use document::{DocError, Document, MarkSpan, author_runs};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
 pub use history::VersionMeta;
-pub use model::{ordered_keys_scan_count, Containers, DocMut, DocRef, IdGen, NoteKind, Region};
+pub use model::{Containers, DocMut, DocRef, IdGen, NoteKind, Region, ordered_keys_scan_count};
 pub use sheet::{CellInput, CellType, CellView, SheetView, Workbook, WorkbookSnapshot};
-pub use snapshot::{AttrVal, BlockView, BookmarkView, ChangeKind, ChangeView, CommentView, DocSnapshot, NoteView};
+pub use snapshot::{
+    AttrVal, BlockView, BookmarkView, ChangeKind, ChangeView, CommentView, DocSnapshot, NoteView,
+};
 
 #[cfg(test)]
 mod smoke {

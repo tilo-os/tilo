@@ -18,11 +18,11 @@ use winit::event::{Modifiers, WindowEvent};
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::Widget;
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine};
 use crate::widget::slash_menu::SlashMenu;
-use crate::widget::Widget;
 
 /// Deeper nesting runs off the panel's right edge.
 pub const MAX_LIST_INDENT: u8 = 5;
@@ -36,13 +36,22 @@ pub enum BlockKind {
     Paragraph,
     /// Constructor helpers clamp to [1, 3]; other values are invalid.
     Heading(u8),
-    Bullet { indent: u8 },
+    Bullet {
+        indent: u8,
+    },
     /// The number is computed from position within its run at the same
     /// indent (`numbered_ordinals`), not stored — renumbers automatically.
-    Numbered { indent: u8 },
-    Checklist { indent: u8, done: bool },
+    Numbered {
+        indent: u8,
+    },
+    Checklist {
+        indent: u8,
+        done: bool,
+    },
     /// `lang` is the fence's tag (e.g. `rust`), `None` for a bare fence.
-    CodeBlock { lang: Option<String> },
+    CodeBlock {
+        lang: Option<String>,
+    },
     /// Non-editable, non-focusable.
     Divider,
 }
@@ -66,9 +75,7 @@ impl BlockKind {
     pub fn supports_indent(&self) -> bool {
         matches!(
             self,
-            BlockKind::Bullet { .. }
-                | BlockKind::Numbered { .. }
-                | BlockKind::Checklist { .. }
+            BlockKind::Bullet { .. } | BlockKind::Numbered { .. } | BlockKind::Checklist { .. }
         )
     }
 
@@ -109,34 +116,49 @@ impl Block {
         let kind = BlockKind::Heading(level.clamp(1, 3));
         Self {
             kind: kind.clone(),
-            line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            line: RichTextLine::new()
+                .with_text(text)
+                .with_size(kind.font_size()),
             soft_break: false,
         }
     }
 
     pub fn bullet(indent: u8, text: &str) -> Self {
-        let kind = BlockKind::Bullet { indent: indent.min(MAX_LIST_INDENT) };
+        let kind = BlockKind::Bullet {
+            indent: indent.min(MAX_LIST_INDENT),
+        };
         Self {
             kind: kind.clone(),
-            line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            line: RichTextLine::new()
+                .with_text(text)
+                .with_size(kind.font_size()),
             soft_break: false,
         }
     }
 
     pub fn numbered(indent: u8, text: &str) -> Self {
-        let kind = BlockKind::Numbered { indent: indent.min(MAX_LIST_INDENT) };
+        let kind = BlockKind::Numbered {
+            indent: indent.min(MAX_LIST_INDENT),
+        };
         Self {
             kind: kind.clone(),
-            line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            line: RichTextLine::new()
+                .with_text(text)
+                .with_size(kind.font_size()),
             soft_break: false,
         }
     }
 
     pub fn checklist(indent: u8, done: bool, text: &str) -> Self {
-        let kind = BlockKind::Checklist { indent: indent.min(MAX_LIST_INDENT), done };
+        let kind = BlockKind::Checklist {
+            indent: indent.min(MAX_LIST_INDENT),
+            done,
+        };
         Self {
             kind: kind.clone(),
-            line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            line: RichTextLine::new()
+                .with_text(text)
+                .with_size(kind.font_size()),
             soft_break: false,
         }
     }
@@ -304,7 +326,9 @@ impl BlockEditor {
                     }
                     body.push(lines.next().unwrap());
                 }
-                editor.blocks.push(Block::code_block(lang, &body.join("\n")));
+                editor
+                    .blocks
+                    .push(Block::code_block(lang, &body.join("\n")));
                 continue;
             }
             // Three hyphens only, for byte-stable round-trip.
@@ -319,7 +343,9 @@ impl BlockEditor {
                 .strip_prefix("- [ ] ")
                 .or_else(|| body.strip_prefix("* [ ] "))
             {
-                editor.blocks.push(Block::checklist(indent, false, check_body));
+                editor
+                    .blocks
+                    .push(Block::checklist(indent, false, check_body));
                 continue;
             }
             if let Some(check_body) = body
@@ -328,13 +354,12 @@ impl BlockEditor {
                 .or_else(|| body.strip_prefix("- [X] "))
                 .or_else(|| body.strip_prefix("* [X] "))
             {
-                editor.blocks.push(Block::checklist(indent, true, check_body));
+                editor
+                    .blocks
+                    .push(Block::checklist(indent, true, check_body));
                 continue;
             }
-            if let Some(bullet_body) = body
-                .strip_prefix("- ")
-                .or_else(|| body.strip_prefix("* "))
-            {
+            if let Some(bullet_body) = body.strip_prefix("- ").or_else(|| body.strip_prefix("* ")) {
                 editor.blocks.push(Block::bullet(indent, bullet_body));
                 continue;
             }
@@ -688,7 +713,7 @@ impl BlockEditor {
             self.focused = Some(0);
             self.structure_dirty = true;
             self.doc_structure_dirty = true;
-        self.doc_structure_dirty = true;
+            self.doc_structure_dirty = true;
             self.dirty = true;
             return;
         }
@@ -724,9 +749,7 @@ impl BlockEditor {
         let kind = BlockKind::Heading(level);
         let font_size = kind.font_size();
         b.kind = kind;
-        let mut new_line = RichTextLine::new()
-            .with_text(&prefix)
-            .with_size(font_size);
+        let mut new_line = RichTextLine::new().with_text(&prefix).with_size(font_size);
         new_line.set_focus(true);
         new_line.set_cursor_pos(0);
         b.line = new_line;
@@ -749,11 +772,13 @@ impl BlockEditor {
         let font_size = new_kind.font_size();
         b.kind = new_kind.clone();
         // Rebuilt (not just resized) so selection/dirty state resets too.
-        let body = if matches!(new_kind, BlockKind::Divider) { "" } else { &text };
+        let body = if matches!(new_kind, BlockKind::Divider) {
+            ""
+        } else {
+            &text
+        };
         let was_focused = b.line.is_focused();
-        let mut new_line = RichTextLine::new()
-            .with_text(body)
-            .with_size(font_size);
+        let mut new_line = RichTextLine::new().with_text(body).with_size(font_size);
         if matches!(new_kind, BlockKind::CodeBlock { .. }) {
             new_line.set_mono(true);
         }
@@ -765,9 +790,7 @@ impl BlockEditor {
         self.dirty = true;
         // Dividers aren't focusable — push focus to the next block (or a
         // fresh trailing paragraph) so the user can keep typing.
-        if matches!(new_kind, BlockKind::Divider)
-            && self.focused == Some(idx)
-        {
+        if matches!(new_kind, BlockKind::Divider) && self.focused == Some(idx) {
             if idx + 1 < self.blocks.len() {
                 self.focus_block(idx + 1, CursorPlacement::Start);
             } else {
@@ -786,22 +809,25 @@ impl BlockEditor {
         };
         let (new_kind, changed) = match &b.kind {
             BlockKind::Bullet { indent } => {
-                let next = (*indent as i16 + delta as i16)
-                    .clamp(0, MAX_LIST_INDENT as i16) as u8;
+                let next = (*indent as i16 + delta as i16).clamp(0, MAX_LIST_INDENT as i16) as u8;
                 let changed = next != *indent;
                 (BlockKind::Bullet { indent: next }, changed)
             }
             BlockKind::Numbered { indent } => {
-                let next = (*indent as i16 + delta as i16)
-                    .clamp(0, MAX_LIST_INDENT as i16) as u8;
+                let next = (*indent as i16 + delta as i16).clamp(0, MAX_LIST_INDENT as i16) as u8;
                 let changed = next != *indent;
                 (BlockKind::Numbered { indent: next }, changed)
             }
             BlockKind::Checklist { indent, done } => {
-                let next = (*indent as i16 + delta as i16)
-                    .clamp(0, MAX_LIST_INDENT as i16) as u8;
+                let next = (*indent as i16 + delta as i16).clamp(0, MAX_LIST_INDENT as i16) as u8;
                 let changed = next != *indent;
-                (BlockKind::Checklist { indent: next, done: *done }, changed)
+                (
+                    BlockKind::Checklist {
+                        indent: next,
+                        done: *done,
+                    },
+                    changed,
+                )
             }
             _ => return false,
         };
@@ -837,12 +863,7 @@ impl BlockEditor {
             );
             // ~4px slop so users don't have to land pixel-perfect.
             let slop = 4.0;
-            let slopped = Rect::new(
-                r.x0 - slop,
-                r.y0 - slop,
-                r.x1 + slop,
-                r.y1 + slop,
-            );
+            let slopped = Rect::new(r.x0 - slop, r.y0 - slop, r.x1 + slop, r.y1 + slop);
             if slopped.contains(p) {
                 return Some(idx);
             }
@@ -884,8 +905,10 @@ impl BlockEditor {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.slash_menu.draw_overlay(scene, transform, text_renderer, theme);
-        self.link_popover.draw_overlay(scene, transform, text_renderer, theme);
+        self.slash_menu
+            .draw_overlay(scene, transform, text_renderer, theme);
+        self.link_popover
+            .draw_overlay(scene, transform, text_renderer, theme);
     }
 
     pub fn set_link_pages(&mut self, pages: Vec<PageEntry>) {
@@ -902,9 +925,15 @@ impl BlockEditor {
     }
 
     fn commit_link_selection(&mut self, page: PageEntry) {
-        let Some(focused_idx) = self.focused else { return };
-        let Some(open_byte) = self.link_open_at.take() else { return };
-        let Some(b) = self.blocks.get_mut(focused_idx) else { return };
+        let Some(focused_idx) = self.focused else {
+            return;
+        };
+        let Some(open_byte) = self.link_open_at.take() else {
+            return;
+        };
+        let Some(b) = self.blocks.get_mut(focused_idx) else {
+            return;
+        };
         let text = b.line.value().to_string();
         let cursor = b.line.cursor_pos().min(text.len());
         let start = open_byte.min(text.len());
@@ -917,7 +946,8 @@ impl BlockEditor {
         new_text.push_str(&text[cursor..]);
         b.line.set_text(&new_text);
         let mark_range = start..(start + page.title.len());
-        b.line.add_mark(MarkSpan::new(mark_range.clone(), Mark::Link(page.id)));
+        b.line
+            .add_mark(MarkSpan::new(mark_range.clone(), Mark::Link(page.id)));
         b.line.set_cursor_pos(start + page.title.len());
         self.dirty = true;
         self.edit_pending = true;
@@ -943,7 +973,9 @@ impl BlockEditor {
     /// Mirrors what the `/` keystroke does internally.
     #[doc(hidden)]
     pub fn open_slash_menu_for_test(&mut self) {
-        let Some(focused_idx) = self.focused else { return };
+        let Some(focused_idx) = self.focused else {
+            return;
+        };
         let caret = self
             .blocks
             .get(focused_idx)
@@ -978,7 +1010,10 @@ impl BlockEditor {
         let b = self.blocks.get_mut(idx)?;
         if let BlockKind::Checklist { indent, done } = &b.kind {
             let new_done = !*done;
-            b.kind = BlockKind::Checklist { indent: *indent, done: new_done };
+            b.kind = BlockKind::Checklist {
+                indent: *indent,
+                done: new_done,
+            };
             self.dirty = true;
             // Counts as a user edit so the page is dirty + gets persisted.
             self.edit_pending = true;
@@ -1156,7 +1191,11 @@ fn kind_from_str(s: &str) -> BlockKind {
         return BlockKind::Checklist { indent, done };
     }
     if let Some(rest) = s.strip_prefix("code:") {
-        let lang = if rest.is_empty() { None } else { Some(rest.to_string()) };
+        let lang = if rest.is_empty() {
+            None
+        } else {
+            Some(rest.to_string())
+        };
         return BlockKind::CodeBlock { lang };
     }
     BlockKind::Paragraph
@@ -1231,8 +1270,7 @@ fn push_text_diff(state: &mut AutoCommit, text_obj: &ObjId, local: &str) {
     if cur == local {
         return;
     }
-    let (at_byte, inserted, removed) =
-        crate::widget::rich_text_line::diff_splice(&cur, local);
+    let (at_byte, inserted, removed) = crate::widget::rich_text_line::diff_splice(&cur, local);
     let char_at = cur[..at_byte.min(cur.len())].chars().count();
     let removed_chars = cur[at_byte..(at_byte + removed).min(cur.len())]
         .chars()
@@ -1394,7 +1432,9 @@ impl Widget for BlockEditor {
             {
                 self.blocks[i].line.bind_text(t);
             }
-            self.blocks[i].line.set_local_author(self.local_author.clone());
+            self.blocks[i]
+                .line
+                .set_local_author(self.local_author.clone());
             self.blocks[i].line.sync(state, &list);
         }
     }
@@ -1477,8 +1517,7 @@ impl Widget for BlockEditor {
             // Shift prefixed kinds' text rect right of a reserved gutter
             // so the prefix glyph doesn't overlap editable text.
             let gutter = prefix_gutter_for(&b.kind);
-            let indent_px =
-                LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
+            let indent_px = LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
             let original = b.line.get_rect();
             if gutter > 0.0 || indent_px > 0.0 {
                 let shifted = Rect::new(
@@ -1538,8 +1577,7 @@ impl Widget for BlockEditor {
 
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             let line_rect = b.line.get_rect();
-            let indent_px =
-                LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
+            let indent_px = LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
             let gutter = prefix_gutter_for(&b.kind);
             let prefix_x0 = line_rect.x0 - gutter;
             let row_x0 = prefix_x0 - indent_px;
@@ -1547,7 +1585,8 @@ impl Widget for BlockEditor {
 
             match &b.kind {
                 BlockKind::Paragraph | BlockKind::Heading(_) => {
-                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                    b.line
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
                 BlockKind::Bullet { .. } => {
                     // A filled disc, not a "•" glyph, reads the same across fonts.
@@ -1562,7 +1601,8 @@ impl Widget for BlockEditor {
                         None,
                         &circle,
                     );
-                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                    b.line
+                        .draw(scene, transform, text_renderer, theme, presence);
                     let _ = indent_px;
                 }
                 BlockKind::Numbered { .. } => {
@@ -1574,8 +1614,7 @@ impl Widget for BlockEditor {
                     // Matches RichTextLine's line height so the ordinal
                     // sits on the item text's baseline.
                     let line_height = size as f64 * 1.25;
-                    let text_y = line_rect.y0
-                        + (line_rect.height() - line_height) / 2.0;
+                    let text_y = line_rect.y0 + (line_rect.height() - line_height) / 2.0;
                     let x = (line_rect.x0 - 6.0 - label_w as f64).max(prefix_x0);
                     text_renderer.draw_text(
                         scene,
@@ -1585,7 +1624,8 @@ impl Widget for BlockEditor {
                         transform * Affine::translate((x, text_y)),
                         None,
                     );
-                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                    b.line
+                        .draw(scene, transform, text_renderer, theme, presence);
                     let _ = indent_px;
                 }
                 BlockKind::Checklist { done, .. } => {
@@ -1628,7 +1668,8 @@ impl Widget for BlockEditor {
                             &shape,
                         );
                     }
-                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                    b.line
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
                 BlockKind::CodeBlock { .. } => {
                     // Paint background + accent bar ONCE per run, spanning
@@ -1643,14 +1684,8 @@ impl Widget for BlockEditor {
                         const CODE_PAD_Y: f64 = 4.0;
                         let top = line_rect.y0 - CODE_PAD_Y;
                         let bottom = line_rects[end].y1 + CODE_PAD_Y;
-                        let bg_rect = Rect::new(
-                            line_rect.x0 - gutter,
-                            top,
-                            line_rect.x1,
-                            bottom,
-                        );
-                        let shape =
-                            vello::kurbo::RoundedRect::from_rect(bg_rect, 4.0);
+                        let bg_rect = Rect::new(line_rect.x0 - gutter, top, line_rect.x1, bottom);
+                        let shape = vello::kurbo::RoundedRect::from_rect(bg_rect, 4.0);
                         scene.fill(
                             vello::peniko::Fill::NonZero,
                             transform,
@@ -1658,12 +1693,7 @@ impl Widget for BlockEditor {
                             None,
                             &shape,
                         );
-                        let bar = Rect::new(
-                            bg_rect.x0,
-                            bg_rect.y0,
-                            bg_rect.x0 + 3.0,
-                            bg_rect.y1,
-                        );
+                        let bar = Rect::new(bg_rect.x0, bg_rect.y0, bg_rect.x0 + 3.0, bg_rect.y1);
                         scene.fill(
                             vello::peniko::Fill::NonZero,
                             transform,
@@ -1672,16 +1702,12 @@ impl Widget for BlockEditor {
                             &bar,
                         );
                     }
-                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                    b.line
+                        .draw(scene, transform, text_renderer, theme, presence);
                 }
                 BlockKind::Divider => {
                     let cy = (line_rect.y0 + line_rect.y1) / 2.0;
-                    let rule = Rect::new(
-                        line_rect.x0,
-                        cy - 0.5,
-                        line_rect.x1,
-                        cy + 0.5,
-                    );
+                    let rule = Rect::new(line_rect.x0, cy - 0.5, line_rect.x1, cy + 0.5);
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
@@ -1903,8 +1929,7 @@ impl Widget for BlockEditor {
             self.cross_block_drag_start = None;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical =
-                Point::new(position.x / scale_factor, position.y / scale_factor);
+            let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_mouse_pos = logical;
 
             // Hovering a slash-menu row moves the highlight to it, so
@@ -1916,20 +1941,11 @@ impl Widget for BlockEditor {
             // Per-block drag stays under the start TextInput's control
             // inside its own rect; this only adds a band on the OTHER
             // blocks the pointer crossed into.
-            if let Some((start_block, start_byte)) = self.cross_block_drag_start
-            {
-                let any_dragging = self
-                    .blocks
-                    .iter()
-                    .any(|b| b.line.inner().is_dragging());
-                if any_dragging
-                    && let Some(end_block) = self.block_at_y(logical.y)
-                {
+            if let Some((start_block, start_byte)) = self.cross_block_drag_start {
+                let any_dragging = self.blocks.iter().any(|b| b.line.inner().is_dragging());
+                if any_dragging && let Some(end_block) = self.block_at_y(logical.y) {
                     let end_byte = if end_block < self.blocks.len() {
-                        self.blocks[end_block]
-                            .line
-                            .inner_mut()
-                            .byte_at_x(logical.x)
+                        self.blocks[end_block].line.inner_mut().byte_at_x(logical.x)
                     } else {
                         0
                     };
@@ -1990,10 +2006,7 @@ impl Widget for BlockEditor {
             let can_open = self
                 .blocks
                 .get(focused_idx)
-                .map(|b| {
-                    !matches!(b.kind, BlockKind::CodeBlock { .. })
-                        && b.kind.is_editable()
-                })
+                .map(|b| !matches!(b.kind, BlockKind::CodeBlock { .. }) && b.kind.is_editable())
                 .unwrap_or(false);
             if can_open {
                 let caret_byte = self
@@ -2006,10 +2019,8 @@ impl Widget for BlockEditor {
                     .get(focused_idx)
                     .map(|b| b.line.get_rect())
                     .unwrap_or(Rect::ZERO);
-                self.slash_menu.set_anchor(Point::new(
-                    line_rect.x0,
-                    line_rect.y1 + 2.0,
-                ));
+                self.slash_menu
+                    .set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
                 self.slash_menu.set_filter("");
                 self.slash_menu.set_visible(true);
                 self.slash_open_at = Some(caret_byte);
@@ -2025,8 +2036,7 @@ impl Widget for BlockEditor {
         } = event
         {
             let hit = self.blocks.iter().position(|b| {
-                b.kind.is_editable()
-                    && b.line.get_rect().contains(self.last_mouse_pos)
+                b.kind.is_editable() && b.line.get_rect().contains(self.last_mouse_pos)
             });
             if let Some(idx) = hit
                 && self.focused != Some(idx)
@@ -2103,9 +2113,7 @@ impl Widget for BlockEditor {
         Some("block_editor")
     }
 
-    fn presence_payload(
-        &self,
-    ) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
         use crate::collaboration::PresencePayload;
         let idx = self.focused?;
         let block = self.blocks.get(idx)?;
@@ -2117,7 +2125,12 @@ impl Widget for BlockEditor {
         if let Some((start, end)) = block.line.selection_range() {
             return Some((key, PresencePayload::Selection { start, end }));
         }
-        Some((key, PresencePayload::Caret { pos: block.line.cursor_pos() }))
+        Some((
+            key,
+            PresencePayload::Caret {
+                pos: block.line.cursor_pos(),
+            },
+        ))
     }
 
     fn get_rect(&self) -> Rect {
@@ -2148,15 +2161,12 @@ impl Widget for BlockEditor {
     /// walks the per-block subtree instead.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::Document)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    multiline: true,
-                    ..Default::default()
-                }),
-        )
+        Some(AccessNode::new(Role::Document).with_state(AccessState {
+            focusable: self.is_focusable(),
+            focused: self.is_focused(),
+            multiline: true,
+            ..Default::default()
+        }))
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2228,7 +2238,8 @@ impl BlockEditor {
                     .get(idx)
                     .map(|b| b.line.get_rect())
                     .unwrap_or(Rect::ZERO);
-                self.link_popover.set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
+                self.link_popover
+                    .set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
                 self.link_popover.set_filter("");
                 self.link_popover.set_visible(true);
                 self.link_open_at = Some(open_at);
@@ -2250,7 +2261,10 @@ mod tests {
         assert!(node.state.multiline, "a document is multiline");
         assert!(node.state.focusable);
         assert!(!node.state.focused, "fresh editor is not focused");
-        assert_eq!(node.value, None, "the document text is not dumped into value");
+        assert_eq!(
+            node.value, None,
+            "the document text is not dumped into value"
+        );
     }
 
     #[test]
@@ -2451,8 +2465,15 @@ mod tests {
             let mut handled = false;
             let mut ft = None;
             e.handle_event(
-                ev, 1.0, &ctrl_shift, &mut state, &root, &mut handled, &mut ft,
-                NodeId::new(0), &taffy,
+                ev,
+                1.0,
+                &ctrl_shift,
+                &mut state,
+                &root,
+                &mut handled,
+                &mut ft,
+                NodeId::new(0),
+                &taffy,
             );
         };
 
@@ -2725,7 +2746,10 @@ mod tests {
         e.focused = Some(0);
         e.split_at_cursor(0, 5); // caret at end of "first"
         assert_eq!(e.blocks().len(), 2);
-        assert!(matches!(e.blocks()[1].kind, BlockKind::Numbered { indent: 0 }));
+        assert!(matches!(
+            e.blocks()[1].kind,
+            BlockKind::Numbered { indent: 0 }
+        ));
         assert_eq!(numbered_ordinals(e.blocks()), vec![1, 2]);
     }
 
@@ -2734,7 +2758,10 @@ mod tests {
         let mut e = BlockEditor::new();
         e.blocks[0].line.set_text("step");
         assert!(e.try_convert_to(0, BlockKind::Numbered { indent: 0 }));
-        assert!(matches!(e.blocks()[0].kind, BlockKind::Numbered { indent: 0 }));
+        assert!(matches!(
+            e.blocks()[0].kind,
+            BlockKind::Numbered { indent: 0 }
+        ));
         assert_eq!(e.blocks()[0].text(), "step");
     }
 
@@ -2876,7 +2903,13 @@ mod tests {
     #[test]
     fn supports_indent_predicate() {
         assert!(BlockKind::Bullet { indent: 0 }.supports_indent());
-        assert!(BlockKind::Checklist { indent: 0, done: false }.supports_indent());
+        assert!(
+            BlockKind::Checklist {
+                indent: 0,
+                done: false
+            }
+            .supports_indent()
+        );
         assert!(!BlockKind::Paragraph.supports_indent());
         assert!(!BlockKind::Heading(1).supports_indent());
         assert!(!BlockKind::CodeBlock { lang: None }.supports_indent());

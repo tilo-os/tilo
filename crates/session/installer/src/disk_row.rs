@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -119,7 +119,13 @@ impl Widget for DiskRow {
         } else {
             (1.0, theme.border_standard)
         };
-        scene.stroke(&Stroke::new(stroke_w), transform, stroke_color, None, &shape);
+        scene.stroke(
+            &Stroke::new(stroke_w),
+            transform,
+            stroke_color,
+            None,
+            &shape,
+        );
 
         // Line 1: device path + size. Line 2: model (dim), if present.
         let head = format!("{}    {}", self.disk.name, self.disk.size);

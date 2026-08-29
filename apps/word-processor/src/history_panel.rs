@@ -26,9 +26,9 @@ use ui::text_render::TextRenderer;
 use ui::widget::history_scrubber::{ScrubberGroup, VersionAction};
 use ui::widget::{HistoryEntryId, HistoryScrubber};
 use ui::{AuthorDirectory, GroupNameRequest, GroupingConfig, HistorySource, Theme};
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 /// Height of the history strip when open (with the version band showing). The
@@ -548,14 +548,22 @@ mod tests {
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
         s.commit_action(None, None);
         let p = {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             let id = dm.insert_block(None, "paragraph");
             dm.splice_text(&id, 0, 0, "first");
             id
         };
         s.commit_action(None, None);
         {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.splice_text(&p, 5, 0, " second");
         }
         s.commit_action(None, None);
@@ -586,7 +594,11 @@ mod tests {
         assert!(
             panel.entries().iter().all(|e| e.author.name == "alice"),
             "the actor the editor set resolves to a name: {:?}",
-            panel.entries().iter().map(|e| &e.author.name).collect::<Vec<_>>()
+            panel
+                .entries()
+                .iter()
+                .map(|e| &e.author.name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -648,13 +660,21 @@ mod tests {
         let blocks = qdoc::model::materialize(&s.doc, &c).blocks;
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.splice_text(&blocks[0].id, 0, 0, "X");
         }
         s.commit_action(None, None);
 
         panel.refresh(&mut s.doc);
-        assert_eq!(panel.current_tick(), 0, "the handle stays where it was dragged");
+        assert_eq!(
+            panel.current_tick(),
+            0,
+            "the handle stays where it was dragged"
+        );
     }
 
     /// A row id from another document restores nothing.
@@ -685,12 +705,17 @@ mod tests {
     /// are the point), the way the FS layer commits when replaying a durable chain.
     fn three_session_doc() -> (State, Vec<String>) {
         let mut s = State::new();
-        s.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+        s.doc
+            .set_actor(automerge::ActorId::from("alice".as_bytes()));
         let c = qdoc::model::init(&mut s.doc, &s.root);
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
         qdoc::history::commit_stamped_at(&mut s.doc, 1_000_000);
         let p = {
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             let id = dm.insert_block(None, "paragraph");
             dm.splice_text(&id, 0, 0, "Start.");
             id
@@ -706,7 +731,11 @@ mod tests {
                     .chars()
                     .count()
             };
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.splice_text(&p, at, 0, " one");
             qdoc::history::commit_stamped_at(&mut s.doc, 1_000_020 + i * 10);
         }
@@ -725,7 +754,11 @@ mod tests {
             };
             let cc = qdoc::model::open(&peer, &s.root).unwrap();
             let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-            let mut dm = qdoc::DocMut { doc: &mut peer, c: &cc, ids: &mut pids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut peer,
+                c: &cc,
+                ids: &mut pids,
+            };
             dm.splice_text(&p, at, 0, " two");
             qdoc::history::commit_stamped_at(&mut peer, 1_004_000 + i * 10);
         }
@@ -741,7 +774,11 @@ mod tests {
                     .count()
             };
             let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &cc, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &cc,
+                ids: &mut ids,
+            };
             dm.splice_text(&p, at, 0, " three");
             qdoc::history::commit_stamped_at(&mut s.doc, 1_012_000 + i * 10);
         }
@@ -764,12 +801,21 @@ mod tests {
         assert!(
             panel.versions().iter().any(|v| v.derived.contains("edits")),
             "an unnamed version describes itself: {:?}",
-            panel.versions().iter().map(|v| v.derived.clone()).collect::<Vec<_>>()
+            panel
+                .versions()
+                .iter()
+                .map(|v| v.derived.clone())
+                .collect::<Vec<_>>()
         );
         // And the segments tile the whole track without gaps or overlaps.
         let mut cursor = 0usize;
         for v in panel.versions() {
-            assert_eq!(v.start, cursor, "versions must tile: {:?}", panel.versions());
+            assert_eq!(
+                v.start,
+                cursor,
+                "versions must tile: {:?}",
+                panel.versions()
+            );
             cursor = v.end + 1;
         }
         assert_eq!(cursor, changes, "and cover every change");
@@ -825,7 +871,11 @@ mod tests {
                 .iter()
                 .any(|g| g.label.as_deref() == Some("Bob's pass")),
             "the band is on the track: {:?}",
-            panel.versions().iter().map(|g| g.title().to_string()).collect::<Vec<_>>()
+            panel
+                .versions()
+                .iter()
+                .map(|g| g.title().to_string())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -889,9 +939,16 @@ mod tests {
         for _ in 0..3 {
             let at = {
                 let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
-                qdoc::model::materialize(&s.doc, &cc).blocks[0].text.chars().count()
+                qdoc::model::materialize(&s.doc, &cc).blocks[0]
+                    .text
+                    .chars()
+                    .count()
             };
-            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut s.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.splice_text(&blocks[0].id, at, 0, " more");
             s.commit_action(None, None);
         }
@@ -923,7 +980,10 @@ mod tests {
             .clone();
         assert!(apply_version(
             &mut s.doc,
-            &VersionAction::Close { record_id: record, at: end_id }
+            &VersionAction::Close {
+                record_id: record,
+                at: end_id
+            }
         ));
         s.commit_action(None, None);
         panel.follow_document();
@@ -958,11 +1018,17 @@ mod tests {
         let boundary = panel.entries()[v.end].id;
         let expected = {
             let snap = qdoc::history::materialize_at(&mut s.doc, v.end).unwrap();
-            snap.blocks.first().map(|b| b.text.clone()).unwrap_or_default()
+            snap.blocks
+                .first()
+                .map(|b| b.text.clone())
+                .unwrap_or_default()
         };
         assert_ne!(expected, live, "the boundary is a different state");
 
-        assert!(restore_to(&mut s.doc, &boundary), "the restore wrote something");
+        assert!(
+            restore_to(&mut s.doc, &boundary),
+            "the restore wrote something"
+        );
         s.commit_action(None, None);
         assert_eq!(
             body(&s),
@@ -987,7 +1053,12 @@ mod tests {
         panel.refresh(&mut s.doc);
         for v in panel.versions().to_vec() {
             panel.set_current_tick(v.end);
-            assert_eq!(panel.current_tick(), v.end, "version ending at {} unreachable", v.end);
+            assert_eq!(
+                panel.current_tick(),
+                v.end,
+                "version ending at {} unreachable",
+                v.end
+            );
         }
     }
 }

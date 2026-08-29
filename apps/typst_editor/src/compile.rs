@@ -101,10 +101,16 @@ pub struct CompileOutput {
 
 impl CompileOutput {
     pub fn error_count(&self) -> usize {
-        self.diagnostics.iter().filter(|d| d.kind == DiagKind::Error).count()
+        self.diagnostics
+            .iter()
+            .filter(|d| d.kind == DiagKind::Error)
+            .count()
     }
     pub fn warning_count(&self) -> usize {
-        self.diagnostics.iter().filter(|d| d.kind == DiagKind::Warning).count()
+        self.diagnostics
+            .iter()
+            .filter(|d| d.kind == DiagKind::Warning)
+            .count()
     }
 }
 
@@ -145,7 +151,11 @@ impl TypstWorld {
     fn new(parts: Arc<WorldParts>, src: &str) -> Self {
         let main_id = FileId::new(None, VirtualPath::new("/main.typ"));
         let main = Source::new(main_id, src.to_string());
-        Self { parts, main_id, main }
+        Self {
+            parts,
+            main_id,
+            main,
+        }
     }
 }
 
@@ -376,7 +386,12 @@ fn byte_to_line_col(text: &str, byte: usize) -> (usize, usize) {
     }
     let before = &text[..byte];
     let line = before.bytes().filter(|&b| b == b'\n').count() + 1;
-    let col = before.rsplit('\n').next().map(|s| s.chars().count()).unwrap_or(0) + 1;
+    let col = before
+        .rsplit('\n')
+        .next()
+        .map(|s| s.chars().count())
+        .unwrap_or(0)
+        + 1;
     (line, col)
 }
 
@@ -424,7 +439,10 @@ mod tests {
         assert!(out.ok, "clean source compiles");
         assert_eq!(out.error_count(), 0);
         assert!(!out.pages.is_empty(), "produced a page");
-        assert!(out.pages[0].width_pt > 0.0 && out.pages[0].height_pt > 0.0, "point size set");
+        assert!(
+            out.pages[0].width_pt > 0.0 && out.pages[0].height_pt > 0.0,
+            "point size set"
+        );
 
         let cells: usize = out
             .page_text
@@ -478,7 +496,10 @@ mod tests {
             "exported bytes begin with the %PDF magic (got {:?})",
             &bytes[..bytes.len().min(8)]
         );
-        assert!(bytes.len() > 400, "a real single-page PDF is more than a stub");
+        assert!(
+            bytes.len() > 400,
+            "a real single-page PDF is more than a stub"
+        );
     }
 
     /// A source that can't compile can't export — the PDF path reports the same
@@ -515,8 +536,14 @@ mod tests {
             .iter()
             .find(|d| d.kind == DiagKind::Warning)
             .expect("a warning diagnostic");
-        assert!(err.line.is_some() && err.col.is_some(), "error span resolved");
-        assert!(warn.line.is_some() && warn.col.is_some(), "warning span resolved");
+        assert!(
+            err.line.is_some() && err.col.is_some(),
+            "error span resolved"
+        );
+        assert!(
+            warn.line.is_some() && warn.col.is_some(),
+            "warning span resolved"
+        );
         assert_ne!(
             err.line, warn.line,
             "the two diagnostics sit on different lines so a jump is observable"

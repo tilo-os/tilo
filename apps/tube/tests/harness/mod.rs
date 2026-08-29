@@ -15,8 +15,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{
     DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
@@ -65,13 +65,18 @@ impl<W: Widget> Harness<W> {
         self.taffy = TaffyTree::new();
         self.node_map.clear();
         self.app.sync(&mut self.state.doc, &self.state.root);
-        let child = self.app.build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
+        let child = self
+            .app
+            .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
         let (w, h) = self.viewport;
         let root = self
             .taffy
             .new_with_children(
                 Style {
-                    size: Size { width: Dimension::length(w), height: Dimension::length(h) },
+                    size: Size {
+                        width: Dimension::length(w),
+                        height: Dimension::length(h),
+                    },
                     ..Default::default()
                 },
                 &[child],
@@ -167,7 +172,10 @@ impl<W: Widget> Harness<W> {
         let pos = PhysicalPosition::new(p.x, p.y);
         let dev = DeviceId::dummy();
         self.last_focus = None;
-        self.dispatch(WindowEvent::CursorMoved { device_id: dev, position: pos });
+        self.dispatch(WindowEvent::CursorMoved {
+            device_id: dev,
+            position: pos,
+        });
         self.dispatch(WindowEvent::MouseInput {
             device_id: dev,
             state: ElementState::Pressed,
@@ -202,7 +210,10 @@ impl<W: Widget> Harness<W> {
     pub fn click_at(&mut self, p: Point) {
         let pos = PhysicalPosition::new(p.x, p.y);
         let dev = DeviceId::dummy();
-        self.dispatch(WindowEvent::CursorMoved { device_id: dev, position: pos });
+        self.dispatch(WindowEvent::CursorMoved {
+            device_id: dev,
+            position: pos,
+        });
         self.dispatch(WindowEvent::MouseInput {
             device_id: dev,
             state: ElementState::Pressed,

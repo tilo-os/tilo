@@ -116,11 +116,7 @@ pub fn resolve_full_audio(video_id: &str) -> Option<ResolvedStream> {
 /// timeout (the child is killed). `-g` output is a few hundred bytes, well under
 /// the pipe buffer, so reading stdout after the child exits cannot deadlock.
 #[cfg(feature = "live")]
-fn run_with_timeout(
-    bin: &str,
-    args: &[&str],
-    timeout: std::time::Duration,
-) -> Option<String> {
+fn run_with_timeout(bin: &str, args: &[&str], timeout: std::time::Duration) -> Option<String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
 

@@ -7,13 +7,13 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -31,7 +31,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out) = parse_shots_arg(&args) {
         // Scenario selects which screen to capture; `--scenario` wins over the
         // legacy `SLIDES_SHOT` env var.
-        let scenario = parse_flag(&args, "--scenario").or_else(|| std::env::var("SLIDES_SHOT").ok());
+        let scenario =
+            parse_flag(&args, "--scenario").or_else(|| std::env::var("SLIDES_SHOT").ok());
         // Viewport: explicit `--viewport WxH` wins; otherwise narrow scenarios
         // render at a phone-ish width (so the rail resolves to an overlay
         // flap), everything else at the default 16:10 canvas.
@@ -47,7 +48,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, slides::app_root(), "dev.qos.slides"));
+        std::process::exit(ui::headless::run(
+            spec,
+            slides::app_root(),
+            "dev.qos.slides",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.slides");

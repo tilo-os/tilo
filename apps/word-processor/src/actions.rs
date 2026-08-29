@@ -163,10 +163,7 @@ pub enum WordProcessorAction {
     },
     /// Insert a manual page break at `(block, at)`: split the block like Enter and
     /// mark the new block to start on a fresh page.
-    InsertPageBreak {
-        block: String,
-        at: usize,
-    },
+    InsertPageBreak { block: String, at: usize },
     /// Insert a fresh paragraph carrying `text` directly after block `after`.
     /// The action-level way to add a line: Enter is a live-edit path, not an
     /// action, so a headless participant (an agent, a script) had no way to
@@ -174,15 +171,11 @@ pub enum WordProcessorAction {
     InsertParagraph { after: String, text: String },
     /// Remove `blocks` (an image, or every cell of a table). Ids are sorted
     /// before removal so replicas emit the identical op sequence.
-    RemoveBlocks {
-        blocks: Vec<String>,
-    },
+    RemoveBlocks { blocks: Vec<String> },
     /// Replace the whole document body with `markdown` (re-import a template /
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
-    ReplaceBody {
-        markdown: String,
-    },
+    ReplaceBody { markdown: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +216,9 @@ fn add_mark_region(dm: &mut DocMut, region: Region, span: &Span, name: &str, val
         r => match value {
             MarkVal::Bool(v) => dm.add_mark_in(r, &span.block, span.start, span.end, name, *v),
             MarkVal::Int(n) => dm.add_mark_in(r, &span.block, span.start, span.end, name, *n),
-            MarkVal::Str(s) => dm.add_mark_in(r, &span.block, span.start, span.end, name, s.as_str()),
+            MarkVal::Str(s) => {
+                dm.add_mark_in(r, &span.block, span.start, span.end, name, s.as_str())
+            }
         },
     }
 }
@@ -238,17 +233,17 @@ fn remove_mark_region(dm: &mut DocMut, c: &Containers, region: Region, span: &Sp
     // `unmark(.., ExpandMark::After)`).
     if let Some(container) = region_container_obj(dm.doc, c, region)
         && let Some(obj) = region_block_obj(dm.doc, &container, &span.block)
-            && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
-                dm.doc.get(&obj, qdoc::schema::BLOCK_TEXT)
-            {
-                let _ = dm.doc.unmark(
-                    &tid,
-                    name,
-                    span.start,
-                    span.end,
-                    automerge::marks::ExpandMark::After,
-                );
-            }
+        && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
+            dm.doc.get(&obj, qdoc::schema::BLOCK_TEXT)
+    {
+        let _ = dm.doc.unmark(
+            &tid,
+            name,
+            span.start,
+            span.end,
+            automerge::marks::ExpandMark::After,
+        );
+    }
 }
 
 fn set_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str, value: &AttrVal) {
@@ -289,7 +284,11 @@ impl Action for WordProcessorAction {
                 del,
                 ins,
             } => {
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 dm.splice_text_in(region.to_region(), block, *at, *del as isize, ins);
             }
 
@@ -305,7 +304,11 @@ impl Action for WordProcessorAction {
                 sorted.sort_by(|a, b| {
                     (a.block.as_str(), a.start, a.end).cmp(&(b.block.as_str(), b.start, b.end))
                 });
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for span in &sorted {
                     if span.start >= span.end {
                         continue;
@@ -333,7 +336,11 @@ impl Action for WordProcessorAction {
             } => {
                 let mut sorted = blocks.clone();
                 sorted.sort();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for block in &sorted {
                     dm.set_kind(block, kind);
                     if let Some(l) = level {
@@ -354,7 +361,11 @@ impl Action for WordProcessorAction {
             } => {
                 let mut sorted = blocks.clone();
                 sorted.sort();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for block in &sorted {
                     if let Some(k) = kind {
                         dm.set_kind(block, k);
@@ -378,14 +389,22 @@ impl Action for WordProcessorAction {
                 let r = region.to_region();
                 let mut sorted = blocks.clone();
                 sorted.sort();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for block in &sorted {
                     set_attr_region(&mut dm, r, block, key, value);
                 }
             }
 
             WordProcessorAction::InsertTable { after, rows, cols } => {
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 let table_id = dm.ids.mint(); // one id shared by every cell
                 let mut prev = Some(after.clone());
                 for row in 0..*rows {
@@ -409,7 +428,11 @@ impl Action for WordProcessorAction {
                 let text = qdoc::model::block_text(doc, &c, block).unwrap_or_default();
                 let char_count = text.chars().count();
                 let tail: String = text.chars().skip(*at).collect();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 let hash = dm.put_blob(bytes);
                 if *at < char_count {
                     dm.splice_text(block, *at, (char_count - *at) as isize, "");
@@ -434,7 +457,11 @@ impl Action for WordProcessorAction {
                 let text = qdoc::model::block_text(doc, &c, block).unwrap_or_default();
                 let char_count = text.chars().count();
                 let tail: String = text.chars().skip(*at).collect();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 if *at < char_count {
                     dm.splice_text(block, *at, (char_count - *at) as isize, "");
                 }
@@ -446,7 +473,11 @@ impl Action for WordProcessorAction {
             }
 
             WordProcessorAction::InsertParagraph { after, text } => {
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 let new = dm.insert_block(Some(after), "paragraph");
                 if !text.is_empty() {
                     dm.splice_text(&new, 0, 0, text);
@@ -456,7 +487,11 @@ impl Action for WordProcessorAction {
             WordProcessorAction::RemoveBlocks { blocks } => {
                 let mut sorted = blocks.clone();
                 sorted.sort();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for block in &sorted {
                     dm.remove_block(block);
                 }
@@ -465,7 +500,11 @@ impl Action for WordProcessorAction {
             WordProcessorAction::ReplaceBody { markdown } => {
                 use qdoc::FormatProvider;
                 let existing = qdoc::model::blocks_in_order(doc, &c);
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for id in &existing {
                     dm.remove_block(id);
                 }
@@ -535,7 +574,12 @@ pub fn set_block_attr_action(
 
 /// Set alignment (`left`/`center`/`right`/`justify`) on `blocks`.
 pub fn set_align_action(blocks: Vec<String>, align: &str) -> WordProcessorAction {
-    set_block_attr_action(RegionKind::Body, blocks, "align", AttrVal::Str(align.to_string()))
+    set_block_attr_action(
+        RegionKind::Body,
+        blocks,
+        "align",
+        AttrVal::Str(align.to_string()),
+    )
 }
 
 /// Apply a named paragraph style (and, for a built-in, its structural kind) to
@@ -683,7 +727,11 @@ fn short(text: &str, fallback: &str) -> String {
 /// target blocks) and a child resource per image, table and heading, each
 /// exporting the document-mutating operations the data model implies.
 pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new("word-processor.document", "word_processor.document", "Document");
+    let mut root = Resource::new(
+        "word-processor.document",
+        "word_processor.document",
+        "Document",
+    );
 
     // Document-level structural inserts, anchored on the caret.
     root = root.with_action(immediate_spec(
@@ -737,9 +785,10 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     let mut table_ids: Vec<String> = Vec::new();
     for b in snap.blocks.iter().filter(|b| b.kind == "cell") {
         if let Some(qdoc::AttrVal::Str(tid)) = b.attrs.get("table")
-            && !table_ids.contains(tid) {
-                table_ids.push(tid.clone());
-            }
+            && !table_ids.contains(tid)
+        {
+            table_ids.push(tid.clone());
+        }
     }
     for tid in &table_ids {
         let cells: Vec<String> = snap
@@ -824,7 +873,9 @@ mod tests {
         {
             use qdoc::FormatProvider;
             let mut dm = ed.edit(&mut state.doc);
-            qdoc::MarkdownCodec.import(markdown.as_bytes(), &mut dm).unwrap();
+            qdoc::MarkdownCodec
+                .import(markdown.as_bytes(), &mut dm)
+                .unwrap();
         }
         let ids = qdoc::model::blocks_in_order(&state.doc, &ed.containers);
         (state, ids)
@@ -857,7 +908,11 @@ mod tests {
         a.doc.commit();
         let bytes = a.save();
         let mut b = ui::State::load(&bytes).unwrap();
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "precondition: same base state"
+        );
 
         // Replace "world" with "there".
         let action = splice_text_action(RegionKind::Body, &block, 6, 11, "there");
@@ -885,7 +940,11 @@ mod tests {
 
         let action = set_mark_action(
             RegionKind::Body,
-            vec![Span { block: block.clone(), start: 0, end: 5 }],
+            vec![Span {
+                block: block.clone(),
+                start: 0,
+                end: 5,
+            }],
             "strong",
             Some(MarkVal::Bool(true)),
             vec![],
@@ -894,14 +953,20 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "mark replayed identically");
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "mark replayed identically"
+        );
         let marks = body_blocks(&b.doc)
             .into_iter()
             .find(|x| x.id == block)
             .map(|x| x.marks)
             .unwrap_or_default();
         assert!(
-            marks.iter().any(|m| m.name == "strong" && m.start == 0 && m.end == 5),
+            marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 0 && m.end == 5),
             "the bold run is present on the peer: {marks:?}"
         );
     }
@@ -920,9 +985,17 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "style replayed identically");
         assert_eq!(
-            body_blocks(&b.doc).into_iter().find(|x| x.id == block).unwrap().kind,
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "style replayed identically"
+        );
+        assert_eq!(
+            body_blocks(&b.doc)
+                .into_iter()
+                .find(|x| x.id == block)
+                .unwrap()
+                .kind,
             "heading",
             "the block became a heading on the peer"
         );
@@ -944,9 +1017,19 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "table replayed identically");
-        let cells_a = body_blocks(&a.doc).into_iter().filter(|x| x.kind == "cell").count();
-        let cells_b = body_blocks(&b.doc).into_iter().filter(|x| x.kind == "cell").count();
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "table replayed identically"
+        );
+        let cells_a = body_blocks(&a.doc)
+            .into_iter()
+            .filter(|x| x.kind == "cell")
+            .count();
+        let cells_b = body_blocks(&b.doc)
+            .into_iter()
+            .filter(|x| x.kind == "cell")
+            .count();
         assert_eq!(cells_a, 6, "2x3 = six cells");
         assert_eq!(cells_a, cells_b, "the same cells on both replicas");
     }
@@ -967,10 +1050,22 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "page break replayed identically");
-        assert_eq!(text_of(&a.doc, &block), "one", "head keeps the pre-caret text");
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "page break replayed identically"
+        );
+        assert_eq!(
+            text_of(&a.doc, &block),
+            "one",
+            "head keeps the pre-caret text"
+        );
         let broke = body_blocks(&a.doc).into_iter().any(|x| {
-            x.text == "two" && matches!(x.attrs.get("page_break_before"), Some(qdoc::AttrVal::Bool(true)))
+            x.text == "two"
+                && matches!(
+                    x.attrs.get("page_break_before"),
+                    Some(qdoc::AttrVal::Bool(true))
+                )
         });
         assert!(broke, "the tail block starts on a fresh page");
     }
@@ -989,7 +1084,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "body replace replayed identically");
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "body replace replayed identically"
+        );
         let first = body_blocks(&a.doc).into_iter().next().unwrap();
         assert_eq!(first.kind, "heading");
         assert_eq!(first.text, "Fresh");
@@ -1006,16 +1105,30 @@ mod tests {
         let before_heads = state.doc.get_heads();
 
         let kind_of = |doc: &AutoCommit| {
-            body_blocks(doc).into_iter().find(|x| x.id == block).map(|x| x.kind)
+            body_blocks(doc)
+                .into_iter()
+                .find(|x| x.id == block)
+                .map(|x| x.kind)
         };
-        assert_eq!(kind_of(&state.doc).as_deref(), Some("paragraph"), "starts as a paragraph");
+        assert_eq!(
+            kind_of(&state.doc).as_deref(),
+            Some("paragraph"),
+            "starts as a paragraph"
+        );
 
         let action = set_paragraph_style_action(vec![block.clone()], "heading", Some(1), None);
         dispatch(&mut state.doc, &action);
         state.record_committed_action(before_heads.clone(), None, None);
 
-        assert_eq!(kind_of(&state.doc).as_deref(), Some("heading"), "the action made it a heading");
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert_eq!(
+            kind_of(&state.doc).as_deref(),
+            Some("heading"),
+            "the action made it a heading"
+        );
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
@@ -1041,17 +1154,31 @@ mod tests {
         assert_eq!(doc_res.kind, "word_processor.document");
 
         // Insert-table spec == insert_table builder.
-        let spec = doc_res.actions.iter().find(|a| a.id == "insert-table").unwrap();
+        let spec = doc_res
+            .actions
+            .iter()
+            .find(|a| a.id == "insert-table")
+            .unwrap();
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&insert_table_action(&block, 2, 2));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "insert-table is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "insert-table is one source of truth"
+        );
 
         // Align-center spec == set_align builder over the same target blocks.
-        let spec = doc_res.actions.iter().find(|a| a.id == "align-center").unwrap();
+        let spec = doc_res
+            .actions
+            .iter()
+            .find(|a| a.id == "align-center")
+            .unwrap();
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&set_align_action(vec![block.clone()], "center"));
-        assert_eq!(from_spec.payload, from_builder.payload, "align is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "align is one source of truth"
+        );
     }
 
     /// Ctrl+K publishes the document resource with its structural children: an
@@ -1066,7 +1193,10 @@ mod tests {
             &mut state.doc,
             &insert_image_action(&para, 0, vec![1, 2, 3, 4], Some(20), Some(10)),
         );
-        let after_img = qdoc::model::blocks_in_order(&state.doc, &qdoc::model::open(&state.doc, &automerge::ROOT).unwrap());
+        let after_img = qdoc::model::blocks_in_order(
+            &state.doc,
+            &qdoc::model::open(&state.doc, &automerge::ROOT).unwrap(),
+        );
         let last = after_img.last().cloned().unwrap();
         dispatch(&mut state.doc, &insert_table_action(&last, 2, 2));
 
@@ -1078,20 +1208,30 @@ mod tests {
         let resources = provide_resources(&ctx, &state.doc);
         assert_eq!(resources.len(), 1, "one document root");
         let root = &resources[0];
-        let ids_of = |kind: &str| {
-            root.children.iter().filter(|r| r.kind == kind).count()
-        };
+        let ids_of = |kind: &str| root.children.iter().filter(|r| r.kind == kind).count();
         assert_eq!(ids_of("word_processor.image"), 1, "an image resource");
         assert_eq!(ids_of("word_processor.table"), 1, "a table resource");
-        assert!(ids_of("word_processor.section") >= 1, "a heading section resource");
+        assert!(
+            ids_of("word_processor.section") >= 1,
+            "a heading section resource"
+        );
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Insert table")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete image")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete table")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Insert table")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete image")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete table")),
+            "{labels:?}"
+        );
     }
 }

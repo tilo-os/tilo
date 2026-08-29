@@ -6,20 +6,23 @@
 //! Skips when no wgpu adapter is available. Set `QUICK_UI_SCREENSHOT_DIR`
 //! to dump PNGs (`file_picker_open.png`, `file_picker_save.png`).
 
-use std::path::PathBuf;
 use crate::support::offscreen::OffscreenRenderer;
+use std::path::PathBuf;
+use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
-use vello::Scene;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::file_picker::{FileFilter, FilePicker, FilePickerMode};
 use ui::widget::Widget;
+use ui::widget::file_picker::{FileFilter, FilePicker, FilePickerMode};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h))).ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 fn temp_dir() -> (tempfile::TempDir, PathBuf) {
@@ -27,7 +30,14 @@ fn temp_dir() -> (tempfile::TempDir, PathBuf) {
     let root = dir.path().to_path_buf();
     std::fs::create_dir(root.join("Pictures")).unwrap();
     std::fs::create_dir(root.join("Documents")).unwrap();
-    for f in ["photo.png", "song.flac", "movie.mkv", "main.rs", "notes.md", "data.zip"] {
+    for f in [
+        "photo.png",
+        "song.flac",
+        "movie.mkv",
+        "main.rs",
+        "notes.md",
+        "data.zip",
+    ] {
         std::fs::write(root.join(f), b"x").unwrap();
     }
     (dir, root)
@@ -78,7 +88,10 @@ fn file_picker_open_and_save_render() {
     let rgba = render(&mut open, w, h, &mut renderer);
     let bg = [0x0f, 0x17, 0x2a, 0xff];
     let non_bg = rgba.chunks_exact(4).filter(|p| p[..4] != bg).count();
-    assert!(non_bg > 2000, "open-mode picker painted too little: {non_bg}");
+    assert!(
+        non_bg > 2000,
+        "open-mode picker painted too little: {non_bg}"
+    );
     dump("file_picker_open", &rgba, w, h);
 
     // Save mode with a typed filename.
@@ -87,6 +100,9 @@ fn file_picker_open_and_save_render() {
         .with_filename("report.md");
     let rgba = render(&mut save, w, h, &mut renderer);
     let non_bg = rgba.chunks_exact(4).filter(|p| p[..4] != bg).count();
-    assert!(non_bg > 2000, "save-mode picker painted too little: {non_bg}");
+    assert!(
+        non_bg > 2000,
+        "save-mode picker painted too little: {non_bg}"
+    );
     dump("file_picker_save", &rgba, w, h);
 }

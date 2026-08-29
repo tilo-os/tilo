@@ -23,7 +23,14 @@ pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
 }
 
 /// Stroke a rounded-rect border.
-pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, width: f64, color: Color) {
+pub fn stroke_round(
+    scene: &mut Scene,
+    t: Affine,
+    rect: Rect,
+    radius: f64,
+    width: f64,
+    color: Color,
+) {
     let shape = RoundedRect::from_rect(rect, radius);
     scene.stroke(&Stroke::new(width), t, color, None, &shape);
 }
@@ -47,7 +54,15 @@ pub fn text(
     color: Color,
     weight: TextWeight,
 ) {
-    tr.draw_text_weighted(scene, s, size, color, t * Affine::translate((x, y)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        None,
+        weight,
+    );
 }
 
 /// Draw monospace text (used by the body preview / highlighter).
@@ -78,7 +93,8 @@ pub fn mono(
 
 /// Measure the advance width of a monospace string at `size`.
 pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
-    tr.measure_styled(s, size, None, TextWeight::Regular, false, true).0 as f64
+    tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
+        .0 as f64
 }
 
 /// Draw a small filled pill (rounded capsule) with a centred label.
@@ -102,6 +118,16 @@ pub fn pill(
     let rect = Rect::new(x, y, x + w, y + height);
     fill_round(scene, t, rect, height / 2.0, bg);
     let ty = y + (height - size as f64 * 1.0) / 2.0 - 1.0;
-    text(scene, tr, t, label, x + pad_x, ty, size, fg, TextWeight::Medium);
+    text(
+        scene,
+        tr,
+        t,
+        label,
+        x + pad_x,
+        ty,
+        size,
+        fg,
+        TextWeight::Medium,
+    );
     rect
 }

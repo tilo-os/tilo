@@ -7,14 +7,14 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use automerge::{ActorId, AutoCommit, ObjType, ROOT};
 use automerge::transaction::Transactable;
+use automerge::{ActorId, AutoCommit, ObjType, ROOT};
 use collab_types::OpClass;
 
 use super::*;
 use crate::permissions::UserId;
-use crate::widget::history::HistoryAuthor;
 use crate::state::State;
+use crate::widget::history::HistoryAuthor;
 use crate::widget::{ActivityTimeline, HistoryFilter};
 
 /// A fixed clock so date-range assertions are deterministic.
@@ -42,7 +42,11 @@ fn two_identity_document() -> (AutoCommit, String) {
     let (mut alice, c, mut alice_ids) = qdoc_doc("alice");
 
     let block = {
-        let mut dm = qdoc::DocMut { doc: &mut alice, c: &c, ids: &mut alice_ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut alice,
+            c: &c,
+            ids: &mut alice_ids,
+        };
         let id = dm.insert_block(None, "paragraph");
         dm.splice_text(&id, 0, 0, "hello");
         id
@@ -54,7 +58,11 @@ fn two_identity_document() -> (AutoCommit, String) {
     bob.set_actor(ActorId::from("bob".as_bytes()));
     {
         let mut bob_ids = qdoc::IdGen::new(bob.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut bob, c: &c, ids: &mut bob_ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut bob,
+            c: &c,
+            ids: &mut bob_ids,
+        };
         dm.splice_text(&block, 5, 0, " world");
     }
     qdoc::history::commit_stamped_at(&mut bob, T0 + 2 * HOUR);
@@ -62,7 +70,11 @@ fn two_identity_document() -> (AutoCommit, String) {
     alice.merge(&mut bob).expect("peers merge");
 
     {
-        let mut dm = qdoc::DocMut { doc: &mut alice, c: &c, ids: &mut alice_ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut alice,
+            c: &c,
+            ids: &mut alice_ids,
+        };
         dm.splice_text(&block, 11, 0, "!");
     }
     qdoc::history::commit_stamped_at(&mut alice, T0 + 3 * HOUR);
@@ -105,7 +117,10 @@ fn three_edits_by_two_identities_are_attributed_correctly() {
         rows.len(),
         3,
         "three authored edits, three rows; got {:?}",
-        entries.iter().map(|e| (&e.author.name, &e.summary)).collect::<Vec<_>>()
+        entries
+            .iter()
+            .map(|e| (&e.author.name, &e.summary))
+            .collect::<Vec<_>>()
     );
     let names: Vec<&str> = rows.iter().map(|e| e.author.name.as_str()).collect();
     assert_eq!(
@@ -140,7 +155,11 @@ fn summaries_report_the_characters_actually_typed() {
 fn deletions_are_counted_and_a_removed_block_is_a_tombstone() {
     let (mut doc, c, mut ids) = qdoc_doc("alice");
     let (a, b) = {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let a = dm.insert_block(None, "paragraph");
         dm.splice_text(&a, 0, 0, "keep this");
         let b = dm.insert_block(Some(&a), "paragraph");
@@ -150,13 +169,21 @@ fn deletions_are_counted_and_a_removed_block_is_a_tombstone() {
     qdoc::history::commit_stamped_at(&mut doc, T0 + HOUR);
 
     {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         dm.splice_text(&a, 4, 5, "");
     }
     qdoc::history::commit_stamped_at(&mut doc, T0 + 2 * HOUR);
 
     {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         dm.remove_block(&b);
     }
     qdoc::history::commit_stamped_at(&mut doc, T0 + 3 * HOUR);
@@ -164,9 +191,16 @@ fn deletions_are_counted_and_a_removed_block_is_a_tombstone() {
     let entries = source().entries(&mut doc);
     let rows = content_rows(&entries);
     assert_eq!(rows.len(), 3, "three authored edits: {rows:?}");
-    assert_eq!(rows[1].summary, "+0 -5 chars", "deleting \" this\" is five chars");
+    assert_eq!(
+        rows[1].summary, "+0 -5 chars",
+        "deleting \" this\" is five chars"
+    );
     assert_eq!(rows[1].op_class, OpClass::Splice);
-    assert_eq!(rows[2].op_class, OpClass::Tombstone, "a removed block is a delete");
+    assert_eq!(
+        rows[2].op_class,
+        OpClass::Tombstone,
+        "a removed block is a delete"
+    );
     assert_eq!(rows[2].summary, "-1 block");
 }
 
@@ -214,7 +248,9 @@ fn restore_returns_earlier_content_and_appends_a_new_entry() {
     let ids_before: Vec<HistoryEntryId> = before.iter().map(|e| e.id).collect();
 
     let containers = qdoc::model::open(&state.doc, &ROOT).unwrap();
-    let text_now = qdoc::model::materialize(&state.doc, &containers).blocks[0].text.clone();
+    let text_now = qdoc::model::materialize(&state.doc, &containers).blocks[0]
+        .text
+        .clone();
     assert_eq!(text_now, "hello world!", "precondition: latest content");
 
     let target = heads_for_entry(&mut state.doc, &v1).expect("row addresses a version");
@@ -224,10 +260,15 @@ fn restore_returns_earlier_content_and_appends_a_new_entry() {
         Some("restore".into()),
         Some(UserId("alice".into())),
     );
-    assert!(changed, "restoring to a different version must change the document");
+    assert!(
+        changed,
+        "restoring to a different version must change the document"
+    );
 
     let containers = qdoc::model::open(&state.doc, &ROOT).unwrap();
-    let restored = qdoc::model::materialize(&state.doc, &containers).blocks[0].text.clone();
+    let restored = qdoc::model::materialize(&state.doc, &containers).blocks[0]
+        .text
+        .clone();
     assert_eq!(restored, "hello", "content matches the version restored to");
 
     let after = source().entries(&mut state.doc);
@@ -247,8 +288,14 @@ fn restore_returns_earlier_content_and_appends_a_new_entry() {
         !ids_before.contains(&newest.id),
         "the newest entry is genuinely new"
     );
-    assert_eq!(newest.summary, "+0 -7 chars", "the restore removed \" world!\"");
-    assert_eq!(&block, &qdoc::model::materialize(&state.doc, &containers).blocks[0].id);
+    assert_eq!(
+        newest.summary, "+0 -7 chars",
+        "the restore removed \" world!\""
+    );
+    assert_eq!(
+        &block,
+        &qdoc::model::materialize(&state.doc, &containers).blocks[0].id
+    );
 }
 
 /// The restore lands on the undo stack, so a user who scrubbed by mistake can
@@ -257,8 +304,10 @@ fn restore_returns_earlier_content_and_appends_a_new_entry() {
 fn a_restore_is_undoable() {
     let (doc, _) = two_identity_document();
     let mut state = State::from_doc(doc);
-    let rows_ids: Vec<HistoryEntryId> =
-        content_rows(&source().entries(&mut state.doc)).iter().map(|e| e.id).collect();
+    let rows_ids: Vec<HistoryEntryId> = content_rows(&source().entries(&mut state.doc))
+        .iter()
+        .map(|e| e.id)
+        .collect();
     let target = heads_for_entry(&mut state.doc, &rows_ids[0]).unwrap();
 
     state.restore_to_heads(&target, None, None, Some(UserId("alice".into())));
@@ -268,7 +317,9 @@ fn a_restore_is_undoable() {
     };
     assert_eq!(text(&state), "hello");
 
-    state.undo(None, None).expect("the restore is on the undo stack");
+    state
+        .undo(None, None)
+        .expect("the restore is on the undo stack");
     assert_eq!(text(&state), "hello world!", "undo puts the restore back");
 }
 
@@ -425,7 +476,11 @@ fn an_unregistered_actor_is_named_honestly_in_a_produced_row() {
     assert_eq!(entries.len(), 1);
     let a = &entries[0].author;
     assert_eq!(a.name, UNKNOWN_AUTHOR_NAME);
-    assert_eq!(a.identity_short.len(), 8, "the short actor hex disambiguates");
+    assert_eq!(
+        a.identity_short.len(),
+        8,
+        "the short actor hex disambiguates"
+    );
     assert!((0.0..360.0).contains(&a.avatar_hue));
 }
 
@@ -441,13 +496,21 @@ fn an_untouched_document_has_no_history() {
 fn the_entry_cap_keeps_the_most_recent_versions() {
     let (mut doc, c, mut ids) = qdoc_doc("alice");
     let p = {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         dm.insert_block(None, "paragraph")
     };
     qdoc::history::commit_stamped_at(&mut doc, T0);
     for i in 0..6 {
         {
-            let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             dm.splice_text(&p, i, 0, "x");
         }
         qdoc::history::commit_stamped_at(&mut doc, T0 + (i as i64 + 1) * HOUR);
@@ -457,7 +520,10 @@ fn the_entry_cap_keeps_the_most_recent_versions() {
     assert_eq!(capped.len(), 3);
     assert_eq!(
         capped.iter().map(|e| e.id).collect::<Vec<_>>(),
-        all[all.len() - 3..].iter().map(|e| e.id).collect::<Vec<_>>(),
+        all[all.len() - 3..]
+            .iter()
+            .map(|e| e.id)
+            .collect::<Vec<_>>(),
         "the cap takes the tail of history, not the head"
     );
     // The first capped row still describes a delta, since the window opens
@@ -474,7 +540,11 @@ fn entry_ids_are_stable_across_peers() {
     let mut elsewhere = AutoCommit::load(&bytes).unwrap();
 
     let a: Vec<HistoryEntryId> = source().entries(&mut alice).iter().map(|e| e.id).collect();
-    let b: Vec<HistoryEntryId> = source().entries(&mut elsewhere).iter().map(|e| e.id).collect();
+    let b: Vec<HistoryEntryId> = source()
+        .entries(&mut elsewhere)
+        .iter()
+        .map(|e| e.id)
+        .collect();
     assert_eq!(a, b, "same history, same row ids");
 }
 

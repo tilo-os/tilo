@@ -3,9 +3,9 @@
 //! numerics. Kept separate from the app so both the Query tab and the Data
 //! tab can reuse it.
 
+use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::Fill;
-use vello::Scene;
 
 use crate::model::{Cell, QueryResult};
 use crate::theme_ext::ThemeExt;
@@ -91,11 +91,7 @@ impl GridView {
                 let ca = result.rows[a].get(col);
                 let cb = result.rows[b].get(col);
                 let ord = compare_cells(ca, cb);
-                if asc {
-                    ord
-                } else {
-                    ord.reverse()
-                }
+                if asc { ord } else { ord.reverse() }
             });
         }
         self.order = order;
@@ -209,7 +205,13 @@ impl GridView {
         let content_right = (x0 + total_w).min(r.x1);
         let body_bottom = (r.y0 + HEADER_H + self.visible_rows() as f64 * ROW_H).min(r.y1);
 
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &r);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &r,
+        );
 
         // Header background spans the full visible width.
         let header_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + HEADER_H);
@@ -304,13 +306,25 @@ impl GridView {
         if max_x > 0.5 {
             let track_y = r.y1 - 4.0;
             let track = Rect::new(r.x0, track_y, r.x1, track_y + 3.0);
-            scene.fill(Fill::NonZero, transform, p.row_alt, None, &track.to_rounded_rect(1.5));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                p.row_alt,
+                None,
+                &track.to_rounded_rect(1.5),
+            );
             let frac = (r.width() / total_w).clamp(0.08, 1.0);
             let thumb_w = r.width() * frac;
             let travel = r.width() - thumb_w;
             let tx = r.x0 + (self.scroll_x / max_x) * travel;
             let thumb = Rect::new(tx, track_y, tx + thumb_w, track_y + 3.0);
-            scene.fill(Fill::NonZero, transform, theme.text_dim, None, &thumb.to_rounded_rect(1.5));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.text_dim,
+                None,
+                &thumb.to_rounded_rect(1.5),
+            );
         }
 
         // Outer border.
@@ -356,7 +370,14 @@ fn draw_cell(
         // Right-align numerics within the cell.
         let (tw, _) = tr.measure(&truncated, 13.0, None);
         let tx = (x + w - CELL_PAD - tw as f64).max(x + CELL_PAD);
-        tr.draw_text(scene, &truncated, 13.0, color, transform * Affine::translate((tx, ty)), None);
+        tr.draw_text(
+            scene,
+            &truncated,
+            13.0,
+            color,
+            transform * Affine::translate((tx, ty)),
+            None,
+        );
     } else {
         tr.draw_text(
             scene,

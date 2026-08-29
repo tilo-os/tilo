@@ -55,7 +55,10 @@ fn encrypted_signed_op_round_trips_outer_signature() {
         OpClass::Splice,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata { epoch, channel: cid },
+        EncryptionMetadata {
+            epoch,
+            channel: cid,
+        },
     );
     sign_op(&mut op, &sk).unwrap();
     // Outer signature verifies — the only contract verify_op cares
@@ -77,7 +80,10 @@ fn bob_decrypts_payload_after_verifying_outer_signature() {
         OpClass::Splice,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata { epoch, channel: cid },
+        EncryptionMetadata {
+            epoch,
+            channel: cid,
+        },
     );
     sign_op(&mut op, &sk).unwrap();
 

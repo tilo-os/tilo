@@ -30,13 +30,13 @@
 use std::collections::HashMap;
 
 use automerge::{
-    transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value,
+    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use taffy::style_helpers::length;
 use taffy::{Display, NodeId, Rect as TaffyRect, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -145,12 +145,16 @@ fn list_ids(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
 
 /// Row ids in display order.
 pub fn row_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
-    rows_list(doc, t).map(|l| list_ids(doc, &l)).unwrap_or_default()
+    rows_list(doc, t)
+        .map(|l| list_ids(doc, &l))
+        .unwrap_or_default()
 }
 
 /// Column ids in display order.
 pub fn col_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
-    cols_list(doc, t).map(|l| list_ids(doc, &l)).unwrap_or_default()
+    cols_list(doc, t)
+        .map(|l| list_ids(doc, &l))
+        .unwrap_or_default()
 }
 
 /// `(rows, cols)` dimensions.
@@ -182,7 +186,12 @@ fn next_id(doc: &mut AutoCommit, t: &ObjId) -> String {
 pub fn cell_obj(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> Option<ObjId> {
     let rid = row_ids(doc, t).into_iter().nth(r)?;
     let cid = col_ids(doc, t).into_iter().nth(c)?;
-    child_obj(doc, &cells_map(doc, t)?, &cell_key(&rid, &cid), ObjType::Text)
+    child_obj(
+        doc,
+        &cells_map(doc, t)?,
+        &cell_key(&rid, &cid),
+        ObjType::Text,
+    )
 }
 
 /// Current text of cell `(r, c)`; empty string when the cell has no content.
@@ -203,7 +212,9 @@ pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, r: usize, c: usize, s: &st
     ) else {
         return;
     };
-    let Some(cells) = cells_map(doc, t) else { return };
+    let Some(cells) = cells_map(doc, t) else {
+        return;
+    };
     let key = cell_key(&rid, &cid);
     let obj = match child_obj(doc, &cells, &key, ObjType::Text) {
         Some(o) => o,
@@ -252,7 +263,9 @@ pub fn insert_column(doc: &mut AutoCommit, t: &ObjId, at: usize) {
 /// Remove the row at display index `at`, deleting its cells.
 pub fn remove_row(doc: &mut AutoCommit, t: &ObjId, at: usize) {
     let rows_v = row_ids(doc, t);
-    let Some(rid) = rows_v.get(at).cloned() else { return };
+    let Some(rid) = rows_v.get(at).cloned() else {
+        return;
+    };
     let cols = col_ids(doc, t);
     if let Some(rows) = rows_list(doc, t) {
         let _ = doc.delete(&rows, at);
@@ -267,7 +280,9 @@ pub fn remove_row(doc: &mut AutoCommit, t: &ObjId, at: usize) {
 /// Remove the column at display index `at`, deleting its cells + width.
 pub fn remove_column(doc: &mut AutoCommit, t: &ObjId, at: usize) {
     let cols_v = col_ids(doc, t);
-    let Some(cid) = cols_v.get(at).cloned() else { return };
+    let Some(cid) = cols_v.get(at).cloned() else {
+        return;
+    };
     let rows = row_ids(doc, t);
     if let Some(cols) = cols_list(doc, t) {
         let _ = doc.delete(&cols, at);
@@ -556,14 +571,38 @@ impl Table {
 
 fn plus(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w: f64) {
     let s = Stroke::new(w);
-    scene.stroke(&s, transform, color, None, &Line::new((c.x - r, c.y), (c.x + r, c.y)));
-    scene.stroke(&s, transform, color, None, &Line::new((c.x, c.y - r), (c.x, c.y + r)));
+    scene.stroke(
+        &s,
+        transform,
+        color,
+        None,
+        &Line::new((c.x - r, c.y), (c.x + r, c.y)),
+    );
+    scene.stroke(
+        &s,
+        transform,
+        color,
+        None,
+        &Line::new((c.x, c.y - r), (c.x, c.y + r)),
+    );
 }
 
 fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w: f64) {
     let s = Stroke::new(w);
-    scene.stroke(&s, transform, color, None, &Line::new((c.x - r, c.y - r), (c.x + r, c.y + r)));
-    scene.stroke(&s, transform, color, None, &Line::new((c.x - r, c.y + r), (c.x + r, c.y - r)));
+    scene.stroke(
+        &s,
+        transform,
+        color,
+        None,
+        &Line::new((c.x - r, c.y - r), (c.x + r, c.y + r)),
+    );
+    scene.stroke(
+        &s,
+        transform,
+        color,
+        None,
+        &Line::new((c.x - r, c.y + r), (c.x + r, c.y - r)),
+    );
 }
 
 impl Widget for Table {
@@ -588,7 +627,10 @@ impl Widget for Table {
         let new_rows = row_ids(state, path);
         let new_cols = col_ids(state, path);
         self.header = header(state, path);
-        self.col_widths = new_cols.iter().map(|cid| col_width(state, path, cid)).collect();
+        self.col_widths = new_cols
+            .iter()
+            .map(|cid| col_width(state, path, cid))
+            .collect();
         self.cells_obj = cells_map(state, path);
 
         // Rebuild the cell editors only when the id set actually changed.
@@ -694,23 +736,44 @@ impl Widget for Table {
 
         // Outer frame (spans the gutters too).
         let frame = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(Fill::NonZero, transform, tk.colors.surfaces.base, None, &frame);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tk.colors.surfaces.base,
+            None,
+            &frame,
+        );
 
         if self.is_empty() {
             let r = self.empty_add_rect();
             let hovered = self.hover == Hover::EmptyAdd;
-            let box_color = if hovered { theme.bg_active } else { tk.colors.surfaces.raised };
+            let box_color = if hovered {
+                theme.bg_active
+            } else {
+                tk.colors.surfaces.raised
+            };
             let rr = RoundedRect::from_rect(r, radius);
             scene.fill(Fill::NonZero, transform, box_color, None, &rr);
             scene.stroke(
                 &Stroke::new(1.5),
                 transform,
-                if hovered { theme.accent_primary } else { theme.border_standard },
+                if hovered {
+                    theme.accent_primary
+                } else {
+                    theme.border_standard
+                },
                 None,
                 &rr,
             );
             let c = r.center();
-            plus(scene, transform, Point::new(c.x - 34.0, c.y), 6.0, theme.accent_primary, 2.0);
+            plus(
+                scene,
+                transform,
+                Point::new(c.x - 34.0, c.y),
+                6.0,
+                theme.accent_primary,
+                2.0,
+            );
             text_renderer.draw_text(
                 scene,
                 "Add cell",
@@ -730,7 +793,13 @@ impl Widget for Table {
         let body = Rect::new(gl, gt, gr, gb);
 
         // Grid body surface + header band + zebra rows.
-        scene.fill(Fill::NonZero, transform, tk.colors.surfaces.raised, None, &body);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tk.colors.surfaces.raised,
+            None,
+            &body,
+        );
         for r in 0..self.n_rows() {
             let row_rect = Rect::new(gl, ys[r], gr, ys[r + 1]);
             let is_header = self.header && r == 0;
@@ -753,10 +822,22 @@ impl Widget for Table {
         let line = Stroke::new(1.0);
         let line_color = tk.colors.border_white_10;
         for &x in &xs {
-            scene.stroke(&line, transform, line_color, None, &Line::new((x, gt), (x, gb)));
+            scene.stroke(
+                &line,
+                transform,
+                line_color,
+                None,
+                &Line::new((x, gt), (x, gb)),
+            );
         }
         for &y in &ys {
-            scene.stroke(&line, transform, line_color, None, &Line::new((gl, y), (gr, y)));
+            scene.stroke(
+                &line,
+                transform,
+                line_color,
+                None,
+                &Line::new((gl, y), (gr, y)),
+            );
         }
         // Heavier separator under the header.
         if self.header && self.n_rows() >= 1 {
@@ -776,7 +857,9 @@ impl Widget for Table {
         // it is derived against that chip rather than assumed to be white: on
         // the high-contrast accent white lands a hair under the non-text floor,
         // which is the palette that can least afford it.
-        let on_accent_mark = tk.colors.on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST);
+        let on_accent_mark = tk
+            .colors
+            .on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST);
         let danger = tk.colors.semantic.danger;
         let on_danger_mark = tk.colors.ink_on_any(
             &[danger],
@@ -836,7 +919,13 @@ impl Widget for Table {
             }
             Hover::DeleteCol(c) => {
                 let col = Rect::new(xs[c], gt, xs[c + 1], gb);
-                scene.fill(Fill::NonZero, transform, danger.with_alpha_factor(0.16), None, &col);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    danger.with_alpha_factor(0.16),
+                    None,
+                    &col,
+                );
                 let hr = self.delete_col_rect(&xs, c);
                 let rr = RoundedRect::from_rect(hr, 4.0);
                 scene.fill(Fill::NonZero, transform, danger, None, &rr);
@@ -844,7 +933,13 @@ impl Widget for Table {
             }
             Hover::DeleteRow(r) => {
                 let row = Rect::new(gl, ys[r], gr, ys[r + 1]);
-                scene.fill(Fill::NonZero, transform, danger.with_alpha_factor(0.16), None, &row);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    danger.with_alpha_factor(0.16),
+                    None,
+                    &row,
+                );
                 let hr = self.delete_row_rect(&ys, r);
                 let rr = RoundedRect::from_rect(hr, 4.0);
                 scene.fill(Fill::NonZero, transform, danger, None, &rr);
@@ -892,7 +987,10 @@ impl Widget for Table {
                     *handled = true;
                     return;
                 }
-                WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    ..
+                } => {
                     self.resize = None;
                     self.pending_commit = true;
                     *handled = true;
@@ -981,9 +1079,9 @@ impl Widget for Table {
                     }
                 }
             }
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed =>
-            {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
                 // Enter moves the caret down one row (Shift+Enter → up).
                 if matches!(key_event.logical_key, Key::Named(NamedKey::Enter))
                     && let Some(focused) = self.cells.iter().position(|c| c.is_focused())
@@ -1015,15 +1113,29 @@ impl Widget for Table {
                 && let Some(&cn) = child_nodes.get(idx)
             {
                 self.cells[idx].handle_event(
-                    event, scale_factor, modifiers, state, &cells_obj, handled,
-                    focus_target, cn, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    &cells_obj,
+                    handled,
+                    focus_target,
+                    cn,
+                    taffy,
                 );
                 return;
             }
             for (cell, &cn) in self.cells.iter_mut().zip(child_nodes.iter()) {
                 cell.handle_event(
-                    event, scale_factor, modifiers, state, &cells_obj, handled, focus_target,
-                    cn, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    &cells_obj,
+                    handled,
+                    focus_target,
+                    cn,
+                    taffy,
                 );
                 if *handled {
                     break;
@@ -1036,7 +1148,10 @@ impl Widget for Table {
         self.cells.iter().map(|c| c as &dyn Widget).collect()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.cells.iter_mut().map(|c| c as &mut (dyn Widget + '_)).collect()
+        self.cells
+            .iter_mut()
+            .map(|c| c as &mut (dyn Widget + '_))
+            .collect()
     }
 
     fn name(&self) -> &str {
@@ -1164,7 +1279,11 @@ mod tests {
 
         assert_eq!(dims(&doc, &t), (1, 4));
         let texts: Vec<String> = (0..4).map(|c| cell_text(&doc, &t, 0, c)).collect();
-        assert_eq!(texts, vec!["A", "", "B", "C"], "new empty column lands in the middle");
+        assert_eq!(
+            texts,
+            vec!["A", "", "B", "C"],
+            "new empty column lands in the middle"
+        );
     }
 
     #[test]
@@ -1235,7 +1354,14 @@ mod tests {
         let ids_before = col_ids(&doc, &t);
         remove_column(&mut doc, &t, 2);
         let ids_after = col_ids(&doc, &t);
-        assert_eq!(ids_after, vec![ids_before[0].clone(), ids_before[1].clone(), ids_before[3].clone()]);
+        assert_eq!(
+            ids_after,
+            vec![
+                ids_before[0].clone(),
+                ids_before[1].clone(),
+                ids_before[3].clone()
+            ]
+        );
         let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
         assert_eq!(texts, vec!["c0", "c1", "c3"]);
     }
@@ -1286,8 +1412,9 @@ mod tests {
     fn char_key(s: &str) -> WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1301,8 +1428,9 @@ mod tests {
     fn enter() -> WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1325,7 +1453,15 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         table.handle_event(
-            ev, 1.0, mods, doc, root, &mut handled, &mut focus_target, node, taffy,
+            ev,
+            1.0,
+            mods,
+            doc,
+            root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            taffy,
         );
         (handled, focus_target)
     }
@@ -1346,14 +1482,30 @@ mod tests {
         // Boundary between col 0 and col 1: xs[1] = LEFT_GUTTER + DEFAULT_COL_W.
         let bx = LEFT_GUTTER + DEFAULT_COL_W;
         let mods = Modifiers::default();
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, TOP_GUTTER / 2.0), &mods);
-        assert_eq!(table.hover, Hover::InsertCol(1), "hover resolves to the middle insert pill");
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(bx, TOP_GUTTER / 2.0),
+            &mods,
+        );
+        assert_eq!(
+            table.hover,
+            Hover::InsertCol(1),
+            "hover resolves to the middle insert pill"
+        );
         let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
 
         assert!(handled, "the insert click is consumed");
         assert_eq!(dims(&doc, &t), (1, 3), "a column was inserted");
         let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
-        assert_eq!(texts, vec!["A", "", "B"], "the new column landed between A and B");
+        assert_eq!(
+            texts,
+            vec!["A", "", "B"],
+            "the new column landed between A and B"
+        );
     }
 
     #[test]
@@ -1370,7 +1522,15 @@ mod tests {
         // Delete handle for row 1 sits in the left gutter at that row's centre.
         let cy = TOP_GUTTER + 1.5 * ROW_H;
         let mods = Modifiers::default();
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(LEFT_GUTTER / 2.0, cy), &mods);
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(LEFT_GUTTER / 2.0, cy),
+            &mods,
+        );
         assert_eq!(table.hover, Hover::DeleteRow(1));
         let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
 
@@ -1397,7 +1557,11 @@ mod tests {
         for ch in ["h", "i"] {
             dispatch(&mut table, &taffy, node, &mut doc, &t, &char_key(ch), &mods);
         }
-        assert_eq!(cell_text(&doc, &t, 0, 0), "hi", "keystrokes splice into the cell's Text");
+        assert_eq!(
+            cell_text(&doc, &t, 0, 0),
+            "hi",
+            "keystrokes splice into the cell's Text"
+        );
     }
 
     #[test]
@@ -1415,7 +1579,11 @@ mod tests {
 
         assert!(handled, "Enter is consumed for cell navigation");
         let want = taffy.children(node).unwrap()[2]; // row 1, col 0
-        assert_eq!(focus_target, Some(want), "focus moves straight down one row");
+        assert_eq!(
+            focus_target,
+            Some(want),
+            "focus moves straight down one row"
+        );
     }
 
     #[test]
@@ -1434,11 +1602,34 @@ mod tests {
         let by = TOP_GUTTER + ROW_H / 2.0;
         let mods = Modifiers::default();
 
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, by), &mods);
-        assert_eq!(table.hover, Hover::ResizeCol(1), "interior boundary hover is a resize");
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(bx, by),
+            &mods,
+        );
+        assert_eq!(
+            table.hover,
+            Hover::ResizeCol(1),
+            "interior boundary hover is a resize"
+        );
         dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
-        assert!(table.resize.is_some(), "press on the boundary starts a resize drag");
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx + 40.0, by), &mods);
+        assert!(
+            table.resize.is_some(),
+            "press on the boundary starts a resize drag"
+        );
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(bx + 40.0, by),
+            &mods,
+        );
 
         let after = col_width(&doc, &t, &cid0);
         assert!(
@@ -1457,7 +1648,15 @@ mod tests {
         let mods = Modifiers::default();
         let r = table.empty_add_rect();
         let c = r.center();
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(c.x, c.y), &mods);
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(c.x, c.y),
+            &mods,
+        );
         assert_eq!(table.hover, Hover::EmptyAdd);
         dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
 
@@ -1482,7 +1681,11 @@ mod tests {
         }
         let grown = doc.save().len() - baseline;
 
-        assert_eq!(cell_text(&doc, &t, 0, 0), typed, "cell must hold what was typed");
+        assert_eq!(
+            cell_text(&doc, &t, 0, 0),
+            typed,
+            "cell must hold what was typed"
+        );
         assert!(
             grown < 12 * typed.len(),
             "typing {} chars grew the document by {grown} bytes — set_cell_text \

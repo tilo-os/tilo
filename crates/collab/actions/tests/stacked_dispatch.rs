@@ -12,10 +12,10 @@
 //! actor-sort must not panic or diverge.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ScalarValue, ROOT};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use qos_actions::{
-    apply_local, dispatch, replay, Action, ActionError, ActionRegistry, Doc, EncodedAction,
-    ExecutionLocus, LocalTransport,
+    Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus, LocalTransport,
+    apply_local, dispatch, replay,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,8 +23,14 @@ use serde::{Deserialize, Serialize};
 /// function of `(self, doc)` — no wall-clock, no RNG — so replay is deterministic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Counter {
-    Put { key: String, value: i64 },
-    Append { key: String, value: String },
+    Put {
+        key: String,
+        value: i64,
+    },
+    Append {
+        key: String,
+        value: String,
+    },
     /// A well-behaved action that legitimately performs no mutation this
     /// turn (a toggle whose precondition already holds). Its `apply` opens
     /// no transaction and writes no op.
@@ -190,12 +196,24 @@ fn noop_action_in_a_stack_does_not_corrupt_the_executor() {
         let mut envelopes = Vec::new();
 
         let actions = [
-            Counter::Put { key: "a".into(), value: 1 },
+            Counter::Put {
+                key: "a".into(),
+                value: 1,
+            },
             Counter::Noop,
-            Counter::Put { key: "b".into(), value: 2 },
+            Counter::Put {
+                key: "b".into(),
+                value: 2,
+            },
             Counter::Noop,
-            Counter::Append { key: "log".into(), value: "x".into() },
-            Counter::Put { key: "c".into(), value: 3 },
+            Counter::Append {
+                key: "log".into(),
+                value: "x".into(),
+            },
+            Counter::Put {
+                key: "c".into(),
+                value: 3,
+            },
         ];
         for (i, action) in actions.iter().enumerate() {
             let encoded = EncodedAction::encode(COUNTER_TYPE, action).unwrap();
@@ -216,7 +234,11 @@ fn noop_action_in_a_stack_does_not_corrupt_the_executor() {
             replay(&mut b, env, &registry())
                 .unwrap_or_else(|e| panic!("iter {iter}: replay failed: {e}"));
         }
-        assert_eq!(a.get_heads(), b.get_heads(), "iter {iter}: converge with no-ops in the stack");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "iter {iter}: converge with no-ops in the stack"
+        );
     }
 }
 
@@ -237,10 +259,19 @@ fn stacked_dispatch_with_active_patch_log_is_deterministic() {
         let mut tx = LocalTransport::new();
         let mut envelopes = Vec::new();
         let actions = [
-            Counter::Put { key: "a".into(), value: 1 },
+            Counter::Put {
+                key: "a".into(),
+                value: 1,
+            },
             Counter::Noop,
-            Counter::Append { key: "log".into(), value: "x".into() },
-            Counter::Put { key: "b".into(), value: 2 },
+            Counter::Append {
+                key: "log".into(),
+                value: "x".into(),
+            },
+            Counter::Put {
+                key: "b".into(),
+                value: 2,
+            },
             Counter::Noop,
         ];
         for (i, action) in actions.iter().enumerate() {
@@ -254,7 +285,11 @@ fn stacked_dispatch_with_active_patch_log_is_deterministic() {
         for env in &envelopes {
             replay(&mut b, env, &registry()).unwrap();
         }
-        assert_eq!(a.get_heads(), b.get_heads(), "iter {iter}: converge (active log)");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "iter {iter}: converge (active log)"
+        );
     }
 }
 
@@ -268,11 +303,20 @@ fn empty_mutation_in_a_stack_does_not_corrupt_the_executor() {
         let mut tx = LocalTransport::new();
         let mut envelopes = Vec::new();
         let actions = [
-            Counter::Put { key: "a".into(), value: 1 },
+            Counter::Put {
+                key: "a".into(),
+                value: 1,
+            },
             Counter::EmptySplice,
-            Counter::Put { key: "b".into(), value: 2 },
+            Counter::Put {
+                key: "b".into(),
+                value: 2,
+            },
             Counter::EmptySplice,
-            Counter::Put { key: "c".into(), value: 3 },
+            Counter::Put {
+                key: "c".into(),
+                value: 3,
+            },
         ];
         for (i, action) in actions.iter().enumerate() {
             let encoded = EncodedAction::encode(COUNTER_TYPE, action).unwrap();
@@ -281,12 +325,20 @@ fn empty_mutation_in_a_stack_does_not_corrupt_the_executor() {
             envelopes.push(d.envelope().clone());
         }
         for (k, v) in [("a", 1i64), ("b", 2), ("c", 3)] {
-            assert_eq!(a.get(&ROOT, k).unwrap().unwrap().0.to_i64(), Some(v), "iter {iter}: {k}");
+            assert_eq!(
+                a.get(&ROOT, k).unwrap().unwrap().0.to_i64(),
+                Some(v),
+                "iter {iter}: {k}"
+            );
         }
         for env in &envelopes {
             replay(&mut b, env, &registry()).unwrap();
         }
-        assert_eq!(a.get_heads(), b.get_heads(), "iter {iter}: converge with empty mutations");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "iter {iter}: converge with empty mutations"
+        );
     }
 }
 
@@ -300,9 +352,15 @@ fn erroring_action_rolls_back_without_corrupting_the_executor() {
         a.update_diff_cursor();
         let mut tx = LocalTransport::new();
 
-        let ok1 = Counter::Put { key: "a".into(), value: 1 };
+        let ok1 = Counter::Put {
+            key: "a".into(),
+            value: 1,
+        };
         let e1 = EncodedAction::encode(COUNTER_TYPE, &ok1).unwrap();
-        let env1 = dispatch(&mut a, &ok1, e1, &mut tx).unwrap().envelope().clone();
+        let env1 = dispatch(&mut a, &ok1, e1, &mut tx)
+            .unwrap()
+            .envelope()
+            .clone();
 
         // The erroring action returns Err from dispatch and must not have written.
         let bad = Counter::WriteThenError;
@@ -317,16 +375,34 @@ fn erroring_action_rolls_back_without_corrupting_the_executor() {
         );
 
         // A later dispatch on the same document must still work (no ghost actor).
-        let ok2 = Counter::Put { key: "b".into(), value: 2 };
+        let ok2 = Counter::Put {
+            key: "b".into(),
+            value: 2,
+        };
         let e2 = EncodedAction::encode(COUNTER_TYPE, &ok2).unwrap();
-        let env2 = dispatch(&mut a, &ok2, e2, &mut tx).unwrap().envelope().clone();
+        let env2 = dispatch(&mut a, &ok2, e2, &mut tx)
+            .unwrap()
+            .envelope()
+            .clone();
 
-        assert_eq!(a.get(&ROOT, "a").unwrap().unwrap().0.to_i64(), Some(1), "iter {iter}: a");
-        assert_eq!(a.get(&ROOT, "b").unwrap().unwrap().0.to_i64(), Some(2), "iter {iter}: b");
+        assert_eq!(
+            a.get(&ROOT, "a").unwrap().unwrap().0.to_i64(),
+            Some(1),
+            "iter {iter}: a"
+        );
+        assert_eq!(
+            a.get(&ROOT, "b").unwrap().unwrap().0.to_i64(),
+            Some(2),
+            "iter {iter}: b"
+        );
 
         replay(&mut b, &env1, &registry()).unwrap();
         replay(&mut b, &env2, &registry()).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "iter {iter}: converge after an error");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "iter {iter}: converge after an error"
+        );
     }
 }
 

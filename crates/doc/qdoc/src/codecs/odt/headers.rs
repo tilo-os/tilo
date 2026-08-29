@@ -3,7 +3,7 @@
 //! (a page-number field is `<text:page-number/>`). This maps them onto the canonical
 //! header/footer regions, splicing regenerated regions back into a copy of `styles.xml`.
 
-use crate::model::{materialize_region, DocMut, DocRef, Region};
+use crate::model::{DocMut, DocRef, Region, materialize_region};
 use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use crate::snapshot::BlockView;
 use quick_xml::events::Event;
@@ -12,7 +12,9 @@ use quick_xml::reader::Reader;
 /// Import the `style:header`/`style:footer` paragraphs from the first `style:master-page`.
 /// `<text:page-number/>` becomes a page-number field. No-op when neither region is present.
 pub(super) fn import_master_headers(styles_xml: &[u8], doc: &mut DocMut) {
-    let Ok(s) = std::str::from_utf8(styles_xml) else { return };
+    let Ok(s) = std::str::from_utf8(styles_xml) else {
+        return;
+    };
     parse_region(s, "style:header", Region::Header, doc);
     parse_region(s, "style:footer", Region::Footer, doc);
 }
@@ -28,7 +30,10 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
     // Pending field marks (block, start) applied after text is in place.
     let mut field_marks: Vec<(String, usize)> = Vec::new();
 
-    let open_block = |doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize| {
+    let open_block = |doc: &mut DocMut,
+                      prev: &mut Option<String>,
+                      cur: &mut Option<String>,
+                      cur_len: &mut usize| {
         let id = doc.insert_block_in(region, prev.as_deref(), "paragraph");
         *prev = Some(id.clone());
         *cur = Some(id.clone());
@@ -51,7 +56,9 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 n if n == tag.as_bytes() => in_region = true,
-                b"text:p" | b"text:h" if in_region => open_block(doc, &mut prev, &mut cur, &mut cur_len),
+                b"text:p" | b"text:h" if in_region => {
+                    open_block(doc, &mut prev, &mut cur, &mut cur_len)
+                }
                 _ => {}
             },
             Event::Empty(e) if in_region => match e.name().as_ref() {
@@ -73,7 +80,11 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
                         .attributes()
                         .flatten()
                         .find(|a| a.key.as_ref() == b"text:c")
-                        .and_then(|a| a.unescape_value().ok().and_then(|v| v.parse::<usize>().ok()))
+                        .and_then(|a| {
+                            a.unescape_value()
+                                .ok()
+                                .and_then(|v| v.parse::<usize>().ok())
+                        })
                         .unwrap_or(1)
                         .min(256);
                     append(doc, &cur, &mut cur_len, &" ".repeat(n));
@@ -83,7 +94,9 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
             Event::Text(t) if in_region && cur.is_some() => {
                 if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
-                    if !txt.is_empty() && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r'])) {
+                    if !txt.is_empty()
+                        && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r']))
+                    {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
                 }
@@ -115,9 +128,12 @@ fn push_escaped(out: &mut String, c: char) {
 
 /// Whether character `i` of `b` is the start of a page-number field.
 fn page_number_field_at(b: &BlockView, i: usize) -> bool {
-    b.marks
-        .iter()
-        .any(|m| m.name == MARK_FIELD && m.start == i && m.end == i + 1 && m.value.as_str() == Some(FIELD_PAGE_NUMBER))
+    b.marks.iter().any(|m| {
+        m.name == MARK_FIELD
+            && m.start == i
+            && m.end == i + 1
+            && m.value.as_str() == Some(FIELD_PAGE_NUMBER)
+    })
 }
 
 /// Render a region block's text, emitting `<text:page-number/>` for field placeholders
@@ -282,6 +298,11 @@ fn strip_regions(inner: &str) -> String {
 fn is_region_tag(name: &[u8]) -> bool {
     matches!(
         name,
-        b"style:header" | b"style:footer" | b"style:header-left" | b"style:footer-left" | b"style:header-first" | b"style:footer-first"
+        b"style:header"
+            | b"style:footer"
+            | b"style:header-left"
+            | b"style:footer-left"
+            | b"style:header-first"
+            | b"style:footer-first"
     )
 }

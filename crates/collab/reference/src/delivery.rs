@@ -201,9 +201,7 @@ impl Destination {
                 private: false,
                 agent: false,
             },
-            Destination::Participant {
-                name, is_agent, ..
-            } => DestinationDisplay {
+            Destination::Participant { name, is_agent, .. } => DestinationDisplay {
                 name,
                 private: true,
                 agent: *is_agent,

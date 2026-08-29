@@ -67,7 +67,10 @@ fn results_flow_back_through_the_channel() {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    assert!(got, "RefreshRemotes result must arrive via the channel, not inline");
+    assert!(
+        got,
+        "RefreshRemotes result must arrive via the channel, not inline"
+    );
     // The in-flight marker is cleared once the result is drained.
     assert!(!w.has_inflight(), "in-flight marker released after drain");
 }
@@ -130,7 +133,10 @@ fn channel_is_mpsc_and_decoupled() {
     // send is buffered, not rendezvous (UI never waits for the worker).
     let t0 = Instant::now();
     job_tx.send(Request::RefreshInstalled).unwrap();
-    assert!(t0.elapsed() < Duration::from_millis(5), "send must not block");
+    assert!(
+        t0.elapsed() < Duration::from_millis(5),
+        "send must not block"
+    );
     // Consumer (worker) side picks it up later.
     assert_eq!(job_rx.recv().unwrap(), Request::RefreshInstalled);
     // And the reverse direction carries results back.

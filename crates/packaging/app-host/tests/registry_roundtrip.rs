@@ -99,7 +99,10 @@ async fn publish_resolve_fetch_and_install() {
         .await
         .expect("fetch + verify");
     assert_eq!(outcome.package_id, pkg_id);
-    assert_eq!(outcome.bytes, qpkg_bytes, "fetched bytes are byte-identical");
+    assert_eq!(
+        outcome.bytes, qpkg_bytes,
+        "fetched bytes are byte-identical"
+    );
 
     // Install on the production path and confirm the payload landed.
     let store = Store::open(&tmp.path().join("store")).unwrap();

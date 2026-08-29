@@ -4,7 +4,9 @@
 //! rectangles, and point↔offset hit-testing. Render it with
 //! [`crate::text_render::TextRenderer::draw_rich`].
 
-use cosmic_text::{Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, Weight, Wrap};
+use cosmic_text::{
+    Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, Weight, Wrap,
+};
 
 /// A generic font family the toolkit can resolve from system fonts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -182,7 +184,11 @@ impl RichTextLayout {
         let line_height = size * 1.4 * line_height_mult;
         let mut buffer = Buffer::new(fs, Metrics::new(size, line_height));
         let fam = family.to_cosmic();
-        let base = Attrs::new().family(fam).weight(if base_bold { Weight::BOLD } else { Weight::NORMAL });
+        let base = Attrs::new().family(fam).weight(if base_bold {
+            Weight::BOLD
+        } else {
+            Weight::NORMAL
+        });
 
         // Byte offsets accumulate over the *non-empty* spans (matching what gets
         // fed to cosmic-text), so backgrounds/baselines align with glyph
@@ -217,7 +223,11 @@ impl RichTextLayout {
                     }
                     let mut a = Attrs::new()
                         .family(run_fam)
-                        .weight(if r.bold || base_bold { Weight::BOLD } else { Weight::NORMAL })
+                        .weight(if r.bold || base_bold {
+                            Weight::BOLD
+                        } else {
+                            Weight::NORMAL
+                        })
                         .metrics(Metrics::new(run_size, run_size * 1.4 * line_height_mult));
                     if r.italic {
                         a = a.style(Style::Italic);
@@ -235,7 +245,14 @@ impl RichTextLayout {
         buffer.set_wrap(Wrap::Word);
         buffer.shape_until_scroll(fs, false);
 
-        Self { buffer, underlines, strikes, backgrounds, baselines, line_height }
+        Self {
+            buffer,
+            underlines,
+            strikes,
+            backgrounds,
+            baselines,
+            line_height,
+        }
     }
 
     /// Total laid-out height (at least one line tall).
@@ -338,19 +355,66 @@ mod tests {
     #[test]
     fn center_alignment_offsets_text() {
         let mut fs = FontSystem::new();
-        let left = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0);
-        let center = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Center, FontFamily::Sans, vec![], vec![], 1.0);
+        let left = RichTextLayout::shape(
+            &mut fs,
+            &[RichSpan::new("hi")],
+            false,
+            16.0,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
+        let center = RichTextLayout::shape(
+            &mut fs,
+            &[RichSpan::new("hi")],
+            false,
+            16.0,
+            400.0,
+            TextAlign::Center,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
         let lx = left.caret_geometry(0).0;
         let cx = center.caret_geometry(0).0;
-        assert!(cx > lx + 50.0, "centered text should start further right: left={lx} center={cx}");
+        assert!(
+            cx > lx + 50.0,
+            "centered text should start further right: left={lx} center={cx}"
+        );
     }
 
     #[test]
     fn wrapping_produces_multiple_lines() {
         let mut fs = FontSystem::new();
         let long = "word ".repeat(60);
-        let one = RichTextLayout::shape(&mut fs, &[RichSpan::new("word")], false, 16.0, 1000.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0);
-        let wrapped = RichTextLayout::shape(&mut fs, &[RichSpan::new(long)], false, 16.0, 120.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0);
+        let one = RichTextLayout::shape(
+            &mut fs,
+            &[RichSpan::new("word")],
+            false,
+            16.0,
+            1000.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
+        let wrapped = RichTextLayout::shape(
+            &mut fs,
+            &[RichSpan::new(long)],
+            false,
+            16.0,
+            120.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
         assert!(wrapped.height() > one.height() * 3.0);
     }
 
@@ -364,7 +428,16 @@ mod tests {
             RichSpan::new("CCC"),
         ];
         let layout = RichTextLayout::shape(
-            &mut fs, &spans, false, 16.0, 400.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut fs,
+            &spans,
+            false,
+            16.0,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
         // Exactly one background band, covering the "BBB" byte range [3, 6).
         assert_eq!(layout.backgrounds.len(), 1);
@@ -380,7 +453,16 @@ mod tests {
         assert!(y1 > y0, "highlight band must have positive height");
         // A span without a background contributes no band.
         let plain = RichTextLayout::shape(
-            &mut fs, &[RichSpan::new("AAA")], false, 16.0, 400.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut fs,
+            &[RichSpan::new("AAA")],
+            false,
+            16.0,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
         assert!(plain.backgrounds.is_empty());
     }
@@ -395,7 +477,16 @@ mod tests {
             RichSpan::new("2").baseline(BaselineShift::Super),
         ];
         let layout = RichTextLayout::shape(
-            &mut fs, &spans, false, base_size, 400.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut fs,
+            &spans,
+            false,
+            base_size,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
         // Recorded as a baseline range over the "2" byte [1, 2).
         assert_eq!(layout.baselines.len(), 1);
@@ -419,14 +510,26 @@ mod tests {
         }
         let bg = base_glyph_size.expect("base glyph present");
         let sg = super_glyph_size.expect("super glyph present");
-        assert!((bg - base_size).abs() < 0.01, "base run keeps full size: {bg}");
+        assert!(
+            (bg - base_size).abs() < 0.01,
+            "base run keeps full size: {bg}"
+        );
         assert!(sg < bg, "super run shapes smaller: super={sg} base={bg}");
-        assert!((sg - base_size * BaselineShift::SCALE).abs() < 0.5, "super ~0.7x: {sg}");
+        assert!(
+            (sg - base_size * BaselineShift::SCALE).abs() < 0.5,
+            "super ~0.7x: {sg}"
+        );
 
         // The draw-time vertical offset moves super UP (negative screen-y) and
         // sub DOWN (positive screen-y); None never moves.
-        assert!(BaselineShift::Super.offset(sg) < 0.0, "super lifts above baseline");
-        assert!(BaselineShift::Sub.offset(sg) > 0.0, "sub drops below baseline");
+        assert!(
+            BaselineShift::Super.offset(sg) < 0.0,
+            "super lifts above baseline"
+        );
+        assert!(
+            BaselineShift::Sub.offset(sg) > 0.0,
+            "sub drops below baseline"
+        );
         assert_eq!(BaselineShift::None.offset(sg), 0.0);
     }
 
@@ -436,14 +539,35 @@ mod tests {
         // Force two lines so the gap between line tops reflects the line advance.
         let long = "word ".repeat(40);
         let single = RichTextLayout::shape(
-            &mut fs, &[RichSpan::new(long.clone())], false, 16.0, 120.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut fs,
+            &[RichSpan::new(long.clone())],
+            false,
+            16.0,
+            120.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
         let doubled = RichTextLayout::shape(
-            &mut fs, &[RichSpan::new(long)], false, 16.0, 120.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 2.0,
+            &mut fs,
+            &[RichSpan::new(long)],
+            false,
+            16.0,
+            120.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            2.0,
         );
         let advance = |layout: &RichTextLayout| -> f32 {
             let tops: Vec<f32> = layout.buffer.layout_runs().map(|r| r.line_top).collect();
-            assert!(tops.len() >= 2, "need at least two lines to measure advance");
+            assert!(
+                tops.len() >= 2,
+                "need at least two lines to measure advance"
+            );
             tops[1] - tops[0]
         };
         let a1 = advance(&single);

@@ -414,7 +414,10 @@ mod tests {
         let mut perms = std::fs::metadata(&path).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).expect("chmod fake helper");
-        let v = HelperVerifier::new(vec!["/bin/sh".to_string(), path.to_string_lossy().into_owned()]);
+        let v = HelperVerifier::new(vec![
+            "/bin/sh".to_string(),
+            path.to_string_lossy().into_owned(),
+        ]);
         (v, path)
     }
 
@@ -423,7 +426,10 @@ mod tests {
     fn helper_exit0_unlocks_exit1_stays_locked_with_nonleaky_msg() {
         // Read the password from stdin; accept exactly one value.
         let (v, path) = fake_helper("read -r pw\n[ \"$pw\" = \"s3cr3t\" ] && exit 0\nexit 1\n");
-        assert!(v.verify("alice", "s3cr3t").is_ok(), "correct password unlocks");
+        assert!(
+            v.verify("alice", "s3cr3t").is_ok(),
+            "correct password unlocks"
+        );
         // Wrong → denied, with the shared non-leaky wording.
         assert_eq!(v.verify("alice", "wrong").unwrap_err(), INCORRECT_MSG);
         let _ = std::fs::remove_file(&path);

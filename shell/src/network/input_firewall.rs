@@ -439,7 +439,10 @@ impl RemoteInputFirewall {
         let state = self.peer_mut(peer);
         // Track the peer's own modifier stream first, so a modifier this event presses counts towards its own chord.
         let is_modifier = state.held.note(keycode, pressed);
-        let mods = state.held.mods().union(ChordMods::from_xkb_bits(declared_modifiers));
+        let mods = state
+            .held
+            .mods()
+            .union(ChordMods::from_xkb_bits(declared_modifiers));
 
         // Focus guard: a keystroke injects only while the shared surface holds
         // keyboard focus, checked before the chord table so a peer can't type into a private window.
@@ -466,7 +469,10 @@ impl RemoteInputFirewall {
 
         // Chords the shell never classifies because the kernel/session takes them first: VT switch and interrupt.
         if mods.ctrl && mods.alt {
-            if matches!(chord, crate::compositor::client_input::ChordKey::Function(_)) {
+            if matches!(
+                chord,
+                crate::compositor::client_input::ChordKey::Function(_)
+            ) {
                 return Err(Denial::SystemChord);
             }
             if keycode == keycode::DELETE {
@@ -1060,9 +1066,12 @@ mod production_path {
         state
             .share_registry
             .insert(PEER, SHARED, StreamingShare::new());
-        state
-            .remote_input_firewall
-            .publish_view(ShellView::new(vec![(SHARED, TILE)], Some(SHARED), false, false));
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(SHARED, TILE)],
+            Some(SHARED),
+            false,
+            false,
+        ));
         state
     }
 
@@ -1259,7 +1268,10 @@ mod production_path {
 
         // The host clicks into a window that is not shared.
         state.remote_input_firewall.publish_view(ShellView::new(
-            vec![(SHARED, TILE), (PRIVATE, Rect::new(600.0, 50.0, 900.0, 350.0))],
+            vec![
+                (SHARED, TILE),
+                (PRIVATE, Rect::new(600.0, 50.0, 900.0, 350.0)),
+            ],
             Some(PRIVATE),
             false,
             false,
@@ -1276,7 +1288,10 @@ mod production_path {
         );
 
         assert_eq!(verdict, Err(Denial::FocusMuted));
-        assert!(!key_is_down(&state, A), "a muted keystroke reached the seat");
+        assert!(
+            !key_is_down(&state, A),
+            "a muted keystroke reached the seat"
+        );
     }
 
     /// Rate limit: 120 events/sec sustained, and the next one is refused.
@@ -1484,11 +1499,8 @@ mod production_path {
     #[test]
     fn a_focus_grab_naming_an_unshared_surface_is_refused() {
         let mut state = staged();
-        let verdict = state.review_remote_input(
-            PEER,
-            SHARED,
-            InputEvent::PointerEnter { surface: PRIVATE },
-        );
+        let verdict =
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerEnter { surface: PRIVATE });
         assert_eq!(verdict, Err(Denial::SurfaceMismatch));
         assert!(
             state.remote_seats.seat(PEER).is_none(),

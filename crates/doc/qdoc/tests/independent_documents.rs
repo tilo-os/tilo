@@ -129,7 +129,9 @@ fn a_third_participant_does_not_displace_the_first_two() {
         b.merge(&mut a);
 
         let all = texts(&a);
-        let complete = ["alice", "bob", "carol"].iter().all(|who| all.iter().any(|s| s.contains(who)));
+        let complete = ["alice", "bob", "carol"]
+            .iter()
+            .all(|who| all.iter().any(|s| s.contains(who)));
         if !complete {
             lost += 1;
         }
@@ -150,15 +152,20 @@ fn a_third_participant_does_not_displace_the_first_two() {
 /// Applying a change into the document from underneath those has to keep them.
 #[test]
 fn adopting_the_schema_keeps_ops_already_pending() {
-    use automerge::{transaction::Transactable, AutoCommit, ROOT};
+    use automerge::{AutoCommit, ROOT, transaction::Transactable};
 
     let mut doc = AutoCommit::new();
-    doc.put(&ROOT, "host_wrote_this", "before the schema existed").unwrap();
+    doc.put(&ROOT, "host_wrote_this", "before the schema existed")
+        .unwrap();
 
     let c = qdoc::model::init(&mut doc, &ROOT);
     let id = {
         let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let id = dm.insert_block(None, "paragraph");
         dm.splice_text(&id, 0, 0, "and after");
         id
@@ -167,7 +174,9 @@ fn adopting_the_schema_keeps_ops_already_pending() {
 
     use automerge::ReadDoc;
     assert_eq!(
-        doc.get(&ROOT, "host_wrote_this").unwrap().and_then(|(v, _)| v.to_str().map(str::to_string)),
+        doc.get(&ROOT, "host_wrote_this")
+            .unwrap()
+            .and_then(|(v, _)| v.to_str().map(str::to_string)),
         Some("before the schema existed".to_string()),
         "the pending op survived the schema being adopted underneath it"
     );

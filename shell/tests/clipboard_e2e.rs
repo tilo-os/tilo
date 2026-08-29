@@ -127,7 +127,10 @@ impl Compositor {
             // smithay logs selection/drag decisions at debug; "denying drag from
             // client without implicit grab" is what distinguishes a rejected drag from
             // one delivered to the wrong surface.
-            .env("RUST_LOG", "warn,smithay::wayland::selection=debug,shell=debug,file_explorer=debug")
+            .env(
+                "RUST_LOG",
+                "warn,smithay::wayland::selection=debug,shell=debug,file_explorer=debug",
+            )
             // Removing both display variables is what keeps this suite from ever
             // reaching the developer's session — the compositor binds a fresh socket
             // with nothing to fall back onto.
@@ -462,7 +465,11 @@ impl TestClient {
     }
 
     fn global_names(&self) -> Vec<String> {
-        self.state.globals.iter().map(|(n, _, _)| n.clone()).collect()
+        self.state
+            .globals
+            .iter()
+            .map(|(n, _, _)| n.clone())
+            .collect()
     }
 
     fn has_global(&self, name: &str) -> bool {
@@ -501,7 +508,11 @@ impl TestClient {
             surface.id().protocol_id()
         ));
 
-        let seat = self.state.seat.clone().expect("compositor advertises wl_seat");
+        let seat = self
+            .state
+            .seat
+            .clone()
+            .expect("compositor advertises wl_seat");
         if let Some(mgr) = self.state.data_manager.clone() {
             self.data_device = Some(mgr.get_data_device(&seat, &self.qh, ()));
         }
@@ -578,14 +589,22 @@ impl TestClient {
     /// Attach an opaque `wl_shm` buffer and commit, so the compositor has real
     /// content to size and composite the tile from.
     fn attach_buffer(&mut self, width: i32, height: i32) {
-        let shm = self.state.shm.clone().expect("compositor advertises wl_shm");
+        let shm = self
+            .state
+            .shm
+            .clone()
+            .expect("compositor advertises wl_shm");
         let stride = width * 4;
         let len = (stride * height) as usize;
 
         // SAFETY: a null-terminated name and a valid flag word are the whole
         // contract of `memfd_create`.
         let raw = unsafe { libc::memfd_create(c"qos-clipboard-e2e".as_ptr(), 0) };
-        assert!(raw >= 0, "memfd_create: {}", std::io::Error::last_os_error());
+        assert!(
+            raw >= 0,
+            "memfd_create: {}",
+            std::io::Error::last_os_error()
+        );
         // SAFETY: `memfd_create` just handed us this descriptor and nothing
         // else owns it.
         let fd = unsafe { OwnedFd::from_raw_fd(raw) };
@@ -681,7 +700,10 @@ impl TestClient {
             "no clipboard offer ever arrived",
         );
         assert!(
-            self.state.clipboard_offer_mimes.iter().any(|m| m == TEXT_MIME),
+            self.state
+                .clipboard_offer_mimes
+                .iter()
+                .any(|m| m == TEXT_MIME),
             "clipboard offer did not advertise {TEXT_MIME}; got {:?}",
             self.state.clipboard_offer_mimes,
         );
@@ -700,7 +722,10 @@ impl TestClient {
             "no primary-selection offer ever arrived",
         );
         assert!(
-            self.state.primary_offer_mimes.iter().any(|m| m == TEXT_MIME),
+            self.state
+                .primary_offer_mimes
+                .iter()
+                .any(|m| m == TEXT_MIME),
             "primary offer did not advertise {TEXT_MIME}; got {:?}",
             self.state.primary_offer_mimes,
         );
@@ -911,9 +936,14 @@ impl Dispatch<WlPointer, ()> for ClientState {
                 state.pointer_entered = false;
                 state.last_serial = serial;
             }
-            wl_pointer::Event::Button { serial, state: s, .. } => {
+            wl_pointer::Event::Button {
+                serial, state: s, ..
+            } => {
                 state.last_serial = serial;
-                if matches!(s, wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed)) {
+                if matches!(
+                    s,
+                    wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed)
+                ) {
                     state.pointer_button_serial = Some(serial);
                 }
             }
@@ -1518,8 +1548,7 @@ impl Compositor {
     }
 
     fn pointer_button(&self, pressed: bool) {
-        let resp =
-            self.control(serde_json::json!({"op": "pointer_button", "pressed": pressed}));
+        let resp = self.control(serde_json::json!({"op": "pointer_button", "pressed": pressed}));
         assert!(resp.get("ok").is_some(), "pointer_button failed: {resp:?}");
     }
 
@@ -1530,7 +1559,12 @@ impl Compositor {
         targets.iter().find_map(|t| {
             (t.get("name")?.as_str()? == name).then(|| {
                 let r = t.get("rect")?.as_array()?;
-                Some([r[0].as_f64()?, r[1].as_f64()?, r[2].as_f64()?, r[3].as_f64()?])
+                Some([
+                    r[0].as_f64()?,
+                    r[1].as_f64()?,
+                    r[2].as_f64()?,
+                    r[3].as_f64()?,
+                ])
             })?
         })
     }
@@ -1555,7 +1589,11 @@ impl Compositor {
         let resp = self.control(serde_json::json!({"op": "list_targets"}));
         resp.get("targets")
             .and_then(|t| t.as_array())
-            .map(|ts| ts.iter().filter_map(|t| t.get("name")?.as_str().map(String::from)).collect())
+            .map(|ts| {
+                ts.iter()
+                    .filter_map(|t| t.get("name")?.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -1584,11 +1622,15 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
     let dump = compositor.control(serde_json::json!({"op": "state_dump"}));
     let mut active = false;
     walk_json(&dump, &mut |v| {
-        let (Some(active_tab), Some(tabs)) = (v.get("active_tab"), v.get("tabs").and_then(|t| t.as_array())) else {
+        let (Some(active_tab), Some(tabs)) = (
+            v.get("active_tab"),
+            v.get("tabs").and_then(|t| t.as_array()),
+        ) else {
             return;
         };
         if tabs.iter().any(|t| {
-            t.get("id") == Some(active_tab) && t.get("title").and_then(|x| x.as_str()) == Some("Files")
+            t.get("id") == Some(active_tab)
+                && t.get("title").and_then(|x| x.as_str()) == Some("Files")
         }) {
             active = true;
         }
@@ -1659,16 +1701,21 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     // its on-screen part, since the tile may extend past the left edge.
     let row = {
         compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-before-drag.png"));
-        let [x, y, w, h] = compositor.named_rect("file_row:photo.png").unwrap_or_else(|| {
-            panic!(
-                "the file manager laid out no row for photo.png; targets: {:?}\n{}",
-                compositor.target_names(),
-                compositor.debug_state()
-            )
-        });
+        let [x, y, w, h] = compositor
+            .named_rect("file_row:photo.png")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the file manager laid out no row for photo.png; targets: {:?}\n{}",
+                    compositor.target_names(),
+                    compositor.debug_state()
+                )
+            });
         let x0 = x.max(0.0);
         let x1 = (x + w).min(compositor.size.0 as f64);
-        assert!(x1 > x0 + 20.0, "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]");
+        assert!(
+            x1 > x0 + 20.0,
+            "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
+        );
         ((x0 + x1) / 2.0, y + h / 2.0)
     };
 
@@ -1705,7 +1752,11 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
             compositor.named_rect("file_row:photo.png"),
             compositor.control(serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
                 .get("files_drag")
-                .map(|v| format!("files_drag={v} handed_off={}", compositor.control(serde_json::json!({"op": "state_dump"}))["state"]["chrome"]["files_drag_handed_off"]))
+                .map(|v| format!(
+                    "files_drag={v} handed_off={}",
+                    compositor.control(serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
+                        ["files_drag_handed_off"]
+                ))
                 .unwrap_or_default(),
             compositor.recent_log(),
         );
@@ -1716,12 +1767,20 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     // flushing as it goes.
     target.roundtrip();
     assert!(
-        target.state.dnd_offer_mimes.iter().any(|m| m == "text/uri-list"),
+        target
+            .state
+            .dnd_offer_mimes
+            .iter()
+            .any(|m| m == "text/uri-list"),
         "the offer must carry the path list; offered {:?}",
         target.state.dnd_offer_mimes
     );
     assert!(
-        target.state.dnd_offer_mimes.iter().any(|m| m == "image/png"),
+        target
+            .state
+            .dnd_offer_mimes
+            .iter()
+            .any(|m| m == "image/png"),
         "a single image is also offered as its own bytes; offered {:?}",
         target.state.dnd_offer_mimes
     );
@@ -1747,13 +1806,11 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
         "the URI list names the dragged file"
     );
     let bytes = target.read_dnd_bytes("image/png", None);
-    assert_eq!(bytes, TINY_PNG, "the image bytes arrive intact through the pipe");
-    target
-        .state
-        .dnd_offer
-        .as_ref()
-        .expect("offer")
-        .finish();
+    assert_eq!(
+        bytes, TINY_PNG,
+        "the image bytes arrive intact through the pipe"
+    );
+    target.state.dnd_offer.as_ref().expect("offer").finish();
     target.roundtrip();
 
     assert!(
@@ -1774,8 +1831,8 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
         eprintln!("skipping: set QOS_LIVE_APP_DND=1 to run the word-processor drop lane");
         return;
     }
-    let word_processor = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/debug/word-processor");
+    let word_processor =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug/word-processor");
     assert!(
         word_processor.exists(),
         "build it first: cargo build -p word-processor ({})",
@@ -1896,7 +1953,10 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     let inserted = loop {
         let hit = app_log
             .lock()
-            .map(|l| l.iter().any(|line| line.contains("word-processor: inserted image from")))
+            .map(|l| {
+                l.iter()
+                    .any(|line| line.contains("word-processor: inserted image from"))
+            })
             .unwrap_or(false);
         if hit {
             break true;

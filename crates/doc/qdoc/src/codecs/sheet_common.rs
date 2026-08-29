@@ -4,7 +4,7 @@
 //! [`SheetPackage::read`], so the same zip-bomb / entry-count / DTD-XXE guards the
 //! document codecs enforce apply verbatim to spreadsheets.
 
-use crate::codecs::safety::{read_zip_parts, ZipLimits};
+use crate::codecs::safety::{ZipLimits, read_zip_parts};
 use crate::format::{CodecError, Confidence};
 use crate::sheet::Workbook;
 use std::io::{Cursor, Write};
@@ -29,11 +29,16 @@ pub(crate) struct SheetPackage {
 impl SheetPackage {
     /// Reads an untrusted spreadsheet package under the default [`ZipLimits`].
     pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
-        Ok(Self { parts: read_zip_parts(bytes, &ZipLimits::default())? })
+        Ok(Self {
+            parts: read_zip_parts(bytes, &ZipLimits::default())?,
+        })
     }
 
     pub fn get(&self, name: &str) -> Option<&[u8]> {
-        self.parts.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice())
+        self.parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.as_slice())
     }
 
     /// Names of every part (original order).

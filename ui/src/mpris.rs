@@ -261,11 +261,11 @@ mod imp {
     use std::sync::mpsc::{Receiver, Sender};
 
     use tokio::sync::mpsc::UnboundedSender;
+    use zbus::interface;
     use zbus::object_server::SignalContext;
     use zbus::zvariant::{ObjectPath, OwnedValue, Value};
-    use zbus::interface;
 
-    use super::{MprisCommand, MprisConfig, PlayerSnapshot, OBJECT_PATH};
+    use super::{MprisCommand, MprisConfig, OBJECT_PATH, PlayerSnapshot};
 
     /// Build the MPRIS `Metadata` map (`a{sv}`) from a snapshot.
     pub(super) fn build_metadata(snap: &PlayerSnapshot) -> HashMap<String, OwnedValue> {
@@ -506,9 +506,7 @@ mod imp {
                 guard.can_seek_changed(&ctxt).await?;
             }
         }
-        if old.track_id == new.track_id
-            && (new.position_us - old.position_us).abs() > 2_000_000
-        {
+        if old.track_id == new.track_id && (new.position_us - old.position_us).abs() > 2_000_000 {
             let _ = PlayerIface::seeked(&ctxt, new.position_us).await;
         }
         Ok(())
@@ -543,7 +541,10 @@ mod imp {
             identity: config.identity.clone(),
             desktop_entry: config.desktop_entry.clone(),
         };
-        let player = PlayerIface { snap: initial.clone(), cmd: cmd_tx.clone() };
+        let player = PlayerIface {
+            snap: initial.clone(),
+            cmd: cmd_tx.clone(),
+        };
         if rt.block_on(serve(&connection, player, root)).is_err() {
             return None;
         }
@@ -588,10 +589,16 @@ mod tests {
 
     #[test]
     fn track_object_path_is_valid_and_sanitised() {
-        assert_eq!(track_object_path(""), "/org/mpris/MediaPlayer2/TrackList/NoTrack");
+        assert_eq!(
+            track_object_path(""),
+            "/org/mpris/MediaPlayer2/TrackList/NoTrack"
+        );
         let p = track_object_path("yt:abc-123");
         assert_eq!(p, "/org/mpris/qos/track/yt_abc_123");
-        assert!(p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'_'));
+        assert!(
+            p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'_')
+        );
     }
 
     #[test]
@@ -599,10 +606,16 @@ mod tests {
         let base = PlayerSnapshot::default();
         let mut same = base.clone();
         same.position_us = 200_000;
-        assert!(!same.should_republish(&base), "sub-second position jitter is ignored");
+        assert!(
+            !same.should_republish(&base),
+            "sub-second position jitter is ignored"
+        );
         let mut playing = base.clone();
         playing.status = PlaybackStatus::Playing;
-        assert!(playing.should_republish(&base), "a status change republishes");
+        assert!(
+            playing.should_republish(&base),
+            "a status change republishes"
+        );
         let mut track = base.clone();
         track.title = "Runaway".into();
         assert!(track.metadata_differs(&base));
@@ -646,7 +659,10 @@ mod tests {
         };
 
         let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
-        let player = imp::PlayerIface { snap: snap.clone(), cmd: cmd_tx.clone() };
+        let player = imp::PlayerIface {
+            snap: snap.clone(),
+            cmd: cmd_tx.clone(),
+        };
         let root = imp::RootIface {
             cmd: cmd_tx.clone(),
             identity: "qOS Player".into(),
@@ -684,8 +700,10 @@ mod tests {
             .expect("read PlaybackStatus");
         assert_eq!(status, "Playing", "served status reflected over D-Bus");
 
-        let metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> =
-            player_proxy.get_property("Metadata").await.expect("read Metadata");
+        let metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> = player_proxy
+            .get_property("Metadata")
+            .await
+            .expect("read Metadata");
         let title: String = metadata
             .get("xesam:title")
             .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string))
@@ -697,9 +715,18 @@ mod tests {
             .expect("title in metadata");
         assert_eq!(title, "Runaway", "served now-playing reflected over D-Bus");
 
-        player_proxy.call_method("Pause", &()).await.expect("Pause call");
-        player_proxy.call_method("Next", &()).await.expect("Next call");
-        player_proxy.call_method("Play", &()).await.expect("Play call");
+        player_proxy
+            .call_method("Pause", &())
+            .await
+            .expect("Pause call");
+        player_proxy
+            .call_method("Next", &())
+            .await
+            .expect("Next call");
+        player_proxy
+            .call_method("Play", &())
+            .await
+            .expect("Play call");
         let mut got = Vec::new();
         for _ in 0..3 {
             got.push(cmd_rx.recv().expect("command delivered"));
@@ -712,7 +739,9 @@ mod tests {
 
         let mut updated = snap.clone();
         updated.status = PlaybackStatus::Paused;
-        imp::apply_update(&server_conn, &snap, &updated).await.expect("apply update");
+        imp::apply_update(&server_conn, &snap, &updated)
+            .await
+            .expect("apply update");
         let status: String = player_proxy
             .get_property("PlaybackStatus")
             .await

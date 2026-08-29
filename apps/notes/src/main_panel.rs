@@ -42,7 +42,7 @@ use ui::Widget;
 use ui::presence::PresenceCtx;
 use ui::text_render::{FontChoice, TextRenderer};
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, EditableLabel, EditOutcome, EmptyState};
+use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState};
 
 use crate::model::PageId;
 
@@ -185,8 +185,7 @@ impl MainPanel {
         title: String,
         body: String,
         resolver: F,
-    )
-    where
+    ) where
         F: FnMut(&str) -> Option<PageId>,
     {
         self.page_id = Some(id);
@@ -380,9 +379,7 @@ impl Widget for MainPanel {
                     inset: taffy::Rect {
                         left: length(PADDING_PX as f32),
                         right: length(PADDING_PX as f32),
-                        top: length(
-                            (PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP) as f32,
-                        ),
+                        top: length((PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP) as f32),
                         bottom: taffy::LengthPercentageAuto::auto(),
                     },
                     ..existing
@@ -454,10 +451,9 @@ impl Widget for MainPanel {
             // for flex-column overflow (same kludge ui::Scrollable uses
             // in its apply_layout).
             let content_h = (last_block_bottom - editor_rect.y0).max(0.0);
-            let viewport_h = (self.rect.height() - 2.0 * PADDING_PX
-                - TITLE_HEIGHT
-                - TITLE_TO_EDITOR_GAP)
-                .max(0.0);
+            let viewport_h =
+                (self.rect.height() - 2.0 * PADDING_PX - TITLE_HEIGHT - TITLE_TO_EDITOR_GAP)
+                    .max(0.0);
             let max_scroll = (content_h - viewport_h).max(0.0);
             let clamped = self.scroll_y.clamp(0.0, max_scroll);
             if clamped != self.scroll_y {
@@ -468,8 +464,7 @@ impl Widget for MainPanel {
             // offset so block rects reflect their on-screen position.
             // Without this, click hit-tests would target stale rects
             // for a scrolled view.
-            let shifted_origin =
-                Point::new(self.rect.x0, self.rect.y0 - self.scroll_y);
+            let shifted_origin = Point::new(self.rect.x0, self.rect.y0 - self.scroll_y);
             self.editor.apply_layout(taffy, n, shifted_origin);
         }
     }
@@ -521,7 +516,8 @@ impl Widget for MainPanel {
             // Overlay popovers (slash menu / link popover) — drawn AFTER the
             // main editor scene so they land on top of every block, and
             // OUTSIDE the scroll clip so they stay visible at their anchor.
-            self.editor.draw_overlay(scene, transform, text_renderer, theme);
+            self.editor
+                .draw_overlay(scene, transform, text_renderer, theme);
         } else {
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
@@ -556,8 +552,7 @@ impl Widget for MainPanel {
         // Track the pointer so a press (which carries no position) can be
         // classified as landing in the title band.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer =
-                Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
         if self.page_id.is_none() {
             return;
@@ -585,7 +580,14 @@ impl Widget for MainPanel {
         if self.title_label.is_editing() {
             self.title_label.apply_layout_external(self.title_rect);
             self.title_label.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
                 taffy,
             );
             match self.title_label.take_outcome() {

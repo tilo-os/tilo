@@ -50,7 +50,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use media::audio::{
     AudioEnumerator, AudioGraph, AudioStream, GraphControl, NoopGraphControl, RealEnumerator,
     RealGraphControl,
@@ -60,13 +60,13 @@ use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Slider, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{AudioPrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row_described, rows, setting_row};
+use crate::widgets::{caption, card, choice_row_described, rows, setting_row};
 
 /// How often the pane re-reads the PipeWire graph while it is open, so a
 /// device plugged in (a headset) or an application that just started playing
@@ -117,7 +117,11 @@ pub struct RealInput;
 impl InputControl for RealInput {
     fn set_input_volume(&self, pct: f32) -> Result<(), String> {
         let frac = (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0);
-        run_wpctl(&["set-volume", "@DEFAULT_AUDIO_SOURCE@", &format!("{frac:.2}")])
+        run_wpctl(&[
+            "set-volume",
+            "@DEFAULT_AUDIO_SOURCE@",
+            &format!("{frac:.2}"),
+        ])
     }
 }
 
@@ -156,11 +160,17 @@ pub struct AudioDevices {
 impl AudioDevices {
     /// Name of the current default sink, if any.
     pub fn default_sink(&self) -> Option<&str> {
-        self.sinks.iter().find(|d| d.default).map(|d| d.name.as_str())
+        self.sinks
+            .iter()
+            .find(|d| d.default)
+            .map(|d| d.name.as_str())
     }
     /// Name of the current default source, if any.
     pub fn default_source(&self) -> Option<&str> {
-        self.sources.iter().find(|d| d.default).map(|d| d.name.as_str())
+        self.sources
+            .iter()
+            .find(|d| d.default)
+            .map(|d| d.name.as_str())
     }
     fn sink_id(&self, name: &str) -> Option<u32> {
         self.sinks.iter().find(|d| d.name == name).map(|d| d.id)
@@ -174,8 +184,7 @@ impl AudioDevices {
 /// indents its rows with, leaving the row's content.
 fn strip_tree_prefix(line: &str) -> &str {
     line.trim_start_matches(|c: char| {
-        c.is_whitespace()
-            || matches!(c, '│' | '├' | '└' | '─' | '┌' | '┐' | '┘' | '┬' | '┴' | '┼')
+        c.is_whitespace() || matches!(c, '│' | '├' | '└' | '─' | '┌' | '┐' | '┘' | '┬' | '┴' | '┼')
     })
 }
 
@@ -300,7 +309,12 @@ fn get_source_volume() -> Option<f32> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     // `Volume: 0.42` (optionally ` [MUTED]`).
     let after = stdout.lines().next()?.split(':').nth(1)?.trim();
-    after.split_whitespace().next()?.parse::<f32>().ok().map(|v| v.clamp(0.0, 1.0))
+    after
+        .split_whitespace()
+        .next()?
+        .parse::<f32>()
+        .ok()
+        .map(|v| v.clamp(0.0, 1.0))
 }
 
 /// Audio pane widget.
@@ -372,7 +386,10 @@ fn devices_from_graph(graph: &AudioGraph) -> AudioDevices {
             })
             .collect()
     };
-    AudioDevices { sinks: map(&graph.sinks), sources: map(&graph.sources) }
+    AudioDevices {
+        sinks: map(&graph.sinks),
+        sources: map(&graph.sources),
+    }
 }
 
 impl Default for AudioPane {
@@ -538,7 +555,12 @@ impl AudioPane {
         // --- Input card: an optional source picker, then the mic level.
         let mut input_rows = Vec::new();
         if self.devices.sources.len() >= 2 {
-            let opts: Vec<String> = self.devices.sources.iter().map(|d| d.name.clone()).collect();
+            let opts: Vec<String> = self
+                .devices
+                .sources
+                .iter()
+                .map(|d| d.name.clone())
+                .collect();
             let mut dd = Dropdown::new(opts, INPUT_DEVICE_KEY).with_id("audio.input_device");
             if let Some(name) = self.devices.default_source() {
                 dd = dd.with_placeholder(name);
@@ -637,18 +659,21 @@ impl AudioPane {
             let dd = Dropdown::new(options.clone(), &sink_key)
                 .with_id(&format!("{sink_key}.dd"))
                 .with_placeholder(&current);
-            let route_row = choice_row_described(
-                &s.app,
-                s.media_name.as_deref().unwrap_or(""),
-                Box::new(dd),
-            );
+            let route_row =
+                choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
             let vol_row = setting_row(
                 "Volume",
-                Box::new(Slider::new("settings.audio.volume", &vol_key).with_id(&format!("{vol_key}.sl"))),
+                Box::new(
+                    Slider::new("settings.audio.volume", &vol_key)
+                        .with_id(&format!("{vol_key}.sl")),
+                ),
             );
             let mute_row = setting_row(
                 "Mute",
-                Box::new(Toggle::new("settings.audio.mute", &mute_key).with_id(&format!("{mute_key}.tg"))),
+                Box::new(
+                    Toggle::new("settings.audio.mute", &mute_key)
+                        .with_id(&format!("{mute_key}.tg")),
+                ),
             );
             blocks.push(rows(vec![route_row, vol_row, mute_row]));
         }
@@ -659,8 +684,15 @@ impl AudioPane {
     /// to, or "Default" when that device is the system default (so a stream on
     /// the default reads as following it, not pinned).
     fn stream_target_label(&self, s: &AudioStream) -> String {
-        let devices = if s.playback { &self.graph.sinks } else { &self.graph.sources };
-        match s.target_id.and_then(|tid| devices.iter().find(|d| d.id == tid)) {
+        let devices = if s.playback {
+            &self.graph.sinks
+        } else {
+            &self.graph.sources
+        };
+        match s
+            .target_id
+            .and_then(|tid| devices.iter().find(|d| d.id == tid))
+        {
             Some(d) if d.is_default => FOLLOW_DEFAULT.to_string(),
             Some(d) => d.description.clone(),
             None => FOLLOW_DEFAULT.to_string(),
@@ -704,7 +736,11 @@ impl AudioPane {
             let result = if choice == FOLLOW_DEFAULT {
                 self.gctl.unroute_stream(s.id)
             } else {
-                let devices = if s.playback { &self.graph.sinks } else { &self.graph.sources };
+                let devices = if s.playback {
+                    &self.graph.sinks
+                } else {
+                    &self.graph.sources
+                };
                 match devices.iter().find(|d| d.description == choice) {
                     Some(dev) => self.gctl.route_stream(s.id, dev.serial),
                     None => Ok(()),
@@ -1243,14 +1279,21 @@ Video
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert!(input.calls.lock().unwrap().is_empty(), "seed must not dispatch");
+        assert!(
+            input.calls.lock().unwrap().is_empty(),
+            "seed must not dispatch"
+        );
         // User drags the input slider to 40%.
         let _ = doc.put(&root, INPUT_VOLUME_KEY, automerge::ScalarValue::F64(0.40));
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root); // idempotent while at rest
         let calls = input.calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "one input dispatch per change: {calls:?}");
-        assert!((calls[0] - 40.0).abs() < 0.5, "expected ~40%, got {}", calls[0]);
+        assert!(
+            (calls[0] - 40.0).abs() < 0.5,
+            "expected ~40%, got {}",
+            calls[0]
+        );
     }
 
     // --- Per-application routing -------------------------------------------
@@ -1336,8 +1379,13 @@ Video
 
     fn routing_pane(gctl: Arc<dyn GraphControl>) -> AudioPane {
         let disp = Arc::new(RecordingDispatcher::default());
-        AudioPane::with_controls(disp as Arc<dyn Dispatcher + Send + Sync>, Arc::new(RealInput), 0.5, 0.75)
-            .with_graph(graph_two_sinks_one_stream(), gctl)
+        AudioPane::with_controls(
+            disp as Arc<dyn Dispatcher + Send + Sync>,
+            Arc::new(RealInput),
+            0.5,
+            0.75,
+        )
+        .with_graph(graph_two_sinks_one_stream(), gctl)
     }
 
     #[test]
@@ -1348,9 +1396,16 @@ Video
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root);
-        assert!(rec.calls().is_empty(), "seeding a stream must dispatch nothing: {:?}", rec.calls());
+        assert!(
+            rec.calls().is_empty(),
+            "seeding a stream must dispatch nothing: {:?}",
+            rec.calls()
+        );
         // The stream on the default sink seeds its picker to "Default".
-        assert_eq!(read_str(&doc, &root, &stream_sink_key(84)).as_deref(), Some(FOLLOW_DEFAULT));
+        assert_eq!(
+            read_str(&doc, &root, &stream_sink_key(84)).as_deref(),
+            Some(FOLLOW_DEFAULT)
+        );
     }
 
     #[test]
@@ -1391,8 +1446,16 @@ Video
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, stream_volume_key(84).as_str(), automerge::ScalarValue::F64(0.30));
-        let _ = doc.put(&root, stream_muted_key(84).as_str(), automerge::ScalarValue::Boolean(true));
+        let _ = doc.put(
+            &root,
+            stream_volume_key(84).as_str(),
+            automerge::ScalarValue::F64(0.30),
+        );
+        let _ = doc.put(
+            &root,
+            stream_muted_key(84).as_str(),
+            automerge::ScalarValue::Boolean(true),
+        );
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root); // idempotent at rest
         assert_eq!(rec.calls(), vec!["volume(84,0.30)", "mute(84,true)"]);
@@ -1437,17 +1500,33 @@ Video
             0.75,
         )
         .with_graph(before, rec)
-        .with_hotplug(Arc::new(Scripted { seq: vec![after], idx: Mutex::new(0) }));
+        .with_hotplug(Arc::new(Scripted {
+            seq: vec![after],
+            idx: Mutex::new(0),
+        }));
         assert_eq!(pane.graph().sinks.len(), 1, "starts with one sink");
 
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root); // re-enumerates → adopts the plugged-in sink
 
-        assert_eq!(pane.graph().sinks.len(), 2, "the headset appeared in the graph");
-        assert!(pane.graph().sinks.iter().any(|d| d.description == "Headphones"));
+        assert_eq!(
+            pane.graph().sinks.len(),
+            2,
+            "the headset appeared in the graph"
+        );
+        assert!(
+            pane.graph()
+                .sinks
+                .iter()
+                .any(|d| d.description == "Headphones")
+        );
         // …and it is selectable in the output-device picker (device view).
-        assert_eq!(pane.devices().sinks.len(), 2, "the picker gained the headset");
+        assert_eq!(
+            pane.devices().sinks.len(),
+            2,
+            "the picker gained the headset"
+        );
         assert!(pane.devices().sinks.iter().any(|d| d.name == "Headphones"));
     }
 
@@ -1476,6 +1555,10 @@ Video
         pane.sync(&mut doc, &root);
         // The choice survives to the shared prefs store.
         let saved = SystemPrefs::load().audio.output_device;
-        assert_eq!(saved.as_deref(), Some("HDMI / DisplayPort"), "default sink preference persisted");
+        assert_eq!(
+            saved.as_deref(),
+            Some("HDMI / DisplayPort"),
+            "default sink preference persisted"
+        );
     }
 }

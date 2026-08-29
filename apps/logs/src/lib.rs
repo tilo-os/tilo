@@ -40,8 +40,7 @@ use ui::widget::Widget;
 /// unreadable the viewer shows an honest zero-state, never the sample — a
 /// system log app must not fabricate log lines.
 pub fn app_root() -> Box<dyn Widget> {
-    let shots_mode = std::env::args()
-        .any(|a| a == "--shots" || a.starts_with("--shots="));
+    let shots_mode = std::env::args().any(|a| a == "--shots" || a.starts_with("--shots="));
 
     if shots_mode {
         return Box::new(LogsApp::new(journal::sample_entries(), false));

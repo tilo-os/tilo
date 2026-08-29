@@ -1,13 +1,13 @@
+use crate::dnd::DragPayload;
+use crate::permissions::PermissionScope;
+use crate::presence::{PresenceCtx, PresenceKey};
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
 use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::presence::{PresenceCtx, PresenceKey};
-use crate::permissions::PermissionScope;
-use crate::dnd::DragPayload;
 
 use std::collections::HashMap;
 
@@ -17,11 +17,32 @@ pub const DISABLED_ALPHA: f32 = 0.45;
 
 pub trait Widget {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool { false }
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId;
-    fn measure(&mut self, _known: taffy::Size<Option<f32>>, _available: taffy::Size<taffy::AvailableSpace>, _text_renderer: &mut TextRenderer) -> taffy::Size<f32> { taffy::Size::ZERO }
+    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        false
+    }
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId;
+    fn measure(
+        &mut self,
+        _known: taffy::Size<Option<f32>>,
+        _available: taffy::Size<taffy::AvailableSpace>,
+        _text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        taffy::Size::ZERO
+    }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx);
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    );
     // This is the widget system's event-dispatch contract, implemented by
     // ~90 widgets; every parameter is independently meaningful (the raw
     // event, scaling, modifiers, CRDT handle+path, two out-params, and the
@@ -29,24 +50,45 @@ pub trait Widget {
     // be a real signature change rippling through every implementor for no
     // behavioural difference, not a mechanical lint fix.
     #[allow(clippy::too_many_arguments)]
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>);
-    fn children(&self) -> Vec<&dyn Widget> { vec![] }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> { vec![] }
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    );
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![]
+    }
     fn name(&self) -> &str;
     /// Stable id for the e2e test harness; `None` falls back to a path-based
     /// key. Must be unique across the live tree — the registry resolves on
     /// first match, so a duplicate shadows the second occurrence.
-    fn test_id(&self) -> Option<&str> { None }
+    fn test_id(&self) -> Option<&str> {
+        None
+    }
 
     /// Lets a screenshot harness hold an animation at a chosen millisecond
     /// and render the real `draw` at that instant. Default `None`; a widget
     /// opts in with `Some(self)`.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { None }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 
     /// Named hit rects for widgets that paint several affordances into one
     /// rect instead of composing children. Same space as
     /// [`Widget::get_rect`]; zero-area entries are dropped.
-    fn test_rects(&self) -> Vec<(String, vello::kurbo::Rect)> { Vec::new() }
+    fn test_rects(&self) -> Vec<(String, vello::kurbo::Rect)> {
+        Vec::new()
+    }
 
     fn get_rect(&self) -> vello::kurbo::Rect;
 
@@ -67,21 +109,29 @@ pub trait Widget {
         None
     }
 
-    fn is_focusable(&self) -> bool { false }
+    fn is_focusable(&self) -> bool {
+        false
+    }
     fn set_focus(&mut self, _focused: bool) {}
-    fn is_focused(&self) -> bool { false }
+    fn is_focused(&self) -> bool {
+        false
+    }
 
     /// While any widget answers `true`, the host restricts Tab/directional
     /// focus to this subtree (wrapping at the ends) and restores the prior
     /// focus once it goes back to `false`. Default `false`.
-    fn traps_focus(&self) -> bool { false }
+    fn traps_focus(&self) -> bool {
+        false
+    }
 
     /// Role, name/description/value, and
     /// [`AccessState`](crate::a11y::AccessState). Default `None` means
     /// presentational: the node is skipped and children reparent onto the
     /// parent. State must be **derived, not stored** so it can't drift from
     /// `draw`; names must already be [`i18n!`](crate::i18n)-resolved.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> { None }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        None
+    }
 
     /// May mutate the CRDT like [`handle_event`](Widget::handle_event).
     /// Default `false` ("not handled") falls back to generic dispatch
@@ -100,26 +150,38 @@ pub trait Widget {
     /// A disabled (`false`) widget is excluded from focus traversal, must
     /// reject input in `handle_event`, and renders dimmed (see
     /// [`DISABLED_ALPHA`]).
-    fn is_enabled(&self) -> bool { true }
+    fn is_enabled(&self) -> bool {
+        true
+    }
     /// Default `true`; the exception is a widget standing in for a process
     /// that has started but not drawn. Must **latch**: once `true`, never
     /// `false` again for the same content, or an un-presenting widget would
     /// make a window vanish mid-resize. What shows meanwhile is decided by
     /// [`Widget::opening`].
-    fn presented(&self) -> bool { true }
+    fn presented(&self) -> bool {
+        true
+    }
     /// True once waiting long enough, while not yet
     /// [`presented`](Widget::presented), that showing nothing would read as
     /// broken. Delayed so a fast open never flashes an indicator.
-    fn opening(&self) -> bool { false }
-    fn needs_commit(&self) -> bool { false }
+    fn opening(&self) -> bool {
+        false
+    }
+    fn needs_commit(&self) -> bool {
+        false
+    }
     fn on_commit(&mut self) {}
-    fn get_state(&self) -> Option<String> { None }
+    fn get_state(&self) -> Option<String> {
+        None
+    }
     fn set_state(&mut self, _state: &str) {}
 
     /// `(caret_byte, text)`, byte offset on a char boundary. The host diffs
     /// this before/after an event so caret-only moves (arrows, Home/End)
     /// get announced, not just typing.
-    fn text_review(&self) -> Option<(usize, String)> { None }
+    fn text_review(&self) -> Option<(usize, String)> {
+        None
+    }
 
     /// Delivers an out-of-band string payload from
     /// [`crate::app::UserEvent::External`] (e.g. a worker thread streaming
@@ -149,14 +211,18 @@ pub trait Widget {
     /// subtree's first focusable widget after the next rebuild. Only
     /// consulted under [`crate::app::App::autofocus_on_structure_change`];
     /// a wizard raises it on step transitions.
-    fn take_focus_reset(&mut self) -> bool { false }
+    fn take_focus_reset(&mut self) -> bool {
+        false
+    }
 
     // --- Fullscreen / presentation contract ---
     /// `None` (default) is "no opinion". **Level-triggered, not
     /// edge-triggered**: the App only calls `set_fullscreen` when this
     /// differs from the live window state. Only the root widget is
     /// consulted.
-    fn fullscreen_intent(&self) -> Option<bool> { None }
+    fn fullscreen_intent(&self) -> Option<bool> {
+        None
+    }
 
     /// Used when [`Self::fullscreen_intent`] resolves `Some(true)` — which
     /// output to target and whether the fullscreen surface mirrors the
@@ -174,7 +240,9 @@ pub trait Widget {
     /// should be, so opening a second file checks out a different document
     /// instead of overwriting the first. Root widget only; `None` keeps the
     /// default package-level document.
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> { None }
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        None
+    }
 
     /// Presentation fields (scroll offset, view mode) contributed to the
     /// App's [`View`](crate::view::View), restored via
@@ -182,7 +250,9 @@ pub trait Widget {
     /// [`get_state`](Self::get_state) (the *focused* widget's
     /// caret/selection): this is root-owned, usually not the focused
     /// widget's.
-    fn view_state(&self) -> Option<crate::view::ViewContribution> { None }
+    fn view_state(&self) -> Option<crate::view::ViewContribution> {
+        None
+    }
 
     fn restore_view_state(&mut self, _view: &crate::view::ViewContribution) {}
 
@@ -191,7 +261,9 @@ pub trait Widget {
     /// re-themes the running app live without a back-channel.
     /// Level-triggered; the App recurses [`Self::children`] itself, so
     /// containers need not forward it. First `Some` wins.
-    fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> { None }
+    fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
+        None
+    }
 
     /// Inverse of [`Self::record_intent`]. A widget that publishes
     /// presence **must** fold this into its presence key — two instances
@@ -202,13 +274,13 @@ pub trait Widget {
 
     // --- Collab / DnD contract extensions ---
     /// Stable identity for presence/permission lookup. Default: opt-out.
-    fn presence_key(&self) -> Option<PresenceKey> { None }
+    fn presence_key(&self) -> Option<PresenceKey> {
+        None
+    }
     /// Outbound presence (typically caret/selection) broadcast while this
     /// widget holds focus; the App polls the focused widget after each event
     /// and diffs it out to peers.
-    fn presence_payload(
-        &self,
-    ) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
         None
     }
     /// Whether `sync` still needs to run on idle frames without input or
@@ -217,7 +289,9 @@ pub trait Widget {
         false
     }
     /// Which permission scope, if any, gates this widget. Default: no gating.
-    fn permission_scope(&self) -> Option<PermissionScope> { None }
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        None
+    }
 
     /// The tree of [`qos_actions::Resource`]s this widget currently has
     /// open, each with the actions it exports to Ctrl+K — e.g. a playing
@@ -264,14 +338,20 @@ pub trait Widget {
         false
     }
 
-    fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
+    fn accepts_drop(&self, _payload: &DragPayload) -> bool {
+        false
+    }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
-    fn wants_pointer_capture(&self) -> bool { false }
+    fn wants_pointer_capture(&self) -> bool {
+        false
+    }
 
     /// Unlike [`wants_pointer_capture`], does not swallow misses — drawn
     /// and hit-tested first, so a small on-video affordance gets z-order
     /// priority without deadening the content under it. Default `false`.
-    fn is_floating(&self) -> bool { false }
+    fn is_floating(&self) -> bool {
+        false
+    }
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
     /// freeze partway until an unrelated event woke it again.
     fn needs_animation_frame(&self) -> bool {
@@ -292,7 +372,9 @@ pub trait Widget {
     /// taffy tree when so. Default `false` is correct for leaves but WRONG
     /// for any container storing child widgets — MUST forward or the
     /// recursion breaks.
-    fn take_structure_dirty(&mut self) -> bool { false }
+    fn take_structure_dirty(&mut self) -> bool {
+        false
+    }
 
     /// Default `true` (dirty every frame). Opt into incremental redraw by
     /// tracking a `dirty: bool`, setting it in `handle_event`/`sync`, and
@@ -352,7 +434,9 @@ pub trait Widget {
         presence: &PresenceCtx,
         _permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
@@ -377,148 +461,210 @@ pub trait Widget {
 
 pub type Element = Box<dyn Widget>;
 
-mod button;      pub use button::{Button, ButtonStyle, ButtonInteract, ButtonFace, face_colors};
-mod checkbox;    pub use checkbox::Checkbox;
-mod column;      pub use column::Column;
-mod row;         pub use row::Row;
-mod toggle;      pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_face_colors};
-mod stack;       pub use stack::Stack;
-mod container;   pub use container::Container;
-mod divider;     pub use divider::{Divider, DividerAxis};
-mod link;        pub use link::Link;
+mod button;
+pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
+mod checkbox;
+pub use checkbox::Checkbox;
+mod column;
+pub use column::Column;
+mod row;
+pub use row::Row;
+mod toggle;
+pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_face_colors};
+mod stack;
+pub use stack::Stack;
+mod container;
+pub use container::Container;
+mod divider;
+pub use divider::{Divider, DividerAxis};
+mod link;
+pub use link::Link;
 mod nav_split;
 pub use nav_split::{
-    NavSplit, FlapState, SplitMode, SplitLayout, PushPane,
-    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH,
+    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushPane, SplitLayout,
+    SplitMode,
 };
 mod app_shell;
 pub use app_shell::{
-    AppShell, NarrowScreen, ShellLayout,
-    DEFAULT_SHELL_BREAKPOINT, DEFAULT_SHELL_SIDEBAR_WIDTH,
+    AppShell, DEFAULT_SHELL_BREAKPOINT, DEFAULT_SHELL_SIDEBAR_WIDTH, NarrowScreen, ShellLayout,
 };
 mod sidebar;
-pub use sidebar::{
-    SidebarDrawer, SidebarSide,
-    DEFAULT_DRAWER_WIDTH, DEFAULT_DRAWER_BREAKPOINT,
-};
+pub use sidebar::{DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_WIDTH, SidebarDrawer, SidebarSide};
 mod nav_shell;
 pub use nav_shell::{
-    NavShell, ShellMode, ContentLayout, NavPane, Affordance,
-    DEFAULT_NAVSHELL_BREAKPOINT, DEFAULT_NAVSHELL_SIDEBAR_WIDTH,
-    DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
+    Affordance, ContentLayout, DEFAULT_NAVSHELL_BREAKPOINT, DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
+    DEFAULT_NAVSHELL_SIDEBAR_WIDTH, NavPane, NavShell, ShellMode,
 };
 mod document_viewport;
 pub use document_viewport::{
-    ContentDraw, DocumentViewport, SmallContentAlign, ViewportState,
-    DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
-    PAN_SLOP,
+    ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
+    DocumentViewport, PAN_SLOP, SmallContentAlign, ViewportState,
 };
 mod floating_window;
 pub use floating_window::FloatingWindow;
 mod segmented;
 pub use segmented::{
-    TriStateControl, SegmentTone, ColorSwatchPicker, packed_color, DEFAULT_PALETTE,
+    ColorSwatchPicker, DEFAULT_PALETTE, SegmentTone, TriStateControl, packed_color,
 };
-mod text;        pub use text::Text;
-mod spacer;      pub use spacer::Spacer;
-mod image;       pub use image::{Image, ImageFit, ImageDecodeError};
-mod slider;      pub use slider::Slider;
-mod text_input;  pub use text_input::TextInput;
-pub mod code_editor; pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color};
-mod editable_label; pub use editable_label::{EditableLabel, EditOutcome};
-pub mod autocomplete; pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion};
-mod number_input; pub use number_input::NumberInput;
-pub mod marks; pub use marks::{Mark, MarkSpan};
-pub mod rich_text_line; pub use rich_text_line::{RichTextLine, LineSignal};
-pub mod rich_text_editor; pub use rich_text_editor::{RichTextEditor, RichBlockStyle};
-pub mod block_editor;   pub use block_editor::{Block, BlockEditor, BlockKind, CursorPlacement};
-pub mod slash_menu;     pub use slash_menu::SlashMenu;
-pub mod link_popover;   pub use link_popover::{LinkPopover, PageEntry};
-pub mod page_palette;   pub use page_palette::PageJumpPalette;
-pub mod page_sidebar;   pub use page_sidebar::{PageSidebar, PageSidebarEvent};
-mod dropdown;    pub use dropdown::Dropdown;
-pub mod tabs;    pub use tabs::{TabBar, TabDescriptor};
-pub mod scrollbar; pub use scrollbar::{Scrollbar, ScrollMetrics, PressOutcome};
-pub mod drag; pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
-mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
-mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
-mod app_widget;  pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
+mod text;
+pub use text::Text;
+mod spacer;
+pub use spacer::Spacer;
+mod image;
+pub use image::{Image, ImageDecodeError, ImageFit};
+mod slider;
+pub use slider::Slider;
+mod text_input;
+pub use text_input::TextInput;
+pub mod code_editor;
+pub use code_editor::{
+    CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color,
+};
+mod editable_label;
+pub use editable_label::{EditOutcome, EditableLabel};
+pub mod autocomplete;
+pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion};
+mod number_input;
+pub use number_input::NumberInput;
+pub mod marks;
+pub use marks::{Mark, MarkSpan};
+pub mod rich_text_line;
+pub use rich_text_line::{LineSignal, RichTextLine};
+pub mod rich_text_editor;
+pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
+pub mod block_editor;
+pub use block_editor::{Block, BlockEditor, BlockKind, CursorPlacement};
+pub mod slash_menu;
+pub use slash_menu::SlashMenu;
+pub mod link_popover;
+pub use link_popover::{LinkPopover, PageEntry};
+pub mod page_palette;
+pub use page_palette::PageJumpPalette;
+pub mod page_sidebar;
+pub use page_sidebar::{PageSidebar, PageSidebarEvent};
+mod dropdown;
+pub use dropdown::Dropdown;
+pub mod tabs;
+pub use tabs::{TabBar, TabDescriptor};
+pub mod scrollbar;
+pub use scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+pub mod drag;
+pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
+mod scrollable;
+pub use scrollable::{ScrollAxis, Scrollable};
+mod tile_host;
+pub use tile_host::{AppKind, TileContent, TileHost};
+mod app_widget;
+pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
 pub mod command_palette;
-pub mod context_menu;     pub use context_menu::{ContextMenu, MenuItem};
+pub mod context_menu;
+pub use context_menu::{ContextMenu, MenuItem};
 pub mod data_table;
-pub mod table;         pub use table::Table;
-pub mod icon_grid;     pub use icon_grid::{IconGrid, IconGridItem};
+pub mod table;
+pub use table::Table;
+pub mod icon_grid;
+pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;
 pub use window_group::{
-    WindowGroup, WindowWidth, DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX,
-    WIDTH_MAX_PERMILLE, WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE,
-    WIDTH_WIDE_PERMILLE, max_group_px, min_group_px, permille_for_px,
+    DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
+    WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
+    WindowGroup, WindowWidth, max_group_px, min_group_px, permille_for_px,
 };
 mod resize_handle;
-pub use resize_handle::{ResizeHandle, HANDLE_HIT_HALF_PX, HANDLE_HOVER_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX};
+pub use resize_handle::{
+    HANDLE_HIT_HALF_PX, HANDLE_HOVER_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle,
+};
 mod group_row;
 pub use group_row::{
     CrossStripDetach, GroupRow, JUMP_PX_PER_DETENT, OutputSpan, WheelJumpAccum, wheel_jump_detents,
 };
 mod strip_view;
-pub use strip_view::{StripView, STRIP_COOLDOWN_MS};
+pub use strip_view::{STRIP_COOLDOWN_MS, StripView};
 mod workspace_view;
-pub use workspace_view::{WorkspaceView, WorkspaceSwitchDirection};
+pub use workspace_view::{WorkspaceSwitchDirection, WorkspaceView};
 pub mod tooltip;
 pub use tooltip::{Tooltip, TooltipHost};
-pub mod toast;
 pub mod permission_prompt;
-pub use permission_prompt::{PermissionPrompt, PromptChoice, PROMPT_HEIGHT};
+pub mod toast;
+pub use permission_prompt::{PROMPT_HEIGHT, PermissionPrompt, PromptChoice};
 pub mod file_picker;
-pub use file_picker::{
-    FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome,
-};
+pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome};
 
-pub mod progress_bar;     pub use progress_bar::ProgressBar;
-pub mod spinner;          pub use spinner::Spinner;
-pub mod date_picker;      pub use date_picker::DatePicker;
-pub mod time_picker;      pub use time_picker::TimePicker;
-pub mod color_picker;     pub use color_picker::ColorPicker;
-pub mod popover_widget;   pub use popover_widget::PopoverWidget;
-pub mod popover;          pub use popover::Popover;
-pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
-pub mod modal_frame;      pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
-pub mod modal_prompt;     pub use modal_prompt::PromptBody;
-pub mod toolbar;          pub use toolbar::Toolbar;
-pub mod breadcrumb;       pub use breadcrumb::Breadcrumb;
-pub mod avatar;           pub use avatar::Avatar;
-pub mod badge;            pub use badge::Badge;
-pub mod icon;             pub use icon::IconWidget;
-pub mod chart;            pub use chart::{Chart, Series, Sparkline};
-pub mod gauge;            pub use gauge::{RingGauge, BarGauge, GaugeThresholds};
-pub mod resizable_split;  pub use resizable_split::ResizableSplit;
-pub mod video_player;     pub use video_player::VideoPlayer;
-pub mod webview;          pub use webview::WebView;
-pub mod image_viewer;     pub use image_viewer::ImageViewer;
-pub mod tree_view;        pub use tree_view::TreeView;
-pub mod toggle_group;     pub use toggle_group::{ToggleGroup, SegmentedFace, SegmentedStyle, segment_colors};
+pub mod progress_bar;
+pub use progress_bar::ProgressBar;
+pub mod spinner;
+pub use spinner::Spinner;
+pub mod date_picker;
+pub use date_picker::DatePicker;
+pub mod time_picker;
+pub use time_picker::TimePicker;
+pub mod color_picker;
+pub use color_picker::ColorPicker;
+pub mod popover_widget;
+pub use popover_widget::PopoverWidget;
+pub mod popover;
+pub use popover::Popover;
+pub mod modal_dialog;
+pub use modal_dialog::ModalDialog;
+pub mod modal_frame;
+pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
+pub mod modal_prompt;
+pub use modal_prompt::PromptBody;
+pub mod toolbar;
+pub use toolbar::Toolbar;
+pub mod breadcrumb;
+pub use breadcrumb::Breadcrumb;
+pub mod avatar;
+pub use avatar::Avatar;
+pub mod badge;
+pub use badge::Badge;
+pub mod icon;
+pub use icon::IconWidget;
+pub mod chart;
+pub use chart::{Chart, Series, Sparkline};
+pub mod gauge;
+pub use gauge::{BarGauge, GaugeThresholds, RingGauge};
+pub mod resizable_split;
+pub use resizable_split::ResizableSplit;
+pub mod video_player;
+pub use video_player::VideoPlayer;
+pub mod webview;
+pub use webview::WebView;
+pub mod image_viewer;
+pub use image_viewer::ImageViewer;
+pub mod tree_view;
+pub use tree_view::TreeView;
+pub mod toggle_group;
+pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
-pub mod empty_state;      pub use empty_state::EmptyState;
-pub mod search_field;     pub use search_field::SearchField;
-pub mod search_results;   pub use search_results::SearchResultsView;
-pub mod stat_tile;        pub use stat_tile::{StatTile, Trend};
-pub mod banner;           pub use banner::{Banner, BannerKind};
-pub mod chip;             pub use chip::{Chip, ChipLead, ChipStyle};
-pub mod card;             pub use card::{Card, CardGrid, card_columns, card_column_width};
+pub mod empty_state;
+pub use empty_state::EmptyState;
+pub mod search_field;
+pub use search_field::SearchField;
+pub mod search_results;
+pub use search_results::SearchResultsView;
+pub mod stat_tile;
+pub use stat_tile::{StatTile, Trend};
+pub mod banner;
+pub use banner::{Banner, BannerKind};
+pub mod chip;
+pub use chip::{Chip, ChipLead, ChipStyle};
+pub mod card;
+pub use card::{Card, CardGrid, card_column_width, card_columns};
 
+pub mod activity_timeline;
 pub mod history;
 pub mod history_group;
-pub mod name_field;
-pub mod activity_timeline;
 pub mod history_scrubber;
+pub mod name_field;
+pub use activity_timeline::ActivityTimeline;
 pub use history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
-pub use activity_timeline::ActivityTimeline;
 pub use history_scrubber::HistoryScrubber;
 // The op/artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
@@ -528,26 +674,24 @@ pub use collab_types::{ArtifactKind, OpClass};
 pub mod channel_browser;
 pub use channel_browser::{ChannelBrowser, ChannelEntry};
 
-pub mod merge_strategy;
 pub mod conflict_banner;
 pub mod conflict_picker;
+pub mod merge_strategy;
 
 // Threshold-identity invite ceremony plus a QR widget; state machine entry
 // point is `identity_flow/mod.rs`.
-pub mod qr;
 pub mod identity_flow;
-pub use qr::QrWidget;
-pub use identity_flow::{
-    IdentityFlow, IdentityFlowScreen, IdentityRecord, IdentityStore,
-    InviteEnvelope, InviteExpiry, MemoryIdentityStore, PairingHandshake,
-    PairingPayload, ScreenOutcome,
-};
-pub use merge_strategy::{
-    Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy,
-    surface_banner,
-};
+pub mod qr;
 pub use conflict_banner::ConflictBanner;
 pub use conflict_picker::{ConflictPicker, PickerOutcome};
+pub use identity_flow::{
+    IdentityFlow, IdentityFlowScreen, IdentityRecord, IdentityStore, InviteEnvelope, InviteExpiry,
+    MemoryIdentityStore, PairingHandshake, PairingPayload, ScreenOutcome,
+};
+pub use merge_strategy::{
+    Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy, surface_banner,
+};
+pub use qr::QrWidget;
 
 #[cfg(test)]
 mod a11y_tree_tests;

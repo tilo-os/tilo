@@ -9,9 +9,9 @@
 //! `Ctrl/Cmd+Enter` is surfaced to the host through [`SqlEditor::take_run`] —
 //! the app polls it after dispatching events and runs the query.
 
+use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -20,8 +20,8 @@ use automerge::AutoCommit;
 use crate::doc::EditorDoc;
 use crate::syntax::{self, Tok};
 use crate::theme_ext::ThemeExt;
-use ui::theme::Theme;
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
 
 /// Vertical advance per line, in logical px.
 const LINE_HEIGHT: f64 = 20.0;
@@ -173,7 +173,9 @@ impl SqlEditor {
     }
 
     fn visible_lines(&self) -> usize {
-        ((self.rect.height() - 2.0 * PAD) / LINE_HEIGHT).floor().max(1.0) as usize
+        ((self.rect.height() - 2.0 * PAD) / LINE_HEIGHT)
+            .floor()
+            .max(1.0) as usize
     }
 
     fn ensure_caret_visible(&mut self) {
@@ -340,8 +342,8 @@ impl SqlEditor {
     fn place_caret_at(&mut self, p: Point) {
         let body_x = self.rect.x0 + GUTTER_W + PAD;
         let body_y = self.rect.y0 + PAD;
-        let line = (((p.y - body_y) / LINE_HEIGHT).floor() as isize).max(0) as usize
-            + self.scroll_line;
+        let line =
+            (((p.y - body_y) / LINE_HEIGHT).floor() as isize).max(0) as usize + self.scroll_line;
         // Approximate column from a monospace advance.
         let char_w = FONT_SIZE as f64 * 0.6;
         let col = (((p.x - body_x) / char_w).round() as isize).max(0) as usize;
@@ -356,7 +358,12 @@ impl SqlEditor {
         scene.fill(Fill::NonZero, transform, p.editor_bg, None, &self.rect);
 
         // Gutter background.
-        let gutter = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + GUTTER_W, self.rect.y1);
+        let gutter = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x0 + GUTTER_W,
+            self.rect.y1,
+        );
         scene.fill(Fill::NonZero, transform, p.gutter_bg, None, &gutter);
         scene.stroke(
             &Stroke::new(1.0),
@@ -433,7 +440,10 @@ impl SqlEditor {
                     transform,
                     theme.accent_primary,
                     None,
-                    &Line::new(Point::new(cx, y + 1.0), Point::new(cx, y + LINE_HEIGHT - 1.0)),
+                    &Line::new(
+                        Point::new(cx, y + 1.0),
+                        Point::new(cx, y + LINE_HEIGHT - 1.0),
+                    ),
                 );
             }
         }
@@ -442,9 +452,7 @@ impl SqlEditor {
         if total > vis {
             let track_h = self.rect.height() - 2.0 * PAD;
             let thumb_h = (vis as f64 / total as f64 * track_h).max(20.0);
-            let thumb_y = self.rect.y0
-                + PAD
-                + (self.scroll_line as f64 / total as f64) * track_h;
+            let thumb_y = self.rect.y0 + PAD + (self.scroll_line as f64 / total as f64) * track_h;
             let thumb = Rect::new(
                 self.rect.x1 - 5.0,
                 thumb_y,

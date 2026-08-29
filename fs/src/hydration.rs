@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
@@ -62,7 +62,10 @@ impl Hydrator {
     /// Idempotent — a concurrent fetch of the same blob shares the mark.
     pub fn mark_fetching(&self, hash: Hash) -> FetchGuard {
         self.in_flight.lock().unwrap().insert(hash);
-        FetchGuard { set: self.in_flight.clone(), hash }
+        FetchGuard {
+            set: self.in_flight.clone(),
+            hash,
+        }
     }
 
     /// The hydration state of the file whose content is `manifest_hash`:
@@ -225,7 +228,12 @@ mod tests {
         assert_eq!(hyd.read(mh, 0, data.len() as u64).await.unwrap(), data);
 
         // ranges that cross chunk boundaries
-        for (off, len) in [(0usize, 100usize), (8000, 20000), (150_000, 1), (299_000, 2000)] {
+        for (off, len) in [
+            (0usize, 100usize),
+            (8000, 20000),
+            (150_000, 1),
+            (299_000, 2000),
+        ] {
             let end = (off + len).min(data.len());
             let got = hyd.read(mh, off as u64, (end - off) as u64).await.unwrap();
             assert_eq!(got, &data[off..end], "range {off}+{len} mismatch");
@@ -246,10 +254,16 @@ mod tests {
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         // A multi-chunk file so we exercise the per-chunk presence check.
-        let data: Vec<u8> = (0..250_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8).collect();
+        let data: Vec<u8> = (0..250_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8)
+            .collect();
         let mh = store.write_content(&data).await.unwrap().unwrap();
         let hyd = Hydrator::new(endpoint, store);
-        assert_eq!(hyd.sync_state(mh).await, SyncState::Local, "fully-ingested file is local");
+        assert_eq!(
+            hyd.sync_state(mh).await,
+            SyncState::Local,
+            "fully-ingested file is local"
+        );
     }
 
     #[tokio::test]
@@ -259,7 +273,11 @@ mod tests {
         let hyd = Hydrator::new(endpoint, store);
         // A manifest hash the store never ingested: exactly what a freshly-joined peer holds — projected metadata, no content.
         let absent = Hash::from([7u8; 32]);
-        assert_eq!(hyd.sync_state(absent).await, SyncState::Projected, "unknown manifest is projected");
+        assert_eq!(
+            hyd.sync_state(absent).await,
+            SyncState::Projected,
+            "unknown manifest is projected"
+        );
     }
 
     #[tokio::test]
@@ -267,12 +285,21 @@ mod tests {
         // Manifest present locally but one referenced chunk was never stored: partially projected (the state after a torn/partial fetch).
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
-        let present = store.ingest(Bytes::from_static(b"chunk that exists")).await.unwrap();
+        let present = store
+            .ingest(Bytes::from_static(b"chunk that exists"))
+            .await
+            .unwrap();
         let missing = Hash::from([9u8; 32]);
         let manifest = crate::content::Manifest {
             chunks: vec![
-                crate::content::ChunkRef { hash: *present.as_bytes(), len: 17 },
-                crate::content::ChunkRef { hash: *missing.as_bytes(), len: 42 },
+                crate::content::ChunkRef {
+                    hash: *present.as_bytes(),
+                    len: 17,
+                },
+                crate::content::ChunkRef {
+                    hash: *missing.as_bytes(),
+                    len: 42,
+                },
             ],
         };
         let mh = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
@@ -289,7 +316,9 @@ mod tests {
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         // Ingest a real file (so absent state would otherwise be Local)...
-        let data: Vec<u8> = (0..200_000u32).map(|i| (i.wrapping_mul(40_503) >> 9) as u8).collect();
+        let data: Vec<u8> = (0..200_000u32)
+            .map(|i| (i.wrapping_mul(40_503) >> 9) as u8)
+            .collect();
         let mh = store.write_content(&data).await.unwrap().unwrap();
         let hyd = Hydrator::new(endpoint, store);
         assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
@@ -305,7 +334,11 @@ mod tests {
         drop(guard);
         // Once the fetch ends the mark clears and the file is local again.
         assert!(!hyd.is_fetching(mh));
-        assert_eq!(hyd.sync_state(mh).await, SyncState::Local, "cleared after the fetch");
+        assert_eq!(
+            hyd.sync_state(mh).await,
+            SyncState::Local,
+            "cleared after the fetch"
+        );
     }
 
     // A blob ingested only on node A is read on node B by fetching it over a real iroh connection (bao-verified), then cached.
@@ -315,7 +348,11 @@ mod tests {
         let server_ep = Endpoint::bind(presets::N0).await.unwrap();
         let server_store = ContentStore::memory();
         let payload = Bytes::from_static(b"collaborative filesystem payload");
-        let hash = server_store.write_content(payload.as_ref()).await.unwrap().unwrap();
+        let hash = server_store
+            .write_content(payload.as_ref())
+            .await
+            .unwrap()
+            .unwrap();
         let _router = Router::builder(server_ep.clone())
             .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
             .spawn();
@@ -333,9 +370,16 @@ mod tests {
         hydrator.add_peer(server_addr);
 
         let got = hydrator.read(hash, 0, payload.len() as u64).await.unwrap();
-        assert_eq!(got.as_slice(), payload.as_ref(), "B must read A's real bytes");
+        assert_eq!(
+            got.as_slice(),
+            payload.as_ref(),
+            "B must read A's real bytes"
+        );
 
         // after hydration the blob is cached locally on B
-        assert!(client_store.has(hash).await, "fetched blob must be cached on B");
+        assert!(
+            client_store.has(hash).await,
+            "fetched blob must be cached on B"
+        );
     }
 }

@@ -295,12 +295,12 @@ mod tests {
     #[test]
     fn the_user_scope_always_has_a_root_and_starts_inside_it() {
         let scope = PickerScope::for_user();
-        assert!(!scope.roots.is_empty(), "a picker with no root can browse nothing");
         assert!(
-            scope
-                .roots
-                .iter()
-                .any(|r| scope.initial_dir.starts_with(r)),
+            !scope.roots.is_empty(),
+            "a picker with no root can browse nothing"
+        );
+        assert!(
+            scope.roots.iter().any(|r| scope.initial_dir.starts_with(r)),
             "the dialog must open somewhere it is allowed to be: {scope:?}"
         );
     }

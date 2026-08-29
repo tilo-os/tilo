@@ -17,7 +17,12 @@ use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
 const OUT: &str = "/tmp/claude-1000/-var-home-quinten-Development-quickdesktop/4b954627-69cb-4365-8ed0-231ae0028e62/scratchpad/flicker";
 
 fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {
-    engine.frames().lock().unwrap().as_ref().map(|f| (f.rgba.clone(), f.width, f.height))
+    engine
+        .frames()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|f| (f.rgba.clone(), f.width, f.height))
 }
 
 /// 8×8 average-colour signature (192 bytes) for cheap change detection.
@@ -52,7 +57,10 @@ fn signature(rgba: &[u8], w: u32, h: u32) -> [u16; 192] {
 }
 
 fn l1(a: &[u16; 192], b: &[u16; 192]) -> u32 {
-    a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs()).sum()
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs())
+        .sum()
 }
 
 fn uniformity(rgba: &[u8]) -> f64 {
@@ -95,7 +103,9 @@ fn save_png(path: &str, rgba: &[u8], w: u32, h: u32) {
 }
 
 fn main() {
-    let url = std::env::args().nth(1).unwrap_or_else(|| "https://duckduckgo.com".into());
+    let url = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "https://duckduckgo.com".into());
     let _ = std::fs::create_dir_all(OUT);
     for e in std::fs::read_dir(OUT).into_iter().flatten().flatten() {
         let _ = std::fs::remove_file(e.path());
@@ -104,11 +114,18 @@ fn main() {
     // Width arg lets us reproduce the mobile-breakpoint (600px) reload:
     // < 600 flips the UA to mobile, which — if it happens after the first
     // load — forces a reload (the startup flicker).
-    let width: u32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(900);
+    let width: u32 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(900);
 
     let engine: SharedEngine = WpeEngine::new().expect("engine");
     let start = Instant::now();
-    engine.send(WebViewCommand::Resize { width, height: 600, scale_factor: 1.0 });
+    engine.send(WebViewCommand::Resize {
+        width,
+        height: 600,
+        scale_factor: 1.0,
+    });
     engine.send(WebViewCommand::Navigate(url.clone()));
     engine.send(WebViewCommand::SetFocused(true));
     println!("capturing startup for {url} …\n  #   t+ms   uniform  mean(rgb)      note");
@@ -137,11 +154,17 @@ fn main() {
                 let opaque = ma > 250;
                 let (ri, gi, bi) = (mr as i32, mg as i32, mb as i32);
                 let note = if u > 97.0 {
-                    if ma < 5 { "transparent (shows placeholder)" }
-                    else if bi > ri + 30 && bi > gi + 30 { "SOLID BLUE — flash" }
-                    else if mr > 230 && mg > 230 && mb > 230 { "solid white — flash" }
-                    else if mr < 20 && mg < 20 && mb < 20 { "SOLID BLACK — flash" }
-                    else { "solid" }
+                    if ma < 5 {
+                        "transparent (shows placeholder)"
+                    } else if bi > ri + 30 && bi > gi + 30 {
+                        "SOLID BLUE — flash"
+                    } else if mr > 230 && mg > 230 && mb > 230 {
+                        "solid white — flash"
+                    } else if mr < 20 && mg < 20 && mb < 20 {
+                        "SOLID BLACK — flash"
+                    } else {
+                        "solid"
+                    }
                 } else if opaque {
                     "content"
                 } else {
@@ -149,7 +172,9 @@ fn main() {
                 };
                 let path = format!("{OUT}/{saved:02}_t{ms:04}.png");
                 save_png(&path, &rgba, w, h);
-                println!("  {saved:2}  {ms:5}   {u:5.1}%  ({mr:3},{mg:3},{mb:3})  a{ma:3}   {note}");
+                println!(
+                    "  {saved:2}  {ms:5}   {u:5.1}%  ({mr:3},{mg:3},{mb:3})  a{ma:3}   {note}"
+                );
                 last_sig = Some(sig);
                 saved += 1;
             }

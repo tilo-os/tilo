@@ -219,7 +219,11 @@ impl Widget for ResizeHandle {
         _presence: &PresenceCtx,
     ) {
         let active = self.hover || self.drag.is_some();
-        let thickness = if active { HANDLE_HOVER_PX } else { HANDLE_VISIBLE_PX };
+        let thickness = if active {
+            HANDLE_HOVER_PX
+        } else {
+            HANDLE_VISIBLE_PX
+        };
         let mid_x = (self.left_rect.x1 + self.right_rect.x0) / 2.0;
         let y0 = self.left_rect.y0.min(self.right_rect.y0);
         let y1 = self.left_rect.y1.max(self.right_rect.y1);
@@ -241,7 +245,13 @@ impl Widget for ResizeHandle {
             Rect::new(mid_x - thickness / 2.0, y0, mid_x + thickness / 2.0, y1),
             thickness / 2.0,
         );
-        scene.fill(vello::peniko::Fill::NonZero, transform, colour, None, &capsule);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colour,
+            None,
+            &capsule,
+        );
     }
 
     fn handle_event(
@@ -450,8 +460,14 @@ mod tests {
                 device_id: dev,
                 position: winit::dpi::PhysicalPosition::new(cx_hover, 200.0),
             },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, node, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
         assert!(h.is_hovered(), "cursor in hit area → hover");
 
@@ -461,8 +477,14 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, node, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
         assert!(h.is_dragging(), "press inside hit area → drag started");
         assert!(!h.is_hovered(), "hover clears once drag begins");
@@ -472,13 +494,24 @@ mod tests {
                 device_id: dev,
                 position: winit::dpi::PhysicalPosition::new(cx_hover + 50.0, 200.0),
             },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, node, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
-        let pulse = h.take_pending().expect("mid-drag must publish a width pulse");
+        let pulse = h
+            .take_pending()
+            .expect("mid-drag must publish a width pulse");
         assert_eq!(pulse.0, 650.0, "left grew by exactly dx");
         assert_eq!(pulse.1, 550.0, "right shrank by exactly dx");
-        assert!(h.take_pending().is_none(), "take-pattern: second poll is None");
+        assert!(
+            h.take_pending().is_none(),
+            "take-pattern: second poll is None"
+        );
 
         h.handle_event(
             &WindowEvent::MouseInput {
@@ -486,8 +519,14 @@ mod tests {
                 state: ElementState::Released,
                 button: MouseButton::Left,
             },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, node, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
         assert!(!h.is_dragging(), "release ends drag");
         assert!(h.take_pending_commit(), "release publishes a commit pulse");
@@ -515,8 +554,14 @@ mod tests {
                 device_id: dev,
                 position: winit::dpi::PhysicalPosition::new(100.0, 200.0),
             },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, node, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
         assert!(!h.is_hovered(), "cursor outside hit area → no hover");
         h.handle_event(
@@ -525,10 +570,19 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0, &modifiers, &mut state, &path,
-            &mut handled, &mut focus, node, &taffy,
+            1.0,
+            &modifiers,
+            &mut state,
+            &path,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
         );
-        assert!(!h.is_dragging(), "press outside hit area must NOT start drag");
+        assert!(
+            !h.is_dragging(),
+            "press outside hit area must NOT start drag"
+        );
     }
 
     #[test]

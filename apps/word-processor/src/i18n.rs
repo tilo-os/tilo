@@ -21,7 +21,9 @@ use unic_langid::LanguageIdentifier;
 /// The source language id (`en-US`). Parsed from a known-good literal; if the
 /// parse ever fails (it cannot for this constant) we fall back to a bare `en`.
 fn source_lang() -> LanguageIdentifier {
-    "en-US".parse().unwrap_or_else(|_| "en".parse().expect("`en` is a valid language id"))
+    "en-US"
+        .parse()
+        .unwrap_or_else(|_| "en".parse().expect("`en` is a valid language id"))
 }
 
 /// The source locale — always present, the fallback for every other locale.
@@ -104,12 +106,18 @@ fn parse_posix_locale(raw: &str) -> Option<LanguageIdentifier> {
 /// Parse every bundled catalog into [`Catalogs`]. Called once per thread the
 /// first time that thread resolves a key.
 fn build_catalogs() -> Catalogs {
-    let source = Catalog { lang: source_lang(), bundle: make_bundle(source_lang(), SOURCE_FTL) };
+    let source = Catalog {
+        lang: source_lang(),
+        bundle: make_bundle(source_lang(), SOURCE_FTL),
+    };
     let others = CATALOGS
         .iter()
         .filter_map(|(tag, ftl)| {
             let lang: LanguageIdentifier = tag.parse().ok()?;
-            Some(Catalog { lang: lang.clone(), bundle: make_bundle(lang, ftl) })
+            Some(Catalog {
+                lang: lang.clone(),
+                bundle: make_bundle(lang, ftl),
+            })
         })
         .collect();
     Catalogs { source, others }
@@ -126,7 +134,10 @@ fn active_lock() -> &'static RwLock<LanguageIdentifier> {
 
 /// The currently-active language id.
 fn active_lang() -> LanguageIdentifier {
-    active_lock().read().map(|l| l.clone()).unwrap_or_else(|_| source_lang())
+    active_lock()
+        .read()
+        .map(|l| l.clone())
+        .unwrap_or_else(|_| source_lang())
 }
 
 thread_local! {
@@ -247,7 +258,10 @@ mod tests {
         set_locale("en-US");
         assert_eq!(t("toolbar-body"), "Body");
         assert_eq!(t("template-report"), "Report");
-        assert_eq!(t("recovery-banner"), "Recovered unsaved changes from a previous session.");
+        assert_eq!(
+            t("recovery-banner"),
+            "Recovered unsaved changes from a previous session."
+        );
     }
 
     #[test]
@@ -313,10 +327,19 @@ mod tests {
         assert!(parse_posix_locale("C").is_none());
         assert!(parse_posix_locale("POSIX").is_none());
         assert!(parse_posix_locale("").is_none());
-        assert_eq!(parse_posix_locale("de_DE.UTF-8").map(|l| l.to_string()), Some("de-DE".to_string()));
-        assert_eq!(parse_posix_locale("en_US").map(|l| l.to_string()), Some("en-US".to_string()));
+        assert_eq!(
+            parse_posix_locale("de_DE.UTF-8").map(|l| l.to_string()),
+            Some("de-DE".to_string())
+        );
+        assert_eq!(
+            parse_posix_locale("en_US").map(|l| l.to_string()),
+            Some("en-US".to_string())
+        );
         // LANGUAGE list: first entry wins.
-        assert_eq!(parse_posix_locale("de:en_US").map(|l| l.to_string()), Some("de".to_string()));
+        assert_eq!(
+            parse_posix_locale("de:en_US").map(|l| l.to_string()),
+            Some("de".to_string())
+        );
     }
 
     /// One word is a word, not "1 words" — the counter is often the only text

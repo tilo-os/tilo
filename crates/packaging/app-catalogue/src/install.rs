@@ -52,9 +52,7 @@ impl InstallError {
             InstallError::NotOffered { package_id } => {
                 format!("no configured registry offers {package_id}")
             }
-            InstallError::NoStagingDir => {
-                "there is nowhere writable to download it to".to_string()
-            }
+            InstallError::NoStagingDir => "there is nowhere writable to download it to".to_string(),
             InstallError::Download { detail } => format!("the download failed: {detail}"),
             InstallError::InstallerMissing { detail } => {
                 format!("qos-install could not be run: {detail}")
@@ -207,7 +205,13 @@ pub fn install_app_reporting(
     let safe_id: String = app
         .package_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let dest = staging.join(format!("{safe_id}-{}.qpkg", app.version.replace('/', "_")));
 
@@ -275,7 +279,12 @@ const DETAIL_MAX_CHARS: usize = 110;
 /// stripped (the caller already says who refused it); anything still
 /// over [`DETAIL_MAX_CHARS`] is elided rather than cut off mid-word.
 fn installer_complaint(text: &str) -> String {
-    let Some(line) = text.lines().map(str::trim).filter(|l| !l.is_empty()).next_back() else {
+    let Some(line) = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .next_back()
+    else {
         return String::new();
     };
     let line = line
@@ -334,7 +343,9 @@ mod tests {
             let msg = c.user_message();
             assert!(!msg.trim().is_empty(), "{c:?} rendered nothing");
             assert!(
-                msg.chars().next().is_some_and(|ch| ch.is_lowercase() || ch.is_alphanumeric()),
+                msg.chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_lowercase() || ch.is_alphanumeric()),
                 "{c:?} → {msg:?} should read as a sentence fragment"
             );
         }
@@ -377,7 +388,10 @@ mod tests {
             detail: installer_complaint("qos-install: qpkg parse: unexpected EOF during skip"),
         }
         .user_message();
-        assert_eq!(msg, "qos-install refused it: qpkg parse: unexpected EOF during skip");
+        assert_eq!(
+            msg,
+            "qos-install refused it: qpkg parse: unexpected EOF during skip"
+        );
         assert!(
             !msg.contains("qos-install: "),
             "the sentence must not name the installer twice: {msg:?}"

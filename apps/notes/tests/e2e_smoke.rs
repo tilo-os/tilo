@@ -36,7 +36,9 @@ fn full_lifecycle_round_trips_through_disk() {
     // First-launch seeded the Welcome page; keep it and add a child
     // page that we'll write into.
     let welcome_id = app.workspace_pages_for_test()[0].id;
-    app.apply_event_for_test(OutEvent::CreateChild { parent: Some(welcome_id) });
+    app.apply_event_for_test(OutEvent::CreateChild {
+        parent: Some(welcome_id),
+    });
     let target_id = app.selected_for_test().expect("child selected");
     assert_ne!(target_id, welcome_id, "child must be a new page");
 
@@ -88,8 +90,7 @@ fn full_lifecycle_round_trips_through_disk() {
         // Convert paragraph to a Bullet via slash-menu API. Mirrors
         // what the SlashMenu's Enter handler would do once it picked
         // BlockKind::Bullet { indent: 0 }.
-        let converted =
-            editor.try_convert_to(2, BlockKind::Bullet { indent: 0 });
+        let converted = editor.try_convert_to(2, BlockKind::Bullet { indent: 0 });
         assert!(converted, "paragraph → bullet conversion must succeed");
 
         // Block 3: checklist with a toggled (done) state.
@@ -100,7 +101,10 @@ fn full_lifecycle_round_trips_through_disk() {
         editor.blocks_mut()[3].line.set_focus(true);
         let converted = editor.try_convert_to(
             3,
-            BlockKind::Checklist { indent: 0, done: false },
+            BlockKind::Checklist {
+                indent: 0,
+                done: false,
+            },
         );
         assert!(converted);
         // Toggle the checkbox — this is what a click on the checkbox
@@ -163,7 +167,12 @@ fn full_lifecycle_round_trips_through_disk() {
     let panel = app2.main_panel_mut();
     assert_eq!(panel.page_id(), Some(target_id));
     let blocks = panel.editor().blocks();
-    assert_eq!(blocks.len(), 4, "must reload 4 blocks; got {}", blocks.len());
+    assert_eq!(
+        blocks.len(),
+        4,
+        "must reload 4 blocks; got {}",
+        blocks.len()
+    );
     assert!(matches!(blocks[0].kind, BlockKind::Paragraph));
     assert_eq!(blocks[0].text(), "Hello world.");
     assert!(matches!(blocks[1].kind, BlockKind::Heading(2)));
@@ -172,7 +181,10 @@ fn full_lifecycle_round_trips_through_disk() {
     assert_eq!(blocks[2].text(), "bullet");
     assert!(matches!(
         blocks[3].kind,
-        BlockKind::Checklist { indent: 0, done: true }
+        BlockKind::Checklist {
+            indent: 0,
+            done: true
+        }
     ));
     assert_eq!(blocks[3].text(), "buy coffee");
 }

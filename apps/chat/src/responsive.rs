@@ -192,23 +192,41 @@ mod tests {
 
     #[test]
     fn mode_switches_at_breakpoint() {
-        assert_eq!(FlapMode::from_width(1280.0, LEFT_BREAKPOINT), FlapMode::Docked);
-        assert_eq!(FlapMode::from_width(700.0, LEFT_BREAKPOINT), FlapMode::Overlay);
-        assert_eq!(FlapMode::from_width(LEFT_BREAKPOINT, LEFT_BREAKPOINT), FlapMode::Docked);
-        assert_eq!(FlapMode::from_width(LEFT_BREAKPOINT - 1.0, LEFT_BREAKPOINT), FlapMode::Overlay);
+        assert_eq!(
+            FlapMode::from_width(1280.0, LEFT_BREAKPOINT),
+            FlapMode::Docked
+        );
+        assert_eq!(
+            FlapMode::from_width(700.0, LEFT_BREAKPOINT),
+            FlapMode::Overlay
+        );
+        assert_eq!(
+            FlapMode::from_width(LEFT_BREAKPOINT, LEFT_BREAKPOINT),
+            FlapMode::Docked
+        );
+        assert_eq!(
+            FlapMode::from_width(LEFT_BREAKPOINT - 1.0, LEFT_BREAKPOINT),
+            FlapMode::Overlay
+        );
     }
 
     #[test]
     fn left_flap_defaults_open_docked_closed_overlay() {
         let s = FlapState::open_when_docked();
         assert!(s.is_open(FlapMode::Docked), "wide window shows the rail");
-        assert!(!s.is_open(FlapMode::Overlay), "narrow window hides it by default");
+        assert!(
+            !s.is_open(FlapMode::Overlay),
+            "narrow window hides it by default"
+        );
     }
 
     #[test]
     fn right_flap_defaults_closed_even_docked() {
         let s = FlapState::closed_by_default();
-        assert!(!s.is_open(FlapMode::Docked), "members panel summoned on demand");
+        assert!(
+            !s.is_open(FlapMode::Docked),
+            "members panel summoned on demand"
+        );
         assert!(!s.is_open(FlapMode::Overlay));
     }
 
@@ -238,7 +256,10 @@ mod tests {
         let mut s = FlapState::open_when_docked(); // reveal 1.0
         s.reconcile(FlapMode::Docked); // first resolution: settles open (1.0)
         s.reconcile(FlapMode::Overlay); // genuine crossing: target closed, animates
-        assert!(s.reveal() > 0.5, "a real crossing animates rather than snapping");
+        assert!(
+            s.reveal() > 0.5,
+            "a real crossing animates rather than snapping"
+        );
         let mut animating = true;
         for _ in 0..600 {
             animating = s.tick_with_dt(FlapMode::Overlay, 0.016);
@@ -257,7 +278,11 @@ mod tests {
         // rail + sidebar and then slide them away.
         let mut s = FlapState::open_when_docked();
         s.reconcile(FlapMode::Overlay);
-        assert_eq!(s.reveal(), 0.0, "narrow first frame is fully closed, no flash");
+        assert_eq!(
+            s.reveal(),
+            0.0,
+            "narrow first frame is fully closed, no flash"
+        );
         assert!(!s.tick(FlapMode::Overlay), "nothing left to animate");
     }
 
@@ -265,7 +290,11 @@ mod tests {
     fn wide_first_run_starts_open_without_sliding_in() {
         let mut s = FlapState::open_when_docked();
         s.reconcile(FlapMode::Docked);
-        assert_eq!(s.reveal(), 1.0, "desktop first frame shows the rail immediately");
+        assert_eq!(
+            s.reveal(),
+            1.0,
+            "desktop first frame shows the rail immediately"
+        );
         assert!(!s.tick(FlapMode::Docked), "settled open, no slide-in");
     }
 }

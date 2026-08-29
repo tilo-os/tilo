@@ -51,8 +51,12 @@ fn remote_typing_event_records_fading_tint() {
 #[test]
 fn remote_arrival_on_tab_flags_the_right_nav_item() {
     let mut a = app();
-    let contacts = PresenceKey::Tab { id: "contacts".into() };
-    let calendar = PresenceKey::Tab { id: "calendar".into() };
+    let contacts = PresenceKey::Tab {
+        id: "contacts".into(),
+    };
+    let calendar = PresenceKey::Tab {
+        id: "calendar".into(),
+    };
 
     a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
         user_id: "alice".into(),
@@ -80,7 +84,10 @@ fn remote_arrival_on_tab_flags_the_right_nav_item() {
         a.presence_ctx().peers_on(&contacts).is_empty(),
         "Alice's old nav flag must clear when she moves"
     );
-    assert_eq!(a.presence_ctx().peers_on(&calendar), &[UserId("alice".into())]);
+    assert_eq!(
+        a.presence_ctx().peers_on(&calendar),
+        &[UserId("alice".into())]
+    );
 }
 
 /// Clicking the edge-mist band latches the follow target to that peer and
@@ -111,7 +118,11 @@ fn follow_offscreen_peer_by_clicking_their_mist() {
     // A click in open canvas doesn't change the follow target.
     let miss = a.try_follow_click(viewport, Point::new(40.0, 40.0));
     assert!(!miss);
-    assert_eq!(a.followed_peer(), Some("bob"), "a miss must not drop the follow");
+    assert_eq!(
+        a.followed_peer(),
+        Some("bob"),
+        "a miss must not drop the follow"
+    );
 }
 
 /// A collaborator that publishes **only** a caret — never `Typing` — still
@@ -187,7 +198,11 @@ fn toolkit_peer_sending_both_tints_once() {
     let marks = a
         .presence_ctx()
         .active_typing(&UserId("alice".into()), &key, Instant::now());
-    assert_eq!(marks.len(), 1, "one run is one marker, however it was reported");
+    assert_eq!(
+        marks.len(),
+        1,
+        "one run is one marker, however it was reported"
+    );
     assert_eq!((marks[0].0.start, marks[0].0.end), (4, 9));
 }
 

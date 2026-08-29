@@ -43,5 +43,5 @@ pub use collection::{Collection, CollectionDecodeError};
 pub use fs::QosAppFs;
 pub use mount::{Mount, MountError, MountOptions};
 pub use store::{
-    BlobError, BlobStore, CountingStore, CounterSnapshot, DiskBlobStore, MemoryBlobStore,
+    BlobError, BlobStore, CounterSnapshot, CountingStore, DiskBlobStore, MemoryBlobStore,
 };

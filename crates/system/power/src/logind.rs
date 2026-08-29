@@ -15,8 +15,8 @@
 //!   `PrepareForSleep` so the compositor can lock before sleep and reset its idle timer on
 //!   resume.
 
-use zbus::zvariant::OwnedFd;
 use zbus::Connection;
+use zbus::zvariant::OwnedFd;
 
 /// login1 well-known names.
 const DEST: &str = "org.freedesktop.login1";
@@ -76,7 +76,10 @@ impl LogindManager {
         mode: &str,
     ) -> zbus::Result<LogindInhibitor> {
         let fd: OwnedFd = self.proxy.call("Inhibit", &(what, who, why, mode)).await?;
-        Ok(LogindInhibitor { _fd: fd, what: what.to_string() })
+        Ok(LogindInhibitor {
+            _fd: fd,
+            what: what.to_string(),
+        })
     }
 
     /// `Manager.ListInhibitors()` → `(what, who, why, mode, uid, pid)` rows. Used by tests to
@@ -144,7 +147,9 @@ mod tests {
 
     #[tokio::test]
     async fn can_suspend_returns_a_known_verdict() {
-        let Some(m) = manager_or_skip("can_suspend").await else { return };
+        let Some(m) = manager_or_skip("can_suspend").await else {
+            return;
+        };
         let verdict = m.can_suspend().await.expect("CanSuspend call");
         assert!(
             matches!(verdict.as_str(), "yes" | "no" | "na" | "challenge"),
@@ -154,7 +159,9 @@ mod tests {
 
     #[tokio::test]
     async fn inhibitor_lands_in_the_list_then_releases() {
-        let Some(m) = manager_or_skip("inhibit").await else { return };
+        let Some(m) = manager_or_skip("inhibit").await else {
+            return;
+        };
         let why = format!("qos-power test {}", std::process::id());
         let holder = m
             .inhibit("idle:sleep", "qOS power test", &why, "block")
@@ -165,7 +172,9 @@ mod tests {
         // The lock is now visible to logind's own bookkeeping.
         let listed = m.list_inhibitors().await.expect("ListInhibitors");
         assert!(
-            listed.iter().any(|(_what, _who, w, _mode, _uid, _pid)| w == &why),
+            listed
+                .iter()
+                .any(|(_what, _who, w, _mode, _uid, _pid)| w == &why),
             "our inhibitor should be listed while held"
         );
 
@@ -186,7 +195,9 @@ mod tests {
 
     #[tokio::test]
     async fn delegate_handled_keys_takes_a_block_lock() {
-        let Some(m) = manager_or_skip("delegate").await else { return };
+        let Some(m) = manager_or_skip("delegate").await else {
+            return;
+        };
         let holder = m.delegate_handled_keys().await.expect("delegate inhibit");
         let listed = m.list_inhibitors().await.expect("ListInhibitors");
         // A block lock on the handled keys, owned by us, must be present.

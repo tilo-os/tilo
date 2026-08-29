@@ -153,7 +153,9 @@ fn export_in_single_device_mode_errors() {
     // must enrol a second share first.
     let mut rng = ChaCha20Rng::from_seed([99u8; 32]);
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-    let err = id.export_recovery_share().expect_err("must reject single-device export");
+    let err = id
+        .export_recovery_share()
+        .expect_err("must reject single-device export");
     assert!(
         err.to_string().contains("threshold mode"),
         "expected threshold-mode requirement, got: {err}"

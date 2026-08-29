@@ -83,7 +83,13 @@ pub fn draw_album_art(
     let (base, accent) = art_colors(seed);
     let shape = RoundedRect::from_rect(rect, radius);
     // Clip to the rounded tile so the blobs don't spill past the corners.
-    scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &shape);
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &shape,
+    );
     scene.fill(Fill::NonZero, transform, base, None, &rect);
 
     let w = rect.width();

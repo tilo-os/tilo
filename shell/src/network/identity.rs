@@ -213,10 +213,12 @@ mod tests {
 
     /// A peer, named the way the transport names it.
     fn peer(n: u8) -> PeerOrigin {
-        PeerOrigin::peer(&libp2p::identity::Keypair::ed25519_from_bytes([n; 32])
-            .unwrap()
-            .public()
-            .to_peer_id())
+        PeerOrigin::peer(
+            &libp2p::identity::Keypair::ed25519_from_bytes([n; 32])
+                .unwrap()
+                .public()
+                .to_peer_id(),
+        )
     }
 
     #[test]
@@ -257,7 +259,9 @@ mod tests {
         // And a's signature does not verify when attributed to b.
         let msg = b"authored by a";
         let sig = dev_sk_a.sign(msg).to_bytes();
-        store.verify_signature_from(&a, msg, &sig, 600, 700).unwrap();
+        store
+            .verify_signature_from(&a, msg, &sig, 600, 700)
+            .unwrap();
         assert_eq!(
             store
                 .verify_signature_from(&b, msg, &sig, 600, 700)

@@ -47,10 +47,7 @@ impl OutputBuilder {
         self.write(|w| {
             if self.hyperlinks_active(w) {
                 // OSC 8 sequence: ESC ] 8 ; params ; URI ST label ESC ] 8 ; ; ST
-                write!(
-                    w,
-                    "\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\"
-                )?;
+                write!(w, "\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")?;
                 writeln!(w)
             } else if label.is_empty() {
                 writeln!(w, "{url}")

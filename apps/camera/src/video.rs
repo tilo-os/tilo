@@ -50,7 +50,12 @@ pub struct Recorder {
 impl Recorder {
     /// A recorder that will tag the clip at `fps` frames per second.
     pub fn new(fps: u32) -> Self {
-        Self { frames: Vec::new(), w: 0, h: 0, fps: fps.max(1) }
+        Self {
+            frames: Vec::new(),
+            w: 0,
+            h: 0,
+            fps: fps.max(1),
+        }
     }
 
     /// JPEG-encode one frame and append it. The first frame fixes the clip
@@ -373,7 +378,8 @@ mod tests {
         // Locate the first "00dc" chunk and pull its payload.
         let movi = find(&avi, b"movi").unwrap();
         let dc = find(&avi[movi..], b"00dc").unwrap() + movi;
-        let size = u32::from_le_bytes([avi[dc + 4], avi[dc + 5], avi[dc + 6], avi[dc + 7]]) as usize;
+        let size =
+            u32::from_le_bytes([avi[dc + 4], avi[dc + 5], avi[dc + 6], avi[dc + 7]]) as usize;
         let payload = &avi[dc + 8..dc + 8 + size];
         assert_eq!(&payload[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
 
@@ -410,7 +416,10 @@ mod tests {
     fn frames_of_a_different_size_are_skipped() {
         let mut rec = Recorder::new(FPS);
         assert!(rec.push(&solid_frame(32, 32, 1, 2, 3)));
-        assert!(!rec.push(&solid_frame(64, 64, 4, 5, 6)), "size change rejected");
+        assert!(
+            !rec.push(&solid_frame(64, 64, 4, 5, 6)),
+            "size change rejected"
+        );
         assert_eq!(rec.frame_count(), 1);
     }
 }

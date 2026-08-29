@@ -395,6 +395,9 @@ mod tests {
     fn releasever_is_never_empty() {
         let r = releasever();
         assert!(!r.is_empty());
-        assert!(!r.contains('%'), "an unexpanded rpm macro leaked through: {r}");
+        assert!(
+            !r.contains('%'),
+            "an unexpanded rpm macro leaked through: {r}"
+        );
     }
 }

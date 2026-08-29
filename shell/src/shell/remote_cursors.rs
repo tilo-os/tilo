@@ -238,4 +238,3 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         self.rect
     }
 }
-

@@ -65,7 +65,6 @@ fn is_raw_peer_form(label: &str) -> bool {
     label.starts_with("peer-") || label.starts_with("peer@")
 }
 
-
 fn temp_sock(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -115,9 +114,7 @@ fn connect(socket: &PathBuf) -> UnixStream {
     loop {
         match UnixStream::connect(socket) {
             Ok(s) => return s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => panic!("could not connect to broker: {e}"),
         }
     }
@@ -165,7 +162,6 @@ fn channel_state_for(
     (state, att)
 }
 
-
 /// The resolver's order, stated as an order: the room outranks what a
 /// connection calls itself, since a `Hello` handle is self-declared and
 /// trusting it would make "announce a name" a way to wear one.
@@ -211,13 +207,9 @@ fn an_unnamed_participant_falls_back_to_an_id_not_to_a_stand_in() {
 #[test]
 fn no_label_reaching_an_app_is_a_raw_peer_form_when_the_room_knows_the_name() {
     let socket = temp_sock("wire");
-    let handle = collab_broker::spawn_full_with_identity(
-        socket.clone(),
-        None,
-        None,
-        room_that_names_us(),
-    )
-    .expect("broker spawns");
+    let handle =
+        collab_broker::spawn_full_with_identity(socket.clone(), None, None, room_that_names_us())
+            .expect("broker spawns");
 
     let cluster = test_cluster();
     let app = "dev.qos.word-processor";

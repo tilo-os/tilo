@@ -45,7 +45,14 @@ fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
 pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
     let out = run_capture(
         "nmcli",
-        &["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
+        &[
+            "-t",
+            "-f",
+            "IN-USE,SSID,SIGNAL,SECURITY",
+            "device",
+            "wifi",
+            "list",
+        ],
     )?;
     Ok(parse_nmcli_wifi_list(&out))
 }
@@ -171,7 +178,13 @@ impl LinkStatus {
 pub fn get_link_status() -> Result<LinkStatus, String> {
     let out = run_capture(
         "nmcli",
-        &["-t", "-f", "TYPE,STATE,CONNECTION,DEVICE", "device", "status"],
+        &[
+            "-t",
+            "-f",
+            "TYPE,STATE,CONNECTION,DEVICE",
+            "device",
+            "status",
+        ],
     )?;
     let mut status = parse_nmcli_device_status(&out);
     if status.kind == LinkKind::Wifi {
@@ -360,14 +373,29 @@ pub struct WiredInfo {
 /// (`connected: false`) `WiredInfo` when no ethernet device is present, so the Settings
 /// panel renders an "unplugged" card without an error path.
 pub fn get_wired() -> Result<WiredInfo, String> {
-    let status = run_capture("nmcli", &["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])?;
+    let status = run_capture(
+        "nmcli",
+        &["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
+    )?;
     let Some((device, connected)) = parse_nmcli_wired_status(&status) else {
         return Ok(WiredInfo::default());
     };
-    let mut info = WiredInfo { connected, device: Some(device.clone()), speed: None, ipv4: None };
+    let mut info = WiredInfo {
+        connected,
+        device: Some(device.clone()),
+        speed: None,
+        ipv4: None,
+    };
     if let Ok(show) = run_capture(
         "nmcli",
-        &["-t", "-f", "CAPABILITIES.SPEED,IP4.ADDRESS", "device", "show", &device],
+        &[
+            "-t",
+            "-f",
+            "CAPABILITIES.SPEED,IP4.ADDRESS",
+            "device",
+            "show",
+            &device,
+        ],
     ) {
         let (speed, ipv4) = parse_nmcli_wired_show(&show);
         info.speed = speed;
@@ -397,7 +425,9 @@ fn parse_nmcli_wired_show(stdout: &str) -> (Option<String>, Option<String>) {
     let mut speed = None;
     let mut ipv4 = None;
     for line in stdout.lines() {
-        let Some((field, value)) = line.split_once(':') else { continue };
+        let Some((field, value)) = line.split_once(':') else {
+            continue;
+        };
         let value = value.trim();
         if field == "CAPABILITIES.SPEED" {
             if !value.is_empty() && value != "unknown" {
@@ -420,13 +450,19 @@ mod wired_tests {
     #[test]
     fn parses_connected_ethernet_from_status() {
         let out = "lo:loopback:unmanaged\neth0:ethernet:connected\nwlan0:wifi:connected\n";
-        assert_eq!(parse_nmcli_wired_status(out), Some(("eth0".to_string(), true)));
+        assert_eq!(
+            parse_nmcli_wired_status(out),
+            Some(("eth0".to_string(), true))
+        );
     }
 
     #[test]
     fn disconnected_ethernet_reports_device_but_not_connected() {
         let out = "enp3s0:ethernet:disconnected\n";
-        assert_eq!(parse_nmcli_wired_status(out), Some(("enp3s0".to_string(), false)));
+        assert_eq!(
+            parse_nmcli_wired_status(out),
+            Some(("enp3s0".to_string(), false))
+        );
     }
 
     #[test]

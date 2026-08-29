@@ -858,7 +858,7 @@ impl ForeignSurfaceWidget {
                 self.cached = Some(ImageData {
                     data: Blob::new(std::sync::Arc::new(frame.rgba)),
                     format: ImageFormat::Rgba8,
-                // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
+                    // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
                     alpha_type: ImageAlphaType::AlphaPremultiplied,
                     width: frame.width,
                     height: frame.height,
@@ -1464,9 +1464,15 @@ mod tests {
         let id = sid(52);
         store().forget(id);
         store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
-        assert!(store().is_opening(id), "precondition: it was still starting");
+        assert!(
+            store().is_opening(id),
+            "precondition: it was still starting"
+        );
         store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
-        assert!(store().mark_presented(id, TILE), "precondition: it presented");
+        assert!(
+            store().mark_presented(id, TILE),
+            "precondition: it presented"
+        );
         assert!(
             !store().is_opening(id),
             "the window is on screen; nothing may still be saying it is on \
@@ -1515,8 +1521,8 @@ mod tests {
         for (field, text) in [("headline", &headline), ("detail", &detail)] {
             let lower = text.to_lowercase();
             for jargon in [
-                "frame", "buffer", "surface", "dmabuf", "modifier", "wayland",
-                "toplevel", "dev.qos", "install",
+                "frame", "buffer", "surface", "dmabuf", "modifier", "wayland", "toplevel",
+                "dev.qos", "install",
             ] {
                 assert!(
                     !lower.contains(jargon),
@@ -1637,7 +1643,10 @@ mod tests {
         );
 
         // A client that kept a title bar out of the size it was given: one axis answered exactly, the other short, nothing overflowing.
-        assert!(fills(1200, 765, TILE), "short by a title bar it drew itself");
+        assert!(
+            fills(1200, 765, TILE),
+            "short by a title bar it drew itself"
+        );
         assert!(fills(1160, 800, TILE), "short by a frame down one side");
         assert!(
             !fills(1210, 765, TILE),
@@ -1748,10 +1757,10 @@ mod tests {
         );
     }
 
-/// A surface asks for frames until it has drawn, and after that only when
-/// a newer one is waiting. The first half matters because an
-/// undrawn-first-buffer client is the one case nothing else wakes the
-/// paint loop for; the second: an app with nothing newer must not hold the loop awake.
+    /// A surface asks for frames until it has drawn, and after that only when
+    /// a newer one is waiting. The first half matters because an
+    /// undrawn-first-buffer client is the one case nothing else wakes the
+    /// paint loop for; the second: an app with nothing newer must not hold the loop awake.
     #[test]
     fn widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one() {
         let id = sid(7);
@@ -1890,8 +1899,8 @@ mod tests {
         );
     }
 
-/// A window the launcher placed in a workspace other than the active one
-/// is already adopted, must not be adopted again — the launch path, not the switch path: a launch records where asked, and the toplevel can map later.
+    /// A window the launcher placed in a workspace other than the active one
+    /// is already adopted, must not be adopted again — the launch path, not the switch path: a launch records where asked, and the toplevel can map later.
     #[test]
     fn a_window_placed_outside_the_active_workspace_is_adopted_once() {
         let mut source = WorkspaceTree::bootstrap_demo();
@@ -1935,7 +1944,7 @@ mod tests {
         );
     }
 
-/// A desktop that already has the duplicate (a session saved before the mirror compared whole trees) comes back with one window, not two.
+    /// A desktop that already has the duplicate (a session saved before the mirror compared whole trees) comes back with one window, not two.
     #[test]
     fn a_duplicate_already_in_the_tree_is_collapsed() {
         let mut source = WorkspaceTree::bootstrap_demo();
@@ -1970,7 +1979,11 @@ mod tests {
             .and_then(|s| s.window_groups.first_mut())
             .expect("the group the window was adopted into");
         group.tabs.push(twin);
-        assert_eq!(tabs_for_surface(&rendered, surface), 2, "the fixture is staged");
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            2,
+            "the fixture is staged"
+        );
 
         assert!(
             reconcile_foreign_tabs(&source, &mut rendered),
@@ -2065,7 +2078,7 @@ mod tests {
             "a window says what it is called, not how it is addressed",
         );
 
-    // A dotted id with a multi-word tail humanises the same way the package registry does, so an app reaches one name by either route.
+        // A dotted id with a multi-word tail humanises the same way the package registry does, so an app reaches one name by either route.
         let w = ForeignSurfaceWidget::new(4, "dev.qos.word-processor".into());
         assert_eq!(w.app_title(), "Word Processor");
     }

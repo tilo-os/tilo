@@ -144,9 +144,17 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
 
     // A qOS image (by name or volume label) can drive a full pre-configured
     // install; anything else is written as-is.
-    let hay = format!("{} {}", name.to_ascii_lowercase(), label.to_ascii_lowercase());
+    let hay = format!(
+        "{} {}",
+        name.to_ascii_lowercase(),
+        label.to_ascii_lowercase()
+    );
     let is_qos = hay.contains("qos");
-    let kind = if is_qos { SourceKind::QosImage } else { SourceKind::IsoFile };
+    let kind = if is_qos {
+        SourceKind::QosImage
+    } else {
+        SourceKind::IsoFile
+    };
 
     // Only bless real disk-image extensions; a stray `.txt` is not an image.
     let looks_like_image = matches!(ext.as_str(), "iso" | "img" | "raw" | "bin" | "dd") || is_qos;
@@ -180,7 +188,11 @@ pub fn read_iso_label(path: &Path) -> Option<String> {
         return None;
     }
     let raw = &hdr[40..72];
-    let label = String::from_utf8_lossy(raw).trim().trim_matches('\0').trim().to_string();
+    let label = String::from_utf8_lossy(raw)
+        .trim()
+        .trim_matches('\0')
+        .trim()
+        .to_string();
     if label.is_empty() { None } else { Some(label) }
 }
 
@@ -285,7 +297,10 @@ mod tests {
     #[test]
     fn reads_real_iso9660_volume_label() {
         let iso = iso_with_label("QOS_1_0_X86_64");
-        assert_eq!(read_iso_label(iso.path()).as_deref(), Some("QOS_1_0_X86_64"));
+        assert_eq!(
+            read_iso_label(iso.path()).as_deref(),
+            Some("QOS_1_0_X86_64")
+        );
     }
 
     #[test]
