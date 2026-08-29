@@ -140,7 +140,7 @@ impl OffscreenRenderer {
         let bytes_per_pixel = 4u32;
         let unpadded = width * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = ((unpadded + align - 1) / align) * align;
+        let padded_bytes_per_row = unpadded.div_ceil(align) * align;
         let readback_size = (padded_bytes_per_row * height) as u64;
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quick-ui-offscreen-readback"),

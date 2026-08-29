@@ -157,29 +157,29 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             SplitOrientation::Horizontal => (
                 taffy::Size {
                     width: left_basis,
-                    height: percent(1.0),
+                    height: percent(1.0_f32),
                 },
                 taffy::Size {
                     width: right_basis,
-                    height: percent(1.0),
+                    height: percent(1.0_f32),
                 },
                 taffy::Size {
                     width: length(DIVIDER_PX as f32),
-                    height: percent(1.0),
+                    height: percent(1.0_f32),
                 },
                 taffy::FlexDirection::Row,
             ),
             SplitOrientation::Vertical => (
                 taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: left_basis,
                 },
                 taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: right_basis,
                 },
                 taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: length(DIVIDER_PX as f32),
                 },
                 taffy::FlexDirection::Column,
@@ -218,8 +218,8 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                     display: taffy::Display::Flex,
                     flex_direction,
                     size: taffy::Size {
-                        width: percent(1.0),
-                        height: percent(1.0),
+                        width: percent(1.0_f32),
+                        height: percent(1.0_f32),
                     },
                     ..Default::default()
                 },

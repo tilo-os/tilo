@@ -56,6 +56,12 @@ pub struct InviteMintScreen {
     error: Option<String>,
 }
 
+impl Default for InviteMintScreen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InviteMintScreen {
     pub fn new() -> Self {
         Self {
@@ -158,6 +164,11 @@ impl InviteMintScreen {
         self.clipboard_msg = None;
     }
 
+    // Mirrors `Widget::handle_event`'s parameter list on purpose --
+    // this is invoked from the trait impl, forwarding the same event,
+    // scale, modifiers, CRDT handle, and out-params the screen host
+    // received; bundling it would mean bundling the trait method too.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -241,10 +252,10 @@ impl Widget for InviteMintScreen {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
         let card_w = 600.0;
         let card_h = 480.0;
@@ -338,13 +349,13 @@ impl Widget for InviteMintScreen {
                 2 => InviteExpiry::OneWeek.label(),
                 _ => InviteExpiry::Never.label(),
             };
-            let selected = match (self.expiry, i) {
+            let selected = matches!(
+                (self.expiry, i),
                 (InviteExpiry::OneHour, 0)
-                | (InviteExpiry::OneDay, 1)
-                | (InviteExpiry::OneWeek, 2)
-                | (InviteExpiry::Never, 3) => true,
-                _ => false,
-            };
+                    | (InviteExpiry::OneDay, 1)
+                    | (InviteExpiry::OneWeek, 2)
+                    | (InviteExpiry::Never, 3)
+            );
             let bg = if selected {
                 theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
             } else {

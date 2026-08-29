@@ -842,17 +842,17 @@ impl Widget for NavShell {
         if let Some(d) = self.detail.as_mut() {
             d.draw(scene, transform, text_renderer, theme, presence);
         }
-        if self.sidebar_visible() {
-            if let Some(s) = self.sidebar.as_mut() {
-                // Scrim must sit between content and the drawer.
-                if self.scrim_rect.width() > 0.0 {
-                    let alpha = (self.sidebar_flap.reveal() * 0.5) as f32;
-                    let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
-                    scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
-                }
-                Self::fill_panel(scene, transform, theme, self.sidebar_rect);
-                s.draw(scene, transform, text_renderer, theme, presence);
+        if self.sidebar_visible()
+            && let Some(s) = self.sidebar.as_mut()
+        {
+            // Scrim must sit between content and the drawer.
+            if self.scrim_rect.width() > 0.0 {
+                let alpha = (self.sidebar_flap.reveal() * 0.5) as f32;
+                let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
+                scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
             }
+            Self::fill_panel(scene, transform, theme, self.sidebar_rect);
+            s.draw(scene, transform, text_renderer, theme, presence);
         }
         // Scrim already drawn above; this only adds dividers + affordance.
         self.draw_chrome_no_scrim(scene, transform, text_renderer, theme);
@@ -998,10 +998,10 @@ impl Widget for NavShell {
             Detail,
         }
         let mut order: Vec<(Which, NodeId)> = Vec::new();
-        if sidebar_first {
-            if let Some(sn) = self.sidebar_node {
-                order.push((Which::Sidebar, sn));
-            }
+        if sidebar_first
+            && let Some(sn) = self.sidebar_node
+        {
+            order.push((Which::Sidebar, sn));
         }
         // Front content pane first for narrow push; harmless order in wide.
         match (self.pane, d_node) {
@@ -1015,10 +1015,10 @@ impl Widget for NavShell {
             }
             (_, None) => order.push((Which::Overview, o_node)),
         }
-        if !sidebar_first {
-            if let Some(sn) = self.sidebar_node {
-                order.push((Which::Sidebar, sn));
-            }
+        if !sidebar_first
+            && let Some(sn) = self.sidebar_node
+        {
+            order.push((Which::Sidebar, sn));
         }
 
         for (which, child_node) in order {

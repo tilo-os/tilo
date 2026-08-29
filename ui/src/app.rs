@@ -174,6 +174,13 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
 #[derive(Debug, Clone, Copy)]
 enum Direction { Up, Down, Left, Right }
 
+/// Fans cursor moves out to libp2p peers too, alongside the Unix-socket
+/// send. Invoked after the throttle gate.
+type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
+/// Lets the shell drain `NeighbourMsg::PresenceMoved` into
+/// [`PresenceCtx::remote_cursors`] without App knowing about libp2p.
+type FrameTick = Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>;
+
 pub struct App {
     state: State,
     root_widget: Box<dyn Widget>,
@@ -247,10 +254,10 @@ pub struct App {
     last_view_presence: Option<crate::view::ViewSubset>,
     /// Fans cursor moves out to libp2p peers too, alongside the Unix-socket
     /// send. Invoked after the throttle gate.
-    presence_broadcast_sink: Option<Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>>,
+    presence_broadcast_sink: Option<PresenceBroadcastSink>,
     /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
     /// [`PresenceCtx::remote_cursors`] without App knowing about libp2p.
-    frame_tick: Option<Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>>,
+    frame_tick: Option<FrameTick>,
 
     /// Only calls into winit when it changes, keeping the hot pointer path
     /// cheap.
@@ -530,12 +537,11 @@ impl App {
     /// A bad value is ignored rather than crashing the app at startup.
     fn text_scale_env() -> Option<f32> {
         for key in ["QOS_A11Y_TEXT_SCALE", "QOS_TEXT_SCALE"] {
-            if let Ok(v) = std::env::var(key) {
-                if let Ok(f) = v.trim().parse::<f32>() {
-                    if f.is_finite() && f > 0.0 {
-                        return Some(f);
-                    }
-                }
+            if let Ok(v) = std::env::var(key)
+                && let Ok(f) = v.trim().parse::<f32>()
+                && f.is_finite() && f > 0.0
+            {
+                return Some(f);
             }
         }
         None
@@ -545,12 +551,11 @@ impl App {
     /// sandboxes via this var so an app comes up already scaled.
     fn ui_scale_env() -> Option<f32> {
         for key in ["QOS_UI_SCALE", "QOS_A11Y_UI_SCALE"] {
-            if let Ok(v) = std::env::var(key) {
-                if let Ok(f) = v.trim().parse::<f32>() {
-                    if f.is_finite() && f > 0.0 {
-                        return Some(f);
-                    }
-                }
+            if let Ok(v) = std::env::var(key)
+                && let Ok(f) = v.trim().parse::<f32>()
+                && f.is_finite() && f > 0.0
+            {
+                return Some(f);
             }
         }
         None
@@ -883,12 +888,12 @@ impl App {
             // dereferences in `navigate_focus` / focus handling.
             let w = unsafe { &*w_ptr };
             let rect = w.get_rect();
-            if rect.contains(point) {
-                if let Some(icon) = w.cursor_shape(point) {
-                    let area = (rect.width() * rect.height()).max(0.0);
-                    if best.is_none_or(|(a, _)| area < a) {
-                        best = Some((area, icon));
-                    }
+            if rect.contains(point)
+                && let Some(icon) = w.cursor_shape(point)
+            {
+                let area = (rect.width() * rect.height()).max(0.0);
+                if best.is_none_or(|(a, _)| area < a) {
+                    best = Some((area, icon));
                 }
             }
         }
@@ -1059,13 +1064,12 @@ impl App {
                 Some((new_key, PresencePayload::Caret { pos: new_pos })),
                 Some((old_key, PresencePayload::Caret { pos: old_pos })),
             ) = (&current, &self.last_focus_presence)
+                && new_key == old_key && new_pos > old_pos
             {
-                if new_key == old_key && new_pos > old_pos {
-                    self.broadcast_presence(
-                        new_key.clone(),
-                        PresencePayload::Typing { start: *old_pos, end: *new_pos },
-                    );
-                }
+                self.broadcast_presence(
+                    new_key.clone(),
+                    PresencePayload::Typing { start: *old_pos, end: *new_pos },
+                );
             }
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
@@ -1484,24 +1488,24 @@ impl App {
 
     fn set_focused_node(&mut self, new_id: Option<NodeId>) {
         if self.focused_node != new_id {
-            if let Some(old_id) = self.focused_node {
-                if let Some(&w_ptr) = self.node_map.get(&old_id) {
-                    unsafe { (*w_ptr).set_focus(false); }
-                }
+            if let Some(old_id) = self.focused_node
+                && let Some(&w_ptr) = self.node_map.get(&old_id)
+            {
+                unsafe { (*w_ptr).set_focus(false); }
             }
             self.focused_node = new_id;
-            if let Some(id) = new_id {
-                if let Some(&w_ptr) = self.node_map.get(&id) {
-                    unsafe { (*w_ptr).set_focus(true); }
-                    // Interrupts the previous utterance so rapid arrow/Tab
-                    // navigation stays responsive.
-                    if self.screen_reader.is_some() {
-                        let node = unsafe { (*w_ptr).accessibility() };
-                        if let (Some(node), Some(sr)) =
-                            (node, self.screen_reader.as_mut())
-                        {
-                            sr.announce_focus(&node);
-                        }
+            if let Some(id) = new_id
+                && let Some(&w_ptr) = self.node_map.get(&id)
+            {
+                unsafe { (*w_ptr).set_focus(true); }
+                // Interrupts the previous utterance so rapid arrow/Tab
+                // navigation stays responsive.
+                if self.screen_reader.is_some() {
+                    let node = unsafe { (*w_ptr).accessibility() };
+                    if let (Some(node), Some(sr)) =
+                        (node, self.screen_reader.as_mut())
+                    {
+                        sr.announce_focus(&node);
                     }
                 }
             }
@@ -1579,10 +1583,10 @@ impl App {
             if let (Some(ch), Some(sr)) = (ch, self.screen_reader.as_mut()) {
                 sr.echo_char(ch);
             }
-        } else if let Some(word) = word_at(&now_text, now_caret) {
-            if let Some(sr) = self.screen_reader.as_mut() {
-                sr.echo_word(&word);
-            }
+        } else if let Some(word) = word_at(&now_text, now_caret)
+            && let Some(sr) = self.screen_reader.as_mut()
+        {
+            sr.echo_word(&word);
         }
     }
 
@@ -1599,10 +1603,10 @@ impl App {
             w: &dyn Widget,
             out: &mut Vec<(String, crate::a11y::Politeness, String)>,
         ) {
-            if let Some(node) = w.accessibility() {
-                if let (Some(politeness), Some(name)) = (node.live, node.name.clone()) {
-                    out.push((name, politeness, crate::screen_reader::describe(&node)));
-                }
+            if let Some(node) = w.accessibility()
+                && let (Some(politeness), Some(name)) = (node.live, node.name.clone())
+            {
+                out.push((name, politeness, crate::screen_reader::describe(&node)));
             }
             for child in w.children() {
                 visit(child, out);
@@ -1725,9 +1729,7 @@ impl App {
             return None;
         }
         let taffy_id = NodeId::from(raw - 1);
-        let Some(&w_ptr) = self.node_map.get(&taffy_id) else {
-            return None;
-        };
+        let &w_ptr = self.node_map.get(&taffy_id)?;
 
         let handled = unsafe {
             (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root)
@@ -1847,10 +1849,10 @@ impl App {
             &mut self.node_map,
         ));
         self.update_focusable_order();
-        if self.autofocus_first && self.focused_node.is_none() {
-            if let Some(&first) = self.focusable_order.first() {
-                self.set_focused_node(Some(first));
-            }
+        if self.autofocus_first && self.focused_node.is_none()
+            && let Some(&first) = self.focusable_order.first()
+        {
+            self.set_focused_node(Some(first));
         }
         self.last_stable_focus_idx = self
             .focused_node
@@ -1916,12 +1918,11 @@ impl App {
                 let target = exact.or_else(|| self.focusable_order.last().copied());
                 if let Some(id) = target {
                     self.set_focused_node(Some(id));
-                    if exact.is_some() {
-                        if let Some(state) = prev_focus_state.as_deref() {
-                            if let Some(&w) = self.node_map.get(&id) {
-                                unsafe { (*w).set_state(state); }
-                            }
-                        }
+                    if exact.is_some()
+                        && let Some(state) = prev_focus_state.as_deref()
+                        && let Some(&w) = self.node_map.get(&id)
+                    {
+                        unsafe { (*w).set_state(state); }
                     }
                 }
             }
@@ -2692,7 +2693,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
                 // Legacy path — `state.collab.cursors` predates PresenceCtx;
                 // kept for apps that still write into it directly.
-                for (_, cursor) in &app.state.collab.cursors {
+                for cursor in app.state.collab.cursors.values() {
                     let mut path = vello::kurbo::BezPath::new();
                     path.move_to(Point::new(0.0, 0.0));
                     path.line_to(Point::new(14.0, 14.0));
@@ -2705,7 +2706,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         cursor_transform,
-                        cursor.color.clone(),
+                        cursor.color,
                         None,
                         &path,
                     );
@@ -2827,7 +2828,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
                 let req = RenderRequest::Frame {
-                    scene,
+                    scene: Box::new(scene),
                     width,
                     height,
                     base_color: app.theme.bg_app,
@@ -2971,24 +2972,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // `keyboard_nav_allowed`).
                 let modal_rect = app.root_widget.modal_capture();
 
-                if !handled {
-                if let WindowEvent::KeyboardInput {
-                    event:
-                        winit::event::KeyEvent {
-                            logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12),
-                            state: winit::event::ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } = event
+                if !handled
+                    && let WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12),
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } = event
                 {
                     app.debug_mode = !app.debug_mode;
                     handled = true;
                 }
-                }
 
-                if !handled && app.modifiers.state().control_key() {
-                    if let WindowEvent::KeyboardInput {
+                if !handled && app.modifiers.state().control_key()
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key: winit::keyboard::Key::Character(ref c),
@@ -2997,67 +2997,66 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
-                    {
-                        let shift = app.modifiers.state().shift_key();
-                        // Otherwise round-tripping undo/redo loses caret
-                        // position.
-                        let current_meta = app.root_widget.get_state();
-                        let current_focus_idx = app
-                            .focused_node
-                            .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-                        match c.as_str() {
-                            // winit delivers Ctrl+Shift+Z as character "Z"
-                            // with shift held, so check the modifier, not
-                            // the capital-letter cue.
-                            "z" | "Z" if shift => {
-                                if let Some(e) = app.state.redo_as(
-                                    Some(&app.local_author),
-                                    current_focus_idx,
-                                    current_meta.clone(),
-                                ) {
-                                    app.apply_undo_entry(e);
-                                }
-                                is_undo_redo = true;
-                                handled = true;
+                {
+                    let shift = app.modifiers.state().shift_key();
+                    // Otherwise round-tripping undo/redo loses caret
+                    // position.
+                    let current_meta = app.root_widget.get_state();
+                    let current_focus_idx = app
+                        .focused_node
+                        .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
+                    match c.as_str() {
+                        // winit delivers Ctrl+Shift+Z as character "Z"
+                        // with shift held, so check the modifier, not
+                        // the capital-letter cue.
+                        "z" | "Z" if shift => {
+                            if let Some(e) = app.state.redo_as(
+                                Some(&app.local_author),
+                                current_focus_idx,
+                                current_meta.clone(),
+                            ) {
+                                app.apply_undo_entry(e);
                             }
-                            "z" | "Z" => {
-                                if let Some(e) = app.state.undo_as(
-                                    Some(&app.local_author),
-                                    current_focus_idx,
-                                    current_meta.clone(),
-                                ) {
-                                    app.apply_undo_entry(e);
-                                }
-                                is_undo_redo = true;
-                                handled = true;
-                            }
-                            "y" | "Y" => {
-                                if let Some(e) = app.state.redo_as(
-                                    Some(&app.local_author),
-                                    current_focus_idx,
-                                    current_meta.clone(),
-                                ) {
-                                    app.apply_undo_entry(e);
-                                }
-                                is_undo_redo = true;
-                                handled = true;
-                            }
-                            // A second Ctrl+K closes the palette.
-                            "k" | "K" => {
-                                if app.action_palette.is_some() {
-                                    app.close_action_palette();
-                                } else {
-                                    app.open_action_palette();
-                                }
-                                handled = true;
-                            }
-                            _ => {}
+                            is_undo_redo = true;
+                            handled = true;
                         }
+                        "z" | "Z" => {
+                            if let Some(e) = app.state.undo_as(
+                                Some(&app.local_author),
+                                current_focus_idx,
+                                current_meta.clone(),
+                            ) {
+                                app.apply_undo_entry(e);
+                            }
+                            is_undo_redo = true;
+                            handled = true;
+                        }
+                        "y" | "Y" => {
+                            if let Some(e) = app.state.redo_as(
+                                Some(&app.local_author),
+                                current_focus_idx,
+                                current_meta.clone(),
+                            ) {
+                                app.apply_undo_entry(e);
+                            }
+                            is_undo_redo = true;
+                            handled = true;
+                        }
+                        // A second Ctrl+K closes the palette.
+                        "k" | "K" => {
+                            if app.action_palette.is_some() {
+                                app.close_action_palette();
+                            } else {
+                                app.open_action_palette();
+                            }
+                            handled = true;
+                        }
+                        _ => {}
                     }
                 }
 
-                if !handled && app.keyboard_nav_allowed(modal_rect) {
-                    if let WindowEvent::KeyboardInput {
+                if !handled && app.keyboard_nav_allowed(modal_rect)
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
@@ -3066,14 +3065,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
-                    {
-                        let shift = app.modifiers.state().shift_key();
-                        handled = app.focus_tab(shift);
-                    }
+                {
+                    let shift = app.modifiers.state().shift_key();
+                    handled = app.focus_tab(shift);
                 }
 
-                if !handled {
-                    if let WindowEvent::KeyboardInput {
+                if !handled
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key: winit::keyboard::Key::Named(logical_key),
@@ -3082,20 +3080,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
+                {
+                    let dir = match logical_key {
+                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
+                        winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
+                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
+                        winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
+                        _ => None,
+                    };
+                    if let (Some(d), true, true) =
+                        (dir, app.modifiers.state().alt_key(), app.keyboard_nav_allowed(modal_rect))
                     {
-                        let dir = match logical_key {
-                            winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                            winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                            winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                            winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                            _ => None,
-                        };
-                        if let (Some(d), true, true) =
-                            (dir, app.modifiers.state().alt_key(), app.keyboard_nav_allowed(modal_rect))
-                        {
-                            app.navigate_focus(d);
-                            handled = true;
-                        }
+                        app.navigate_focus(d);
+                        handled = true;
                     }
                 }
 
@@ -3194,8 +3191,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
                 // If no widget consumed Enter/Space (text inputs do), activate
                 // the focused control the same way a mouse click would.
-                if !handled {
-                    if let WindowEvent::KeyboardInput {
+                if !handled
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key:
@@ -3208,23 +3205,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
-                    {
-                        if let Some(fid) = app.focused_node {
-                            if let Some(&w_ptr) = app.node_map.get(&fid) {
-                                let did = unsafe {
-                                    (*w_ptr).perform_action(
-                                        &crate::a11y::Action::Activate,
-                                        &mut app.state.doc,
-                                        &app.state.root,
-                                    )
-                                };
-                                if did {
-                                    handled = true;
-                                    app.needs_sync = true;
-                                    app.layout_dirty = true;
-                                }
-                            }
-                        }
+                    && let Some(fid) = app.focused_node
+                    && let Some(&w_ptr) = app.node_map.get(&fid)
+                {
+                    let did = unsafe {
+                        (*w_ptr).perform_action(
+                            &crate::a11y::Action::Activate,
+                            &mut app.state.doc,
+                            &app.state.root,
+                        )
+                    };
+                    if did {
+                        handled = true;
+                        app.needs_sync = true;
+                        app.layout_dirty = true;
                     }
                 }
 
@@ -3234,8 +3228,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 //   Ctrl   → jump to min/max (Left = min, Right = max)
                 // Other widgets ignore the action, falling through to
                 // directional navigation below.
-                if !handled {
-                    if let WindowEvent::KeyboardInput {
+                if !handled
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key: winit::keyboard::Key::Named(named),
@@ -3244,50 +3238,49 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
+                {
+                    use crate::a11y::Action;
+                    let ctrl = app.modifiers.state().control_key();
+                    let shift = app.modifiers.state().shift_key();
+                    // (action to repeat, how many times)
+                    let (action, times) = match named {
+                        winit::keyboard::NamedKey::ArrowLeft if ctrl => {
+                            (Some(Action::SetValue("0".into())), 1)
+                        }
+                        winit::keyboard::NamedKey::ArrowRight if ctrl => {
+                            (Some(Action::SetValue("100".into())), 1)
+                        }
+                        winit::keyboard::NamedKey::ArrowLeft => {
+                            (Some(Action::Decrement), if shift { 4 } else { 1 })
+                        }
+                        winit::keyboard::NamedKey::ArrowRight => {
+                            (Some(Action::Increment), if shift { 4 } else { 1 })
+                        }
+                        _ => (None, 0),
+                    };
+                    if let (Some(act), Some(fid)) = (action, app.focused_node)
+                        && let Some(&w_ptr) = app.node_map.get(&fid)
                     {
-                        use crate::a11y::Action;
-                        let ctrl = app.modifiers.state().control_key();
-                        let shift = app.modifiers.state().shift_key();
-                        // (action to repeat, how many times)
-                        let (action, times) = match named {
-                            winit::keyboard::NamedKey::ArrowLeft if ctrl => {
-                                (Some(Action::SetValue("0".into())), 1)
-                            }
-                            winit::keyboard::NamedKey::ArrowRight if ctrl => {
-                                (Some(Action::SetValue("100".into())), 1)
-                            }
-                            winit::keyboard::NamedKey::ArrowLeft => {
-                                (Some(Action::Decrement), if shift { 4 } else { 1 })
-                            }
-                            winit::keyboard::NamedKey::ArrowRight => {
-                                (Some(Action::Increment), if shift { 4 } else { 1 })
-                            }
-                            _ => (None, 0),
-                        };
-                        if let (Some(act), Some(fid)) = (action, app.focused_node) {
-                            if let Some(&w_ptr) = app.node_map.get(&fid) {
-                                let mut any = false;
-                                for _ in 0..times {
-                                    any |= unsafe {
-                                        (*w_ptr).perform_action(
-                                            &act,
-                                            &mut app.state.doc,
-                                            &app.state.root,
-                                        )
-                                    };
-                                }
-                                if any {
-                                    handled = true;
-                                    app.needs_sync = true;
-                                    app.layout_dirty = true;
-                                }
-                            }
+                        let mut any = false;
+                        for _ in 0..times {
+                            any |= unsafe {
+                                (*w_ptr).perform_action(
+                                    &act,
+                                    &mut app.state.doc,
+                                    &app.state.root,
+                                )
+                            };
+                        }
+                        if any {
+                            handled = true;
+                            app.needs_sync = true;
+                            app.layout_dirty = true;
                         }
                     }
                 }
 
-                if !handled && app.keyboard_nav_allowed(modal_rect) {
-                    if let WindowEvent::KeyboardInput {
+                if !handled && app.keyboard_nav_allowed(modal_rect)
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key: winit::keyboard::Key::Named(logical_key),
@@ -3296,18 +3289,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
-                    {
-                        let dir = match logical_key {
-                            winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                            winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                            winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                            winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                            _ => None,
-                        };
-                        if let Some(d) = dir {
-                            app.navigate_focus(d);
-                            handled = true;
-                        }
+                {
+                    let dir = match logical_key {
+                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
+                        winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
+                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
+                        winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
+                        _ => None,
+                    };
+                    if let Some(d) = dir {
+                        app.navigate_focus(d);
+                        handled = true;
                     }
                 }
 
@@ -3402,11 +3394,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Catches a compositor reconfigure that changes `inner_size()`
         // without delivering `Resized`.
-        if let Some(prev) = app.last_frame_size {
-            if window.inner_size() != prev {
-                app.layout_dirty = true;
-                window.request_redraw();
-            }
+        if let Some(prev) = app.last_frame_size
+            && window.inner_size() != prev
+        {
+            app.layout_dirty = true;
+            window.request_redraw();
         }
         if app.pump_collab_presence() {
             window.request_redraw();
@@ -3423,12 +3415,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // The button-driven twin of the Ctrl+K palette dispatch: record one
         // undo boundary so Ctrl+Z reverts it.
-        if let Some(before) = app.root_widget.take_committed_action() {
-            if app.state.doc.get_heads() != before {
-                app.state.record_committed_action(before, None, None);
-                app.needs_sync = true;
-                window.request_redraw();
-            }
+        if let Some(before) = app.root_widget.take_committed_action()
+            && app.state.doc.get_heads() != before
+        {
+            app.state.record_committed_action(before, None, None);
+            app.needs_sync = true;
+            window.request_redraw();
         }
 
         if app.root_widget.needs_commit() {
@@ -4073,10 +4065,10 @@ pub fn dispatch_gated_event<W: crate::widget::Widget + ?Sized>(
     widget: &W,
     dispatch: impl FnOnce(),
 ) -> bool {
-    if let Some(scope) = widget.permission_scope() {
-        if !ctx.check(&scope) {
-            return false;
-        }
+    if let Some(scope) = widget.permission_scope()
+        && !ctx.check(&scope)
+    {
+        return false;
     }
     dispatch();
     true
@@ -5376,15 +5368,15 @@ impl crate::view::FreezeThaw for App {
                 view_mode: view.view_mode.clone(),
             });
 
-        if let Some(f) = &view.focus {
-            if let Some(&id) = self.focusable_order.get(f.ordinal) {
-                self.set_focused_node(Some(id));
-                if !f.ephemeral.is_empty() {
-                    if let Some(&w) = self.node_map.get(&id) {
-                        unsafe {
-                            (*w).set_state(&f.ephemeral);
-                        }
-                    }
+        if let Some(f) = &view.focus
+            && let Some(&id) = self.focusable_order.get(f.ordinal)
+        {
+            self.set_focused_node(Some(id));
+            if !f.ephemeral.is_empty()
+                && let Some(&w) = self.node_map.get(&id)
+            {
+                unsafe {
+                    (*w).set_state(&f.ephemeral);
                 }
             }
         }

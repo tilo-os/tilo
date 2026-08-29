@@ -122,7 +122,7 @@ impl Widget for TriStateControl {
         let node = taffy
             .new_leaf(Style {
                 flex_shrink: 0.0,
-                size: taffy::Size { width: percent(1.0), height: length(SEGMENT_HEIGHT as f32) },
+                size: taffy::Size { width: percent(1.0_f32), height: length(SEGMENT_HEIGHT as f32) },
                 ..Default::default()
             })
             .unwrap();

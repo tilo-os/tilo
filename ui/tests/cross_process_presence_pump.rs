@@ -96,10 +96,10 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                 continue;
             };
             let dst_idx = 1 - src_idx;
-            if let Ok(mut guard) = streams.lock() {
-                if let Some(stream) = guard.get_mut(dst_idx) {
-                    write_frame(stream, &bytes);
-                }
+            if let Ok(mut guard) = streams.lock()
+                && let Some(stream) = guard.get_mut(dst_idx)
+            {
+                write_frame(stream, &bytes);
             }
         }
         for r in readers {

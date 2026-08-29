@@ -308,15 +308,15 @@ impl Driver {
         if self.focused == node {
             return;
         }
-        if let Some(old) = self.focused {
-            if let Some(&p) = self.node_map.get(&old) {
-                unsafe { (*p).set_focus(false) };
-            }
+        if let Some(old) = self.focused
+            && let Some(&p) = self.node_map.get(&old)
+        {
+            unsafe { (*p).set_focus(false) };
         }
-        if let Some(new) = node {
-            if let Some(&p) = self.node_map.get(&new) {
-                unsafe { (*p).set_focus(true) };
-            }
+        if let Some(new) = node
+            && let Some(&p) = self.node_map.get(&new)
+        {
+            unsafe { (*p).set_focus(true) };
         }
         self.focused = node;
     }
@@ -583,7 +583,7 @@ impl Driver {
     /// The document rendered as JSON, for a harness to diff across a
     /// restart.
     pub fn dump_json(&mut self) -> String {
-        serde_json::to_string_pretty(&automerge::AutoSerde::from(&*self.state.doc.document()))
+        serde_json::to_string_pretty(&automerge::AutoSerde::from(self.state.doc.document()))
             .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 }
@@ -727,13 +727,13 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     let v: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| format!("invalid JSON: {e}"))?;
     let mut spec = Spec::default();
-    if let Some(vp) = v.get("viewport").and_then(|x| x.as_array()) {
-        if vp.len() == 2 {
-            spec.viewport = Some((
-                vp[0].as_u64().unwrap_or(0) as u32,
-                vp[1].as_u64().unwrap_or(0) as u32,
-            ));
-        }
+    if let Some(vp) = v.get("viewport").and_then(|x| x.as_array())
+        && vp.len() == 2
+    {
+        spec.viewport = Some((
+            vp[0].as_u64().unwrap_or(0) as u32,
+            vp[1].as_u64().unwrap_or(0) as u32,
+        ));
     }
     if let Some(p) = v.get("dump").and_then(|x| x.as_str()) {
         spec.dump = Some(p.into());
@@ -854,7 +854,7 @@ pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{Button, Widget};
+    use crate::widget::Button;
 
     #[test]
     fn spec_parses_every_action_shape() {

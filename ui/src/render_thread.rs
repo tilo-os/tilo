@@ -66,7 +66,9 @@ const _: fn() = || {
 
 pub enum RenderRequest {
     Frame {
-        scene: Scene,
+        // Boxed so the `Shutdown` variant (which carries nothing) doesn't
+        // force every enum value to reserve room for an inline `Scene`.
+        scene: Box<Scene>,
         width: u32,
         height: u32,
         base_color: Color,
@@ -146,7 +148,7 @@ pub fn spawn_render_thread(
             while let Ok(msg) = rx.recv() {
                 let (mut scene, width, height, base_color) = match msg {
                     RenderRequest::Frame { scene, width, height, base_color } => {
-                        (scene, width, height, base_color)
+                        (*scene, width, height, base_color)
                     }
                     RenderRequest::Shutdown => break,
                 };
@@ -154,8 +156,8 @@ pub fn spawn_render_thread(
                 // Resize on the worker so main never touches wgpu state after
                 // spawn — simpler than an explicit Resize variant, and keeps
                 // every wgpu call on the thread that owns the surface.
-                if surface.config.width != width || surface.config.height != height {
-                    if let Err(err) = resize_surface_checked(&render_cx, &mut surface, width, height)
+                if (surface.config.width != width || surface.config.height != height)
+                    && let Err(err) = resize_surface_checked(&render_cx, &mut surface, width, height)
                     {
                         // Re-attempting the same reconfigure on a destroyed
                         // surface fails identically forever.
@@ -163,7 +165,6 @@ pub fn spawn_render_thread(
                         let _ = outcome_tx.send(FrameOutcome::SurfaceGone);
                         break;
                     }
-                }
 
                 let outcome = render_one_frame(
                     &render_cx,
@@ -248,6 +249,11 @@ fn resize_surface_checked(
     }
 }
 
+// One call site: this is the whole worker's per-frame encode+present step,
+// and each parameter is a distinct, independently necessary piece of GPU
+// state or frame metadata. Bundling would trade nine named parameters for
+// an equally large ad-hoc struct with no behavioural change.
+#[allow(clippy::too_many_arguments)]
 fn render_one_frame(
     render_cx: &RenderContext,
     surface: &mut RenderSurface<'static>,
@@ -284,16 +290,16 @@ fn render_one_frame(
 
     // Composite any post-processor content (the browser's zero-copy WebView
     // texture) into the intermediate texture before it goes to the surface.
-    if let Ok(mut guard) = POST_PROCESSOR.lock() {
-        if let Some(p) = guard.as_mut() {
-            p.post_render(
-                &device_handle.device,
-                &device_handle.queue,
-                &surface.target_view,
-                width,
-                height,
-            );
-        }
+    if let Ok(mut guard) = POST_PROCESSOR.lock()
+        && let Some(p) = guard.as_mut()
+    {
+        p.post_render(
+            &device_handle.device,
+            &device_handle.queue,
+            &surface.target_view,
+            width,
+            height,
+        );
     }
 
     let encode_us = t_encode.map(|t| t.elapsed().as_secs_f64() * 1e6);

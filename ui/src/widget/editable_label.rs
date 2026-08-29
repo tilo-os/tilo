@@ -280,16 +280,26 @@ impl Widget for EditableLabel {
             // The field itself consumes neither Enter nor Esc, so the
             // wrapper intercepts both before forwarding.
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
-            } if matches!(logical_key, Key::Named(NamedKey::Enter)) => {
+            } => {
                 self.commit();
                 *handled = true;
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
-            } if matches!(logical_key, Key::Named(NamedKey::Escape)) => {
+            } => {
                 self.cancel();
                 *handled = true;
             }

@@ -314,12 +314,11 @@ impl BooksDoc {
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if let ScalarValue::Str(s) = v.as_ref() {
-                    if !s.is_empty() {
-                        out.push(PathBuf::from(s.to_string()));
-                    }
-                }
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && let ScalarValue::Str(s) = v.as_ref()
+                && !s.is_empty()
+            {
+                out.push(PathBuf::from(s.to_string()));
             }
         }
         out
@@ -523,13 +522,14 @@ mod tests {
     #[test]
     fn settings_round_trip() {
         let mut doc = AutoCommit::new();
-        let mut s = Settings::default();
-        s.font_scale = 1.3;
-        s.line_spacing = 1.45;
-        s.font_id = "serif".into();
-        s.theme = ReadTheme::Dark;
-        s.scheme_id = "midnight".into();
-        s.mode = crate::model::ReadMode::TwoUp;
+        let s = Settings {
+            font_scale: 1.3,
+            line_spacing: 1.45,
+            font_id: "serif".into(),
+            theme: ReadTheme::Dark,
+            scheme_id: "midnight".into(),
+            mode: crate::model::ReadMode::TwoUp,
+        };
         BooksDoc::write_settings(&mut doc, &s);
         let back = BooksDoc::read_settings(&doc);
         assert!((back.font_scale - 1.3).abs() < 0.001);

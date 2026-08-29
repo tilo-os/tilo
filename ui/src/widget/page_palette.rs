@@ -105,7 +105,7 @@ impl PageJumpPalette {
     }
 
     pub fn height(&self) -> f64 {
-        let rows = self.visible.len().min(MAX_VISIBLE_ROWS).max(1) as f64;
+        let rows = self.visible.len().clamp(1, MAX_VISIBLE_ROWS) as f64;
         PADDING * 2.0 + INPUT_HEIGHT + PADDING + ROW_HEIGHT * rows
     }
 

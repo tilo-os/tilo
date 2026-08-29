@@ -36,6 +36,9 @@ impl IconGridItem {
     }
 }
 
+/// `(index, ctrl, shift)`.
+type ItemClick = Box<dyn FnMut(usize, bool, bool)>;
+
 pub struct IconGrid {
     items: Vec<IconGridItem>,
     /// Per-cell box (icon + label) in logical px.
@@ -56,7 +59,7 @@ pub struct IconGrid {
     last_cursor: Point,
     last_click: Option<(usize, std::time::Instant)>,
 
-    on_item_click: Option<Box<dyn FnMut(usize, bool, bool)>>,
+    on_item_click: Option<ItemClick>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
 }
 
@@ -288,19 +291,19 @@ impl Widget for IconGrid {
 
         // So arrow-key navigation is visible without relying on the
         // selection fill alone.
-        if self.is_focused {
-            if let Some(i) = self.selection.primary() {
-                let cell = self.cell_rect(i);
-                if !presence.should_cull(cell) {
-                    let ring = RoundedRect::from_rect(cell, tokens.radii.md as f64);
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(2.0),
-                        transform,
-                        theme.border_focus,
-                        None,
-                        &ring,
-                    );
-                }
+        if self.is_focused
+            && let Some(i) = self.selection.primary()
+        {
+            let cell = self.cell_rect(i);
+            if !presence.should_cull(cell) {
+                let ring = RoundedRect::from_rect(cell, tokens.radii.md as f64);
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(2.0),
+                    transform,
+                    theme.border_focus,
+                    None,
+                    &ring,
+                );
             }
         }
     }
@@ -431,10 +434,10 @@ impl Widget for IconGrid {
                 ..Default::default()
             });
         // So the reader can say "2 of 9".
-        if let Some(i) = primary {
-            if i < self.items.len() {
-                node = node.with_position(i + 1, self.items.len());
-            }
+        if let Some(i) = primary
+            && i < self.items.len()
+        {
+            node = node.with_position(i + 1, self.items.len());
         }
         Some(node)
     }

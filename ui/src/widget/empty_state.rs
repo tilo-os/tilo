@@ -319,8 +319,8 @@ impl Widget for EmptyState {
         let node = taffy
             .new_leaf(Style {
                 flex_grow: 1.0,
-                size: taffy::Size { width: percent(1.0), height: percent(1.0) },
-                min_size: taffy::Size { width: percent(0.0), height: percent(0.0) },
+                size: taffy::Size { width: percent(1.0_f32), height: percent(1.0_f32) },
+                min_size: taffy::Size { width: percent(0.0_f32), height: percent(0.0_f32) },
                 ..Default::default()
             })
             .unwrap();
@@ -392,11 +392,11 @@ impl Widget for EmptyState {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.action_label.is_some() && self.action_rect.contains(self.last_cursor) {
-                    self.action_fired = true;
-                    *handled = true;
-                }
+            }
+                if self.action_label.is_some() && self.action_rect.contains(self.last_cursor) =>
+            {
+                self.action_fired = true;
+                *handled = true;
             }
             _ => {}
         }

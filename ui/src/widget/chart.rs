@@ -621,7 +621,7 @@ mod tests {
             Rect::new(0.0, 0.0, 200.0, 120.0), &theme, &empty, 1.0, false, "", "", "",
         );
         let grid_tags = count_color_tags(&grid_only);
-        assert!(grid_tags >= GRID_DIVISIONS + 1, "grid rules must paint");
+        assert!(grid_tags > GRID_DIVISIONS, "grid rules must paint");
 
         let series = vec![Series::new(vec![1.0, 2.0, 3.0], theme.accent_primary)];
         let mut with_line = Scene::new();

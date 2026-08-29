@@ -141,7 +141,7 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     if TRACE.load(Ordering::Relaxed) && n <= TRACE_FRAMES {
         eprintln!("[webview-profile] frame #{n} {width}x{height} swizzle {:.0}us", swizzle.as_secs_f64() * 1e6);
     }
-    if n % SUMMARY_EVERY == 0 {
+    if n.is_multiple_of(SUMMARY_EVERY) {
         s.print_summary();
     }
 }

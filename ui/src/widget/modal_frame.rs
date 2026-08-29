@@ -254,10 +254,10 @@ impl ModalLayout {
     /// overlaps the card (all of them do) resolves to the action. `None` only
     /// for a point outside the viewport entirely.
     pub fn hit(&self, p: Point) -> Option<ModalHit> {
-        if let Some(c) = self.close {
-            if c.contains(p) {
-                return Some(ModalHit::Close);
-            }
+        if let Some(c) = self.close
+            && c.contains(p)
+        {
+            return Some(ModalHit::Close);
         }
         for (i, r) in self.actions.iter().enumerate() {
             if r.area() > 0.0 && r.contains(p) {

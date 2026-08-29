@@ -40,7 +40,7 @@ fn of_role(nodes: &[(AkNodeId, AkNode)], role: AkRole) -> Vec<&AkNode> {
 fn by_label<'a>(nodes: &'a [(AkNodeId, AkNode)], role: AkRole, label: &str) -> &'a AkNode {
     nodes
         .iter()
-        .find(|(_, n)| n.role() == role && n.label().as_deref() == Some(label))
+        .find(|(_, n)| n.role() == role && n.label() == Some(label))
         .map(|(_, n)| n)
         .unwrap_or_else(|| panic!("no {role:?} node labelled {label:?}"))
 }
@@ -57,7 +57,7 @@ fn tri_state_control_exposes_a_radio_group() {
     let groups = of_role(&nodes, AkRole::Group);
     assert_eq!(groups.len(), 1, "one group container");
     let group = groups[0];
-    assert_eq!(group.value().as_deref(), Some("Allow"), "group value is the active label");
+    assert_eq!(group.value(), Some("Allow"), "group value is the active label");
     assert!(group.supports_action(AkAction::Click), "the control is activatable");
 
     // Three radio buttons, one per segment, in order, each positioned N of 3.
@@ -90,7 +90,7 @@ fn color_swatch_picker_exposes_a_selectable_list() {
     assert_eq!(lists.len(), 1, "one list container");
     let list = lists[0];
     // The chosen swatch's hex is the list value — derived from the real colour.
-    assert_eq!(list.value().as_deref(), Some("#E6C84A"), "value is selected swatch hex");
+    assert_eq!(list.value(), Some("#E6C84A"), "value is selected swatch hex");
 
     let items = of_role(&nodes, AkRole::ListItem);
     assert_eq!(items.len(), DEFAULT_PALETTE.len(), "one ListItem per swatch");
@@ -115,7 +115,7 @@ fn ring_gauge_exposes_a_named_percentage_meter() {
     let nodes = access_nodes(&mut g);
     let bar = by_label(&nodes, AkRole::ProgressIndicator, "CPU");
     // The dim caption names it; the fraction becomes a spoken percentage.
-    assert_eq!(bar.value().as_deref(), Some("42%"), "fraction renders as a percentage");
+    assert_eq!(bar.value(), Some("42%"), "fraction renders as a percentage");
 }
 
 #[test]
@@ -125,13 +125,13 @@ fn bar_gauge_prefers_the_caller_value_readout() {
     let nodes = access_nodes(&mut g);
     let bar = by_label(&nodes, AkRole::ProgressIndicator, "Memory");
     // A human-facing readout ("3.2 GB") wins over the raw percentage.
-    assert_eq!(bar.value().as_deref(), Some("3.2 GB"));
+    assert_eq!(bar.value(), Some("3.2 GB"));
 
     // With no readout, the fraction falls back to a percentage.
     let mut plain = BarGauge::new(0.25).with_label("Disk", "");
     let plain_nodes = access_nodes(&mut plain);
     let plain_bar = by_label(&plain_nodes, AkRole::ProgressIndicator, "Disk");
-    assert_eq!(plain_bar.value().as_deref(), Some("25%"));
+    assert_eq!(plain_bar.value(), Some("25%"));
 }
 
 // slash_menu::SlashMenu -> Menu + MenuItem children (hidden when closed)
@@ -192,7 +192,7 @@ fn tab_bar_exposes_each_tab_with_selected_state() {
 
     let lists = of_role(&nodes, AkRole::TabList);
     assert_eq!(lists.len(), 1, "one tab list");
-    assert_eq!(lists[0].value().as_deref(), Some("Details"), "value is the active tab title");
+    assert_eq!(lists[0].value(), Some("Details"), "value is the active tab title");
 
     let tabs = of_role(&nodes, AkRole::Tab);
     assert_eq!(tabs.len(), 3, "one Tab per descriptor");
@@ -218,7 +218,7 @@ fn toggle_group_exposes_each_segment_with_checked_state() {
 
     let group = of_role(&nodes, AkRole::Group);
     assert_eq!(group.len(), 1);
-    assert_eq!(group[0].value().as_deref(), Some("Dark"), "value is the selected segment");
+    assert_eq!(group[0].value(), Some("Dark"), "value is the selected segment");
 
     // Segments map to Buttons carrying the pressed (toggled) state.
     let buttons = of_role(&nodes, AkRole::Button);
@@ -268,8 +268,8 @@ fn composed_ui_reaches_every_new_widget_through_the_window_root() {
     assert_eq!(of_role(&nodes, AkRole::ProgressIndicator).len(), 2, "two gauges");
     assert_eq!(of_role(&nodes, AkRole::Menu).len(), 1, "slash menu");
     // Two distinct gauges, told apart by their accessible names.
-    assert!(nodes.iter().any(|(_, n)| n.label().as_deref() == Some("GPU")));
-    assert!(nodes.iter().any(|(_, n)| n.label().as_deref() == Some("Battery")));
+    assert!(nodes.iter().any(|(_, n)| n.label() == Some("GPU")));
+    assert!(nodes.iter().any(|(_, n)| n.label() == Some("Battery")));
 }
 
 // Screen-reader announcement path: focus + value-change narration on the

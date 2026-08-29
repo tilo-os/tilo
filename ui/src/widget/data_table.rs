@@ -89,11 +89,16 @@ impl<Row> ColumnDef<Row> {
     }
 }
 
+pub type SortCmp<Row> = Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
+
+/// `(display_index, ctrl, shift)`.
+type RowClick = Box<dyn FnMut(usize, bool, bool)>;
+
 /// So row changes can re-apply the current ordering.
 struct SortState<Row> {
     key: String,
     ascending: bool,
-    cmp: Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>,
+    cmp: SortCmp<Row>,
 }
 
 /// `origin_x`/`origin_w` are the pointer-x and column width at `begin_resize`,
@@ -137,7 +142,7 @@ pub struct DataTable<Row> {
     selection: crate::selection::SelectionModel,
     /// `(display_index, ctrl, shift)`, so a stateless host (rebuilt each
     /// frame) can own the selection.
-    on_row_click: Option<Box<dyn FnMut(usize, bool, bool)>>,
+    on_row_click: Option<RowClick>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
     /// When set, *replaces* the internal `toggle_sort` so the host can own
     /// sort order (the file explorer sorts its own model).
@@ -278,12 +283,12 @@ impl<Row> DataTable<Row> {
     /// install one typed comparator, then header-click/keyboard handlers flip
     /// direction through this simpler entry point.
     pub fn sort_by(&mut self, column_key: &str, ascending: bool) -> bool {
-        if let Some(s) = &mut self.sort {
-            if s.key == column_key {
-                s.ascending = ascending;
-                self.reapply_sort();
-                return true;
-            }
+        if let Some(s) = &mut self.sort
+            && s.key == column_key
+        {
+            s.ascending = ascending;
+            self.reapply_sort();
+            return true;
         }
         false
     }
@@ -447,12 +452,12 @@ impl<Row> DataTable<Row> {
             Some(s) if s.key == key => !s.ascending,
             _ => true,
         };
-        if let Some(s) = &mut self.sort {
-            if s.key == key {
-                s.ascending = ascending;
-                self.reapply_sort();
-                return Some((key, ascending));
-            }
+        if let Some(s) = &mut self.sort
+            && s.key == key
+        {
+            s.ascending = ascending;
+            self.reapply_sort();
+            return Some((key, ascending));
         }
         None
     }
@@ -554,19 +559,19 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     * Affine::translate((cr.x0 + CELL_PADDING_X, label_y)),
                 None,
             );
-            if let Some(s) = &self.sort {
-                if s.key == col.key {
-                    let arrow = if s.ascending { "\u{25B2}" } else { "\u{25BC}" };
-                    text_renderer.draw_text(
-                        scene,
-                        arrow,
-                        text_size,
-                        tokens.colors.text_dim,
-                        transform
-                            * Affine::translate((cr.x1 - 16.0, label_y)),
-                        None,
-                    );
-                }
+            if let Some(s) = &self.sort
+                && s.key == col.key
+            {
+                let arrow = if s.ascending { "\u{25B2}" } else { "\u{25BC}" };
+                text_renderer.draw_text(
+                    scene,
+                    arrow,
+                    text_size,
+                    tokens.colors.text_dim,
+                    transform
+                        * Affine::translate((cr.x1 - 16.0, label_y)),
+                    None,
+                );
             }
         }
 
@@ -656,10 +661,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 }
                 // An active scrollbar drag owns the move.
                 if self.vbar.is_dragging() {
-                    if let Some(track) = self.v_track() {
-                        if let Some(target) = self.vbar.drag_to(track, self.v_metrics(), pt) {
-                            self.set_scroll_y(target as f32);
-                        }
+                    if let Some(track) = self.v_track()
+                        && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), pt)
+                    {
+                        self.set_scroll_y(target as f32);
                     }
                     *handled = true;
                     return;
@@ -693,13 +698,13 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 }
                 // 1. Column resize handles win over everything.
                 for i in 0..self.columns.len() {
-                    if let Some(handle) = self.resize_handle_rect_for(i) {
-                        if handle.contains(pt) {
-                            let key = self.columns[i].key.clone();
-                            self.begin_resize(&key, pt.x as f32);
-                            *handled = true;
-                            return;
-                        }
+                    if let Some(handle) = self.resize_handle_rect_for(i)
+                        && handle.contains(pt)
+                    {
+                        let key = self.columns[i].key.clone();
+                        self.begin_resize(&key, pt.x as f32);
+                        *handled = true;
+                        return;
                     }
                 }
                 // 2. Header click → sort (host-owned via on_header_click, else internal toggle).
@@ -708,44 +713,44 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     && pt.x >= self.rect.x0
                     && pt.x <= self.rect.x1;
                 if in_header {
-                    if let Some(i) = self.col_rects.iter().position(|c| pt.x >= c.x0 && pt.x < c.x1) {
-                        if self.columns.get(i).map(|c| c.sortable).unwrap_or(false) {
-                            if let Some(cb) = &mut self.on_header_click {
-                                cb(i);
-                            } else {
-                                self.toggle_sort(i);
-                            }
-                            *handled = true;
+                    if let Some(i) = self.col_rects.iter().position(|c| pt.x >= c.x0 && pt.x < c.x1)
+                        && self.columns.get(i).map(|c| c.sortable).unwrap_or(false)
+                    {
+                        if let Some(cb) = &mut self.on_header_click {
+                            cb(i);
+                        } else {
+                            self.toggle_sort(i);
                         }
+                        *handled = true;
                     }
                     return;
                 }
                 // 3. Body-row selection.
-                if self.selectable {
-                    if let Some(ri) = self.row_at(pt) {
-                        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                        let shift = modifiers.state().shift_key();
-                        self.selection.apply_click(ri, ctrl, shift);
-                        *focus_target = Some(node_id);
-                        if let Some(cb) = &mut self.on_row_click {
-                            cb(ri, ctrl, shift);
-                        }
-                        // Internal double-click → activate (long-lived hosts).
-                        let now = std::time::Instant::now();
-                        let is_double = matches!(
-                            self.last_click_row,
-                            Some((pri, t)) if pri == ri && now.duration_since(t) < std::time::Duration::from_millis(500)
-                        );
-                        if is_double {
-                            self.last_click_row = None;
-                            if let Some(cb) = &mut self.on_activate {
-                                cb(ri);
-                            }
-                        } else {
-                            self.last_click_row = Some((ri, now));
-                        }
-                        *handled = true;
+                if self.selectable
+                    && let Some(ri) = self.row_at(pt)
+                {
+                    let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+                    let shift = modifiers.state().shift_key();
+                    self.selection.apply_click(ri, ctrl, shift);
+                    *focus_target = Some(node_id);
+                    if let Some(cb) = &mut self.on_row_click {
+                        cb(ri, ctrl, shift);
                     }
+                    // Internal double-click → activate (long-lived hosts).
+                    let now = std::time::Instant::now();
+                    let is_double = matches!(
+                        self.last_click_row,
+                        Some((pri, t)) if pri == ri && now.duration_since(t) < std::time::Duration::from_millis(500)
+                    );
+                    if is_double {
+                        self.last_click_row = None;
+                        if let Some(cb) = &mut self.on_activate {
+                            cb(ri);
+                        }
+                    } else {
+                        self.last_click_row = Some((ri, now));
+                    }
+                    *handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -802,10 +807,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
                         *handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
-                        if let Some(c) = cur {
-                            if let Some(cb) = &mut self.on_activate {
-                                cb(c);
-                            }
+                        if let Some(c) = cur
+                            && let Some(cb) = &mut self.on_activate
+                        {
+                            cb(c);
                         }
                         *handled = true;
                     }
@@ -1207,7 +1212,7 @@ mod tests {
         assert_eq!(t.row_at(p), Some(10), "top of body maps to the scrolled-in row");
         // visible window also starts around row 10 (minus overscan).
         let (start, _end) = t.visible_row_range();
-        assert!(start <= 10 && start >= 8, "window starts near the scroll position: {start}");
+        assert!((8..=10).contains(&start), "window starts near the scroll position: {start}");
     }
 
     /// 100 rows at 300×400, internal-scroll with a 5-row viewport (120 px

@@ -232,13 +232,12 @@ impl TextInput {
         if let Some(obj) = &self.bound_text {
             return Some(obj.clone());
         }
-        if self.crdt_bound {
-            if let Ok(Some((Value::Object(ObjType::Text), id))) =
+        if self.crdt_bound
+            && let Ok(Some((Value::Object(ObjType::Text), id))) =
                 state.get(root, self.on_change_path.as_str())
             {
                 return Some(id);
             }
-        }
         None
     }
 
@@ -785,8 +784,8 @@ impl TextInput {
 
         if self.highlight_current_line && self.is_focused && !self.shows_placeholder() {
             let band_color = theme.bg_hover.with_alpha_factor(0.6);
-            for i in 0..self.lines.len() {
-                if line_of_row[i] != caret_line {
+            for (i, &lor) in line_of_row.iter().enumerate() {
+                if lor != caret_line {
                     continue;
                 }
                 let top = self.lines[i].y - self.scroll_y;
@@ -817,18 +816,18 @@ impl TextInput {
         type Seg = (String, f64, vello::peniko::Color);
         let mut row_draws: Vec<(f64, Vec<Seg>)> = Vec::new();
         let mut gutter_nums: Vec<(f64, String, bool)> = Vec::new();
-        for i in 0..self.lines.len() {
-            let top = self.lines[i].y - self.scroll_y;
+        for (i, line) in self.lines.iter().enumerate() {
+            let top = line.y - self.scroll_y;
             if top + lh < 0.0 || top > view_h {
                 continue;
             }
             let li = line_of_row[i];
             if gutter_w > 0.0 && (i == 0 || self.lines[i - 1].hard_break) {
-                gutter_nums.push((self.lines[i].y, (li + 1).to_string(), li == caret_line));
+                gutter_nums.push((line.y, (li + 1).to_string(), li == caret_line));
             }
             let segs = self.row_segments(i, li, text_color, theme);
             if !segs.is_empty() {
-                row_draws.push((self.lines[i].y, segs));
+                row_draws.push((line.y, segs));
             }
         }
 
@@ -1835,11 +1834,11 @@ impl Widget for TextInput {
                         }
                         *handled = true;
                     }
-                    ElementState::Released => {
-                        if self.is_dragging {
-                            self.is_dragging = false;
-                            *handled = true;
-                        }
+                    ElementState::Released
+                        if self.is_dragging =>
+                    {
+                        self.is_dragging = false;
+                        *handled = true;
                     }
                     _ => {}
                 }
@@ -1872,13 +1871,13 @@ impl Widget for TextInput {
                         };
                         // A plain arrow with a selection collapses to the selection edge
                         // rather than moving one char past it (native editor behaviour).
-                        if !shift && !ctrl {
-                            if let Some((s, _)) = self.selection_range() {
-                                self.cursor_pos = s;
-                                self.selection_anchor = None;
-                                *handled = true;
-                                return;
-                            }
+                        if !shift && !ctrl
+                            && let Some((s, _)) = self.selection_range()
+                        {
+                            self.cursor_pos = s;
+                            self.selection_anchor = None;
+                            *handled = true;
+                            return;
                         }
                         self.set_cursor(new_pos, shift);
                         *handled = true;
@@ -1889,13 +1888,13 @@ impl Widget for TextInput {
                         } else {
                             next_char_boundary(&self.text, self.cursor_pos)
                         };
-                        if !shift && !ctrl {
-                            if let Some((_, e)) = self.selection_range() {
-                                self.cursor_pos = e;
-                                self.selection_anchor = None;
-                                *handled = true;
-                                return;
-                            }
+                        if !shift && !ctrl
+                            && let Some((_, e)) = self.selection_range()
+                        {
+                            self.cursor_pos = e;
+                            self.selection_anchor = None;
+                            *handled = true;
+                            return;
                         }
                         self.set_cursor(new_pos, shift);
                         *handled = true;
@@ -2020,11 +2019,11 @@ impl Widget for TextInput {
                         }
                     }
                     _ => {
-                        if let Some(t) = text {
-                            if !t.as_str().chars().all(|c| c.is_control()) {
-                                self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
-                                *handled = true;
-                            }
+                        if let Some(t) = text
+                            && !t.as_str().chars().all(|c| c.is_control())
+                        {
+                            self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
+                            *handled = true;
                         }
                     }
                 }
@@ -2193,18 +2192,18 @@ impl Widget for TextInput {
             }
         }
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let r = self.rect;
-                let overlay = Self::PERMISSION_DENIED_OVERLAY;
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    Affine::IDENTITY,
-                    overlay,
-                    None,
-                    &r,
-                );
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let r = self.rect;
+            let overlay = Self::PERMISSION_DENIED_OVERLAY;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                Affine::IDENTITY,
+                overlay,
+                None,
+                &r,
+            );
         }
     }
 

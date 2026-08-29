@@ -621,19 +621,19 @@ impl Widget for Scrollable {
                 let cur = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = cur;
                 if self.vbar.is_dragging() {
-                    if let Some(track) = self.vertical_track() {
-                        if let Some(target) = self.vbar.drag_to(track, self.v_metrics(), cur) {
-                            self.scroll_by(0.0, target as f32 - self.offset_y);
-                        }
+                    if let Some(track) = self.vertical_track()
+                        && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), cur)
+                    {
+                        self.scroll_by(0.0, target as f32 - self.offset_y);
                     }
                     *handled = true;
                     return;
                 }
                 if self.hbar.is_dragging() {
-                    if let Some(track) = self.horizontal_track() {
-                        if let Some(target) = self.hbar.drag_to(track, self.h_metrics(), cur) {
-                            self.scroll_by(target as f32 - self.offset_x, 0.0);
-                        }
+                    if let Some(track) = self.horizontal_track()
+                        && let Some(target) = self.hbar.drag_to(track, self.h_metrics(), cur)
+                    {
+                        self.scroll_by(target as f32 - self.offset_x, 0.0);
                     }
                     *handled = true;
                     return;
@@ -782,12 +782,11 @@ impl Widget for Scrollable {
             }
             return;
         }
-        if let Some(c) = &mut self.child {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&child_node) = children.first() {
-                    c.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
-                }
-            }
+        if let Some(c) = &mut self.child
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&child_node) = children.first()
+        {
+            c.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
         }
     }
 
@@ -1051,7 +1050,6 @@ mod tests {
 
     use crate::widget::{Column, Text};
     use std::collections::HashMap;
-    use taffy::prelude::TaffyMaxContent;
 
     fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
         let theme = Theme::dark();
