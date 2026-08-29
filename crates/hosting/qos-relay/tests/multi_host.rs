@@ -31,7 +31,7 @@ use std::time::Duration;
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
@@ -145,30 +145,25 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
         signature: [2u8; 64],
     };
     c1_r1.send(d2).unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
 
     // relay1's pending dir for p2 has 1 delta; relay2 has none.
     let hex_p2 = hex::encode(p2.device_pubkey());
     let pending_r1 = relay1.state_root.join("workspaces/3/pending").join(&hex_p2);
     let pending_r2 = relay2.state_root.join("workspaces/3/pending").join(&hex_p2);
-    let count_r1 = if pending_r1.exists() {
-        std::fs::read_dir(&pending_r1)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-            .count()
-    } else {
-        0
+    let count = |dir: &std::path::Path| {
+        std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+                    .count()
+            })
+            .unwrap_or(0)
     };
-    let count_r2 = if pending_r2.exists() {
-        std::fs::read_dir(&pending_r2)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-            .count()
-    } else {
-        0
-    };
+    // Wait for the write rather than guessing how long it takes: a fixed sleep
+    // is a race that fails on a loaded machine and proves nothing on a fast one.
+    wait_for(|| count(&pending_r1) == 1, 300).await;
+    let count_r1 = count(&pending_r1);
+    let count_r2 = count(&pending_r2);
     assert_eq!(count_r1, 1, "relay1 should hold the delta for offline p2");
     assert_eq!(count_r2, 0, "relay2 should not have seen the delta");
 
