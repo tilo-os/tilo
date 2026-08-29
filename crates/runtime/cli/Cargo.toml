@@ -18,13 +18,8 @@ path = "src/lib.rs"
 [dependencies]
 runtime          = { path = "../runtime" }
 runtime-fs       = { path = "../runtime-fs" }
-runtime-collab   = { path = "../runtime-collab" }
-runtime-identity = { path = "../runtime-identity" }
 
 anyhow.workspace = true
-clap.workspace = true
-thiserror.workspace = true
-serde.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"] }
 
 [dev-dependencies]

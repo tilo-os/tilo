@@ -16,7 +16,6 @@ path = "src/main.rs"
 collab-types = { path = "../../collab/collab-types" }
 
 anyhow.workspace = true
-clap.workspace = true
 dirs.workspace = true
 landlock.workspace = true
 libc.workspace = true
