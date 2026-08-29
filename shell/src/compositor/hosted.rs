@@ -54,7 +54,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // "this build declined to open them" look identical from the desk, and the journal isn't where the person is looking.
     let (mut tree, state_notice) = persist::load_or_default(&path);
 
-    // Under `--enable-peer-sync`, derive a deterministic 16-bit peer salt from the libp2p keypair
+    // Under `--enable-peer-sync`, derive a deterministic 16-bit peer salt from the Iroh keypair
     // and stamp it into every id `next_id` mints, so two peers no longer fold distinct workspaces
     // into one row when counters overlap. Must be set BEFORE `load_or_default`'s
     // `seed_next_id_from_self` runs, or the counter seeds off the previous (salt-0) run and the
@@ -124,7 +124,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let peer_sync: Option<Arc<ShellNetwork>> = if enable_peer_sync {
         match ShellNetwork::spawn(tree_handle.clone(), &peer_key_path()) {
             Ok(handle) => {
-                // Subscribe to the default workspace topic so the actor's gossipsub mesh has somewhere to deliver `NeighbourMsg::SyncReq`s as soon as a peer dials in.
+                // Subscribe to the default workspace topic so the actor's gossip mesh has somewhere to deliver `NeighbourMsg::SyncReq`s as soon as a peer dials in.
                 let _ = handle.join_default_workspace();
                 tracing::info!("peer-sync: actor spawned, default workspace joined");
                 Some(Arc::new(handle))
@@ -336,7 +336,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // Local CRDT fan-out broker: when QUICK_COLLAB_SOCK is set, bind the path and detach a
     // listener thread so every app launched with the same env var shares CRDT updates live. Held
     // for the lifetime of `app.run()` so the socket file and reader threads survive the session. See
-    // `shell::collab_broker` for the protocol; when peer-sync is also enabled, the broker bridges through `ShellNetwork` so two laptops on the same gossipsub topic share app-level CRDT increments too.
+    // `shell::collab_broker` for the protocol; when peer-sync is also enabled, the broker bridges through `ShellNetwork` so two laptops on the same gossip topic share app-level CRDT increments too.
     let _collab_broker: Option<crate::shell::collab_broker::BrokerHandle> =
         if let Some(path) = std::env::var_os("QUICK_COLLAB_SOCK") {
             let socket_path = std::path::PathBuf::from(path);

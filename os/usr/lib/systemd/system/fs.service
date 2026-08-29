@@ -50,9 +50,9 @@ ExecStartPre=-/usr/bin/cp -n /usr/share/qos/fs-capabilities.json /var/lib/qos/fs
 # not reading it at all.
 #
 # `--principal person:local` is the subject the shipped list grants to.
-# It has to be a principal rather than a key: the mount's own identity is
-# the iroh endpoint key, which is generated fresh on every start, so no
-# capability file written ahead of time could ever name it.
+# The shipped default uses a human-readable local principal. The mount also
+# has the machine's durable certified device key, shared with the shell, so
+# remote policies can name a stable cryptographic subject when required.
 #
 # The shipped list grants that principal read+write on the whole
 # workspace — i.e. exactly the access an unenforced mount gave. This

@@ -21,7 +21,7 @@ use crate::shell::network::ShellNetwork;
 
 /// The network operations the broker's outbound half needs. A trait
 /// rather than a bare [`ShellNetwork`] so the routing decision can be
-/// tested against a recording sink instead of standing up libp2p.
+/// tested against a recording sink instead of standing up Iroh.
 pub trait PeerPublishSink: Send + Sync {
     fn app_crdt_incremental(
         &self,
@@ -333,7 +333,7 @@ impl PeerPublisher {
 }
 
 /// A sink that keeps what it was asked to publish, so a test can ask
-/// "what route reached the wire" without standing up libp2p. Lives here
+/// "what route reached the wire" without standing up Iroh. Lives here
 /// since both broker transports share this instrument.
 #[cfg(test)]
 pub mod recording {

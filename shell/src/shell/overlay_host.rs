@@ -297,7 +297,7 @@ pub struct ShellOverlayHost {
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
 /// when the user picks a peer-sync command; the compositor drains these
-/// into its `ShellNetwork` handle so libp2p side-effects stay on the
+/// into its `ShellNetwork` handle so Iroh side-effects stay on the
 /// runtime thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncAction {
@@ -408,7 +408,7 @@ fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> 
 }
 
 /// A short, comparable fingerprint of the inviter's machine: the last
-/// eight base58 characters of their libp2p `PeerId`, grouped in two so
+/// eight characters of their Iroh `EndpointId`, grouped in two so
 /// it can be read aloud (same grouping as
 /// `onboarding::MintedIdentity::grouped_fingerprint`).
 fn peer_fingerprint(peer_id: &str) -> String {
@@ -3953,7 +3953,7 @@ impl ShellOverlayHost {
     #[allow(dead_code)]
     pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
         // Peer-sync rows enqueue an action for the compositor to drain
-        // (libp2p stays on the runtime thread) rather than mutating
+        // (Iroh stays on the runtime thread) rather than mutating
         // chrome directly. Ignored when the flag is off, in case a stale
         // palette row survives a toggle.
         if self.peer_sync_enabled {

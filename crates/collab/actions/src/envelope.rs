@@ -4,7 +4,7 @@
 //! into an identical document*: the base heads it was authored against,
 //! the deterministic actor id ([`ActionId`]), the commit timestamp, and
 //! the declared [`ExecutionLocus`]. All `Serialize`/`Deserialize` so it
-//! rides any transport (the local broker today, MLS-encrypted libp2p later).
+//! rides any transport (the local broker today, MLS-encrypted Iroh later).
 
 use automerge::{ActorId, ChangeHash};
 use serde::{Deserialize, Serialize};

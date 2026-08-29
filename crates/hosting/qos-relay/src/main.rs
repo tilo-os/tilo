@@ -164,7 +164,7 @@ fn load_identity(root: &std::path::Path) -> anyhow::Result<RelayIdentity> {
     let paths = IdentityPaths::under(root);
     let user_public_key = persist::read_public_key(&paths.user_pubkey)
         .with_context(|| format!("read user pubkey {}", paths.user_pubkey.display()))?;
-    let device_signing_key = persist::read_signing_key(&paths.device_privkey)
+    let device_signing_key = persist::read_device_key(&paths.device_privkey)
         .with_context(|| format!("read device secret {}", paths.device_privkey.display()))?;
     let device_cert = persist::read_device_cert(&paths.device_cert)
         .with_context(|| format!("read device cert {}", paths.device_cert.display()))?;

@@ -2,7 +2,7 @@
 //!
 //! One ciphersuite — `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` —
 //! with no negotiation: Ed25519 lines up with the rest of qOS (identity
-//! keys, the FROST threshold crate, libp2p's transport key), so a
+//! keys, the FROST threshold crate, Iroh's transport key), so a
 //! different MLS signature scheme would force two key materials per
 //! member; X25519/AES-128-GCM/SHA-256 are the small-ciphersuite MLS
 //! interop defaults (no need for P-384 strength at channel scale); and

@@ -841,20 +841,18 @@ mod two_sessions {
 
     const OWNER: &str = "quinten";
 
-    /// A real base58 peer id, minted from a keypair, so the parse is
+    /// A real Iroh endpoint id, minted from a keypair, so the parse is
     /// the production one.
     fn peer_id(seed: u8) -> String {
-        libp2p::identity::Keypair::ed25519_from_bytes([seed; 32])
-            .expect("32 bytes is a keypair")
+        iroh::SecretKey::from_bytes(&[seed; 32])
             .public()
-            .to_peer_id()
-            .to_base58()
+            .to_string()
     }
 
     /// The handle presence frames identify `peer` by.
     fn handle_of(peer: &str) -> u64 {
         crate::network::behaviour::peer_liveness_handle(
-            &peer.parse::<libp2p::PeerId>().expect("a peer id"),
+            &peer.parse::<iroh::EndpointId>().expect("an endpoint id"),
         )
     }
 
@@ -1421,7 +1419,7 @@ mod two_sessions {
         {
             let mut replica = host_net.replica.lock().expect("the replica lock");
             replica.handle_from(
-                &crate::shell::state::PeerOrigin::peer_base58(&guest_peer),
+                &crate::shell::state::PeerOrigin::peer_id(&guest_peer),
                 &NeighbourMsg::SyncReq {
                     since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new())
                         .expect("empty heads serialise"),

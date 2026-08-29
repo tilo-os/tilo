@@ -905,11 +905,9 @@ def main() -> int:
     else:
         area = work_area() or (yc.VIDEO_W, yc.VIDEO_H)
         session.window_size = f"{area[0]}x{area[1]}"
-    # No peer gossip. This take is one person and one machine, and mdns
-    # finds every other qOS session running here — another agent's
-    # harness, a demo left open — and paints its cursor and name pill
-    # over the document. On camera that reads as a collaborator nobody
-    # invited.
+    # No peer gossip. This take is one person and one machine; an explicit
+    # demo peer or configured host would paint its cursor and name pill over
+    # the document, which reads as an uninvited collaborator on camera.
     session.peer_sync = False
     yc.SESSIONS = [session]
 

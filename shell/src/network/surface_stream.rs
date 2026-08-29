@@ -5,7 +5,7 @@
 //! the chat call app share one wire format; this module re-exports the
 //! types so existing callers keep compiling unchanged.
 //!
-//! `SurfaceStreamStart` / `SurfaceStreamEnd` stay on gossipsub via
+//! `SurfaceStreamStart` / `SurfaceStreamEnd` stay on gossip via
 //! [`crate::network::NeighbourMsg`]; only the per-frame video payload
 //! rides this substream. `PeerId` / `SurfaceId` here are
 //! [`crate::network::protocol`]'s `u64` aliases, identical to the re-exported crate's.

@@ -31,7 +31,7 @@ separate proof.
 
 Each frame is sent with a second client attached to the **sender's own**
 broker. A frame that reaches the control but not the far session is one
-the libp2p bridge does not carry. A frame that reaches neither was
+the Iroh bridge does not carry. A frame that reaches neither was
 rejected by the broker — malformed, or off-route. Without the control
 those two failures are indistinguishable, and the second would send you
 hunting through the network layer for a bug in your own JSON.
