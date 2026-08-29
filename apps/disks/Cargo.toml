@@ -39,3 +39,6 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 # Pinned to match `apps/chat` so a single zbus copy resolves from the lock.
 zbus = { workspace = true, optional = true, default-features = true }
+
+[lints]
+workspace = true

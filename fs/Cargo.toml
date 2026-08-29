@@ -42,3 +42,6 @@ futures-lite.workspace = true
 # Encode PNG fixtures for the thumbnail tests (the crate itself never decodes
 # images — that is the `thumbnail` crate's job).
 image = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

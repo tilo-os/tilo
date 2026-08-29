@@ -57,3 +57,6 @@ pkg = { path = "../../crates/packaging/pkg" }
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[lints]
+workspace = true

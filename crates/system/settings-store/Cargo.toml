@@ -19,3 +19,6 @@ atomic-file = { path = "../../../crates/system/atomic-file" }
 
 [dev-dependencies]
 serial_test.workspace = true
+
+[lints]
+workspace = true

@@ -53,3 +53,6 @@ decode = ["media/decode"]
 # Real export through GStreamer (encode + mux to a real file). Heavier; needs
 # the gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
 gst = ["dep:gstreamer", "dep:gstreamer-app"]
+
+[lints]
+workspace = true

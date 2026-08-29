@@ -31,3 +31,6 @@ ashpd.workspace = true
 tokio.workspace = true
 url.workspace = true
 serial_test.workspace = true
+
+[lints]
+workspace = true

@@ -8,3 +8,6 @@ license = "AGPL-3.0-or-later"
 
 [build-dependencies]
 cc = "1"
+
+[lints]
+workspace = true

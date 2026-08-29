@@ -13,3 +13,6 @@ qdoc-html = { path = "../qdoc-html" }
 # workspace lockfile (qdoc's docx/odt codecs use it) so adding qdoc-epub does not
 # churn the resolve.
 zip.workspace = true
+
+[lints]
+workspace = true
