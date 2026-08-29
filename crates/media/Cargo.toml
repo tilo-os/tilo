@@ -18,7 +18,6 @@ decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.
 automerge.workspace = true
-tracing.workspace = true
 
 # The audio graph client reads `pw-dump`'s JSON to enumerate the
 # PipeWire/WirePlumber node graph (devices + per-application streams). Same pin

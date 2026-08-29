@@ -42,7 +42,6 @@ qdoc = { path = "../../crates/doc/qdoc" }
 # no OS TLS stack is needed inside the image.
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 automerge.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 anyhow.workspace = true

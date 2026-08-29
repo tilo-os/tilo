@@ -34,7 +34,6 @@ tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 # Real MIME parsing (incoming) + MIME building (outgoing). Both are pure
 # Rust with no native/TLS/async deps, so the headless build stays green and
 # fast. The bundled sample corpus is genuinely parsed by mail-parser, and

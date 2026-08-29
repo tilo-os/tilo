@@ -66,7 +66,6 @@ tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 
 # Optional: enabled only by the `streaming` / `audio` / `lyrics` / `p2p`
 # features above. Versions pinned to match the workspace lock so no extra
