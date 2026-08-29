@@ -74,12 +74,8 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
         (c1, c2)
     };
 
-    c1_r1
-        .send(Envelope::Subscribe { workspace_id: 3 })
-        .unwrap();
-    c2_r1
-        .send(Envelope::Subscribe { workspace_id: 3 })
-        .unwrap();
+    c1_r1.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
+    c2_r1.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
 
     for cli in [&c1_r1, &c2_r1] {
         let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
@@ -125,9 +121,7 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
     )
     .await
     .unwrap();
-    c2_r2
-        .send(Envelope::Subscribe { workspace_id: 3 })
-        .unwrap();
+    c2_r2.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
     let ready = tokio::time::timeout(Duration::from_secs(2), c2_r2.recv())
         .await
         .unwrap()
@@ -155,14 +149,8 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
 
     // relay1's pending dir for p2 has 1 delta; relay2 has none.
     let hex_p2 = hex::encode(p2.device_pubkey());
-    let pending_r1 = relay1
-        .state_root
-        .join("workspaces/3/pending")
-        .join(&hex_p2);
-    let pending_r2 = relay2
-        .state_root
-        .join("workspaces/3/pending")
-        .join(&hex_p2);
+    let pending_r1 = relay1.state_root.join("workspaces/3/pending").join(&hex_p2);
+    let pending_r2 = relay2.state_root.join("workspaces/3/pending").join(&hex_p2);
     let count_r1 = if pending_r1.exists() {
         std::fs::read_dir(&pending_r1)
             .unwrap()

@@ -120,7 +120,10 @@ fn engine_decodes_a_real_file_and_the_pts_advances() {
         }
         if let Some(frame) = engine.latest_frame() {
             // Every decoded frame is tightly-packed RGBA of a real size.
-            assert!(frame.width > 0 && frame.height > 0, "decoded frame has real dimensions");
+            assert!(
+                frame.width > 0 && frame.height > 0,
+                "decoded frame has real dimensions"
+            );
             assert_eq!(
                 frame.rgba.len(),
                 frame.width as usize * frame.height as usize * 4,
@@ -152,9 +155,16 @@ fn engine_decodes_a_real_file_and_the_pts_advances() {
         ptss.iter().max() > ptss.iter().min(),
         "the playhead advanced across decoded frames: {ptss:?}"
     );
-    assert!(saw_duration, "the stream's duration became known during decode");
+    assert!(
+        saw_duration,
+        "the stream's duration became known during decode"
+    );
     let (w, h) = first_frame_dims.expect("at least one decoded frame");
-    assert_eq!((w, h), (160, 120), "decoded the frame at the encoded resolution");
+    assert_eq!(
+        (w, h),
+        (160, 120),
+        "decoded the frame at the encoded resolution"
+    );
 }
 
 #[test]
@@ -193,6 +203,12 @@ fn player_app_pulls_a_real_decoded_frame_onto_its_surface() {
         "the app decoded {} and put a frame on the video surface",
         sample.display()
     );
-    assert!(app.player().is_playing(), "the app autoplays the opened file");
-    assert!(app.player().duration_ms() > 0, "the app learned the stream duration");
+    assert!(
+        app.player().is_playing(),
+        "the app autoplays the opened file"
+    );
+    assert!(
+        app.player().duration_ms() > 0,
+        "the app learned the stream duration"
+    );
 }

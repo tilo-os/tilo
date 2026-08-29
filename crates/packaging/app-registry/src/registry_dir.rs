@@ -43,9 +43,7 @@ pub fn read_index(dir: &Path) -> Result<RegistryIndex> {
 pub fn load_or_new_index(dir: &Path, registry_id: &str) -> Result<RegistryIndex> {
     match std::fs::read(index_path(dir)) {
         Ok(bytes) => RegistryIndex::from_json(&bytes).context("decode existing index.json"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Ok(RegistryIndex::new(registry_id))
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(RegistryIndex::new(registry_id)),
         Err(e) => Err(e).context("read index.json"),
     }
 }

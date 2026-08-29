@@ -7,13 +7,13 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -36,7 +36,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             let bundled = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample-media");
             if bundled.exists() {
                 // Safety: set before any threads spawn for the one-shot render.
-                unsafe { std::env::set_var("QOS_VE_MEDIA_DIR", bundled); }
+                unsafe {
+                    std::env::set_var("QOS_VE_MEDIA_DIR", bundled);
+                }
             }
         }
         // Scenario selectors (deterministic single-frame captures):
@@ -53,7 +55,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // and, under `--features decode`, warms the pipeline so the capture
         // shows the clip's true decoded frame — not the representative gradient.
         if let Some(path) = parse_value_arg(&args, "--import") {
-            let mut app = video_editor::VideoEditorApp::new_import_placed(vec![std::path::PathBuf::from(path)]);
+            let mut app =
+                video_editor::VideoEditorApp::new_import_placed(vec![std::path::PathBuf::from(
+                    path,
+                )]);
             // Warm up on ONE state so the import + the async-prerolled decoded
             // frame persist into the same document the render then draws from.
             let mut state = ui::State::new();
@@ -69,18 +74,63 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         if empty {
-            render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?;
+            render_shot_to_png(
+                video_editor::app_root(),
+                DEFAULT_SHOTS_VIEWPORT,
+                &out,
+                ui::State::new(),
+            )?;
         } else if args.iter().any(|a| a == "--narrow") {
-            render_shot_to_png(video_editor::app_root_narrow(), NARROW_SHOTS_VIEWPORT, &out, ui::State::new())?;
+            render_shot_to_png(
+                video_editor::app_root_narrow(),
+                NARROW_SHOTS_VIEWPORT,
+                &out,
+                ui::State::new(),
+            )?;
         } else {
             match scenario.as_deref() {
-                Some("filters") => render_shot_to_png(video_editor::app_root_filters(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
-                Some("split") => render_shot_to_png(video_editor::app_root_split(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
-                Some("menu") => render_shot_to_png(video_editor::app_root_menu(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
-                Some("rename") => render_shot_to_png(video_editor::app_root_rename(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
-                Some("drag") => render_shot_to_png(video_editor::app_root_drag(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
-                Some("effects") => render_shot_to_png(video_editor::app_root_effects(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
-                _ => render_shot_to_png(video_editor::app_root_demo(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
+                Some("filters") => render_shot_to_png(
+                    video_editor::app_root_filters(),
+                    DEFAULT_SHOTS_VIEWPORT,
+                    &out,
+                    ui::State::new(),
+                )?,
+                Some("split") => render_shot_to_png(
+                    video_editor::app_root_split(),
+                    DEFAULT_SHOTS_VIEWPORT,
+                    &out,
+                    ui::State::new(),
+                )?,
+                Some("menu") => render_shot_to_png(
+                    video_editor::app_root_menu(),
+                    DEFAULT_SHOTS_VIEWPORT,
+                    &out,
+                    ui::State::new(),
+                )?,
+                Some("rename") => render_shot_to_png(
+                    video_editor::app_root_rename(),
+                    DEFAULT_SHOTS_VIEWPORT,
+                    &out,
+                    ui::State::new(),
+                )?,
+                Some("drag") => render_shot_to_png(
+                    video_editor::app_root_drag(),
+                    DEFAULT_SHOTS_VIEWPORT,
+                    &out,
+                    ui::State::new(),
+                )?,
+                Some("effects") => render_shot_to_png(
+                    video_editor::app_root_effects(),
+                    DEFAULT_SHOTS_VIEWPORT,
+                    &out,
+                    ui::State::new(),
+                )?,
+                _ => render_shot_to_png(
+                    video_editor::app_root_demo(),
+                    DEFAULT_SHOTS_VIEWPORT,
+                    &out,
+                    ui::State::new(),
+                )?,
             }
         }
         return Ok(());
@@ -90,7 +140,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, video_editor::app_root(), "dev.qos.video-editor"));
+        std::process::exit(ui::headless::run(
+            spec,
+            video_editor::app_root(),
+            "dev.qos.video-editor",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.video-editor");

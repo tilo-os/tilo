@@ -1,14 +1,14 @@
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use taffy::style_helpers::percent;
+use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style};
-use taffy::style_helpers::percent;
-use crate::widget::Widget;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
 
 pub struct Stack {
     children: Vec<Box<dyn Widget>>,
@@ -66,12 +66,18 @@ impl Widget for Stack {
         changed
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let child_nodes: Vec<NodeId> = self.children
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let child_nodes: Vec<NodeId> = self
+            .children
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
-            
+
         // Absolute so all children overlap.
         for &node in &child_nodes {
             let mut style = taffy.style(node).unwrap().clone();
@@ -79,24 +85,26 @@ impl Widget for Stack {
             taffy.set_style(node, style).unwrap();
         }
 
-        let node = taffy.new_with_children(
-            Style {
-                display: taffy::Display::Flex,
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    // With every child `position: Absolute`, the stack
-                    // contributes zero to intrinsic size, so `Dimension::auto()`
-                    // here made the parent ration percent-based descendant
-                    // heights from 0 rather than the viewport — a Column's
-                    // bottom-padding got silently dropped. Pinning to the
-                    // parent's height makes the viewport size flow through
-                    // to absolute children correctly.
-                    height: percent(1.0_f32),
+        let node = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    size: taffy::Size {
+                        width: percent(1.0_f32),
+                        // With every child `position: Absolute`, the stack
+                        // contributes zero to intrinsic size, so `Dimension::auto()`
+                        // here made the parent ration percent-based descendant
+                        // heights from 0 rather than the viewport — a Column's
+                        // bottom-padding got silently dropped. Pinning to the
+                        // parent's height makes the viewport size flow through
+                        // to absolute children correctly.
+                        height: percent(1.0_f32),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            },
-            &child_nodes
-        ).unwrap();
+                &child_nodes,
+            )
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -109,24 +117,54 @@ impl Widget for Stack {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        
+
         let children = taffy.children(node).unwrap();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
             child_widget.apply_layout(taffy, *child_node, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
         for child in &mut self.children {
             child.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
         let child_nodes = taffy.children(node_id).unwrap();
         // Reverse order: top-most first.
-        for (child_widget, &child_node) in self.children.iter_mut().rev().zip(child_nodes.iter().rev()) {
-            child_widget.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
+        for (child_widget, &child_node) in
+            self.children.iter_mut().rev().zip(child_nodes.iter().rev())
+        {
+            child_widget.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
             if *handled {
                 break;
             }
@@ -138,14 +176,19 @@ impl Widget for Stack {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children.iter_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).collect()
+        self.children
+            .iter_mut()
+            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+            .collect()
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
 
-    fn name(&self) -> &str { "Stack" }
+    fn name(&self) -> &str {
+        "Stack"
+    }
 
     // `.any` would short-circuit and skip `take_structure_dirty()` on later
     // children once one reports dirty, leaving their flags uncleared --
@@ -162,7 +205,9 @@ impl Widget for Stack {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -179,18 +224,33 @@ impl Widget for Stack {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         // Propagate presence/permission context down to each child so nested
         // opt-in widgets still render their chrome.
         for child in &mut self.children {
-            child.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            child.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
 
         if let Some(scope) = self.permission_scope()
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
         if let Some(key) = self.presence_key()

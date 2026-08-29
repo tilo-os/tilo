@@ -16,7 +16,7 @@
 
 use automerge::transaction::{CommitOptions, Transactable};
 
-use crate::action::{Action, ActionError, ActionId, EncodedAction, Doc, ExecutionLocus};
+use crate::action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
 use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
 

@@ -10,7 +10,10 @@ use launcher::registry;
 use launcher::run::{LaunchMode, RunError, RunOptions, run};
 
 #[derive(Debug, Parser)]
-#[command(name = "qos-launcher", about = "Launch a qOS application package in a sandbox.")]
+#[command(
+    name = "qos-launcher",
+    about = "Launch a qOS application package in a sandbox."
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -407,11 +410,7 @@ fn run_installed(
             return ExitCode::from(2);
         }
     };
-    if !manifest
-        .cli_commands
-        .iter()
-        .any(|c| c == command)
-    {
+    if !manifest.cli_commands.iter().any(|c| c == command) {
         eprintln!(
             "qos-launcher: {package} does not declare CLI command {command:?} — check its manifest's [cli] block."
         );
@@ -434,10 +433,11 @@ fn run_installed(
     // CLI-flavour launches through the PATH shim default --minimal-libs
     // on: shim invocations have no place to pass launcher flags, and CLI
     // apps are dynamically-linked ELFs until qos-runtime bundles land.
-    let minimal_libs = minimal_libs || !matches!(
-        std::env::var("QOS_LAUNCHER_NO_MINIMAL_LIBS").as_deref(),
-        Ok("1") | Ok("true")
-    );
+    let minimal_libs = minimal_libs
+        || !matches!(
+            std::env::var("QOS_LAUNCHER_NO_MINIMAL_LIBS").as_deref(),
+            Ok("1") | Ok("true")
+        );
     let opts = RunOptions {
         no_services,
         runtime_root: None,
@@ -500,8 +500,7 @@ fn run_installed(
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
-    let env = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env)
         .with_target(false)

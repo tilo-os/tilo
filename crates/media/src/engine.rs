@@ -20,7 +20,7 @@ use std::time::Instant;
 use crate::event::{MediaEvent, VideoFrame};
 use crate::ring::{PrefetchProgress, Prefetcher};
 use crate::source::Source;
-use crate::transport::{correction, Correction, TransportState};
+use crate::transport::{Correction, TransportState, correction};
 
 /// Placeholder stream length for the synthesized fallback when nothing better
 /// is known. Real decode always overrides this from the pipeline's duration.
@@ -64,17 +64,29 @@ impl MediaEngine {
         #[cfg(feature = "decode")]
         {
             if let Some(gst) = gst_backend::GstState::new() {
-                return Self { backend: Backend::Gst(gst), source: None, volume: 0.8 };
+                return Self {
+                    backend: Backend::Gst(gst),
+                    source: None,
+                    volume: 0.8,
+                };
             }
         }
-        Self { backend: Backend::Synth(SynthState::new()), source: None, volume: 0.8 }
+        Self {
+            backend: Backend::Synth(SynthState::new()),
+            source: None,
+            volume: 0.8,
+        }
     }
 
     /// Force the synthesized backend regardless of build features. Used by the
     /// hermetic engine tests so event ordering and transport application are
     /// exercised deterministically without a real decode.
     pub fn new_synthesized() -> Self {
-        Self { backend: Backend::Synth(SynthState::new()), source: None, volume: 0.8 }
+        Self {
+            backend: Backend::Synth(SynthState::new()),
+            source: None,
+            volume: 0.8,
+        }
     }
 
     /// Whether this engine is decoding through a real GStreamer pipeline (vs.
@@ -433,7 +445,11 @@ impl SynthState {
                 let g = ((y * 255) / h) as u8;
                 let b = (((x + y + hue_shift) * 255) / (w + h)) as u8;
                 // Diagonal content stripes for texture.
-                let stripe = if ((x + y + hue_shift) / 24) % 2 == 0 { 24 } else { 0 };
+                let stripe = if ((x + y + hue_shift) / 24) % 2 == 0 {
+                    24
+                } else {
+                    0
+                };
                 rgba[i] = r.saturating_add(stripe);
                 rgba[i + 1] = g;
                 rgba[i + 2] = b;
@@ -458,11 +474,11 @@ impl SynthState {
 #[cfg(feature = "decode")]
 mod gst_backend {
     use super::*;
-    use std::collections::VecDeque;
     use gstreamer as gst;
     use gstreamer::prelude::*;
     use gstreamer_app as gst_app;
     use gstreamer_video as gst_video;
+    use std::collections::VecDeque;
 
     pub struct GstState {
         playbin: gst::Element,
@@ -544,7 +560,11 @@ mod gst_backend {
 
         pub fn set_playing(&mut self, playing: bool) {
             self.playing = playing;
-            let state = if playing { gst::State::Playing } else { gst::State::Paused };
+            let state = if playing {
+                gst::State::Playing
+            } else {
+                gst::State::Paused
+            };
             let _ = self.playbin.set_state(state);
         }
 
@@ -623,10 +643,7 @@ mod gst_backend {
 
             // Pull the freshest decoded frame(s); keep only the last so the
             // surface never lags behind the pipeline.
-            while let Some(sample) = self
-                .appsink
-                .try_pull_sample(Some(gst::ClockTime::ZERO))
-            {
+            while let Some(sample) = self.appsink.try_pull_sample(Some(gst::ClockTime::ZERO)) {
                 if let Some(frame) = frame_from_sample(&sample) {
                     self.latest = Some(frame);
                 }
@@ -682,29 +699,49 @@ mod tests {
     #[test]
     fn opens_and_orders_duration_before_position() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.play();
 
         // First poll: DurationKnown must precede any Position.
         let evts = e.poll_at(0);
-        let dur_idx = evts.iter().position(|x| matches!(x, MediaEvent::DurationKnown { .. }));
-        assert!(dur_idx.is_some(), "duration announced on first poll: {evts:?}");
-        if let Some(pos_idx) = evts.iter().position(|x| matches!(x, MediaEvent::Position { .. })) {
+        let dur_idx = evts
+            .iter()
+            .position(|x| matches!(x, MediaEvent::DurationKnown { .. }));
+        assert!(
+            dur_idx.is_some(),
+            "duration announced on first poll: {evts:?}"
+        );
+        if let Some(pos_idx) = evts
+            .iter()
+            .position(|x| matches!(x, MediaEvent::Position { .. }))
+        {
             assert!(dur_idx.unwrap() < pos_idx, "DurationKnown before Position");
         }
         // Duration announced exactly once.
         let evts2 = e.poll_at(50);
-        assert!(!evts2.iter().any(|x| matches!(x, MediaEvent::DurationKnown { .. })));
+        assert!(
+            !evts2
+                .iter()
+                .any(|x| matches!(x, MediaEvent::DurationKnown { .. }))
+        );
     }
 
     #[test]
     fn playhead_advances_with_virtual_time() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.play();
         e.poll_at(0); // baseline
         e.poll_at(1_000);
-        assert_eq!(e.position_ms(), 1_000, "1s of virtual time advanced the playhead 1s");
+        assert_eq!(
+            e.position_ms(),
+            1_000,
+            "1s of virtual time advanced the playhead 1s"
+        );
         e.pause();
         e.poll_at(2_000);
         e.poll_at(3_000);
@@ -714,13 +751,22 @@ mod tests {
     #[test]
     fn reaching_duration_emits_position_then_ended_last() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.seek_ms(e.duration_ms().unwrap() - 10);
         e.play();
         e.poll_at(0); // baseline
         let evts = e.poll_at(1_000); // jumps past the end
-        assert_eq!(evts.last(), Some(&MediaEvent::Ended), "Ended is the final event");
-        assert!(evts.iter().any(|x| matches!(x, MediaEvent::Position { .. })));
+        assert_eq!(
+            evts.last(),
+            Some(&MediaEvent::Ended),
+            "Ended is the final event"
+        );
+        assert!(
+            evts.iter()
+                .any(|x| matches!(x, MediaEvent::Position { .. }))
+        );
         assert!(!e.is_playing(), "stopped at the end");
         assert_eq!(e.position_ms(), e.duration_ms().unwrap());
     }
@@ -728,7 +774,9 @@ mod tests {
     #[test]
     fn synthesized_engine_produces_a_frame() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         let f = e.latest_frame().expect("a seed frame exists after open");
         assert_eq!((f.width, f.height), (SYNTH_W, SYNTH_H));
         assert_eq!(f.rgba.len(), (SYNTH_W * SYNTH_H * 4) as usize);
@@ -741,33 +789,58 @@ mod tests {
         // player's empty state stays a clean surface, not a test pattern.
         e.poll_at(0);
         e.poll_at(100);
-        assert!(e.latest_frame().is_none(), "empty state carries no synthesized frame");
+        assert!(
+            e.latest_frame().is_none(),
+            "empty state carries no synthesized frame"
+        );
         // Opening a source seeds the first frame.
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
-        assert!(e.latest_frame().is_some(), "a frame appears once media is opened");
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
+        assert!(
+            e.latest_frame().is_some(),
+            "a frame appears once media is opened"
+        );
     }
 
     #[test]
     fn follower_applies_host_transport_and_seeks_on_large_drift() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.poll_at(0);
         // Host is playing, well ahead of us — a corrective seek must fire.
-        let host = TransportState { playing: true, position_ms: 30_000, rate: 1.0, epoch_ms: 0 };
+        let host = TransportState {
+            playing: true,
+            position_ms: 30_000,
+            rate: 1.0,
+            epoch_ms: 0,
+        };
         let seeked = e.apply_transport(&host, 0);
         assert!(seeked, "large drift triggers a seek");
         assert_eq!(e.position_ms(), 30_000);
         assert!(e.is_playing(), "adopted the host's playing state");
 
         // Now in sync: a matching host state issues no seek.
-        let host2 = TransportState { playing: true, position_ms: 30_000, rate: 1.0, epoch_ms: 0 };
-        assert!(!e.apply_transport(&host2, 0), "no seek when already aligned");
+        let host2 = TransportState {
+            playing: true,
+            position_ms: 30_000,
+            rate: 1.0,
+            epoch_ms: 0,
+        };
+        assert!(
+            !e.apply_transport(&host2, 0),
+            "no seek when already aligned"
+        );
     }
 
     #[test]
     fn transport_state_snapshots_engine() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.seek_ms(5_000);
         e.play();
         let ts = e.transport_state(1_234);

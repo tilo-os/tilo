@@ -26,7 +26,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{a1_to_addr, addr_to_a1, Addr, CellFormat, CellValue, FormatCategory, FormulaError};
+use crate::model::{
+    Addr, CellFormat, CellValue, FormatCategory, FormulaError, a1_to_addr, addr_to_a1,
+};
 
 // ---------------------------------------------------------------------------
 // Reference extraction (for editor highlighting + click-to-insert)
@@ -117,13 +119,25 @@ pub fn references(body: &str) -> Vec<RefSpan> {
                     let tl = (a0.0.min(a1v.0), a0.1.min(a1v.1));
                     let br = (a0.0.max(a1v.0), a0.1.max(a1v.1));
                     let key = format!("{}:{}", addr_to_a1(tl.0, tl.1), addr_to_a1(br.0, br.1));
-                    out.push(RefSpan { start, end: m, tl, br, key });
+                    out.push(RefSpan {
+                        start,
+                        end: m,
+                        tl,
+                        br,
+                        key,
+                    });
                     i = m;
                     continue;
                 }
             }
             let key = addr_to_a1(a0.0, a0.1);
-            out.push(RefSpan { start, end: i, tl: a0, br: a0, key });
+            out.push(RefSpan {
+                start,
+                end: i,
+                tl: a0,
+                br: a0,
+                key,
+            });
             continue;
         }
         i += 1;
@@ -299,9 +313,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
         match c {
             '0'..='9' | '.' => {
                 let start = i;
-                while i < chars.len()
-                    && (chars[i].is_ascii_digit() || chars[i] == '.')
-                {
+                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
                     i += 1;
                 }
                 // optional scientific exponent: 1e3, 2.5E-4
@@ -375,8 +387,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
                 out.push(Token::Eq);
                 i += 1;
             }
-            '+' | '-' | '*' | '/' | '^' | '&' | '%' | '(' | ')' | ','
-            | ':' => {
+            '+' | '-' | '*' | '/' | '^' | '&' | '%' | '(' | ')' | ',' | ':' => {
                 out.push(Token::Op(c));
                 i += 1;
             }
@@ -532,11 +543,7 @@ impl Parser {
         // Percent literal suffix: `50%` -> 0.5.
         while matches!(self.peek(), Some(Token::Op('%'))) {
             self.next();
-            e = Expr::Binary(
-                BinOp::Div,
-                Box::new(e),
-                Box::new(Expr::Num(100.0)),
-            );
+            e = Expr::Binary(BinOp::Div, Box::new(e), Box::new(Expr::Num(100.0)));
         }
         Ok(e)
     }
@@ -707,11 +714,7 @@ impl<'a> Engine<'a> {
             return rv;
         }
         if op == BinOp::Concat {
-            return CellValue::Text(format!(
-                "{}{}",
-                lv.to_plain_string(),
-                rv.to_plain_string()
-            ));
+            return CellValue::Text(format!("{}{}", lv.to_plain_string(), rv.to_plain_string()));
         }
         // Comparisons can compare text or numbers.
         if matches!(
@@ -1043,7 +1046,8 @@ impl<'a> Engine<'a> {
             "SEARCH" => self.find_fn(args, false),
             "PROPER" => self.unary_text(args, proper_case),
             "REPT" => {
-                let s = self.eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
+                let s = self
+                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
                     .to_plain_string();
                 let n = args
                     .get(1)
@@ -1053,9 +1057,13 @@ impl<'a> Engine<'a> {
                 CellValue::Text(s.repeat(n.min(10_000)))
             }
             "VALUE" => {
-                let s = self.eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
+                let s = self
+                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
                     .to_plain_string();
-                let cleaned: String = s.chars().filter(|c| !matches!(c, ',' | '$' | ' ')).collect();
+                let cleaned: String = s
+                    .chars()
+                    .filter(|c| !matches!(c, ',' | '$' | ' '))
+                    .collect();
                 let core = cleaned.trim_end_matches('%');
                 match core.parse::<f64>() {
                     Ok(n) => CellValue::Number(if cleaned.ends_with('%') { n / 100.0 } else { n }),
@@ -1071,7 +1079,8 @@ impl<'a> Engine<'a> {
                 CellValue::Bool(a == b)
             }
             "CHAR" => {
-                let n = self.eval_expr(args.first().unwrap_or(&Expr::Num(0.0)))
+                let n = self
+                    .eval_expr(args.first().unwrap_or(&Expr::Num(0.0)))
                     .as_number()
                     .unwrap_or(0.0) as u32;
                 match char::from_u32(n) {
@@ -1080,7 +1089,8 @@ impl<'a> Engine<'a> {
                 }
             }
             "CODE" => {
-                let s = self.eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
+                let s = self
+                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
                     .to_plain_string();
                 match s.chars().next() {
                     Some(c) => CellValue::Number(c as u32 as f64),
@@ -1170,7 +1180,8 @@ impl<'a> Engine<'a> {
             "INDEX" => self.index_fn(args),
             "MATCH" => self.match_fn(args),
             "CHOOSE" => {
-                let idx = self.eval_expr(args.first().unwrap_or(&Expr::Num(0.0)))
+                let idx = self
+                    .eval_expr(args.first().unwrap_or(&Expr::Num(0.0)))
                     .as_number()
                     .unwrap_or(0.0) as i64;
                 if idx >= 1 && (idx as usize) < args.len() {
@@ -1204,8 +1215,14 @@ impl<'a> Engine<'a> {
                     return CellValue::Error(FormulaError::Error);
                 }
                 let h = self.eval_expr(&args[0]).as_number().unwrap_or(0.0);
-                let mi = args.get(1).and_then(|a| self.eval_expr(a).as_number()).unwrap_or(0.0);
-                let s = args.get(2).and_then(|a| self.eval_expr(a).as_number()).unwrap_or(0.0);
+                let mi = args
+                    .get(1)
+                    .and_then(|a| self.eval_expr(a).as_number())
+                    .unwrap_or(0.0);
+                let s = args
+                    .get(2)
+                    .and_then(|a| self.eval_expr(a).as_number())
+                    .unwrap_or(0.0);
                 CellValue::Number(((h * 3600.0 + mi * 60.0 + s) / 86400.0).rem_euclid(1.0))
             }
             "TODAY" => CellValue::Number(crate::model::now_serial().floor()),
@@ -1271,11 +1288,7 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn binary_num(
-        &mut self,
-        args: &[Expr],
-        f: impl Fn(f64, f64) -> Option<f64>,
-    ) -> CellValue {
+    fn binary_num(&mut self, args: &[Expr], f: impl Fn(f64, f64) -> Option<f64>) -> CellValue {
         if args.len() != 2 {
             return CellValue::Error(FormulaError::Error);
         }
@@ -1474,7 +1487,10 @@ impl<'a> Engine<'a> {
         if old.is_empty() {
             return CellValue::Text(text);
         }
-        let instance = args.get(3).and_then(|a| self.eval_expr(a).as_number()).map(|n| n as usize);
+        let instance = args
+            .get(3)
+            .and_then(|a| self.eval_expr(a).as_number())
+            .map(|n| n as usize);
         let out = match instance {
             None => text.replace(&old, &new),
             Some(target) if target >= 1 => {
@@ -1506,8 +1522,8 @@ impl<'a> Engine<'a> {
             return CellValue::Error(FormulaError::Error);
         }
         let chars: Vec<char> = self.eval_expr(&args[0]).to_plain_string().chars().collect();
-        let start =
-            (self.eval_expr(&args[1]).as_number().unwrap_or(1.0).max(1.0) as usize - 1).min(chars.len());
+        let start = (self.eval_expr(&args[1]).as_number().unwrap_or(1.0).max(1.0) as usize - 1)
+            .min(chars.len());
         let num = self.eval_expr(&args[2]).as_number().unwrap_or(0.0).max(0.0) as usize;
         let new = self.eval_expr(&args[3]).to_plain_string();
         let end = (start + num).min(chars.len());
@@ -1599,7 +1615,12 @@ impl<'a> Engine<'a> {
         }
         let approx = args
             .get(3)
-            .map(|a| self.eval_expr(a).as_number().map(|n| n != 0.0).unwrap_or(true))
+            .map(|a| {
+                self.eval_expr(a)
+                    .as_number()
+                    .map(|n| n != 0.0)
+                    .unwrap_or(true)
+            })
             .unwrap_or(true);
         let mut best: Option<u32> = None;
         for r in tl.1..=br.1 {
@@ -1645,7 +1666,12 @@ impl<'a> Engine<'a> {
         }
         let approx = args
             .get(3)
-            .map(|a| self.eval_expr(a).as_number().map(|n| n != 0.0).unwrap_or(true))
+            .map(|a| {
+                self.eval_expr(a)
+                    .as_number()
+                    .map(|n| n != 0.0)
+                    .unwrap_or(true)
+            })
             .unwrap_or(true);
         let mut best: Option<u32> = None;
         for c in tl.0..=br.0 {
@@ -1678,7 +1704,10 @@ impl<'a> Engine<'a> {
             .get(1)
             .and_then(|a| self.eval_expr(a).as_number())
             .unwrap_or(0.0) as i64;
-        let a2 = args.get(2).and_then(|a| self.eval_expr(a).as_number()).map(|n| n as i64);
+        let a2 = args
+            .get(2)
+            .and_then(|a| self.eval_expr(a).as_number())
+            .map(|n| n as i64);
         let (row_i, col_i) = match a2 {
             Some(c) => (a1, c),
             None if rows == 1 => (1, a1),
@@ -1797,11 +1826,20 @@ enum RoundMode {
 fn criterion_matches(probe: &CellValue, crit: &CellValue) -> bool {
     if let CellValue::Text(s) = crit {
         let s = s.trim();
-        for (op, len) in [("<=", 2), (">=", 2), ("<>", 2), ("<", 1), (">", 1), ("=", 1)] {
+        for (op, len) in [
+            ("<=", 2),
+            (">=", 2),
+            ("<>", 2),
+            ("<", 1),
+            (">", 1),
+            ("=", 1),
+        ] {
             if let Some(rest) = s.strip_prefix(op) {
                 let _ = len;
                 if let Ok(threshold) = rest.trim().parse::<f64>() {
-                    let Some(p) = probe.as_number() else { return false };
+                    let Some(p) = probe.as_number() else {
+                        return false;
+                    };
                     return match op {
                         "<=" => p <= threshold,
                         ">=" => p >= threshold,
@@ -1833,10 +1871,7 @@ fn criterion_matches(probe: &CellValue, crit: &CellValue) -> bool {
 /// `Ref` is a 1×1 rectangle; anything that isn't a reference yields `None`.
 fn range_bounds(arg: &Expr) -> Option<(Addr, Addr)> {
     match arg {
-        Expr::Range(a, b) => Some((
-            (a.0.min(b.0), a.1.min(b.1)),
-            (a.0.max(b.0), a.1.max(b.1)),
-        )),
+        Expr::Range(a, b) => Some(((a.0.min(b.0), a.1.min(b.1)), (a.0.max(b.0), a.1.max(b.1)))),
         Expr::Ref(a) => Some((*a, *a)),
         _ => None,
     }
@@ -1847,7 +1882,9 @@ fn range_bounds(arg: &Expr) -> Option<(Addr, Addr)> {
 fn values_equal(a: &CellValue, b: &CellValue) -> bool {
     match (a.as_number(), b.as_number()) {
         (Some(x), Some(y)) => x == y,
-        _ => a.to_plain_string().eq_ignore_ascii_case(&b.to_plain_string()),
+        _ => a
+            .to_plain_string()
+            .eq_ignore_ascii_case(&b.to_plain_string()),
     }
 }
 
@@ -1908,10 +1945,22 @@ fn proper_case(s: &str) -> String {
 /// The full English month name for `TEXT`'s `mmmm` token.
 fn full_month(m: u32) -> &'static str {
     const M: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June", "July", "August", "September",
-        "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
-    M.get((m.max(1).min(12) - 1) as usize).copied().unwrap_or("January")
+    M.get((m.max(1).min(12) - 1) as usize)
+        .copied()
+        .unwrap_or("January")
 }
 
 /// Render a number through a `TEXT` format code — a date/time picture when the
@@ -2044,7 +2093,9 @@ fn month_abbrev_local(m: u32) -> &'static str {
     const M: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    M.get((m.max(1).min(12) - 1) as usize).copied().unwrap_or("Jan")
+    M.get((m.max(1).min(12) - 1) as usize)
+        .copied()
+        .unwrap_or("Jan")
 }
 
 /// Parse a non-formula raw string into a literal value. Numbers parse as
@@ -2115,10 +2166,7 @@ enum Unit {
 ///   * SUM/AVERAGE/MIN/MAX/etc. over a uniformly-formatted range inherit
 ///     that format.
 ///   * anything ambiguous → `None` (plain).
-pub fn infer_result_format(
-    body: &str,
-    formats: &HashMap<Addr, CellFormat>,
-) -> Option<CellFormat> {
+pub fn infer_result_format(body: &str, formats: &HashMap<Addr, CellFormat>) -> Option<CellFormat> {
     let expr = parse(body).ok()?;
     let unit = unit_of(&expr, formats);
     unit_to_format(unit)
@@ -2150,7 +2198,10 @@ fn unit_of_format(fmt: CellFormat) -> Unit {
 fn unit_of(expr: &Expr, formats: &HashMap<Addr, CellFormat>) -> Unit {
     match expr {
         Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) => Unit::Scalar,
-        Expr::Ref(addr) => formats.get(addr).map(|f| unit_of_format(*f)).unwrap_or(Unit::Scalar),
+        Expr::Ref(addr) => formats
+            .get(addr)
+            .map(|f| unit_of_format(*f))
+            .unwrap_or(Unit::Scalar),
         Expr::Range(_, _) => Unit::Scalar,
         Expr::Unary(_, inner) => unit_of(inner, formats),
         Expr::Binary(op, l, r) => {
@@ -2236,7 +2287,12 @@ fn arg_units(arg: &Expr, formats: &HashMap<Addr, CellFormat>) -> Vec<Unit> {
             let mut out = Vec::new();
             for r in r0..=r1 {
                 for c in c0..=c1 {
-                    out.push(formats.get(&(c, r)).map(|f| unit_of_format(*f)).unwrap_or(Unit::Scalar));
+                    out.push(
+                        formats
+                            .get(&(c, r))
+                            .map(|f| unit_of_format(*f))
+                            .unwrap_or(Unit::Scalar),
+                    );
                 }
             }
             out
@@ -2270,7 +2326,9 @@ mod tests {
     }
 
     fn val(map: &HashMap<Addr, CellValue>, a: &str) -> CellValue {
-        map.get(&a1_to_addr(a).unwrap()).cloned().unwrap_or(CellValue::Empty)
+        map.get(&a1_to_addr(a).unwrap())
+            .cloned()
+            .unwrap_or(CellValue::Empty)
     }
 
     #[test]
@@ -2317,7 +2375,7 @@ mod tests {
 
     #[test]
     fn specific_excel_error_codes() {
-        use crate::model::{format_value, CellFormat};
+        use crate::model::{CellFormat, format_value};
         // Each formula triggers one specific cause. Assert both the typed
         // error kind *and* the exact canonical string the grid renders
         // (through the real `recalculate` + `format_value` path).
@@ -2409,8 +2467,14 @@ mod tests {
     #[test]
     fn stats_conditional_functions() {
         let m = run(&[
-            ("A1", "10"), ("A2", "20"), ("A3", "30"), ("A4", "40"),
-            ("B1", "x"), ("B2", "y"), ("B3", "x"), ("B4", "y"),
+            ("A1", "10"),
+            ("A2", "20"),
+            ("A3", "30"),
+            ("A4", "40"),
+            ("B1", "x"),
+            ("B2", "y"),
+            ("B3", "x"),
+            ("B4", "y"),
             ("C1", "=AVERAGEIF(A1:A4,\">15\")"),
             ("C2", "=SUMIFS(A1:A4,B1:B4,\"x\")"),
             ("C3", "=COUNTIFS(A1:A4,\">=20\",B1:B4,\"y\")"),
@@ -2470,9 +2534,12 @@ mod tests {
     fn lookup_functions() {
         // A small table: A=key, B=payload.
         let m = run(&[
-            ("A1", "1"), ("B1", "one"),
-            ("A2", "2"), ("B2", "two"),
-            ("A3", "3"), ("B3", "three"),
+            ("A1", "1"),
+            ("B1", "one"),
+            ("A2", "2"),
+            ("B2", "two"),
+            ("A3", "3"),
+            ("B3", "three"),
             ("D1", "=VLOOKUP(2,A1:B3,2,FALSE)"),
             ("D2", "=INDEX(B1:B3,3)"),
             ("D3", "=MATCH(3,A1:A3,0)"),

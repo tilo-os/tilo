@@ -2,7 +2,7 @@
 //! queries them all, merges the hits, and ranks them on a shared footing so the
 //! best matches surface regardless of which provider produced them.
 
-use super::provider::{fuzzy_score, SearchProvider, SearchResult};
+use super::provider::{SearchProvider, SearchResult, fuzzy_score};
 
 /// Weight applied to a provider's own [`SearchResult::score`] bias relative
 /// to the registry's query-match bonus: high enough that a pinned result
@@ -27,7 +27,10 @@ pub struct FnProvider<F> {
 
 impl<F> FnProvider<F> {
     pub fn new(name: impl Into<String>, f: F) -> Self {
-        Self { name: name.into(), f }
+        Self {
+            name: name.into(),
+            f,
+        }
     }
 }
 
@@ -53,7 +56,9 @@ pub struct SearchRegistry {
 
 impl SearchRegistry {
     pub fn new() -> Self {
-        Self { providers: Vec::new() }
+        Self {
+            providers: Vec::new(),
+        }
     }
 
     pub fn register(&mut self, provider: Box<dyn SearchProvider>) -> &mut Self {
@@ -107,7 +112,10 @@ impl SearchRegistry {
             if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
                 g.results.push(r);
             } else {
-                groups.push(SearchGroup { kind: r.kind.clone(), results: vec![r] });
+                groups.push(SearchGroup {
+                    kind: r.kind.clone(),
+                    results: vec![r],
+                });
             }
         }
         groups
@@ -161,7 +169,10 @@ mod tests {
         reg.register_fn("Files", |_q| vec![r("Files", "critical-log.txt", "f:1")]);
         reg.register_fn("Apps", |_q| vec![r("Apps", "Calculator", "a:1")]);
         let out = reg.query("cal");
-        assert_eq!(out[0].title, "Calculator", "prefix match outranks scattered, across providers");
+        assert_eq!(
+            out[0].title, "Calculator",
+            "prefix match outranks scattered, across providers"
+        );
     }
 
     #[test]
@@ -201,7 +212,10 @@ mod tests {
         });
         let groups = reg.query_grouped("cal");
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].results[0].title, "Calculator", "best-in-group first");
+        assert_eq!(
+            groups[0].results[0].title, "Calculator",
+            "best-in-group first"
+        );
         assert_eq!(groups[0].results[1].title, "Terminal Calculator");
     }
 
@@ -209,7 +223,9 @@ mod tests {
     fn per_group_cap_limits_flood() {
         let mut reg = SearchRegistry::new();
         reg.register_fn("Files", |_q| {
-            (0..20).map(|i| r("Files", &format!("file{i}.txt"), &format!("f:{i}"))).collect()
+            (0..20)
+                .map(|i| r("Files", &format!("file{i}.txt"), &format!("f:{i}")))
+                .collect()
         });
         let groups = reg.query_grouped_capped("file", 5);
         assert_eq!(groups.len(), 1);

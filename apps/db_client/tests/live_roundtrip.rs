@@ -31,7 +31,9 @@ fn unique_table() -> String {
 #[test]
 fn postgres_real_round_trip() {
     if std::env::var("QOS_DB_TEST_PG").is_err() {
-        eprintln!("skipping postgres_real_round_trip: set QOS_DB_TEST_PG to run against a live server");
+        eprintln!(
+            "skipping postgres_real_round_trip: set QOS_DB_TEST_PG to run against a live server"
+        );
         return;
     }
 

@@ -3,7 +3,7 @@
 //! `<w:footnoteReference w:id="N"/>`/`<w:endnoteReference w:id="N"/>`. This maps a note
 //! onto a `note-ref` marker in body text plus its content in the `notes` container.
 
-use crate::model::{materialize_notes, DocMut, DocRef, NoteKind};
+use crate::model::{DocMut, DocRef, NoteKind, materialize_notes};
 use crate::snapshot::{BlockView, NoteView};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -18,9 +18,15 @@ pub(super) const ENDNOTES_REL_ID: &str = "rIdQdocEndnotes";
 /// Import a footnotes/endnotes part, returning a `docx_id → qdoc_note_id` map for the
 /// body parser. Reserved separator/continuationSeparator notes hold no user content and
 /// are skipped.
-pub(super) fn import_notes_part(xml: &[u8], kind: NoteKind, doc: &mut DocMut) -> BTreeMap<String, String> {
+pub(super) fn import_notes_part(
+    xml: &[u8],
+    kind: NoteKind,
+    doc: &mut DocMut,
+) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
-    let Ok(s) = std::str::from_utf8(xml) else { return map };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return map;
+    };
     let tag: &[u8] = match kind {
         NoteKind::Footnote => b"w:footnote",
         NoteKind::Endnote => b"w:endnote",
@@ -79,7 +85,10 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String
     let mut cur_len: usize = 0;
     let mut in_t = false;
 
-    let open_block = |doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize| {
+    let open_block = |doc: &mut DocMut,
+                      prev: &mut Option<String>,
+                      cur: &mut Option<String>,
+                      cur_len: &mut usize| {
         if let Some(id) = doc.insert_note_block(&note_id, prev.as_deref(), "paragraph") {
             *prev = Some(id.clone());
             *cur = Some(id);
@@ -131,7 +140,10 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String
 }
 
 fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
-    e.attributes().flatten().find(|a| a.key.as_ref() == key).and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == key)
+        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
 }
 
 fn push_escaped(out: &mut String, c: char) {
@@ -209,8 +221,10 @@ pub(super) fn export_notes(doc: &DocRef) -> ExportedNotes {
     let mut id_map = BTreeMap::new();
     let mut kind_map = BTreeMap::new();
 
-    let footnotes: Vec<ExportNote> = collect_kind(&notes, NoteKind::Footnote, &mut id_map, &mut kind_map);
-    let endnotes: Vec<ExportNote> = collect_kind(&notes, NoteKind::Endnote, &mut id_map, &mut kind_map);
+    let footnotes: Vec<ExportNote> =
+        collect_kind(&notes, NoteKind::Footnote, &mut id_map, &mut kind_map);
+    let endnotes: Vec<ExportNote> =
+        collect_kind(&notes, NoteKind::Endnote, &mut id_map, &mut kind_map);
 
     ExportedNotes {
         footnotes_xml: part_xml(&footnotes, "footnotes", "footnote"),
@@ -232,7 +246,10 @@ fn collect_kind<'a>(
     for n in notes.iter().filter(|n| n.kind == want) {
         id_map.insert(n.id.clone(), next);
         kind_map.insert(n.id.clone(), kind);
-        out.push(ExportNote { docx_id: next, note: n });
+        out.push(ExportNote {
+            docx_id: next,
+            note: n,
+        });
         next += 1;
     }
     out
@@ -253,7 +270,11 @@ fn part_xml(notes: &[ExportNote], root: &str, item: &str) -> Option<Vec<u8>> {
         r#"<w:{item} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{item}>"#
     ));
     for en in notes {
-        inner.push_str(&format!(r#"<w:{item} w:id="{}">{}</w:{item}>"#, en.docx_id, render_note_body(&en.note.blocks)));
+        inner.push_str(&format!(
+            r#"<w:{item} w:id="{}">{}</w:{item}>"#,
+            en.docx_id,
+            render_note_body(&en.note.blocks)
+        ));
     }
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

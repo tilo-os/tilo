@@ -504,7 +504,9 @@ impl Widget for NotesApp {
                             let mut p = self.selection.cursor;
                             if p < self.body.text.len() {
                                 p += 1;
-                                while p < self.body.text.len() && !self.body.text.is_char_boundary(p) {
+                                while p < self.body.text.len()
+                                    && !self.body.text.is_char_boundary(p)
+                                {
                                     p += 1;
                                 }
                             }
@@ -518,7 +520,10 @@ impl Widget for NotesApp {
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         let cur = self.selection.cursor;
-                        let line_start = self.body.text[..cur].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                        let line_start = self.body.text[..cur]
+                            .rfind('\n')
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
                         let col = cur - line_start;
                         let new_pos = if line_start == 0 {
                             0
@@ -545,7 +550,10 @@ impl Widget for NotesApp {
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         let cur = self.selection.cursor;
-                        let line_start = self.body.text[..cur].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                        let line_start = self.body.text[..cur]
+                            .rfind('\n')
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
                         let col = cur - line_start;
                         let line_end = self.body.text[cur..]
                             .find('\n')
@@ -726,7 +734,6 @@ impl NotesApp {
         }
         line_end
     }
-
 }
 
 impl AppWidget for NotesApp {
@@ -780,7 +787,10 @@ mod tests {
             pill.area() > 0.0,
             "a blank note paints EmptyState, whose call-to-action resolves a rect",
         );
-        assert!(tile.contains(pill.center()), "the pill sits inside the tile");
+        assert!(
+            tile.contains(pill.center()),
+            "the pill sits inside the tile"
+        );
         assert!(
             (pill.center().x - tile.center().x).abs() < 1.0,
             "the zero-state is horizontally centred, not left-aligned at the padding: \

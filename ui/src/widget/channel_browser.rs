@@ -195,11 +195,7 @@ impl ChannelBrowser {
     }
 
     pub fn space_pills(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .entries
-            .iter()
-            .map(|e| e.space_name.clone())
-            .collect();
+        let mut names: Vec<String> = self.entries.iter().map(|e| e.space_name.clone()).collect();
         names.sort();
         names.dedup();
         names
@@ -444,13 +440,7 @@ impl ChannelBrowser {
             let body = if active { active_fill } else { idle_fill };
             let color = if active { active_text } else { idle_text };
             let shape = RoundedRect::from_rect(rect, pill_h / 2.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                body,
-                None,
-                &shape,
-            );
+            scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
             let (lw2, lh2) = text_renderer.measure(label, pill_text_size, None);
             text_renderer.draw_text(
                 scene,
@@ -486,13 +476,7 @@ impl ChannelBrowser {
         };
         for name in &pills {
             let active = self.space_filter.as_deref() == Some(name.as_str());
-            paint_pill(
-                name,
-                active,
-                text_renderer,
-                &mut x,
-                &mut self.pill_rects,
-            );
+            paint_pill(name, active, text_renderer, &mut x, &mut self.pill_rects);
         }
     }
 
@@ -745,8 +729,7 @@ impl ChannelBrowser {
         ] {
             let (kw, kh) = text_renderer.measure(key, chip_text_size, None);
             let chip_w = kw as f64 + 10.0;
-            let chip_rect =
-                Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
+            let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
             let chip_shape = RoundedRect::from_rect(chip_rect, 4.0);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -755,13 +738,7 @@ impl ChannelBrowser {
                 None,
                 &chip_shape,
             );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                chip_border,
-                None,
-                &chip_shape,
-            );
+            scene.stroke(&Stroke::new(1.0), transform, chip_border, None, &chip_shape);
             text_renderer.draw_text(
                 scene,
                 key,
@@ -987,8 +964,7 @@ impl Widget for ChannelBrowser {
         // works even when the input has focus.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1047,8 +1023,8 @@ impl Widget for ChannelBrowser {
             return;
         }
         use crate::text_selection::{
-            clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-            prev_char_boundary, prev_word_boundary, Selection,
+            Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+            prev_char_boundary, prev_word_boundary,
         };
         let mods = modifiers.state();
         let shift = mods.shift_key();
@@ -1310,8 +1286,7 @@ mod tests {
     fn key_press(logical_key: Key) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1619,11 +1594,9 @@ mod tests {
             .visible_entry(b.visible_len() - 1)
             .unwrap_or_else(|| b.visible_entry(0).unwrap());
         let other = b.visible_entry(0).unwrap();
-        let noisy_name_match =
-            noisy.name == "noisy" || other.name == "noisy";
+        let noisy_name_match = noisy.name == "noisy" || other.name == "noisy";
         assert!(noisy_name_match);
-        let n =
-            if other.name == "noisy" { other } else { noisy };
+        let n = if other.name == "noisy" { other } else { noisy };
         assert_eq!(n.unread_count, 42);
         assert_eq!(n.name, "noisy");
         // Threshold for the capped "99+" render.
@@ -1634,17 +1607,24 @@ mod tests {
     #[test]
     fn host_loop_typing_arrow_enter_fires_callback_for_second_match() {
         let entries = vec![
-            entry("engineering", "Company", 200.0, 100, 3, false, Some("Editor")),
+            entry(
+                "engineering",
+                "Company",
+                200.0,
+                100,
+                3,
+                false,
+                Some("Editor"),
+            ),
             entry("english-class", "Personal", 30.0, 200, 0, true, None),
             entry("design", "Company", 200.0, 50, 0, false, None),
             entry("notes", "Personal", 30.0, 80, 1, false, Some("Owner")),
         ];
         let captured: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let captured_clone = captured.clone();
-        let mut b =
-            ChannelBrowser::with_entries(entries).on_select(move |e| {
-                *captured_clone.borrow_mut() = Some(e.name.clone());
-            });
+        let mut b = ChannelBrowser::with_entries(entries).on_select(move |e| {
+            *captured_clone.borrow_mut() = Some(e.name.clone());
+        });
         b.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
         b.set_focus(true);
         // "eng" matches engineering + english-class.

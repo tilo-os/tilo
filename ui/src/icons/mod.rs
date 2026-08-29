@@ -132,7 +132,9 @@ fn path_from_d(d: &str) -> BezPath {
 fn rect_path(x: f64, y: f64, w: f64, h: f64, rx: f64) -> BezPath {
     let rect = Rect::new(x, y, x + w, y + h);
     if rx > 0.0 {
-        RoundedRect::from_rect(rect, rx).path_elements(0.1).collect()
+        RoundedRect::from_rect(rect, rx)
+            .path_elements(0.1)
+            .collect()
     } else {
         let mut p = BezPath::new();
         p.move_to(Point::new(rect.x0, rect.y0));
@@ -152,7 +154,9 @@ fn line_path(x1: f64, y1: f64, x2: f64, y2: f64) -> BezPath {
 }
 
 fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
-    Circle::new(Point::new(cx, cy), r).path_elements(0.1).collect()
+    Circle::new(Point::new(cx, cy), r)
+        .path_elements(0.1)
+        .collect()
 }
 
 /// The strokable subpaths for `icon` in the lucide 24×24 viewBox.
@@ -203,35 +207,24 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("m3 21 7-7"),
             path_from_d("M4 14h6v6"),
         ],
-        Icon::X => vec![
-            path_from_d("M18 6 6 18"),
-            path_from_d("m6 6 12 12"),
-        ],
+        Icon::X => vec![path_from_d("M18 6 6 18"), path_from_d("m6 6 12 12")],
         Icon::ChevronUp => vec![path_from_d("m18 15-6-6-6 6")],
         Icon::ChevronDown => vec![path_from_d("m6 9 6 6 6-6")],
         Icon::ChevronLeft => vec![path_from_d("m15 18-6-6 6-6")],
-        Icon::Plus => vec![
-            path_from_d("M5 12h14"),
-            path_from_d("M12 5v14"),
-        ],
-        Icon::Search => vec![
-            circle_path(11.0, 11.0, 8.0),
-            path_from_d("m21 21-4.3-4.3"),
-        ],
+        Icon::Plus => vec![path_from_d("M5 12h14"), path_from_d("M12 5v14")],
+        Icon::Search => vec![circle_path(11.0, 11.0, 8.0), path_from_d("m21 21-4.3-4.3")],
         Icon::PenTool => vec![
-            path_from_d("M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z"),
-            path_from_d("m18 13-1.375-6.874a1 1 0 0 0-.746-.776L3.235 2.028a1 1 0 0 0-1.207 1.207L5.35 15.879a1 1 0 0 0 .776.746L13 18"),
+            path_from_d(
+                "M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z",
+            ),
+            path_from_d(
+                "m18 13-1.375-6.874a1 1 0 0 0-.746-.776L3.235 2.028a1 1 0 0 0-1.207 1.207L5.35 15.879a1 1 0 0 0 .776.746L13 18",
+            ),
             path_from_d("m2.3 2.3 7.286 7.286"),
             circle_path(11.0, 11.0, 2.0),
         ],
-        Icon::Code => vec![
-            path_from_d("m16 18 6-6-6-6"),
-            path_from_d("m8 6-6 6 6 6"),
-        ],
-        Icon::Terminal => vec![
-            path_from_d("M12 19h8"),
-            path_from_d("m4 17 6-6-6-6"),
-        ],
+        Icon::Code => vec![path_from_d("m16 18 6-6-6-6"), path_from_d("m8 6-6 6 6 6")],
+        Icon::Terminal => vec![path_from_d("M12 19h8"), path_from_d("m4 17 6-6-6-6")],
         Icon::FileText => vec![
             path_from_d("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"),
             path_from_d("M14 2v4a2 2 0 0 0 2 2h4"),
@@ -245,17 +238,27 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M19 21V3"),
         ],
         Icon::Layers => vec![
-            path_from_d("M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"),
-            path_from_d("M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"),
-            path_from_d("M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"),
+            path_from_d(
+                "M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z",
+            ),
+            path_from_d(
+                "M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12",
+            ),
+            path_from_d(
+                "M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17",
+            ),
         ],
         Icon::Settings => vec![
-            path_from_d("M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"),
+            path_from_d(
+                "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915",
+            ),
             circle_path(12.0, 12.0, 3.0),
         ],
         Icon::Home => vec![
             path_from_d("M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"),
-            path_from_d("M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"),
+            path_from_d(
+                "M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+            ),
         ],
         Icon::Camera => vec![
             path_from_d(
@@ -310,18 +313,9 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"),
         ],
         // --- File-manager set (actions / chrome) — lucide v0.546.0 ---
-        Icon::ArrowLeft => vec![
-            path_from_d("m12 19-7-7 7-7"),
-            path_from_d("M19 12H5"),
-        ],
-        Icon::ArrowRight => vec![
-            path_from_d("M5 12h14"),
-            path_from_d("m12 5 7 7-7 7"),
-        ],
-        Icon::ArrowUp => vec![
-            path_from_d("m5 12 7-7 7 7"),
-            path_from_d("M12 19V5"),
-        ],
+        Icon::ArrowLeft => vec![path_from_d("m12 19-7-7 7-7"), path_from_d("M19 12H5")],
+        Icon::ArrowRight => vec![path_from_d("M5 12h14"), path_from_d("m12 5 7 7-7 7")],
+        Icon::ArrowUp => vec![path_from_d("m5 12 7-7 7 7"), path_from_d("M12 19V5")],
         Icon::ChevronRight => vec![path_from_d("m9 18 6-6-6-6")],
         Icon::RotateCw => vec![
             path_from_d("M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"),
@@ -331,9 +325,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.85a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 10.633a.53.53 0 0 1 .294-.904l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z",
         )],
         Icon::Sun => vec![
-            path_from_d(
-                "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z",
-            ),
+            path_from_d("M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"),
             path_from_d("M12 2v2"),
             path_from_d("M12 20v2"),
             path_from_d("m4.93 4.93 1.41 1.41"),
@@ -396,7 +388,9 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         ],
         Icon::Bell => vec![
             path_from_d("M10.268 21a2 2 0 0 0 3.464 0"),
-            path_from_d("M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"),
+            path_from_d(
+                "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326",
+            ),
         ],
         Icon::Play => vec![path_from_d(
             "M6 3a1 1 0 0 1 1.514-.857l13 7a1 1 0 0 1 0 1.714l-13 7A1 1 0 0 1 6 21z",
@@ -419,7 +413,9 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         ],
         Icon::Trash => vec![
             path_from_d("M3 6h18"),
-            path_from_d("M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"),
+            path_from_d(
+                "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",
+            ),
             line_path(10.0, 11.0, 10.0, 17.0),
             line_path(14.0, 11.0, 14.0, 17.0),
         ],
@@ -449,13 +445,17 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"),
         ],
         Icon::Pencil => vec![
-            path_from_d("M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"),
+            path_from_d(
+                "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z",
+            ),
             path_from_d("m15 5 4 4"),
         ],
         Icon::FolderPlus => vec![
             path_from_d("M12 10v6"),
             path_from_d("M9 13h6"),
-            path_from_d("M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"),
+            path_from_d(
+                "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+            ),
         ],
         Icon::FilePlus => vec![
             path_from_d("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"),
@@ -473,7 +473,9 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         ],
         Icon::HardDrive => vec![
             line_path(22.0, 12.0, 2.0, 12.0),
-            path_from_d("M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"),
+            path_from_d(
+                "M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z",
+            ),
             line_path(6.0, 16.0, 6.01, 16.0),
             line_path(10.0, 16.0, 10.01, 16.0),
         ],
@@ -501,10 +503,14 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         // --- Mail set — lucide v0.546.0 ---
         Icon::Inbox => vec![
             path_from_d("M22 12h-6l-2 3h-4l-2-3H2"),
-            path_from_d("M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"),
+            path_from_d(
+                "M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z",
+            ),
         ],
         Icon::Send => vec![
-            path_from_d("M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"),
+            path_from_d(
+                "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z",
+            ),
             path_from_d("m21.854 2.147-10.94 10.939"),
         ],
         Icon::Reply => vec![
@@ -582,9 +588,9 @@ pub fn icon_for_path(path: &std::path::Path, is_dir: bool) -> Icon {
             | "java" | "kt" | "rb" | "php" | "swift" | "sh" | "bash" | "fish" | "zsh" | "lua"
             | "toml" | "json" | "yaml" | "yml" | "xml" | "html" | "htm" | "css" | "scss" | "sql",
         ) => Icon::FileCode,
-        Some("txt" | "md" | "markdown" | "rst" | "doc" | "docx" | "odt" | "rtf" | "pdf" | "tex") => {
-            Icon::FileText
-        }
+        Some(
+            "txt" | "md" | "markdown" | "rst" | "doc" | "docx" | "odt" | "rtf" | "pdf" | "tex",
+        ) => Icon::FileText,
         _ => Icon::File,
     }
 }
@@ -595,7 +601,14 @@ impl Icon {
     /// with `self` and [`LUCIDE_DEFAULT_STROKE_PX`]. Pass `Affine::IDENTITY`
     /// for `transform` when `rect` is already in scene space.
     pub fn draw(self, scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
-        draw_icon(scene, transform, rect, self, color, LUCIDE_DEFAULT_STROKE_PX);
+        draw_icon(
+            scene,
+            transform,
+            rect,
+            self,
+            color,
+            LUCIDE_DEFAULT_STROKE_PX,
+        );
     }
 
     /// Paint the icon as a **solid fill** rather than a stroked outline —
@@ -659,9 +672,7 @@ pub fn draw_icon(
     let glyph_h = LUCIDE_VIEWBOX * scale;
     let tx = rect.x0 + (size.width - glyph_w) / 2.0;
     let ty = rect.y0 + (size.height - glyph_h) / 2.0;
-    let local = transform
-        * Affine::translate((tx, ty))
-        * Affine::scale(scale);
+    let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
 
     let stroke = Stroke::new(stroke_px / scale)
         .with_caps(Cap::Round)
@@ -775,7 +786,11 @@ mod tests {
             "wifi = base dot + 3 arcs, outermost first — the tray indexes these"
         );
         assert_eq!(icon_subpaths(Icon::WifiOff).len(), 7);
-        assert_eq!(icon_subpaths(Icon::VolumeX).len(), 3, "cone + 2 cross lines");
+        assert_eq!(
+            icon_subpaths(Icon::VolumeX).len(),
+            3,
+            "cone + 2 cross lines"
+        );
         assert_eq!(
             icon_subpaths(Icon::EthernetPort).len(),
             5,
@@ -932,7 +947,10 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count();
-        assert!(color_tags >= 1, "Icon::draw must stroke at least one subpath");
+        assert!(
+            color_tags >= 1,
+            "Icon::draw must stroke at least one subpath"
+        );
     }
 
     #[test]
@@ -942,16 +960,52 @@ mod tests {
         assert_eq!(icon_subpaths(Icon::Play).len(), 1, "play = 1 triangle path");
         assert_eq!(icon_subpaths(Icon::Pause).len(), 2, "pause = 2 bars");
         assert_eq!(icon_subpaths(Icon::Check).len(), 1, "check = 1 tick");
-        assert_eq!(icon_subpaths(Icon::Refresh).len(), 4, "refresh = 2 arcs + 2 heads");
-        assert_eq!(icon_subpaths(Icon::ExternalLink).len(), 3, "external-link = box + arrow + diag");
-        assert_eq!(icon_subpaths(Icon::Trash).len(), 4, "trash = lid + body + 2 streaks");
-        assert_eq!(icon_subpaths(Icon::Copy).len(), 2, "copy = fg rect + bg corner");
+        assert_eq!(
+            icon_subpaths(Icon::Refresh).len(),
+            4,
+            "refresh = 2 arcs + 2 heads"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::ExternalLink).len(),
+            3,
+            "external-link = box + arrow + diag"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::Trash).len(),
+            4,
+            "trash = lid + body + 2 streaks"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::Copy).len(),
+            2,
+            "copy = fg rect + bg corner"
+        );
         assert_eq!(icon_subpaths(Icon::Folder).len(), 1, "folder = 1 outline");
-        assert_eq!(icon_subpaths(Icon::ChevronRight).len(), 1, "chevron-right = 1 path");
-        assert_eq!(icon_subpaths(Icon::MoreHorizontal).len(), 3, "more = 3 dots");
-        assert_eq!(icon_subpaths(Icon::ArrowBigUp).len(), 1, "arrow-big-up = 1 closed arrow");
-        assert_eq!(icon_subpaths(Icon::Delete).len(), 3, "delete = tag body + 2 ✕ strokes");
-        assert_eq!(icon_subpaths(Icon::CornerDownLeft).len(), 2, "corner-down-left = hook + head");
+        assert_eq!(
+            icon_subpaths(Icon::ChevronRight).len(),
+            1,
+            "chevron-right = 1 path"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::MoreHorizontal).len(),
+            3,
+            "more = 3 dots"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::ArrowBigUp).len(),
+            1,
+            "arrow-big-up = 1 closed arrow"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::Delete).len(),
+            3,
+            "delete = tag body + 2 ✕ strokes"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::CornerDownLeft).len(),
+            2,
+            "corner-down-left = hook + head"
+        );
     }
 
     #[test]
@@ -975,9 +1029,17 @@ mod tests {
         assert_eq!(icon_subpaths(Icon::Inbox).len(), 2, "inbox = tray + body");
         assert_eq!(icon_subpaths(Icon::Reply).len(), 2, "reply = arm + arrow");
         assert_eq!(icon_subpaths(Icon::Mail).len(), 2, "mail = body + flap");
-        assert_eq!(icon_subpaths(Icon::Calendar).len(), 4, "calendar = 2 ticks + body + rule");
+        assert_eq!(
+            icon_subpaths(Icon::Calendar).len(),
+            4,
+            "calendar = 2 ticks + body + rule"
+        );
         assert_eq!(icon_subpaths(Icon::Ban).len(), 2, "ban = ring + bar");
-        assert_eq!(icon_subpaths(Icon::Download).len(), 3, "download = stem + head + tray");
+        assert_eq!(
+            icon_subpaths(Icon::Download).len(),
+            3,
+            "download = stem + head + tray"
+        );
     }
 
     #[test]
@@ -1000,13 +1062,41 @@ mod tests {
 
     #[test]
     fn workspace_icon_subpath_counts() {
-        assert_eq!(icon_subpaths(Icon::PenTool).len(), 4, "pen-tool = 3 paths + 1 circle");
-        assert_eq!(icon_subpaths(Icon::Code).len(), 2, "code = 2 angle-bracket paths");
-        assert_eq!(icon_subpaths(Icon::FileText).len(), 5, "file-text = page + corner + 3 lines");
-        assert_eq!(icon_subpaths(Icon::BarChart).len(), 3, "bar-chart = 3 column paths");
-        assert_eq!(icon_subpaths(Icon::Layers).len(), 3, "layers = 3 stacked plate paths");
-        assert_eq!(icon_subpaths(Icon::Settings).len(), 2, "settings = gear path + dot");
-        assert_eq!(icon_subpaths(Icon::Home).len(), 2, "home = roof + doorway paths");
+        assert_eq!(
+            icon_subpaths(Icon::PenTool).len(),
+            4,
+            "pen-tool = 3 paths + 1 circle"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::Code).len(),
+            2,
+            "code = 2 angle-bracket paths"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::FileText).len(),
+            5,
+            "file-text = page + corner + 3 lines"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::BarChart).len(),
+            3,
+            "bar-chart = 3 column paths"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::Layers).len(),
+            3,
+            "layers = 3 stacked plate paths"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::Settings).len(),
+            2,
+            "settings = gear path + dot"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::Home).len(),
+            2,
+            "home = roof + doorway paths"
+        );
         for icon in [
             Icon::PenTool,
             Icon::Code,
@@ -1065,28 +1155,64 @@ mod tests {
     fn file_manager_icon_subpath_counts() {
         assert_eq!(icon_subpaths(Icon::Folder).len(), 1);
         assert_eq!(icon_subpaths(Icon::File).len(), 2, "file = page + corner");
-        assert_eq!(icon_subpaths(Icon::Image).len(), 3, "image = frame + lens + ridge");
+        assert_eq!(
+            icon_subpaths(Icon::Image).len(),
+            3,
+            "image = frame + lens + ridge"
+        );
         assert_eq!(icon_subpaths(Icon::Film).len(), 8, "film = frame + 7 rails");
-        assert_eq!(icon_subpaths(Icon::Scissors).len(), 5, "scissors = 2 rings + 3 strokes");
-        assert_eq!(icon_subpaths(Icon::Trash2).len(), 5, "trash = 2 tines + body + lid + handle");
-        assert_eq!(icon_subpaths(Icon::HardDrive).len(), 4, "hard-drive = divider + body + 2 dots");
-        assert_eq!(icon_subpaths(Icon::List).len(), 6, "list = 3 bullets + 3 rules");
+        assert_eq!(
+            icon_subpaths(Icon::Scissors).len(),
+            5,
+            "scissors = 2 rings + 3 strokes"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::Trash2).len(),
+            5,
+            "trash = 2 tines + body + lid + handle"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::HardDrive).len(),
+            4,
+            "hard-drive = divider + body + 2 dots"
+        );
+        assert_eq!(
+            icon_subpaths(Icon::List).len(),
+            6,
+            "list = 3 bullets + 3 rules"
+        );
     }
 
     #[test]
     fn icon_for_path_classifies_by_extension() {
         use std::path::Path;
         // Directories always fold to the folder glyph regardless of name.
-        assert_eq!(icon_for_path(Path::new("/home/user/Pictures"), true), Icon::Folder);
-        assert_eq!(icon_for_path(Path::new("/x/archive.zip"), true), Icon::Folder);
+        assert_eq!(
+            icon_for_path(Path::new("/home/user/Pictures"), true),
+            Icon::Folder
+        );
+        assert_eq!(
+            icon_for_path(Path::new("/x/archive.zip"), true),
+            Icon::Folder
+        );
         // Media families.
-        assert_eq!(icon_for_path(Path::new("a/photo.PNG"), false), Icon::Image, "case-insensitive");
+        assert_eq!(
+            icon_for_path(Path::new("a/photo.PNG"), false),
+            Icon::Image,
+            "case-insensitive"
+        );
         assert_eq!(icon_for_path(Path::new("song.flac"), false), Icon::Music);
         assert_eq!(icon_for_path(Path::new("clip.mkv"), false), Icon::Film);
-        assert_eq!(icon_for_path(Path::new("bundle.tar.gz"), false), Icon::Archive);
+        assert_eq!(
+            icon_for_path(Path::new("bundle.tar.gz"), false),
+            Icon::Archive
+        );
         assert_eq!(icon_for_path(Path::new("main.rs"), false), Icon::FileCode);
         assert_eq!(icon_for_path(Path::new("notes.md"), false), Icon::FileText);
-        assert_eq!(icon_for_path(Path::new("report.docx"), false), Icon::FileText);
+        assert_eq!(
+            icon_for_path(Path::new("report.docx"), false),
+            Icon::FileText
+        );
         // Unknown / extension-less → generic file.
         assert_eq!(icon_for_path(Path::new("Makefile"), false), Icon::File);
         assert_eq!(icon_for_path(Path::new("blob.qwerty"), false), Icon::File);

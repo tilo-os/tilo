@@ -35,7 +35,6 @@ fn ws_of(tree: &WorkspaceTree, id: WorkspaceId) -> &Workspace {
         .expect("workspace")
 }
 
-
 #[test]
 fn only_the_owner_may_administer_the_room() {
     let (tree, id) = room_owned_by(ALICE);
@@ -129,7 +128,6 @@ fn a_non_owner_cannot_grant_or_revoke() {
     );
 }
 
-
 #[test]
 fn a_peer_without_the_verb_is_denied_and_the_denial_is_attributable() {
     use shell::shell::state::CapDecision;
@@ -216,7 +214,6 @@ fn the_host_can_change_a_peers_permissions_live() {
         "and Bob is no longer a member"
     );
 }
-
 
 #[test]
 fn a_revoked_capability_stops_working_on_a_peer() {
@@ -321,7 +318,6 @@ fn tree_grant_admin(tree: &mut WorkspaceTree, id: WorkspaceId, cap_id: &str) {
     )
     .expect("owner delegates");
 }
-
 
 #[test]
 fn always_survives_a_restart_and_session_does_not() {

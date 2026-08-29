@@ -26,11 +26,22 @@ fn assert_shot(view: Option<&str>, viewport: Option<&str>, tag: &str) {
         cmd.env("SOFTWARE_STORE_SHOT_VIEW", view);
     }
     let status = cmd.status().expect("spawn software_store --shots");
-    assert!(status.success(), "software_store --shots exited with {status:?} ({tag})");
+    assert!(
+        status.success(),
+        "software_store --shots exited with {status:?} ({tag})"
+    );
 
     let bytes = fs::read(&out).expect("read shots PNG");
-    assert!(bytes.len() >= 8, "PNG must have at least an 8-byte header ({tag})");
-    assert_eq!(&bytes[..8], &PNG_MAGIC, "expected PNG magic at start of {} ({tag})", out.display());
+    assert!(
+        bytes.len() >= 8,
+        "PNG must have at least an 8-byte header ({tag})"
+    );
+    assert_eq!(
+        &bytes[..8],
+        &PNG_MAGIC,
+        "expected PNG magic at start of {} ({tag})",
+        out.display()
+    );
     let _ = fs::remove_file(&out);
 }
 

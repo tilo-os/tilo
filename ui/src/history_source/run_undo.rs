@@ -18,7 +18,7 @@
 use automerge::AutoCommit;
 
 use crate::history_source::authors::AuthorDirectory;
-use crate::history_source::revert::{revert_run, KeptSlot, RevertError};
+use crate::history_source::revert::{KeptSlot, RevertError, revert_run};
 use crate::history_source::runs::{AgentRun, RunStep};
 
 /// What happened to one application's share of a run.
@@ -28,10 +28,7 @@ pub enum StepState {
     Undone { changes: usize },
     /// Inverted, except for slots somebody edited afterwards — which were left
     /// exactly as they are. A caller rendering this as "undone" is lying.
-    KeptSome {
-        changes: usize,
-        kept: Vec<KeptSlot>,
-    },
+    KeptSome { changes: usize, kept: Vec<KeptSlot> },
     /// The step's changes are in the document but their effect was already
     /// gone. Not an error.
     NothingToUndo,
@@ -121,10 +118,7 @@ impl RunUndoReport {
 ///
 /// The pre-flight a coordinator runs **before** undoing anything. An empty
 /// result means every step can be attempted; a non-empty one is a refusal.
-pub fn unreachable_steps(
-    run: &AgentRun,
-    reachable: impl Fn(&RunStep) -> bool,
-) -> Vec<&RunStep> {
+pub fn unreachable_steps(run: &AgentRun, reachable: impl Fn(&RunStep) -> bool) -> Vec<&RunStep> {
     run.steps.iter().filter(|s| !reachable(s)).collect()
 }
 
@@ -138,7 +132,10 @@ pub fn refuse_run(run: &AgentRun, missing: &[&RunStep]) -> RunUndoReport {
             .map(|s| StepOutcome {
                 app: s.app.clone(),
                 record: s.record.clone(),
-                state: if missing.iter().any(|m| m.app == s.app && m.record == s.record) {
+                state: if missing
+                    .iter()
+                    .any(|m| m.app == s.app && m.record == s.record)
+                {
                     StepState::Unreachable
                 } else {
                     StepState::NotAttempted

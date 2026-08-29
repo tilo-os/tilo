@@ -22,8 +22,14 @@ fn granted(name: &str, app: &str) -> ui::permissions::PermissionContext {
     use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     PermissionContext::from_capabilities(
         Actor::agent(name),
-        vec![CapOverride::grant(Subject::agent(name), Scope::App(app.to_string()), Verb::Write)
-            .with_id("invited")],
+        vec![
+            CapOverride::grant(
+                Subject::agent(name),
+                Scope::App(app.to_string()),
+                Verb::Write,
+            )
+            .with_id("invited"),
+        ],
     )
 }
 
@@ -41,7 +47,11 @@ fn seed_document_with_image(instruction: &str) -> AutoCommit {
     let c = qdoc::model::init(&mut doc, &automerge::ROOT);
     let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let title = dm.insert_block(None, "paragraph");
         dm.splice_text(&title, 0, 0, "Launch plan");
         let img = dm.insert_block(Some(&title), "image");
@@ -63,7 +73,12 @@ fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
 ///
 /// Returns the peer's final replica and whether the agent reports having
 /// acted.
-fn run(cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config, mut replica: AutoCommit, mut poll: impl FnMut(&AutoCommit) -> bool, within: Duration) -> (AutoCommit, bool) {
+fn run(
+    cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config,
+    mut replica: AutoCommit,
+    mut poll: impl FnMut(&AutoCommit) -> bool,
+    within: Duration,
+) -> (AutoCommit, bool) {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     {
@@ -74,7 +89,10 @@ fn run(cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config, mut replica: Aut
     }
     let started = Instant::now();
     while !sock.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -99,7 +117,8 @@ fn run(cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config, mut replica: Aut
         s.run_until(Instant::now() + within).expect("agent session")
     });
 
-    peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    peer.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
     let deadline = Instant::now() + within;
     let mut done = false;
     while Instant::now() < deadline && !done {
@@ -111,13 +130,19 @@ fn run(cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config, mut replica: Aut
         };
         match event {
             CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived, ..
+                payload: PresencePayload::Arrived,
+                ..
             } => {
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT { data: replica.save() }).unwrap();
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                    data: replica.save(),
+                })
+                .unwrap();
                 write_frame(&mut peer, &snap).unwrap();
             }
             CollabEvent::CRDTIncremental { data } => {
-                replica.load_incremental(&data).expect("apply the agent's change");
+                replica
+                    .load_incremental(&data)
+                    .expect("apply the agent's change");
                 done = poll(&replica);
             }
             _ => {}
@@ -162,19 +187,31 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
         replica,
         |doc| {
             let b = blocks(doc);
-            let title_done = b.iter().any(|x| x.kind == "heading" && x.text == "Launch plan");
+            let title_done = b
+                .iter()
+                .any(|x| x.kind == "heading" && x.text == "Launch plan");
             let image_gone = !b.iter().any(|x| x.kind == "image");
             let answered = !b.iter().any(|x| x.text.starts_with("Scribe:"));
             title_done && image_gone && answered
         },
         Duration::from_secs(15),
     );
-    let shown: Vec<(String, String)> = blocks(&replica).iter().map(|b| (b.kind.clone(), b.text.clone())).collect();
+    let shown: Vec<(String, String)> = blocks(&replica)
+        .iter()
+        .map(|b| (b.kind.clone(), b.text.clone()))
+        .collect();
     assert!(acted, "the agent reports having acted");
 
     let b = blocks(&replica);
-    assert!(b.iter().any(|x| x.kind == "heading" && x.text == "Launch plan"), "{shown:?}");
-    assert!(!b.iter().any(|x| x.kind == "image"), "the image was not deleted: {shown:?}");
+    assert!(
+        b.iter()
+            .any(|x| x.kind == "heading" && x.text == "Launch plan"),
+        "{shown:?}"
+    );
+    assert!(
+        !b.iter().any(|x| x.kind == "image"),
+        "the image was not deleted: {shown:?}"
+    );
     assert!(
         !b.iter().any(|x| x.text.starts_with("Scribe:")),
         "the instruction was left holding a refusal instead of being answered in full \
@@ -216,7 +253,10 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     }
     let started = Instant::now();
     while !sock.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     let room = Uuid::new_v4();
@@ -266,10 +306,18 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         PermissionContext::from_capabilities(
             Actor::agent("Scribe"),
             vec![
-                CapOverride::grant(Subject::agent("Scribe"), Scope::App("word-processor".to_string()), Verb::Write)
-                    .with_id("wp"),
-                CapOverride::grant(Subject::agent("Scribe"), Scope::App("photos".to_string()), Verb::Write)
-                    .with_id("photos"),
+                CapOverride::grant(
+                    Subject::agent("Scribe"),
+                    Scope::App("word-processor".to_string()),
+                    Verb::Write,
+                )
+                .with_id("wp"),
+                CapOverride::grant(
+                    Subject::agent("Scribe"),
+                    Scope::App("photos".to_string()),
+                    Verb::Write,
+                )
+                .with_id("photos"),
             ],
         )
     };
@@ -290,7 +338,8 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(15)).expect("agent session")
+        s.run_until(Instant::now() + Duration::from_secs(15))
+            .expect("agent session")
     });
 
     // Nothing here yet waits for a late-arriving application — that is
@@ -304,7 +353,9 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     // for it.
     let (photo_ready_tx, photo_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let photo_thread = std::thread::spawn(move || {
-        photo_peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        photo_peer
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut signalled = false;
         while Instant::now() < deadline {
@@ -313,10 +364,13 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
             };
             match serde_json::from_slice::<CollabEvent>(&frame) {
                 Ok(CollabEvent::RemotePresenceUpdate {
-                    payload: PresencePayload::Arrived, ..
+                    payload: PresencePayload::Arrived,
+                    ..
                 }) => {
-                    let snap =
-                        serde_json::to_vec(&CollabRequest::SyncCRDT { data: photo_replica.save() }).unwrap();
+                    let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                        data: photo_replica.save(),
+                    })
+                    .unwrap();
                     write_frame(&mut photo_peer, &snap).unwrap();
                     if !signalled {
                         let _ = photo_ready_tx.send(());
@@ -335,7 +389,9 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         photo_replica
     });
 
-    wp_peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    wp_peer
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
     while Instant::now() < deadline && !done {
@@ -344,16 +400,24 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         };
         match serde_json::from_slice::<CollabEvent>(&frame) {
             Ok(CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived, ..
+                payload: PresencePayload::Arrived,
+                ..
             }) => {
                 photo_ready_rx
                     .recv_timeout(Duration::from_secs(10))
                     .expect("the photo peer never answered its own Arrived");
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT { data: wp_replica.save() }).unwrap();
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                    data: wp_replica.save(),
+                })
+                .unwrap();
                 write_frame(&mut wp_peer, &snap).unwrap();
             }
-            Ok(CollabEvent::CRDTIncremental { data }) if wp_replica.load_incremental(&data).is_ok() => {
-                done = !blocks(&wp_replica).iter().any(|x| x.text.starts_with("Scribe:"));
+            Ok(CollabEvent::CRDTIncremental { data })
+                if wp_replica.load_incremental(&data).is_ok() =>
+            {
+                done = !blocks(&wp_replica)
+                    .iter()
+                    .any(|x| x.text.starts_with("Scribe:"));
             }
             _ => {}
         }
@@ -362,10 +426,15 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     assert!(
         done,
         "the instruction was never answered; blocks: {:?}",
-        blocks(&wp_replica).iter().map(|b| (b.kind.clone(), b.text.clone())).collect::<Vec<_>>()
+        blocks(&wp_replica)
+            .iter()
+            .map(|b| (b.kind.clone(), b.text.clone()))
+            .collect::<Vec<_>>()
     );
 
-    let photo_replica = photo_thread.join().expect("the photo peer's thread must not panic");
+    let photo_replica = photo_thread
+        .join()
+        .expect("the photo peer's thread must not panic");
     assert_eq!(
         photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters,
         1,
@@ -396,7 +465,11 @@ fn without_the_capability_a_discovered_operation_is_never_performed() {
             permissions: nothing_granted("Scribe"),
         },
         replica,
-        |doc| blocks(doc).iter().any(|x| x.text.starts_with("Scribe: I can't")),
+        |doc| {
+            blocks(doc)
+                .iter()
+                .any(|x| x.text.starts_with("Scribe: I can't"))
+        },
         Duration::from_secs(15),
     );
     assert!(acted, "the agent reports having acted");

@@ -10,8 +10,8 @@
 use vello::peniko::Color;
 
 use crate::model::TypeClass;
-use ui::theme::Theme;
 use ui::ColorCompat;
+use ui::theme::Theme;
 
 /// A bundle of derived colours for one frame, computed from a [`Theme`].
 #[derive(Clone, Copy)]

@@ -23,14 +23,16 @@
 
 use std::sync::{Arc, OnceLock};
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{
+    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
+};
 use taffy::style_helpers::{length, percent};
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
 };
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, ColorStop, Extend, Fill, Gradient};
-use vello::Scene;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
@@ -45,8 +47,8 @@ use ui::widget::{
     Button, Divider, Dropdown, IconWidget, Row, Spacer, Spinner, Text, TextInput, Widget,
 };
 
-use crate::auth::{spawn_auth, AuthUpdate};
-use crate::sessions::{read_sessions, Session, DEFAULT_SESSIONS_DIR};
+use crate::auth::{AuthUpdate, spawn_auth};
+use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
 
 const USERNAME_PATH: &str = "greeter.username";
 const PASSWORD_PATH: &str = "greeter.password";
@@ -654,9 +656,7 @@ impl GreeterApp {
                     rows.push(Box::new(
                         Row::new()
                             .push(Box::new(Spinner::with_size(16.0)))
-                            .push(Box::new(
-                                Text::new(live).with_size(13.0).with_color(tint),
-                            )),
+                            .push(Box::new(Text::new(live).with_size(13.0).with_color(tint))),
                     ));
                 }
             }
@@ -1856,8 +1856,14 @@ mod tests {
         assert_eq!(app.phase, AuthPhase::Idle, "back to the form on failure");
         assert_eq!(app.status, "Incorrect username or password");
         // Password cleared, username preserved.
-        assert_eq!(GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(), Some(""));
-        assert_eq!(GreeterApp::read_text(&doc, &root, USERNAME_PATH).as_deref(), Some("alice"));
+        assert_eq!(
+            GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            GreeterApp::read_text(&doc, &root, USERNAME_PATH).as_deref(),
+            Some("alice")
+        );
     }
 
     /// A rejected attempt and a blank field are different things and must
@@ -1935,7 +1941,10 @@ mod tests {
         assert_eq!(app.phase, AuthPhase::Authenticating);
         assert!(!GreeterApp::read_flag(&doc, &root, SUBMIT_PATH));
         // Password is still intact (no failure was processed).
-        assert_eq!(GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(), Some("pw"));
+        assert_eq!(
+            GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(),
+            Some("pw")
+        );
     }
 
     /// A submit that lands while the session is already starting must not
@@ -1956,7 +1965,10 @@ mod tests {
         let _ = doc.put(&root, SUBMIT_PATH, true);
         app.sync(&mut doc, &root);
         assert_eq!(app.phase, AuthPhase::Starting);
-        assert_eq!(GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(), Some("pw"));
+        assert_eq!(
+            GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(),
+            Some("pw")
+        );
     }
 
     /// On the *form* (Idle), the focusable order must NOT shift when the
@@ -2067,13 +2079,19 @@ mod tests {
         let _ = doc.put(&root, REBOOT_PATH, true);
         app.sync(&mut doc, &root);
         assert_eq!(app.last_power_action, Some(PowerAction::Reboot));
-        assert!(!GreeterApp::read_flag(&doc, &root, REBOOT_PATH), "reboot flag reset");
+        assert!(
+            !GreeterApp::read_flag(&doc, &root, REBOOT_PATH),
+            "reboot flag reset"
+        );
 
         // Power off.
         let _ = doc.put(&root, POWEROFF_PATH, true);
         app.sync(&mut doc, &root);
         assert_eq!(app.last_power_action, Some(PowerAction::PowerOff));
-        assert!(!GreeterApp::read_flag(&doc, &root, POWEROFF_PATH), "poweroff flag reset");
+        assert!(
+            !GreeterApp::read_flag(&doc, &root, POWEROFF_PATH),
+            "poweroff flag reset"
+        );
     }
 
     /// A failed attempt returns to the form (inputs re-enabled) and also

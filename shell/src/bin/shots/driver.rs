@@ -413,11 +413,7 @@ impl ShellDriver {
                 tree.grant_in_workspace(
                     ws_id,
                     &owner,
-                    CapOverride::grant(
-                        Subject::person(who),
-                        Scope::FsPath(path.to_string()),
-                        verb,
-                    ),
+                    CapOverride::grant(Subject::person(who), Scope::FsPath(path.to_string()), verb),
                 );
             }
             // Research already has two people present. Give them the

@@ -12,17 +12,17 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{Banner, Button, Card, Checkbox, Column, Row, Spacer, Text, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::onboarding::{
-    MintedIdentity, Onboarding, Screen, ACKNOWLEDGEMENT, DONE_BODY, DONE_TITLE, INTRO_BODY,
-    INTRO_POINTS, INTRO_TITLE, NO_RECOVERY_POINTS, NO_RECOVERY_TITLE,
+    ACKNOWLEDGEMENT, DONE_BODY, DONE_TITLE, INTRO_BODY, INTRO_POINTS, INTRO_TITLE, MintedIdentity,
+    NO_RECOVERY_POINTS, NO_RECOVERY_TITLE, Onboarding, Screen,
 };
 
 /// Measure for the ceremony's column, in logical px — body text at 13px
@@ -117,17 +117,20 @@ impl OnboardingView {
             list = list.push(bullet(point));
         }
         // The gate. Disabled until the box is ticked, so the primary action can't be clicked past the consequence.
-        let create = Button::new("onboarding.create.button", "Create my identity", Some(KEY_CREATE))
-            .with_style(ui::widget::ButtonStyle::Primary)
-            .with_enabled(self.flow.can_create());
+        let create = Button::new(
+            "onboarding.create.button",
+            "Create my identity",
+            Some(KEY_CREATE),
+        )
+        .with_style(ui::widget::ButtonStyle::Primary)
+        .with_enabled(self.flow.can_create());
         Box::new(
             Column::new()
                 .with_no_padding()
                 .with_gap(20.0)
-                .push(Box::new(
-                    Banner::warning(NO_RECOVERY_TITLE)
-                        .with_message("Read this before continuing — it cannot be undone later."),
-                ))
+                .push(Box::new(Banner::warning(NO_RECOVERY_TITLE).with_message(
+                    "Read this before continuing — it cannot be undone later.",
+                )))
                 .push(Box::new(Card::new(Box::new(list))))
                 .push(Box::new(
                     Row::new()
@@ -165,9 +168,7 @@ impl OnboardingView {
             );
         }
         let minted = self.flow.minted();
-        let fingerprint = minted
-            .map(|m| m.grouped_fingerprint())
-            .unwrap_or_default();
+        let fingerprint = minted.map(|m| m.grouped_fingerprint()).unwrap_or_default();
         let path = minted
             .map(|m| m.path.display().to_string())
             .unwrap_or_default();
@@ -200,8 +201,12 @@ impl OnboardingView {
                     theme,
                 ))
                 .push(actions(vec![Box::new(
-                    Button::new("onboarding.finish.button", "Start using qOS", Some(KEY_FINISH))
-                        .with_style(ui::widget::ButtonStyle::Primary),
+                    Button::new(
+                        "onboarding.finish.button",
+                        "Start using qOS",
+                        Some(KEY_FINISH),
+                    )
+                    .with_style(ui::widget::ButtonStyle::Primary),
                 )])),
         )
     }
@@ -393,7 +398,11 @@ impl Widget for OnboardingView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.as_ref().map(|c| c.as_ref()).into_iter().collect()
+        self.composed
+            .as_ref()
+            .map(|c| c.as_ref())
+            .into_iter()
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -430,8 +439,8 @@ impl Widget for OnboardingView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -491,7 +500,11 @@ mod tests {
         v.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_UNDERSTOOD);
         v.sync(&mut doc, &automerge::ROOT);
-        let _ = doc.put(&automerge::ROOT, KEY_UNDERSTOOD, ScalarValue::Boolean(false));
+        let _ = doc.put(
+            &automerge::ROOT,
+            KEY_UNDERSTOOD,
+            ScalarValue::Boolean(false),
+        );
         v.sync(&mut doc, &automerge::ROOT);
         assert!(!v.flow().can_create());
         press(&mut doc, KEY_CREATE);
@@ -529,7 +542,12 @@ mod tests {
     fn every_screen_builds_a_layout() {
         let (mut v, _) = view();
         let mut doc = AutoCommit::new();
-        for step in [None, Some(KEY_BEGIN), Some(KEY_UNDERSTOOD), Some(KEY_CREATE)] {
+        for step in [
+            None,
+            Some(KEY_BEGIN),
+            Some(KEY_UNDERSTOOD),
+            Some(KEY_CREATE),
+        ] {
             if let Some(k) = step {
                 press(&mut doc, k);
                 v.sync(&mut doc, &automerge::ROOT);

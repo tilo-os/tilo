@@ -4,7 +4,7 @@
 //! onto the document-wide column setting; the exporter hands back the `<w:cols>`
 //! element to fold into the generated sectPr.
 
-use crate::model::{columns as model_columns, DocMut, DocRef};
+use crate::model::{DocMut, DocRef, columns as model_columns};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
@@ -15,7 +15,9 @@ const TWIPS_PER_PX: f64 = 15.0;
 /// the section carries no `w:cols` (or a count of one) — the document keeps its
 /// single-column default.
 pub(super) fn import_section_columns(document_xml: &[u8], doc: &mut DocMut) {
-    let Some((count, gap)) = parse_cols(document_xml) else { return };
+    let Some((count, gap)) = parse_cols(document_xml) else {
+        return;
+    };
     if count <= 1 {
         return;
     }
@@ -41,13 +43,21 @@ fn parse_cols(document_xml: &[u8]) -> Option<(u32, Option<f64>)> {
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"w:num")
-                    .and_then(|a| a.unescape_value().ok().and_then(|v| v.trim().parse::<u32>().ok()))
+                    .and_then(|a| {
+                        a.unescape_value()
+                            .ok()
+                            .and_then(|v| v.trim().parse::<u32>().ok())
+                    })
                     .unwrap_or(1);
                 let gap = e
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"w:space")
-                    .and_then(|a| a.unescape_value().ok().and_then(|v| v.trim().parse::<f64>().ok()))
+                    .and_then(|a| {
+                        a.unescape_value()
+                            .ok()
+                            .and_then(|v| v.trim().parse::<f64>().ok())
+                    })
                     .map(|twips| (twips / TWIPS_PER_PX * 100.0).round() / 100.0);
                 return Some((num, gap));
             }

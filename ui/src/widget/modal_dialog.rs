@@ -227,7 +227,9 @@ impl<C: Widget> ModalDialog<C> {
         }
         let mut inner_taffy = TaffyTree::<()>::new();
         let mut inner_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let content_node = self.content.build_layout(&mut inner_taffy, theme, &mut inner_map);
+        let content_node = self
+            .content
+            .build_layout(&mut inner_taffy, theme, &mut inner_map);
         let _ = inner_taffy.compute_layout_with_measure(
             content_node,
             Size {
@@ -279,10 +281,18 @@ impl<C: Widget> ModalDialog<C> {
         );
     }
 
-    pub fn dialog_rect(&self) -> Rect { self.rect }
-    pub fn primary_rect(&self) -> Rect { self.primary_rect }
-    pub fn secondary_rect(&self) -> Rect { self.secondary_rect }
-    pub fn is_open(&self) -> bool { self.open }
+    pub fn dialog_rect(&self) -> Rect {
+        self.rect
+    }
+    pub fn primary_rect(&self) -> Rect {
+        self.primary_rect
+    }
+    pub fn secondary_rect(&self) -> Rect {
+        self.secondary_rect
+    }
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
 }
 
 /// Local to this module rather than reusing `permission_prompt::draw_button`,
@@ -489,13 +499,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // App's `modal_capture` cooperation.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 // A TextInput only takes a click while hovered, and this
                 // CursorMoved is what arms it.
-                self.forward_to_content(
-                    event, scale_factor, modifiers, state, path, focus_target,
-                );
+                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -512,9 +519,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 *handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.forward_to_content(
-                    event, scale_factor, modifiers, state, path, focus_target,
-                );
+                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -534,7 +539,12 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     }
                 } else if self.rect.contains(p) {
                     self.forward_to_content(
-                        event, scale_factor, modifiers, state, path, focus_target,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        focus_target,
                     );
                 } else {
                     if let Some(cb) = self.on_dismiss.as_mut() {
@@ -548,7 +558,12 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 // affordance in the content can react.
                 if self.rect.contains(self.last_cursor) {
                     self.forward_to_content(
-                        event, scale_factor, modifiers, state, path, focus_target,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        focus_target,
                     );
                 }
                 *handled = true;
@@ -557,7 +572,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         }
     }
 
-    fn name(&self) -> &str { "ModalDialog" }
+    fn name(&self) -> &str {
+        "ModalDialog"
+    }
 
     fn modal_capture(&self) -> Option<Rect> {
         if self.open { Some(self.rect) } else { None }
@@ -571,9 +588,13 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         vec![&mut self.content]
     }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
-    fn traps_focus(&self) -> bool { self.open }
+    fn traps_focus(&self) -> bool {
+        self.open
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -644,8 +665,12 @@ mod tests {
             _taffy: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str { "TestContent" }
-        fn get_rect(&self) -> Rect { Rect::ZERO }
+        fn name(&self) -> &str {
+            "TestContent"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
     }
 
     /// Counts how many events it was forwarded, so the modal-trap
@@ -683,7 +708,10 @@ mod tests {
             _a: taffy::Size<taffy::AvailableSpace>,
             _tr: &mut TextRenderer,
         ) -> taffy::Size<f32> {
-            taffy::Size { width: 200.0, height: 40.0 }
+            taffy::Size {
+                width: 200.0,
+                height: 40.0,
+            }
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
             self.rect = Rect::new(origin.x, origin.y, origin.x + 200.0, origin.y + 40.0);
@@ -711,8 +739,12 @@ mod tests {
         ) {
             self.events.set(self.events.get() + 1);
         }
-        fn name(&self) -> &str { "CountingContent" }
-        fn get_rect(&self) -> Rect { self.rect }
+        fn name(&self) -> &str {
+            "CountingContent"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
     }
 
     /// SAFETY: opaque `DeviceId` whose all-zero bit pattern is tolerated
@@ -761,10 +793,7 @@ mod tests {
 
     /// Same as [`dispatch`] but returns whether the dialog marked the event
     /// handled — needed to assert the modal-blocking contract.
-    fn dispatch_handled<C: Widget + 'static>(
-        d: &mut ModalDialog<C>,
-        event: &WindowEvent,
-    ) -> bool {
+    fn dispatch_handled<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) -> bool {
         let mut tree = TaffyTree::<()>::new();
         let node = tree.new_leaf(Style::default()).unwrap();
         let mut handled = false;
@@ -803,9 +832,17 @@ mod tests {
 
     /// Through the real five-pass path so `content_taffy` / `content_node`
     /// are populated and in-box forwarding works.
-    fn laid_out_counting(open: bool) -> (ModalDialog<CountingContent>, std::rc::Rc<std::cell::Cell<usize>>) {
+    fn laid_out_counting(
+        open: bool,
+    ) -> (
+        ModalDialog<CountingContent>,
+        std::rc::Rc<std::cell::Cell<usize>>,
+    ) {
         let events = std::rc::Rc::new(std::cell::Cell::new(0usize));
-        let content = CountingContent { events: events.clone(), rect: Rect::ZERO };
+        let content = CountingContent {
+            events: events.clone(),
+            rect: Rect::ZERO,
+        };
         let mut d = ModalDialog::new("Title", content).open(open);
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();

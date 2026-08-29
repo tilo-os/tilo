@@ -152,7 +152,11 @@ pub struct Review {
 
 impl Review {
     pub fn new(author: &str, stars: f32, body: &str) -> Self {
-        Self { author: author.into(), stars, body: body.into() }
+        Self {
+            author: author.into(),
+            stars,
+            body: body.into(),
+        }
     }
 }
 
@@ -169,10 +173,16 @@ pub struct Compat {
 
 impl Compat {
     pub fn info(label: &str) -> Self {
-        Self { label: label.into(), blocking: false }
+        Self {
+            label: label.into(),
+            blocking: false,
+        }
     }
     pub fn warn(label: &str) -> Self {
-        Self { label: label.into(), blocking: true }
+        Self {
+            label: label.into(),
+            blocking: true,
+        }
     }
 }
 
@@ -252,7 +262,11 @@ impl AppEntry {
             shots: Vec::new(),
             featured: false,
             icon_tone: tone,
-            monogram: name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default(),
+            monogram: name
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_default(),
             reviews: Vec::new(),
             compat: Vec::new(),
             download_count: None,
@@ -328,10 +342,16 @@ pub struct Permission {
 
 impl Permission {
     pub fn normal(label: &str) -> Self {
-        Self { label: label.into(), sensitive: false }
+        Self {
+            label: label.into(),
+            sensitive: false,
+        }
     }
     pub fn sensitive(label: &str) -> Self {
-        Self { label: label.into(), sensitive: true }
+        Self {
+            label: label.into(),
+            sensitive: true,
+        }
     }
 }
 
@@ -360,7 +380,10 @@ pub enum InstallState {
 
 impl InstallState {
     pub fn is_installed_or_update(&self) -> bool {
-        matches!(self, InstallState::Installed | InstallState::UpdateAvailable(_))
+        matches!(
+            self,
+            InstallState::Installed | InstallState::UpdateAvailable(_)
+        )
     }
 }
 
@@ -450,7 +473,11 @@ impl UpdateProgress {
         }
         let finished = self.done;
         let total = self.total();
-        let mut s = format!("Updating {} of {}", (finished + self.active).min(total), total);
+        let mut s = format!(
+            "Updating {} of {}",
+            (finished + self.active).min(total),
+            total
+        );
         if self.queued > 0 {
             s.push_str(&format!(" · {} queued", self.queued));
         }
@@ -563,7 +590,11 @@ mod tests {
 
     #[test]
     fn state_derivation_covers_all_cases() {
-        let cat = Catalog::new(vec![entry("a", "2.0"), entry("b", "2.0"), entry("c", "2.0")]);
+        let cat = Catalog::new(vec![
+            entry("a", "2.0"),
+            entry("b", "2.0"),
+            entry("c", "2.0"),
+        ]);
         let mut snap = InstallSnapshot::default();
         // a: installed at latest
         snap.installed.insert("a".into(), "2.0".into());
@@ -572,12 +603,18 @@ mod tests {
         // c: installing
         snap.installing.insert("c".into(), 0.5);
 
-        assert_eq!(cat.state_of(cat.get("a").unwrap(), &snap), InstallState::Installed);
+        assert_eq!(
+            cat.state_of(cat.get("a").unwrap(), &snap),
+            InstallState::Installed
+        );
         assert_eq!(
             cat.state_of(cat.get("b").unwrap(), &snap),
             InstallState::UpdateAvailable("1.0".into())
         );
-        assert_eq!(cat.state_of(cat.get("c").unwrap(), &snap), InstallState::Installing(0.5));
+        assert_eq!(
+            cat.state_of(cat.get("c").unwrap(), &snap),
+            InstallState::Installing(0.5)
+        );
     }
 
     #[test]
@@ -588,12 +625,19 @@ mod tests {
         let mut snap = InstallSnapshot::default();
         snap.installed.insert("a".into(), "1.0".into());
         snap.installing.insert("a".into(), 0.3);
-        assert_eq!(cat.state_of(cat.get("a").unwrap(), &snap), InstallState::Installing(0.3));
+        assert_eq!(
+            cat.state_of(cat.get("a").unwrap(), &snap),
+            InstallState::Installing(0.3)
+        );
     }
 
     #[test]
     fn updatable_and_installed_queries() {
-        let cat = Catalog::new(vec![entry("a", "2.0"), entry("b", "2.0"), entry("c", "2.0")]);
+        let cat = Catalog::new(vec![
+            entry("a", "2.0"),
+            entry("b", "2.0"),
+            entry("c", "2.0"),
+        ]);
         let mut snap = InstallSnapshot::default();
         snap.installed.insert("a".into(), "2.0".into());
         snap.installed.insert("b".into(), "1.0".into());
@@ -630,26 +674,53 @@ mod tests {
         // A queued app reads as Queued regardless of (zero) progress.
         assert_eq!(InstallPhase::from_progress(0.0, true), InstallPhase::Queued);
         // Below the boundary → downloading; at/above → installing.
-        assert_eq!(InstallPhase::from_progress(0.0, false), InstallPhase::Downloading);
-        assert_eq!(InstallPhase::from_progress(0.59, false), InstallPhase::Downloading);
-        assert_eq!(InstallPhase::from_progress(0.6, false), InstallPhase::Installing);
-        assert_eq!(InstallPhase::from_progress(0.95, false), InstallPhase::Installing);
+        assert_eq!(
+            InstallPhase::from_progress(0.0, false),
+            InstallPhase::Downloading
+        );
+        assert_eq!(
+            InstallPhase::from_progress(0.59, false),
+            InstallPhase::Downloading
+        );
+        assert_eq!(
+            InstallPhase::from_progress(0.6, false),
+            InstallPhase::Installing
+        );
+        assert_eq!(
+            InstallPhase::from_progress(0.95, false),
+            InstallPhase::Installing
+        );
     }
 
     #[test]
     fn update_progress_status_line_reflects_batch() {
         // Mid-batch: 1 done, 1 active, 2 queued of 4.
-        let p = UpdateProgress { queued: 2, active: 1, done: 1, overall: 0.4 };
+        let p = UpdateProgress {
+            queued: 2,
+            active: 1,
+            done: 1,
+            overall: 0.4,
+        };
         assert!(p.in_flight());
         assert_eq!(p.total(), 4);
         assert_eq!(p.status_line(), "Updating 2 of 4 · 2 queued");
 
         // Active only, nothing queued.
-        let p = UpdateProgress { queued: 0, active: 2, done: 0, overall: 0.3 };
+        let p = UpdateProgress {
+            queued: 0,
+            active: 2,
+            done: 0,
+            overall: 0.3,
+        };
         assert_eq!(p.status_line(), "Updating 2 of 2");
 
         // Finished batch.
-        let p = UpdateProgress { queued: 0, active: 0, done: 3, overall: 1.0 };
+        let p = UpdateProgress {
+            queued: 0,
+            active: 0,
+            done: 3,
+            overall: 1.0,
+        };
         assert!(!p.in_flight());
         assert_eq!(p.status_line(), "3 updates complete");
 

@@ -19,7 +19,9 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format};
+use vello::peniko::{
+    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
+};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
@@ -278,8 +280,7 @@ impl Image {
                 let dh = ih_f * scale;
                 let dx = self.rect.x0 + (rw - dw) * 0.5;
                 let dy = self.rect.y0 + (rh - dh) * 0.5;
-                let bt =
-                    Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
+                let bt = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
                 let dest = Rect::new(dx, dy, dx + dw, dy + dh);
                 (bt, dest)
             }
@@ -289,8 +290,7 @@ impl Image {
                 let dh = ih_f * scale;
                 let dx = self.rect.x0 + (rw - dw) * 0.5;
                 let dy = self.rect.y0 + (rh - dh) * 0.5;
-                let bt =
-                    Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
+                let bt = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
                 // Clip to the widget rect so cover crops on the long axis.
                 (bt, self.rect)
             }
@@ -537,8 +537,8 @@ mod tests {
 
     #[test]
     fn image_with_fill_fit_fills_entire_rect() {
-        let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
-            .with_fit(ImageFit::Fill);
+        let img =
+            Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16).with_fit(ImageFit::Fill);
         let mut scene = Scene::new();
         let mut img = img;
         img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 50.0));
@@ -561,8 +561,8 @@ mod tests {
     #[test]
     fn accessibility_alt_text_surfaces_as_accessible_name() {
         use crate::a11y::Role;
-        let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
-            .with_alt("A red square");
+        let img =
+            Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16).with_alt("A red square");
         assert_eq!(img.alt(), Some("A red square"));
         let node = Widget::accessibility(&img).expect("image is not presentational");
         assert_eq!(node.role, Role::Image);

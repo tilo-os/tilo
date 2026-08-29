@@ -325,8 +325,7 @@ mod tests {
     /// it is the id a caller actually resolves against.
     #[test]
     fn a_photograph_that_names_its_content_is_addressed_by_it() {
-        const HASH: &str =
-            "623fdbf0c19749ddd1116f8c68b561ad648e3023ca4f304a732bf7b06d1ffb82";
+        const HASH: &str = "623fdbf0c19749ddd1116f8c68b561ad648e3023ca4f304a732bf7b06d1ffb82";
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
         let img = OpenImage::from_path("/run/user/1000/qlva3099960/qos-opened/x.png", 800, 400)
@@ -355,7 +354,10 @@ mod tests {
         assert_eq!(content_of("photos.image:"), None);
         assert_eq!(content_of("files.entry:/x"), None);
         // Right length, wrong alphabet: hex is what a hash is written in.
-        assert_eq!(content_of(&format!("photos.image:{}", "z".repeat(64))), None);
+        assert_eq!(
+            content_of(&format!("photos.image:{}", "z".repeat(64))),
+            None
+        );
     }
 
     #[test]
@@ -372,7 +374,10 @@ mod tests {
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].kind, IMAGE_KIND);
         assert_eq!(res[0].label, "harbour.png");
-        assert_eq!(res[0].id.0, "photos.image:/var/tmp/qos/home/quinten/harbour.png");
+        assert_eq!(
+            res[0].id.0,
+            "photos.image:/var/tmp/qos/home/quinten/harbour.png"
+        );
         // The size is discoverable from titles alone.
         assert_eq!(res[0].children.len(), 1);
         assert_eq!(res[0].children[0].label, "800 x 400 pixels");
@@ -415,7 +420,11 @@ mod tests {
         }
         assert!(!flat.is_empty(), "there was nothing to enumerate");
 
-        assert_eq!(doc.get_heads(), before_heads, "enumeration moved the document");
+        assert_eq!(
+            doc.get_heads(),
+            before_heads,
+            "enumeration moved the document"
+        );
         assert_eq!(doc.save(), before_bytes, "enumeration changed the document");
     }
 
@@ -483,9 +492,15 @@ mod tests {
         let r = parse_crop_arg("0.25, 0.25, 0.5, 0.5").expect("four numbers");
         assert!((r.w - 0.5).abs() < 1e-9);
         assert!(parse_crop_arg("").is_none());
-        assert!(parse_crop_arg("0.1,0.2,0.3").is_none(), "three is not a rect");
+        assert!(
+            parse_crop_arg("0.1,0.2,0.3").is_none(),
+            "three is not a rect"
+        );
         assert!(parse_crop_arg("a,b,c,d").is_none());
-        assert!(parse_crop_arg("0,0,0,0").is_none(), "an empty crop is refused");
+        assert!(
+            parse_crop_arg("0,0,0,0").is_none(),
+            "an empty crop is refused"
+        );
     }
 
     /// A prompted crop that cannot be parsed must leave the photograph alone
@@ -505,10 +520,21 @@ mod tests {
         };
         let mut registry = ActionRegistry::new();
         register(&mut registry);
-        registry.decode(&build("nonsense")).unwrap().apply(&mut doc).unwrap();
+        registry
+            .decode(&build("nonsense"))
+            .unwrap()
+            .apply(&mut doc)
+            .unwrap();
         let e = PhotosDoc::edits(&doc);
-        assert!(e.crop.is_full(), "a bad argument cropped the photograph: {:?}", e.crop);
-        assert_eq!(e.rotate_quarters, 1, "and it must not undo the rotation either");
+        assert!(
+            e.crop.is_full(),
+            "a bad argument cropped the photograph: {:?}",
+            e.crop
+        );
+        assert_eq!(
+            e.rotate_quarters, 1,
+            "and it must not undo the rotation either"
+        );
     }
 
     #[test]

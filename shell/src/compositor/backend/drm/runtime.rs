@@ -37,14 +37,16 @@ use winit::keyboard::{
 
 use super::devices::{ModeInfo, filter_kms_nodes};
 use super::gestures::{GestureAction, GestureConfig, GestureTracker};
-use super::input_config;
 use super::hotplug::{self, ConnectedOutput, LiveOutput};
+use super::input_config;
 use super::input_config::{DeviceCaps, InputSettings};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{CardHandle, CursorPlanes, DrmScanout, ScanoutBuild, open_all_scanouts};
 use super::session::{SeatTick, SessionAction, SessionState};
-use crate::compositor::backend::{BackendEvent, GestureEvent, Output, OutputId, TouchEvent as QosTouchEvent};
+use crate::compositor::backend::{
+    BackendEvent, GestureEvent, Output, OutputId, TouchEvent as QosTouchEvent,
+};
 
 /// Errors a DRM backend can encounter during construction — each variant maps to a clean operator-visible message; the binary `eprintln!`s + exits 1 instead of panicking.
 #[derive(Debug, thiserror::Error)]
@@ -155,10 +157,10 @@ impl DrmDispatchState {
         }
     }
 
-/// Re-ask the hardware what is connected and reconcile.
-///
-/// Every udev edge lands here, including no-op ones — a `Changed` event
-/// fires on every DPMS transition and EDID re-read, and re-modesetting on those would flash the panel for nothing. [`hotplug::plan`] tells the two apart.
+    /// Re-ask the hardware what is connected and reconcile.
+    ///
+    /// Every udev edge lands here, including no-op ones — a `Changed` event
+    /// fires on every DPMS transition and EDID re-read, and re-modesetting on those would flash the panel for nothing. [`hotplug::plan`] tells the two apart.
     pub fn rescan_outputs(&mut self, reason: &str) {
         let Some(card) = self.card.as_ref() else {
             return;
@@ -355,11 +357,7 @@ impl DrmDispatchState {
             // The remaining three all happen inside the scanouts, which
             // live on the render thread, so they travel together as one ordered `Resume` — splitting would let a frame slip between modeset and unpause.
             SessionAction::ResetOutputs => {
-                let dpms_on = self
-                    .session
-                    .as_ref()
-                    .map(|s| s.dpms_on())
-                    .unwrap_or(true);
+                let dpms_on = self.session.as_ref().map(|s| s.dpms_on()).unwrap_or(true);
                 self.command(ScanoutCommand::Resume { dpms_on });
             }
             SessionAction::RestoreDpms | SessionAction::ResumeScanout => {}
@@ -510,8 +508,8 @@ pub struct ScanoutEntry {
     pub scanout: DrmScanout,
 }
 
-    /// Lay output sizes out left-to-right at `y = 0` — a thin alias for
-    /// [`hotplug::layout`] so startup and hotplug pack outputs through one implementation, or drift shows a monitor in the wrong place after a re-plug.
+/// Lay output sizes out left-to-right at `y = 0` — a thin alias for
+/// [`hotplug::layout`] so startup and hotplug pack outputs through one implementation, or drift shows a monitor in the wrong place after a re-plug.
 #[cfg(test)]
 use hotplug::layout as side_by_side_layout;
 
@@ -604,24 +602,27 @@ impl DrmRuntime {
         // activating has to take master back and rebuild every output,
         // since nothing about a CRTC survives the switch. `super::session`'s state machine owns the ordering; this handler performs what it returns.
         handle
-            .insert_source(session_notifier, move |event, _, state: &mut DrmDispatchState| {
-                use smithay::backend::session::Event as SeatEvent;
-                let tick = match event {
-                    SeatEvent::ActivateSession => {
-                        tracing::info!("DRM backend: session activated");
-                        SeatTick::Activate
-                    }
-                    SeatEvent::PauseSession => {
-                        tracing::info!("DRM backend: session paused");
-                        SeatTick::Pause
-                    }
-                };
-                let actions = match state.session.as_ref() {
-                    Some(s) => s.apply_with_actions(tick),
-                    None => Vec::new(),
-                };
-                state.perform_all(actions);
-            })
+            .insert_source(
+                session_notifier,
+                move |event, _, state: &mut DrmDispatchState| {
+                    use smithay::backend::session::Event as SeatEvent;
+                    let tick = match event {
+                        SeatEvent::ActivateSession => {
+                            tracing::info!("DRM backend: session activated");
+                            SeatTick::Activate
+                        }
+                        SeatEvent::PauseSession => {
+                            tracing::info!("DRM backend: session paused");
+                            SeatTick::Pause
+                        }
+                    };
+                    let actions = match state.session.as_ref() {
+                        Some(s) => s.apply_with_actions(tick),
+                        None => Vec::new(),
+                    };
+                    state.perform_all(actions);
+                },
+            )
             .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
 
         // Every one of the three udev events is the same question — what
@@ -651,165 +652,168 @@ impl DrmRuntime {
         // libinput events. Pointer, keyboard, gestures and touch all come
         // through here, translated into winit-shaped `WindowEvent`s the chrome handles — a bare-TTY keystroke takes the same path as a nested dev window's.
         handle
-            .insert_source(libinput_backend, move |event, _, state: &mut DrmDispatchState| match event {
-                // A device appearing is the only moment libinput will
-                // accept its configuration (at startup and on real hot-plug) — the arm that makes persisted input settings reach the hardware at all.
-                InputEvent::DeviceAdded { mut device } => {
-                    state.configure_device(&mut device);
-                    state.devices.push(device);
-                }
-                InputEvent::DeviceRemoved { device } => {
-                    tracing::info!(device = device.name(), "DRM input: device removed");
-                    state.devices.retain(|d| *d != device);
-                }
-                // Absolute motion (usb-tablet/touch): map normalized coords through the output size to a pixel position.
-                InputEvent::PointerMotionAbsolute { event } => {
-                    let (w, h) = state.output_size;
-                    let x = event.x_transformed(w.max(1));
-                    let y = event.y_transformed(h.max(1));
-                    state.pointer = (x, y);
-                    // Reposition the hardware cursor plane immediately — no framebuffer redraw needed; `CursorPlanes` routes the global position to the plane under the pointer.
-                    state.hw_cursor.move_to(x, y);
-                    state.push(BackendEvent::Input(cursor_moved_event(x, y)));
-                }
-                // Relative motion (mouse): accumulate + clamp to output.
-                InputEvent::PointerMotion { event } => {
-                    let (w, h) = state.output_size;
-                    let max_x = (w.max(1) - 1) as f64;
-                    let max_y = (h.max(1) - 1) as f64;
-                    let x = (state.pointer.0 + event.delta_x()).clamp(0.0, max_x);
-                    let y = (state.pointer.1 + event.delta_y()).clamp(0.0, max_y);
-                    state.pointer = (x, y);
-                    state.hw_cursor.move_to(x, y);
-                    state.push(BackendEvent::Input(cursor_moved_event(x, y)));
-                }
-                InputEvent::PointerButton { event } => {
-                    if let Some(button) = map_mouse_button(event.button()) {
-                        let st = match event.state() {
-                            ButtonState::Pressed => ElementState::Pressed,
-                            ButtonState::Released => ElementState::Released,
-                        };
-                        state.push(BackendEvent::Input(mouse_input_event(st, button)));
+            .insert_source(
+                libinput_backend,
+                move |event, _, state: &mut DrmDispatchState| match event {
+                    // A device appearing is the only moment libinput will
+                    // accept its configuration (at startup and on real hot-plug) — the arm that makes persisted input settings reach the hardware at all.
+                    InputEvent::DeviceAdded { mut device } => {
+                        state.configure_device(&mut device);
+                        state.devices.push(device);
                     }
-                }
-                InputEvent::PointerAxis { event } => {
-                    let dx = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                    let dy = event.amount(Axis::Vertical).unwrap_or(0.0);
-                    if dx != 0.0 || dy != 0.0 {
-                        state.push(BackendEvent::Input(mouse_wheel_event(dx, dy)));
+                    InputEvent::DeviceRemoved { device } => {
+                        tracing::info!(device = device.name(), "DRM input: device removed");
+                        state.devices.retain(|d| *d != device);
                     }
-                }
-                // Keyboard: run the libinput keycode through xkb to get a
-                // logical key + text, then enqueue a winit-shaped
-                // `KeyboardInput` (plus `ModifiersChanged` on a modifier flip)
-                // — the same wire the winit backend feeds, so `dispatch_event` handles DRM keystrokes identically to hosted-mode ones.
-                InputEvent::Keyboard { event } => {
-                    let pressed = matches!(event.state(), KeyState::Pressed);
-                    state.handle_keyboard_key(event.key_code(), pressed);
-                }
+                    // Absolute motion (usb-tablet/touch): map normalized coords through the output size to a pixel position.
+                    InputEvent::PointerMotionAbsolute { event } => {
+                        let (w, h) = state.output_size;
+                        let x = event.x_transformed(w.max(1));
+                        let y = event.y_transformed(h.max(1));
+                        state.pointer = (x, y);
+                        // Reposition the hardware cursor plane immediately — no framebuffer redraw needed; `CursorPlanes` routes the global position to the plane under the pointer.
+                        state.hw_cursor.move_to(x, y);
+                        state.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                    }
+                    // Relative motion (mouse): accumulate + clamp to output.
+                    InputEvent::PointerMotion { event } => {
+                        let (w, h) = state.output_size;
+                        let max_x = (w.max(1) - 1) as f64;
+                        let max_y = (h.max(1) - 1) as f64;
+                        let x = (state.pointer.0 + event.delta_x()).clamp(0.0, max_x);
+                        let y = (state.pointer.1 + event.delta_y()).clamp(0.0, max_y);
+                        state.pointer = (x, y);
+                        state.hw_cursor.move_to(x, y);
+                        state.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                    }
+                    InputEvent::PointerButton { event } => {
+                        if let Some(button) = map_mouse_button(event.button()) {
+                            let st = match event.state() {
+                                ButtonState::Pressed => ElementState::Pressed,
+                                ButtonState::Released => ElementState::Released,
+                            };
+                            state.push(BackendEvent::Input(mouse_input_event(st, button)));
+                        }
+                    }
+                    InputEvent::PointerAxis { event } => {
+                        let dx = event.amount(Axis::Horizontal).unwrap_or(0.0);
+                        let dy = event.amount(Axis::Vertical).unwrap_or(0.0);
+                        if dx != 0.0 || dy != 0.0 {
+                            state.push(BackendEvent::Input(mouse_wheel_event(dx, dy)));
+                        }
+                    }
+                    // Keyboard: run the libinput keycode through xkb to get a
+                    // logical key + text, then enqueue a winit-shaped
+                    // `KeyboardInput` (plus `ModifiersChanged` on a modifier flip)
+                    // — the same wire the winit backend feeds, so `dispatch_event` handles DRM keystrokes identically to hosted-mode ones.
+                    InputEvent::Keyboard { event } => {
+                        let pressed = matches!(event.state(), KeyState::Pressed);
+                        state.handle_keyboard_key(event.key_code(), pressed);
+                    }
 
-                // ---- touchpad gestures ----
-                InputEvent::GestureSwipeBegin { event } => {
-                    state.handle_gesture(GestureEvent::SwipeBegin {
-                        fingers: event.fingers(),
-                    });
-                }
-                InputEvent::GestureSwipeUpdate { event } => {
-                    state.handle_gesture(GestureEvent::SwipeUpdate {
-                        dx: event.delta_x(),
-                        dy: event.delta_y(),
-                    });
-                }
-                InputEvent::GestureSwipeEnd { event } => {
-                    state.handle_gesture(GestureEvent::SwipeEnd {
-                        cancelled: event.cancelled(),
-                    });
-                }
-                InputEvent::GesturePinchBegin { event } => {
-                    state.handle_gesture(GestureEvent::PinchBegin {
-                        fingers: event.fingers(),
-                    });
-                }
-                InputEvent::GesturePinchUpdate { event } => {
-                    state.handle_gesture(GestureEvent::PinchUpdate {
-                        dx: event.delta_x(),
-                        dy: event.delta_y(),
-                        scale: event.scale(),
-                        rotation: event.rotation(),
-                    });
-                }
-                InputEvent::GesturePinchEnd { event } => {
-                    state.handle_gesture(GestureEvent::PinchEnd {
-                        cancelled: event.cancelled(),
-                    });
-                }
-                InputEvent::GestureHoldBegin { event } => {
-                    state.handle_gesture(GestureEvent::HoldBegin {
-                        fingers: event.fingers(),
-                    });
-                }
-                InputEvent::GestureHoldEnd { event } => {
-                    state.handle_gesture(GestureEvent::HoldEnd {
-                        cancelled: event.cancelled(),
-                    });
-                }
+                    // ---- touchpad gestures ----
+                    InputEvent::GestureSwipeBegin { event } => {
+                        state.handle_gesture(GestureEvent::SwipeBegin {
+                            fingers: event.fingers(),
+                        });
+                    }
+                    InputEvent::GestureSwipeUpdate { event } => {
+                        state.handle_gesture(GestureEvent::SwipeUpdate {
+                            dx: event.delta_x(),
+                            dy: event.delta_y(),
+                        });
+                    }
+                    InputEvent::GestureSwipeEnd { event } => {
+                        state.handle_gesture(GestureEvent::SwipeEnd {
+                            cancelled: event.cancelled(),
+                        });
+                    }
+                    InputEvent::GesturePinchBegin { event } => {
+                        state.handle_gesture(GestureEvent::PinchBegin {
+                            fingers: event.fingers(),
+                        });
+                    }
+                    InputEvent::GesturePinchUpdate { event } => {
+                        state.handle_gesture(GestureEvent::PinchUpdate {
+                            dx: event.delta_x(),
+                            dy: event.delta_y(),
+                            scale: event.scale(),
+                            rotation: event.rotation(),
+                        });
+                    }
+                    InputEvent::GesturePinchEnd { event } => {
+                        state.handle_gesture(GestureEvent::PinchEnd {
+                            cancelled: event.cancelled(),
+                        });
+                    }
+                    InputEvent::GestureHoldBegin { event } => {
+                        state.handle_gesture(GestureEvent::HoldBegin {
+                            fingers: event.fingers(),
+                        });
+                    }
+                    InputEvent::GestureHoldEnd { event } => {
+                        state.handle_gesture(GestureEvent::HoldEnd {
+                            cancelled: event.cancelled(),
+                        });
+                    }
 
-                // touchscreen
-                //
-                // Each touch point is delivered twice: once as a `wl_touch`
-                // event for real multi-touch clients, and once as pointer
-                // motion + a left click so the shell chrome (driven by the
-                // winit event stream, no touch path) responds like a click. Without the second half, a touchscreen can operate apps but not the desktop.
-                InputEvent::TouchDown { event } => {
-                    let (x, y) = touch_position(state, &event);
-                    state.pointer = (x, y);
-                    state.hw_cursor.move_to(x, y);
-                    state.push(BackendEvent::Touch(QosTouchEvent::Down {
-                        slot: touch_slot(event.slot()),
-                        x,
-                        y,
-                    }));
-                    state.push(BackendEvent::Input(cursor_moved_event(x, y)));
-                    state.push(BackendEvent::Input(mouse_input_event(
-                        ElementState::Pressed,
-                        MouseButton::Left,
-                    )));
-                }
-                InputEvent::TouchMotion { event } => {
-                    let (x, y) = touch_position(state, &event);
-                    state.pointer = (x, y);
-                    state.hw_cursor.move_to(x, y);
-                    state.push(BackendEvent::Touch(QosTouchEvent::Motion {
-                        slot: touch_slot(event.slot()),
-                        x,
-                        y,
-                    }));
-                    state.push(BackendEvent::Input(cursor_moved_event(x, y)));
-                }
-                InputEvent::TouchUp { event } => {
-                    state.push(BackendEvent::Touch(QosTouchEvent::Up {
-                        slot: touch_slot(event.slot()),
-                    }));
-                    state.push(BackendEvent::Input(mouse_input_event(
-                        ElementState::Released,
-                        MouseButton::Left,
-                    )));
-                }
-                InputEvent::TouchCancel { .. } => {
-                    state.push(BackendEvent::Touch(QosTouchEvent::Cancel));
-                    // A cancelled touch is not a click — release the synthetic button so the chrome doesn't sit on a phantom held pointer.
-                    state.push(BackendEvent::Input(mouse_input_event(
-                        ElementState::Released,
-                        MouseButton::Left,
-                    )));
-                }
-                InputEvent::TouchFrame { .. } => {
-                    state.push(BackendEvent::Touch(QosTouchEvent::Frame));
-                }
+                    // touchscreen
+                    //
+                    // Each touch point is delivered twice: once as a `wl_touch`
+                    // event for real multi-touch clients, and once as pointer
+                    // motion + a left click so the shell chrome (driven by the
+                    // winit event stream, no touch path) responds like a click. Without the second half, a touchscreen can operate apps but not the desktop.
+                    InputEvent::TouchDown { event } => {
+                        let (x, y) = touch_position(state, &event);
+                        state.pointer = (x, y);
+                        state.hw_cursor.move_to(x, y);
+                        state.push(BackendEvent::Touch(QosTouchEvent::Down {
+                            slot: touch_slot(event.slot()),
+                            x,
+                            y,
+                        }));
+                        state.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                        state.push(BackendEvent::Input(mouse_input_event(
+                            ElementState::Pressed,
+                            MouseButton::Left,
+                        )));
+                    }
+                    InputEvent::TouchMotion { event } => {
+                        let (x, y) = touch_position(state, &event);
+                        state.pointer = (x, y);
+                        state.hw_cursor.move_to(x, y);
+                        state.push(BackendEvent::Touch(QosTouchEvent::Motion {
+                            slot: touch_slot(event.slot()),
+                            x,
+                            y,
+                        }));
+                        state.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                    }
+                    InputEvent::TouchUp { event } => {
+                        state.push(BackendEvent::Touch(QosTouchEvent::Up {
+                            slot: touch_slot(event.slot()),
+                        }));
+                        state.push(BackendEvent::Input(mouse_input_event(
+                            ElementState::Released,
+                            MouseButton::Left,
+                        )));
+                    }
+                    InputEvent::TouchCancel { .. } => {
+                        state.push(BackendEvent::Touch(QosTouchEvent::Cancel));
+                        // A cancelled touch is not a click — release the synthetic button so the chrome doesn't sit on a phantom held pointer.
+                        state.push(BackendEvent::Input(mouse_input_event(
+                            ElementState::Released,
+                            MouseButton::Left,
+                        )));
+                    }
+                    InputEvent::TouchFrame { .. } => {
+                        state.push(BackendEvent::Touch(QosTouchEvent::Frame));
+                    }
 
-                // Switches (lid, tablet mode) and tablet-tool events are handled elsewhere or not at all; unlike the gestures above they were never advertised to clients, so dropping them promises nothing undelivered.
-                _ => {}
-            })
+                    // Switches (lid, tablet mode) and tablet-tool events are handled elsewhere or not at all; unlike the gestures above they were never advertised to clients, so dropping them promises nothing undelivered.
+                    _ => {}
+                },
+            )
             .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
 
         // Compile the xkb keymap once at startup from the session's `XKB_DEFAULT_*` environment (installer-seeded, PAM-exported); a failure is non-fatal, running pointer-only rather than refusing to boot.
@@ -870,7 +874,9 @@ impl DrmRuntime {
         // Start the pointer in the middle of the combined space.
         let (ow, oh) = dispatch.output_size;
         dispatch.pointer = (ow as f64 / 2.0, oh as f64 / 2.0);
-        dispatch.hw_cursor.move_to(dispatch.pointer.0, dispatch.pointer.1);
+        dispatch
+            .hw_cursor
+            .move_to(dispatch.pointer.0, dispatch.pointer.1);
 
         Ok(Self {
             event_loop,
@@ -945,7 +951,7 @@ impl DrmRuntime {
     #[cfg(test)]
     pub fn synthesize_for_tests(outputs: Vec<(OutputId, Output)>) -> DrmDispatchState {
         let mut registry = OutputRegistry::new();
-    // Re-intern so the registry's `next_id` is consistent with the synthesised ids — arbitrary keys, since the test only cares about `output_meta`.
+        // Re-intern so the registry's `next_id` is consistent with the synthesised ids — arbitrary keys, since the test only cares about `output_meta`.
         for (id, _) in &outputs {
             registry.intern(super::outputs::DrmOutputKey {
                 device: 0,
@@ -960,8 +966,8 @@ impl DrmRuntime {
     }
 }
 
-    /// Ask one libinput device what it can be configured to do — every
-    /// question is a capability query, asked before setting to keep the path free of error returns for settings a device never accepted.
+/// Ask one libinput device what it can be configured to do — every
+/// question is a capability query, asked before setting to keep the path free of error returns for settings a device never accepted.
 fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
     DeviceCaps {
         supports_tap: device.config_tap_finger_count() > 0,
@@ -973,8 +979,8 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
     }
 }
 
-    /// The `display.scale` the user has set, or `None`. Distinguishing
-    /// "unset" from "set to 1.0" is the point: unset derives the scale from the panel, 1.0 means the user chose 100% on a HiDPI panel.
+/// The `display.scale` the user has set, or `None`. Distinguishing
+/// "unset" from "set to 1.0" is the point: unset derives the scale from the panel, 1.0 means the user chose 100% on a HiDPI panel.
 fn load_display_scale_override() -> Option<f64> {
     settings_store::load_section("display")
         .get("scale")
@@ -982,7 +988,7 @@ fn load_display_scale_override() -> Option<f64> {
         .filter(|s| (0.5..=3.0).contains(s))
 }
 
-    /// Touch slot as a plain integer for the backend event. libinput reports `-1` for single-touch devices with no slot concept — all one finger, so slot 0 is honest.
+/// Touch slot as a plain integer for the backend event. libinput reports `-1` for single-touch devices with no slot concept — all one finger, so slot 0 is honest.
 fn touch_slot(slot: TouchSlot) -> u32 {
     let id: i32 = slot.into();
     id.max(0) as u32
@@ -994,10 +1000,7 @@ where
     E: AbsolutePositionEvent<LibinputInputBackend>,
 {
     let (w, h) = state.output_size;
-    (
-        event.x_transformed(w.max(1)),
-        event.y_transformed(h.max(1)),
-    )
+    (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)))
 }
 
 /// Build a `WindowEvent::CursorMoved` for the compositor's input wire. `device_id` is zeroed — the host path never inspects it (mirrors `native::execute_planned_action`).
@@ -1476,7 +1479,7 @@ mod tests {
         assert_eq!(picked.width, 2560);
     }
 
-// Keyboard: xkb keycode → winit key translation
+    // Keyboard: xkb keycode → winit key translation
 
     /// Pure mapping: named special keys and printable characters resolve to the winit `Key` the chrome matches on — no real keymap needed, mirroring the `preferred_mode`/pointer-helper tests.
     #[test]
@@ -1630,12 +1633,12 @@ mod tests {
         assert!(side_by_side_layout(&[]).is_empty());
     }
 
-// Hotplug + session reconciliation, on the production methods
-//
-// `rescan_outputs` and `adopt_builds` need a real card (they modeset), but
-// everything they do *after* the ioctls — re-layout, scale derivation,
-// pointer clamping, the output table, and the commands sent to the
-// scanout owner — is reachable without one. These drive `DrmDispatchState`'s own methods rather than re-deriving the policy in the test.
+    // Hotplug + session reconciliation, on the production methods
+    //
+    // `rescan_outputs` and `adopt_builds` need a real card (they modeset), but
+    // everything they do *after* the ioctls — re-layout, scale derivation,
+    // pointer clamping, the output table, and the commands sent to the
+    // scanout owner — is reachable without one. These drive `DrmDispatchState`'s own methods rather than re-deriving the policy in the test.
 
     fn crtc(n: u32) -> smithay::reexports::drm::control::crtc::Handle {
         smithay::reexports::drm::control::from_u32(n).expect("non-zero crtc handle")
@@ -1859,13 +1862,16 @@ mod tests {
         state.perform_all(session.apply_with_actions(SeatTick::Activate));
     }
 
-// Gesture routing, on the production `handle_gesture`
+    // Gesture routing, on the production `handle_gesture`
 
     #[test]
     fn a_three_finger_swipe_becomes_a_shell_gesture_and_never_reaches_a_client() {
         let mut state = DrmDispatchState::default();
         state.handle_gesture(GestureEvent::SwipeBegin { fingers: 3 });
-        state.handle_gesture(GestureEvent::SwipeUpdate { dx: 0.0, dy: -150.0 });
+        state.handle_gesture(GestureEvent::SwipeUpdate {
+            dx: 0.0,
+            dy: -150.0,
+        });
         state.handle_gesture(GestureEvent::SwipeEnd { cancelled: false });
 
         let shell: Vec<_> = state
@@ -1876,10 +1882,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            shell,
-            vec![GestureAction::SwitchWorkspace(-1)]
-        );
+        assert_eq!(shell, vec![GestureAction::SwitchWorkspace(-1)]);
         assert!(
             !state
                 .events
@@ -1896,7 +1899,10 @@ mod tests {
         let mut state = DrmDispatchState::default();
         for ev in [
             GestureEvent::SwipeBegin { fingers: 4 },
-            GestureEvent::SwipeUpdate { dx: 0.0, dy: -150.0 },
+            GestureEvent::SwipeUpdate {
+                dx: 0.0,
+                dy: -150.0,
+            },
             GestureEvent::SwipeEnd { cancelled: false },
         ] {
             state.handle_gesture(ev);
@@ -1976,7 +1982,10 @@ mod tests {
             ..Default::default()
         };
         state.handle_gesture(GestureEvent::SwipeBegin { fingers: 3 });
-        state.handle_gesture(GestureEvent::SwipeUpdate { dx: 0.0, dy: -150.0 });
+        state.handle_gesture(GestureEvent::SwipeUpdate {
+            dx: 0.0,
+            dy: -150.0,
+        });
         assert!(
             state.events.iter().any(|e| matches!(
                 e,
@@ -1986,7 +1995,7 @@ mod tests {
         );
     }
 
-// libinput device configuration, on the production plan
+    // libinput device configuration, on the production plan
 
     #[test]
     fn a_touchpad_plan_turns_tapping_on_by_default() {

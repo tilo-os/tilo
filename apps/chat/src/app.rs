@@ -157,7 +157,11 @@ impl MenuAction {
     }
     /// Menu items for one of your own messages.
     pub fn for_message() -> [MenuAction; 3] {
-        [MenuAction::EditMessage, MenuAction::PinMessage, MenuAction::DeleteMessage]
+        [
+            MenuAction::EditMessage,
+            MenuAction::PinMessage,
+            MenuAction::DeleteMessage,
+        ]
     }
 }
 
@@ -190,22 +194,39 @@ pub(crate) enum Hit {
     /// Toggle a category's collapsed state.
     CategoryToggle(Id),
     /// Execute a context-menu / create action.
-    MenuAction { target: MenuTarget, action: MenuAction },
+    MenuAction {
+        target: MenuTarget,
+        action: MenuAction,
+    },
     /// The "+" create-channel button on a category header.
-    AddChannel { workspace: Id, category: Id },
+    AddChannel {
+        workspace: Id,
+        category: Id,
+    },
     /// The "+" create-category button in the sidebar header.
     AddCategory(Id),
     /// The "+" create-workspace button at the foot of the rail.
     AddWorkspace,
     /// Confirm the inline rename editor.
     RenameConfirm,
-    Reaction { msg: Id, emoji: String },
-    AddReaction { msg: Id, anchor: Point },
+    Reaction {
+        msg: Id,
+        emoji: String,
+    },
+    AddReaction {
+        msg: Id,
+        anchor: Point,
+    },
     OpenThread(Id),
-    EditHistory { msg: Id, anchor: Point },
+    EditHistory {
+        msg: Id,
+        anchor: Point,
+    },
     /// Right-click target over one of your own messages — opens the message
     /// action menu (Edit). Left-click on it is a no-op.
-    MessageMenu { msg: Id },
+    MessageMenu {
+        msg: Id,
+    },
     /// Commit the inline message editor to the CRDT.
     EditSave,
     /// Discard the inline message editor without writing.
@@ -575,7 +596,8 @@ impl ChatApp {
     /// in-memory projection is reconciled from the document by the caller's
     /// `reload`. This app supplies only its domain: the action and its type.
     pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: ChatAction) {
-        self.actions.dispatch(doc, actions::CHAT_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(doc, actions::CHAT_ACTION_TYPE, &action);
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
@@ -597,8 +619,11 @@ impl ChatApp {
             .find(|w| w.id == self.active_ws)
             .map(|w| w.name.clone())
             .unwrap_or_default();
-        let mut channels: Vec<&Channel> =
-            self.channels.iter().filter(|c| c.workspace == self.active_ws).collect();
+        let mut channels: Vec<&Channel> = self
+            .channels
+            .iter()
+            .filter(|c| c.workspace == self.active_ws)
+            .collect();
         channels.sort_by_key(|c| c.order);
         let channels = channels
             .into_iter()
@@ -637,7 +662,11 @@ impl ChatApp {
     pub(crate) fn reaction_toggle_action(&self, msg: &str, emoji: &str) -> ChatAction {
         let reacting = self
             .message(msg)
-            .map(|m| m.reactions.iter().any(|r| r.emoji == emoji && r.reacted_by(&self.me.id)))
+            .map(|m| {
+                m.reactions
+                    .iter()
+                    .any(|r| r.emoji == emoji && r.reacted_by(&self.me.id))
+            })
             .unwrap_or(false);
         if reacting {
             actions::remove_reaction_action(&self.active_channel, msg, emoji, &self.me.id)
@@ -820,9 +849,8 @@ impl ChatApp {
         let me = self.me.id.clone();
 
         // --- Microphone → Opus → publish (only while transmitting) ---
-        let transmit = !self.call.muted
-            && !self.call.deafened
-            && self.call_allows(CallAction::Speak);
+        let transmit =
+            !self.call.muted && !self.call.deafened && self.call_allows(CallAction::Speak);
         if transmit {
             if self.mic.is_none() {
                 self.mic = crate::audio::MicCapture::new();
@@ -846,8 +874,10 @@ impl ChatApp {
         let camera_on = !self.call.audio_only && self.call_allows(CallAction::Camera);
         if camera_on {
             if self.camera.is_none() {
-                self.camera =
-                    crate::video::CameraCapture::new(crate::video::DEFAULT_W, crate::video::DEFAULT_H);
+                self.camera = crate::video::CameraCapture::new(
+                    crate::video::DEFAULT_W,
+                    crate::video::DEFAULT_H,
+                );
                 // Camera encode reuses the shared stack's H.264 encoder.
                 self.cam_encoder = qos_callstream::H264Encoder::new(
                     crate::video::DEFAULT_W,
@@ -989,7 +1019,9 @@ impl ChatApp {
                     crate::video::DEFAULT_FPS,
                 )
                 .ok();
-                self.media.transport_mut().publish(crate::media::TrackKind::Screen);
+                self.media
+                    .transport_mut()
+                    .publish(crate::media::TrackKind::Screen);
             }
         }
         let _ = src;
@@ -1010,7 +1042,9 @@ impl ChatApp {
         {
             self.screen = None;
             self.screen_session = None;
-            self.media.transport_mut().unpublish(crate::media::TrackKind::Screen);
+            self.media
+                .transport_mut()
+                .unpublish(crate::media::TrackKind::Screen);
         }
     }
 
@@ -1034,8 +1068,16 @@ impl ChatApp {
     /// colour behind a mention.
     pub fn adopt_room(&mut self, presence: &PresenceCtx) {
         self.adopt_own_participant(presence);
-        self.room_names.retain(|id, _| presence.names.contains_key(&ui::permissions::UserId(id.clone())));
-        self.room_colors.retain(|id, _| presence.names.contains_key(&ui::permissions::UserId(id.clone())));
+        self.room_names.retain(|id, _| {
+            presence
+                .names
+                .contains_key(&ui::permissions::UserId(id.clone()))
+        });
+        self.room_colors.retain(|id, _| {
+            presence
+                .names
+                .contains_key(&ui::permissions::UserId(id.clone()))
+        });
         for (id, name) in &presence.names {
             let name = name.trim();
             if name.is_empty() {
@@ -1044,7 +1086,8 @@ impl ChatApp {
             self.room_names.insert(id.0.clone(), name.to_string());
             // A colour is the same kind of answer: assigned per room so two
             // people never collide, and shared with the caret pill and cursor.
-            self.room_colors.insert(id.0.clone(), presence.color_for(id));
+            self.room_colors
+                .insert(id.0.clone(), presence.color_for(id));
         }
     }
 
@@ -1144,8 +1187,19 @@ impl ChatApp {
     /// carry no information.
     fn unnamed_tag(id: &str) -> String {
         let body = id.rsplit(['@', ':']).next().unwrap_or(id);
-        let tail: String = body.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
-        if tail.is_empty() { id.to_string() } else { tail }
+        let tail: String = body
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if tail.is_empty() {
+            id.to_string()
+        } else {
+            tail
+        }
     }
 
     /// The avatar monogram for `id`, derived from whatever the room calls them
@@ -1154,7 +1208,10 @@ impl ChatApp {
         let name = self.display_name(id);
         let s = ui::widget::Avatar::initials_for_name(&name);
         if s.is_empty() {
-            name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
+            name.chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_default()
         } else {
             s
         }
@@ -1164,7 +1221,10 @@ impl ChatApp {
     /// room's assignment when it made one, otherwise the system-wide
     /// per-user colour every other surface derives the same way.
     pub fn participant_color(&self, id: &str) -> (u8, u8, u8) {
-        self.room_colors.get(id).copied().unwrap_or_else(|| ui::presence::user_color(id))
+        self.room_colors
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| ui::presence::user_color(id))
     }
 
     /// Everyone the `@` picker can offer: the document's own users, plus
@@ -1174,11 +1234,19 @@ impl ChatApp {
         let mut out: Vec<crate::mention::Participant> = self
             .users
             .iter()
-            .map(|u| crate::mention::Participant { id: u.id.clone(), name: self.display_name(&u.id), is_agent: u.is_agent })
+            .map(|u| crate::mention::Participant {
+                id: u.id.clone(),
+                name: self.display_name(&u.id),
+                is_agent: u.is_agent,
+            })
             .collect();
         for id in self.room_names.keys() {
             if !out.iter().any(|p| &p.id == id) {
-                out.push(crate::mention::Participant { id: id.clone(), name: self.display_name(id), is_agent: false });
+                out.push(crate::mention::Participant {
+                    id: id.clone(),
+                    name: self.display_name(id),
+                    is_agent: false,
+                });
             }
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1206,8 +1274,11 @@ impl ChatApp {
 
     /// Categories in the active workspace, ordered.
     pub(crate) fn ws_categories(&self) -> Vec<&crate::model::Category> {
-        let mut v: Vec<&crate::model::Category> =
-            self.categories.iter().filter(|c| c.workspace == self.active_ws).collect();
+        let mut v: Vec<&crate::model::Category> = self
+            .categories
+            .iter()
+            .filter(|c| c.workspace == self.active_ws)
+            .collect();
         v.sort_by_key(|c| c.order);
         v
     }
@@ -1218,7 +1289,10 @@ impl ChatApp {
 
     /// Cached voice members of `channel` (empty when nobody is connected).
     pub(crate) fn voice_in(&self, channel: &str) -> &[crate::model::VoiceMember] {
-        self.voice_members.get(channel).map(|v| v.as_slice()).unwrap_or(&[])
+        self.voice_members
+            .get(channel)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// The media routing for the current call, chosen from the live participant
@@ -1273,8 +1347,7 @@ impl ChatApp {
     pub(crate) fn set_composer_focus(&mut self) {
         let editing = self.editing.is_some() || self.rename.is_some();
         let main = matches!(self.focus, Focus::Main) && !editing;
-        let thread =
-            matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
+        let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
         ui::Widget::set_focus(&mut self.composer_main, main);
         ui::Widget::set_focus(&mut self.composer_thread, thread);
     }
@@ -1293,7 +1366,9 @@ impl ChatApp {
         self.categories = ChatDoc::list_categories(doc);
         self.users = ChatDoc::list_users(doc);
         // Keep the active channel valid (e.g. after a workspace switch).
-        if self.channel(&self.active_channel).map(|c| c.workspace.clone())
+        if self
+            .channel(&self.active_channel)
+            .map(|c| c.workspace.clone())
             != Some(self.active_ws.clone())
         {
             if let Some(first) = self
@@ -1319,7 +1394,11 @@ impl ChatApp {
         self.messages = ChatDoc::list_messages(doc, &self.active_channel);
         // Cache voice membership for every voice channel in this workspace.
         self.voice_members.clear();
-        for ch in self.channels.iter().filter(|c| c.kind == model::ChannelKind::Voice) {
+        for ch in self
+            .channels
+            .iter()
+            .filter(|c| c.kind == model::ChannelKind::Voice)
+        {
             let members = ChatDoc::list_voice_members(doc, &ch.id);
             if !members.is_empty() {
                 self.voice_members.insert(ch.id.clone(), members);
@@ -1332,17 +1411,22 @@ impl ChatApp {
         // changed (a channel/thread switch), where a caret reset is correct.
         self.draft_main = ChatDoc::draft_text(doc, &self.active_channel);
         self.composer_main.set_text(&self.draft_main);
-        let ch_name =
-            self.channel(&self.active_channel).map(|c| c.name.clone()).unwrap_or_default();
-        self.composer_main.set_placeholder(&format!("Message #{ch_name}"));
-        self.composer_main.set_local_author(Some(self.me.id.clone()));
+        let ch_name = self
+            .channel(&self.active_channel)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        self.composer_main
+            .set_placeholder(&format!("Message #{ch_name}"));
+        self.composer_main
+            .set_local_author(Some(self.me.id.clone()));
         self.draft_thread = match self.thread_draft_key() {
             Some(k) => ChatDoc::draft_text(doc, &k),
             None => String::new(),
         };
         self.composer_thread.set_text(&self.draft_thread);
         self.composer_thread.set_placeholder("Reply…");
-        self.composer_thread.set_local_author(Some(self.me.id.clone()));
+        self.composer_thread
+            .set_local_author(Some(self.me.id.clone()));
         // `--shots` only: stage a mid-compose draft into the main composer so a
         // screenshot shows real text + caret. Never set in a live/interactive
         // run, so this is inert in production.
@@ -1382,8 +1466,10 @@ impl ChatApp {
         // user id → the name of the voice channel they're connected to.
         let mut in_voice: HashMap<&str, String> = HashMap::new();
         for (ch_id, members) in &self.voice_members {
-            let ch_name =
-                self.channel(ch_id).map(|c| c.name.clone()).unwrap_or_else(|| ch_id.clone());
+            let ch_name = self
+                .channel(ch_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| ch_id.clone());
             for m in members {
                 in_voice.insert(m.user.as_str(), ch_name.clone());
             }
@@ -1410,7 +1496,9 @@ impl ChatApp {
             }
         };
         rows.sort_by(|a, b| {
-            rank(&a.0, &a.1).cmp(&rank(&b.0, &b.1)).then_with(|| a.0.name.cmp(&b.0.name))
+            rank(&a.0, &a.1)
+                .cmp(&rank(&b.0, &b.1))
+                .then_with(|| a.0.name.cmp(&b.0.name))
         });
         rows
     }
@@ -1483,7 +1571,12 @@ impl ChatApp {
         }
     }
     pub(crate) fn header_rect(&self) -> Rect {
-        Rect::new(self.center_left(), self.rect.y0, self.center_right(), self.rect.y0 + HEADER_H)
+        Rect::new(
+            self.center_left(),
+            self.rect.y0,
+            self.center_right(),
+            self.rect.y0 + HEADER_H,
+        )
     }
     pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
         let w = (self.center_right() - self.center_left() - 48.0).max(40.0) as f32;
@@ -1501,7 +1594,12 @@ impl ChatApp {
     }
     pub(crate) fn messages_rect(&self, tr: &mut TextRenderer) -> Rect {
         let composer = self.composer_rect(tr);
-        Rect::new(self.center_left(), self.rect.y0 + HEADER_H, self.center_right(), composer.y0 - 6.0)
+        Rect::new(
+            self.center_left(),
+            self.rect.y0 + HEADER_H,
+            self.center_right(),
+            composer.y0 - 6.0,
+        )
     }
     pub(crate) fn thread_rect(&self) -> Rect {
         let x0 = self.right_pane_x0();
@@ -1576,7 +1674,8 @@ impl ChatApp {
         for e in &self.attach_entries {
             let _ = self.images.get(&e.key());
         }
-        self.images.block_until_idle(std::time::Duration::from_secs(3));
+        self.images
+            .block_until_idle(std::time::Duration::from_secs(3));
     }
 
     /// The host-tile video rect for the current call mode, including the
@@ -1632,8 +1731,7 @@ impl Widget for ChatApp {
                 &self.me.initials,
                 self.me.color_idx,
                 model::Presence::Online,
-            ) {
-            }
+            ) {}
         } else if self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
             ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
@@ -1712,18 +1810,27 @@ impl Widget for ChatApp {
                     right: LengthPercentageAuto::auto(),
                     bottom: LengthPercentageAuto::auto(),
                 },
-                size: Size { width: percent(f.2 as f32), height: percent(f.3 as f32) },
+                size: Size {
+                    width: percent(f.2 as f32),
+                    height: percent(f.3 as f32),
+                },
                 ..Default::default()
             }
         };
         let video_node = taffy.new_leaf(video_style).unwrap();
-        node_map.insert(video_node, &mut self.video as *mut VideoPlayer as *mut dyn Widget);
+        node_map.insert(
+            video_node,
+            &mut self.video as *mut VideoPlayer as *mut dyn Widget,
+        );
         self.video_node = Some(video_node);
 
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size { width: percent(1.0), height: percent(1.0) },
+                    size: Size {
+                        width: percent(1.0),
+                        height: percent(1.0),
+                    },
                     ..Default::default()
                 },
                 &[video_node],
@@ -1749,7 +1856,10 @@ impl Widget for ChatApp {
             let off = if self.call.expanded {
                 Point::new(self.rect.x0, self.rect.y0)
             } else {
-                Point::new(self.rect.x0 + self.call.overlay_offset.x, self.rect.y0 + self.call.overlay_offset.y)
+                Point::new(
+                    self.rect.x0 + self.call.overlay_offset.x,
+                    self.rect.y0 + self.call.overlay_offset.y,
+                )
             };
             self.video.apply_layout(taffy, vn, off);
         }
@@ -1784,7 +1894,12 @@ impl Widget for ChatApp {
         // content behind the floating panel.
         if self.right_mode == FlapMode::Overlay && self.right_flap.reveal() > 0.001 {
             let a = (self.right_flap.reveal() * 0.55) as f32;
-            crate::paint::fill_rect(scene, tf, self.rect, c.surfaces.overlay.with_alpha_factor(a));
+            crate::paint::fill_rect(
+                scene,
+                tf,
+                self.rect,
+                c.surfaces.overlay.with_alpha_factor(a),
+            );
             ChatApp::push_hit(&mut hits, self.rect, Hit::Dismiss);
         }
         if self.right_flap_open() || self.right_flap.reveal() > 0.001 {
@@ -1801,7 +1916,12 @@ impl Widget for ChatApp {
         // Left flap (rail + channel sidebar). Overlay scrim first.
         if self.left_mode == FlapMode::Overlay && self.left_flap.reveal() > 0.001 {
             let a = (self.left_flap.reveal() * 0.55) as f32;
-            crate::paint::fill_rect(scene, tf, self.rect, c.surfaces.overlay.with_alpha_factor(a));
+            crate::paint::fill_rect(
+                scene,
+                tf,
+                self.rect,
+                c.surfaces.overlay.with_alpha_factor(a),
+            );
             ChatApp::push_hit(&mut hits, self.rect, Hit::Dismiss);
         }
         if self.left_flap_open() || self.left_flap.reveal() > 0.001 {
@@ -1915,10 +2035,9 @@ impl Widget for ChatApp {
     /// makes every text channel findable there by name or topic, alongside the
     /// actions the app exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::ChannelSearchProvider::new(
-            &self.channels,
-            &self.workspaces,
-        ))]
+        vec![Box::new(
+            crate::search_provider::ChannelSearchProvider::new(&self.channels, &self.workspaces),
+        )]
     }
 
     /// Open the conversation a chosen palette row identifies: switch to its
@@ -1926,7 +2045,8 @@ impl Widget for ChatApp {
     /// messages). View state is per-peer presentation, so the doc args are
     /// unused — the same fields the sidebar's own channel click sets.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::ChannelSearchProvider::parse_action_id(action_id) {
+        if let Some(id) = crate::search_provider::ChannelSearchProvider::parse_action_id(action_id)
+        {
             if let Some(ws) = self.channel(&id).map(|c| c.workspace.clone()) {
                 self.active_ws = ws;
                 self.active_channel = id;
@@ -2080,9 +2200,18 @@ mod identity_on_screen {
         let app = ChatApp::new_ephemeral();
         let stranger = "peer@9007495404254172154";
         let shown = app.user_name(stranger);
-        assert!(!shown.contains("9007495404254172154"), "the id leaked onto the screen as `{shown}`");
-        assert!(shown.starts_with("Someone"), "an unnamed peer should read as somebody unnamed, got `{shown}`");
-        assert!(shown.contains("2154"), "two unnamed peers have to be distinguishable, got `{shown}`");
+        assert!(
+            !shown.contains("9007495404254172154"),
+            "the id leaked onto the screen as `{shown}`"
+        );
+        assert!(
+            shown.starts_with("Someone"),
+            "an unnamed peer should read as somebody unnamed, got `{shown}`"
+        );
+        assert!(
+            shown.contains("2154"),
+            "two unnamed peers have to be distinguishable, got `{shown}`"
+        );
     }
 
     /// You have a name, and this process knows it.

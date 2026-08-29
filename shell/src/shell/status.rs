@@ -37,15 +37,13 @@ impl SystemStatus {
     /// Matches `PowerPolicy`'s default low threshold; a charging
     /// battery is never "low" however empty, because it's filling.
     pub fn battery_is_low(&self) -> bool {
-        self.battery.is_some_and(|b| {
-            b.present && b.state.is_discharging() && b.percent <= 20
-        })
+        self.battery
+            .is_some_and(|b| b.present && b.state.is_discharging() && b.percent <= 20)
     }
 
     pub fn battery_is_critical(&self) -> bool {
-        self.battery.is_some_and(|b| {
-            b.present && b.state.is_discharging() && b.percent <= 5
-        })
+        self.battery
+            .is_some_and(|b| b.present && b.state.is_discharging() && b.percent <= 5)
     }
 
     pub fn battery_is_charging(&self) -> bool {

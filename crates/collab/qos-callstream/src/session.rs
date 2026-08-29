@@ -230,9 +230,14 @@ mod tests {
         const W: u32 = 64;
         const H: u32 = 64;
         let mut sender = VideoStreamSender::new(W, H, 30).expect("sender");
-        let wire = sender.offer_frame(&gradient(W, H), Instant::now()).expect("frame");
+        let wire = sender
+            .offer_frame(&gradient(W, H), Instant::now())
+            .expect("frame");
         let (frame, _) = SurfaceFrame::decode(&wire).expect("decode").expect("whole");
-        assert!(frame.keyframe, "the first H.264 access unit is an IDR keyframe");
+        assert!(
+            frame.keyframe,
+            "the first H.264 access unit is an IDR keyframe"
+        );
         assert_eq!(frame.sequence, 0);
     }
 
@@ -240,7 +245,11 @@ mod tests {
     fn wrong_sized_buffer_yields_no_frame() {
         let mut sender = VideoStreamSender::new(32, 32, 30).expect("sender");
         // RGB (3 bytes/px), not RGBA — size mismatch folds to None.
-        assert!(sender.offer_frame(&vec![0u8; 32 * 32 * 3], Instant::now()).is_none());
+        assert!(
+            sender
+                .offer_frame(&vec![0u8; 32 * 32 * 3], Instant::now())
+                .is_none()
+        );
     }
 
     #[test]

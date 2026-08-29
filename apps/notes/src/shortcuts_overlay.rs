@@ -182,7 +182,13 @@ impl ShortcutsOverlay {
         // Card.
         let radius = tokens.radii.md as f64;
         let card = RoundedRect::from_rect(self.card, radius);
-        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &card);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &card,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -247,7 +253,11 @@ impl ShortcutsOverlay {
         };
 
         for (idx, group) in GROUPS.iter().enumerate() {
-            let x = if idx % 2 == 0 { col_left_x } else { col_right_x };
+            let x = if idx % 2 == 0 {
+                col_left_x
+            } else {
+                col_right_x
+            };
             let y = column_top_for(idx);
 
             // Group heading.
@@ -314,8 +324,7 @@ impl ShortcutsOverlay {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 false
             }
             WindowEvent::KeyboardInput {
@@ -357,9 +366,7 @@ impl Default for ShortcutsOverlay {
 }
 
 fn group_block_height(row_count: usize, group_size: f32, _row_size: f32) -> f64 {
-    group_size as f64
-        + GROUP_HEADING_TO_ROWS_GAP
-        + (row_count as f64) * ROW_HEIGHT
+    group_size as f64 + GROUP_HEADING_TO_ROWS_GAP + (row_count as f64) * ROW_HEIGHT
 }
 
 impl Widget for ShortcutsOverlay {

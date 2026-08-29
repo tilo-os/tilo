@@ -303,7 +303,10 @@ mod tests {
         let (_root, mut entry) = fresh_entry(RevocationReason::Compromised);
         entry.signature[0] ^= 0x01;
         let mut list = RevocationList::new();
-        assert_eq!(list.insert(entry).unwrap_err(), RevocationError::BadSignature);
+        assert_eq!(
+            list.insert(entry).unwrap_err(),
+            RevocationError::BadSignature
+        );
         assert!(list.is_empty());
     }
 

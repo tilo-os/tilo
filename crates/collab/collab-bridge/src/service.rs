@@ -22,9 +22,8 @@ use collab_types::ArtifactId;
 
 /// Factory closure that opens the upstream connection; kept as a closure so tests can substitute a fake broker without touching the real filesystem.
 pub type UpstreamOpener = Rc<
-    dyn Fn() -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::io::Result<UpstreamHandle>>>,
-    >,
+    dyn Fn()
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<UpstreamHandle>>>>,
 >;
 
 /// Root capnp service, owned by the RPC system for one client connection; `joinChannel` is what dials the upstream broker.
@@ -55,11 +54,9 @@ impl collab_service::Server for BridgeCollabService {
             let identity = reader.get_identity()?.to_vec();
             tracing::trace!(channel = %channel_id, identity_bytes = identity.len(), "SDK joinChannel");
 
-            let upstream = opener().await.map_err(|e| {
-                capnp::Error::failed(format!(
-                    "upstream broker unavailable: {e}"
-                ))
-            })?;
+            let upstream = opener()
+                .await
+                .map_err(|e| capnp::Error::failed(format!("upstream broker unavailable: {e}")))?;
 
             let hello = hello_from_join(&channel_id, &identity);
             upstream
@@ -112,9 +109,10 @@ impl channel_handle::Server for BridgeChannel {
             let req = CollabRequest::SignedSyncIncremental {
                 envelope: Box::new(envelope),
             };
-            upstream.send_request(&req).await.map_err(|e| {
-                capnp::Error::failed(format!("upstream send failed: {e}"))
-            })
+            upstream
+                .send_request(&req)
+                .await
+                .map_err(|e| capnp::Error::failed(format!("upstream send failed: {e}")))
         })
     }
 
@@ -214,9 +212,10 @@ impl channel_handle::Server for BridgeChannel {
                 before_seq,
                 max: max as u16,
             };
-            upstream.send_request(&req).await.map_err(|e| {
-                capnp::Error::failed(format!("upstream fetch send failed: {e}"))
-            })?;
+            upstream
+                .send_request(&req)
+                .await
+                .map_err(|e| capnp::Error::failed(format!("upstream fetch send failed: {e}")))?;
 
             // Await the matching reply, FIFO by artifact id; non-matching entries are
             // discarded (shouldn't happen with the nil-artifact placeholder, but future-proofs it).
@@ -228,10 +227,7 @@ impl channel_handle::Server for BridgeChannel {
     }
 }
 
-fn fill_scrollback_batch(
-    mut b: scrollback_batch::Builder<'_>,
-    reply: ScrollbackReply,
-) {
+fn fill_scrollback_batch(mut b: scrollback_batch::Builder<'_>, reply: ScrollbackReply) {
     let (mut earliest, mut latest) = (0u64, 0u64);
     if !reply.ops.is_empty() {
         earliest = reply.ops.first().map(|op| op.seq).unwrap_or(0);
@@ -281,9 +277,10 @@ async fn pop_matching_reply(
     }
 }
 
-
 pub struct BridgeOpStream {
-    rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::upstream::OpEnvelope>>>,
+    rx: std::sync::Arc<
+        tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::upstream::OpEnvelope>>,
+    >,
 }
 
 impl stream::Server for BridgeOpStream {
@@ -294,9 +291,10 @@ impl stream::Server for BridgeOpStream {
     ) -> Promise<(), capnp::Error> {
         let rx = self.rx.clone();
         Promise::from_future(async move {
-            let ev = rx.lock().await.recv().await.ok_or_else(|| {
-                capnp::Error::disconnected("op stream upstream closed".into())
-            })?;
+            let ev =
+                rx.lock().await.recv().await.ok_or_else(|| {
+                    capnp::Error::disconnected("op stream upstream closed".into())
+                })?;
             let mut r = results.get();
             r.set_op(&ev.op_bytes);
             r.set_from_user_id(&ev.from_user_id);
@@ -311,9 +309,10 @@ impl stream::Server for BridgeOpStream {
     }
 }
 
-
 pub struct BridgeContextStream {
-    rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::upstream::ContextSnapshot>>>,
+    rx: std::sync::Arc<
+        tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::upstream::ContextSnapshot>>,
+    >,
 }
 
 impl context_stream::Server for BridgeContextStream {
@@ -360,7 +359,6 @@ fn pack_color(rgb: [f32; 3]) -> u32 {
     let b = clamp(rgb[2]);
     (r << 16) | (g << 8) | b
 }
-
 
 pub struct BridgePresenceHandle {
     upstream: UpstreamHandle,
@@ -439,7 +437,12 @@ impl presence_handle::Server for BridgePresenceHandle {
         publish_keyed(
             self.upstream.clone(),
             params.get().and_then(|r| {
-                Ok((r.get_key_bytes()?.to_vec(), PresencePayload::Caret { pos: r.get_pos() as usize }))
+                Ok((
+                    r.get_key_bytes()?.to_vec(),
+                    PresencePayload::Caret {
+                        pos: r.get_pos() as usize,
+                    },
+                ))
             }),
         )
     }
@@ -528,7 +531,6 @@ fn publish_keyed(
     }.boxed_local())
 }
 
-
 pub struct BridgeCursorStream {
     presence: std::sync::Arc<crate::upstream::DropOldest<PresenceEnvelope>>,
 }
@@ -616,7 +618,6 @@ impl presence_stream::Server for BridgePresenceStream {
         })
     }
 }
-
 
 /// Builds a [`BridgeCollabService`] whose upstream opener dials `path` on every `joinChannel` call.
 pub fn service_for_path(path: std::path::PathBuf) -> BridgeCollabService {

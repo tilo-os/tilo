@@ -76,7 +76,9 @@ fn played_child_role(role: &str, write: impl FnOnce()) -> bool {
 /// pipe that was never broken.
 #[test]
 fn eprintln_aborts_the_app_when_the_reader_of_stderr_is_gone() {
-    if played_child_role("eprintln", || eprintln!("[app] broadcast doc delta {}B", 128)) {
+    if played_child_role("eprintln", || {
+        eprintln!("[app] broadcast doc delta {}B", 128)
+    }) {
         return;
     }
 

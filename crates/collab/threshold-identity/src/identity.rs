@@ -162,7 +162,9 @@ impl ThresholdIdentity {
     /// First-device bootstrap: 1-of-1 mode. Generates a fresh Ed25519
     /// keypair and stores the secret in seed form so
     /// [`Self::single_device_seed`] can hand it back for persistence.
-    pub fn bootstrap_single_device<R: CryptoRng + RngCore>(rng: &mut R) -> Result<Self, ThresholdError> {
+    pub fn bootstrap_single_device<R: CryptoRng + RngCore>(
+        rng: &mut R,
+    ) -> Result<Self, ThresholdError> {
         let signing_key = ed25519_dalek::SigningKey::generate(rng);
         Ok(Self::from_single_device_key(signing_key))
     }
@@ -258,10 +260,7 @@ impl ThresholdIdentity {
 
     /// Commit a completed DKG run into this identity. Replaces
     /// the previous key material.
-    pub fn adopt_dkg_outcome(
-        &mut self,
-        session: DkgSession,
-    ) -> Result<(), ThresholdError> {
+    pub fn adopt_dkg_outcome(&mut self, session: DkgSession) -> Result<(), ThresholdError> {
         let (kp, pkp, threshold, total, share_index, group_pk) = session.into_inner_complete()?;
         self.inner = InnerKey::Threshold {
             secret_share: SecretShare::from_key_package(kp),
@@ -382,10 +381,7 @@ impl ThresholdIdentity {
     /// surviving device remain. Requires threshold mode (an existing
     /// `PublicKeyPackage` to extend); the recovery share must belong to the
     /// same group.
-    pub fn adopt_recovery_share(
-        &mut self,
-        share: SecretShare,
-    ) -> Result<(), ThresholdError> {
+    pub fn adopt_recovery_share(&mut self, share: SecretShare) -> Result<(), ThresholdError> {
         let kp = share.key_package();
         let kp_group_vec = kp.verifying_key().serialize()?;
         let kp_group: [u8; 32] = kp_group_vec.as_slice().try_into().map_err(|_| {
@@ -421,11 +417,8 @@ impl ThresholdIdentity {
                 verifying_shares.insert(id, *kp.verifying_share());
                 let group_vk =
                     frost_ed25519::VerifyingKey::deserialize(self.group_public_key.as_bytes())?;
-                *public_key_package = PublicKeyPackage::new(
-                    verifying_shares,
-                    group_vk,
-                    Some(self.threshold),
-                );
+                *public_key_package =
+                    PublicKeyPackage::new(verifying_shares, group_vk, Some(self.threshold));
                 // Replace this device's share with the recovery share — the
                 // previous secret is zeroized via SecretShare's drop chain.
                 let kp_owned: frost_ed25519::keys::KeyPackage = kp.clone();

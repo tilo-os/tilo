@@ -61,7 +61,9 @@ impl TrustPolicy {
         match self {
             Self::AllowMatchingUser => &cert.user_public_key == own_user_pubkey,
             Self::AllowList { users } => users.iter().any(|hex_pk| match hex::decode(hex_pk) {
-                Ok(bytes) if bytes.len() == 32 => bytes.as_slice() == cert.user_public_key.as_slice(),
+                Ok(bytes) if bytes.len() == 32 => {
+                    bytes.as_slice() == cert.user_public_key.as_slice()
+                }
                 _ => false,
             }),
             Self::AllowAny => true,

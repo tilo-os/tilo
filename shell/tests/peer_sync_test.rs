@@ -101,7 +101,9 @@ async fn two_actors_exchange_a_workspace_append_change() {
     // not its local workspace handle (which means nothing on B).
     let mut tree_a = WorkspaceTree::default();
     let local_a = tree_a.append_empty_workspace("Renamed");
-    let room = tree_a.room_of(local_a).expect("a fresh workspace has a room");
+    let room = tree_a
+        .room_of(local_a)
+        .expect("a fresh workspace has a room");
     let changes = tree_a
         .export_room_changes_since(room, &[])
         .expect("A is in the room it is exporting");
@@ -149,11 +151,7 @@ async fn two_actors_exchange_a_workspace_append_change() {
     let local_b = tree_b.append_empty_workspace("Placeholder");
     assert!(tree_b.set_room(local_b, room), "B joins A's room");
     let merged = tree_b
-        .apply_room_changes(
-            room,
-            &received_changes,
-            &PeerOrigin::peer(&sender),
-        )
+        .apply_room_changes(room, &received_changes, &PeerOrigin::peer(&sender))
         .expect("apply");
     assert!(merged, "the round must change B's copy of the room");
 

@@ -40,15 +40,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use automerge::{
-    transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value,
+    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use taffy::style_helpers::{length, percent};
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
 };
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use vello::Scene;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
@@ -61,7 +61,7 @@ use ui::widget::{Dropdown, Row, Spinner, Text, TextInput, Widget};
 
 use crate::action_button::ActionButton;
 use crate::disk_row::DiskRow;
-use crate::disks::{read_disks, Disk};
+use crate::disks::{Disk, read_disks};
 use crate::install::{InstallOptions, PowerAction};
 use crate::keyboard_view::KeyboardView;
 use crate::layouts;
@@ -146,8 +146,12 @@ fn has_tpm2() -> bool {
 fn encrypt_description(encrypt: bool, tpm2: bool) -> &'static str {
     match (encrypt, tpm2) {
         (false, _) => "The disk is not encrypted. Anyone with physical access can read your data.",
-        (true, true) => "Encrypts the whole disk with LUKS. This computer's TPM2 chip unlocks it at boot, and a recovery key (shown once during install) is always generated as a backup in case the TPM is reset or fails.",
-        (true, false) => "Encrypts the whole disk with LUKS. This computer has no TPM2 chip, so it cannot unlock itself — you will type a passphrase every time it boots. A recovery key is also generated and shown once, as the backup if you forget the passphrase.",
+        (true, true) => {
+            "Encrypts the whole disk with LUKS. This computer's TPM2 chip unlocks it at boot, and a recovery key (shown once during install) is always generated as a backup in case the TPM is reset or fails."
+        }
+        (true, false) => {
+            "Encrypts the whole disk with LUKS. This computer has no TPM2 chip, so it cannot unlock itself — you will type a passphrase every time it boots. A recovery key is also generated and shown once, as the backup if you forget the passphrase."
+        }
     }
 }
 
@@ -176,8 +180,9 @@ pub enum Step {
 
 /// Captions for the step-progress breadcrumb, index-aligned with
 /// [`step_index`].
-pub const STEP_LABELS: [&str; 6] =
-    ["Keyboard", "Disk", "Account", "Options", "Review", "Install"];
+pub const STEP_LABELS: [&str; 6] = [
+    "Keyboard", "Disk", "Account", "Options", "Review", "Install",
+];
 
 /// Position of `step` in the breadcrumb (0-based). Keyboard is first so the
 /// layout is chosen BEFORE the user types anything (username/password).
@@ -372,7 +377,13 @@ impl Widget for Card {
     ) {
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
         scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &shape);
-        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &shape);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &shape,
+        );
         for child in &mut self.children {
             child.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -660,7 +671,10 @@ impl InstallerApp {
 
     /// The chosen filesystem name (e.g. `btrfs`).
     fn filesystem(&self) -> &str {
-        FILESYSTEMS.get(self.selected_fs).copied().unwrap_or("btrfs")
+        FILESYSTEMS
+            .get(self.selected_fs)
+            .copied()
+            .unwrap_or("btrfs")
     }
 
     /// Resolve the selected layout's display name to its dataset entry,
@@ -818,7 +832,12 @@ impl InstallerApp {
 
     /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
-        match validate_step(self.step, self.selected_disk, &self.username, &self.hostname) {
+        match validate_step(
+            self.step,
+            self.selected_disk,
+            &self.username,
+            &self.hostname,
+        ) {
             Ok(()) => {
                 if let Some(n) = next_step(self.step) {
                     // Never auto-advance into Install via Next; the Begin
@@ -902,15 +921,10 @@ impl InstallerApp {
             Some(proxy) => {
                 // Worker thread: stream each line back as an External event.
                 std::thread::spawn(move || {
-                    let result = crate::install::run_install(
-                        &disk,
-                        &user,
-                        &password,
-                        &opts,
-                        |line| {
+                    let result =
+                        crate::install::run_install(&disk, &user, &password, &opts, |line| {
                             let _ = proxy.send_event(UserEvent::External(line));
-                        },
-                    );
+                        });
                     let terminal = match result {
                         Ok(true) => CTRL_DONE.to_string(),
                         Ok(false) => CTRL_FAIL.to_string(),
@@ -927,13 +941,9 @@ impl InstallerApp {
             None => {
                 // Synchronous fallback (blocks the caller).
                 let mut lines = std::mem::take(&mut self.status_lines);
-                let result = crate::install::run_install(
-                    &disk,
-                    &user,
-                    &password,
-                    &opts,
-                    |line| lines.push(line),
-                );
+                let result = crate::install::run_install(&disk, &user, &password, &opts, |line| {
+                    lines.push(line)
+                });
                 self.status_lines = lines;
                 match result {
                     Ok(true) => self.mark_install_done(),
@@ -970,7 +980,8 @@ impl InstallerApp {
     fn run_power(&mut self, action: PowerAction) {
         match crate::install::run_power(action) {
             Ok(true) => {}
-            _ => self.set_status("Could not run power action — remove the medium and reboot manually."),
+            _ => self
+                .set_status("Could not run power action — remove the medium and reboot manually."),
         }
     }
 
@@ -991,9 +1002,11 @@ impl InstallerApp {
             Step::Disk => {
                 children.push(Box::new(Text::new("Install qOS").with_size(xl)));
                 children.push(Box::new(
-                    Text::new("Choose where to install. The selected disk will be completely erased.")
-                        .with_size(sm)
-                        .with_color(dim),
+                    Text::new(
+                        "Choose where to install. The selected disk will be completely erased.",
+                    )
+                    .with_size(sm)
+                    .with_color(dim),
                 ));
                 if self.disks.is_empty() {
                     children.push(Box::new(
@@ -1156,7 +1169,9 @@ impl InstallerApp {
             Step::Review => {
                 children.push(Box::new(Text::new("Review your choices").with_size(xl)));
 
-                let dev = self.selected_dev().unwrap_or_else(|| "<no disk>".to_string());
+                let dev = self
+                    .selected_dev()
+                    .unwrap_or_else(|| "<no disk>".to_string());
                 let disk_value = match self.selected_disk_ref() {
                     Some(d) if d.model.is_empty() => format!("{} ({})", d.name, d.size),
                     Some(d) => format!("{} ({}, {})", d.name, d.size, d.model),
@@ -1164,11 +1179,7 @@ impl InstallerApp {
                 };
                 children.push(summary_row(theme, "Disk", &disk_value));
                 children.push(summary_row(theme, "Filesystem", self.filesystem()));
-                children.push(summary_row(
-                    theme,
-                    "Encryption",
-                    &self.encryption_summary(),
-                ));
+                children.push(summary_row(theme, "Encryption", &self.encryption_summary()));
                 children.push(summary_row(theme, "Hostname", self.hostname.trim()));
                 children.push(summary_row(theme, "Time zone", self.timezone.trim()));
                 children.push(summary_row(theme, "Keyboard layout", self.keymap.trim()));
@@ -1211,60 +1222,60 @@ impl InstallerApp {
                     begin_disabled,
                 ));
             }
-            Step::Install => {
-                match self.install_state {
-                    InstallState::Done => {
-                        children.push(Box::new(
-                            Text::new("qOS is installed")
-                                .with_size(xl)
-                                .with_color(theme.status_success),
-                        ));
-                        children.push(Box::new(
-                            Text::new("Installation complete. Remove the installer medium, then reboot.")
-                                .with_size(sm)
-                                .with_color(dim),
-                        ));
-                        children.push(Box::new(StatusLog::new(
-                            self.status_lines.clone(),
-                            STATUS_LOG_HEIGHT,
-                        )));
-                        children.push(finish_row());
-                    }
-                    InstallState::Failed => {
-                        children.push(Box::new(
-                            Text::new("Installation failed")
-                                .with_size(xl)
-                                .with_color(danger),
-                        ));
-                        children.push(Box::new(
-                            Text::new("Something went wrong. Review the log, then go back to try again.")
-                                .with_size(sm)
-                                .with_color(dim),
-                        ));
-                        children.push(Box::new(StatusLog::new(
-                            self.status_lines.clone(),
-                            STATUS_LOG_HEIGHT,
-                        )));
-                        children.push(Box::new(ActionButton::new("Back", BACK_PATH)));
-                    }
-                    _ => {
-                        children.push(Box::new(Text::new("Installing qOS…").with_size(xl)));
-                        children.push(Box::new(
-                            Row::new()
-                                .push(Box::new(Spinner::new()))
-                                .push(Box::new(
-                                    Text::new("Working — this can take a few minutes. Don't power off.")
-                                        .with_size(sm)
-                                        .with_color(dim),
-                                )),
-                        ));
-                        children.push(Box::new(StatusLog::new(
-                            self.status_lines.clone(),
-                            STATUS_LOG_HEIGHT,
-                        )));
-                    }
+            Step::Install => match self.install_state {
+                InstallState::Done => {
+                    children.push(Box::new(
+                        Text::new("qOS is installed")
+                            .with_size(xl)
+                            .with_color(theme.status_success),
+                    ));
+                    children.push(Box::new(
+                        Text::new(
+                            "Installation complete. Remove the installer medium, then reboot.",
+                        )
+                        .with_size(sm)
+                        .with_color(dim),
+                    ));
+                    children.push(Box::new(StatusLog::new(
+                        self.status_lines.clone(),
+                        STATUS_LOG_HEIGHT,
+                    )));
+                    children.push(finish_row());
                 }
-            }
+                InstallState::Failed => {
+                    children.push(Box::new(
+                        Text::new("Installation failed")
+                            .with_size(xl)
+                            .with_color(danger),
+                    ));
+                    children.push(Box::new(
+                        Text::new(
+                            "Something went wrong. Review the log, then go back to try again.",
+                        )
+                        .with_size(sm)
+                        .with_color(dim),
+                    ));
+                    children.push(Box::new(StatusLog::new(
+                        self.status_lines.clone(),
+                        STATUS_LOG_HEIGHT,
+                    )));
+                    children.push(Box::new(ActionButton::new("Back", BACK_PATH)));
+                }
+                _ => {
+                    children.push(Box::new(Text::new("Installing qOS…").with_size(xl)));
+                    children.push(Box::new(
+                        Row::new().push(Box::new(Spinner::new())).push(Box::new(
+                            Text::new("Working — this can take a few minutes. Don't power off.")
+                                .with_size(sm)
+                                .with_color(dim),
+                        )),
+                    ));
+                    children.push(Box::new(StatusLog::new(
+                        self.status_lines.clone(),
+                        STATUS_LOG_HEIGHT,
+                    )));
+                }
+            },
         }
 
         // A transient validation/error line under every step's controls.
@@ -1942,12 +1953,19 @@ mod tests {
         app.sync(&mut doc, &root);
         assert!(app.encrypt, "selecting the LUKS segment enables encryption");
         assert!(app.install_options().encrypt);
-        assert!(!InstallerApp::read_flag(&doc, &root, encrypt_path(1).as_str()));
+        assert!(!InstallerApp::read_flag(
+            &doc,
+            &root,
+            encrypt_path(1).as_str()
+        ));
 
         // Raise the "off" segment (index 0) → back to unencrypted.
         let _ = doc.put(&root, encrypt_path(0).as_str(), true);
         app.sync(&mut doc, &root);
-        assert!(!app.encrypt, "selecting the off segment disables encryption");
+        assert!(
+            !app.encrypt,
+            "selecting the off segment disables encryption"
+        );
         assert!(!app.install_options().encrypt);
     }
 
@@ -1973,7 +1991,10 @@ mod tests {
         let _ = doc.put(&root, encrypt_path(1).as_str(), true);
         app.sync(&mut doc, &root);
         assert!(app.install_options().encrypt);
-        assert!(app.install_options().fido2, "FIDO2 threads through with LUKS");
+        assert!(
+            app.install_options().fido2,
+            "FIDO2 threads through with LUKS"
+        );
     }
 
     #[test]
@@ -2043,7 +2064,11 @@ mod tests {
         let _ = doc.put(&root, BEGIN_PATH, true);
         app.sync(&mut doc, &root);
         assert_eq!(app.install_state, InstallState::Idle);
-        assert_eq!(app.step, Step::Review, "blocked until the key is acknowledged");
+        assert_eq!(
+            app.step,
+            Step::Review,
+            "blocked until the key is acknowledged"
+        );
 
         // Toggle the acknowledgement on.
         let _ = doc.put(&root, RECOVERY_ACK_PATH, true);
@@ -2103,7 +2128,10 @@ mod tests {
 
         // Whitespace is not a passphrase.
         app.pin = "   ".to_string();
-        assert!(!app.encryption_ready(), "blank passphrase is still no passphrase");
+        assert!(
+            !app.encryption_ready(),
+            "blank passphrase is still no passphrase"
+        );
     }
 
     #[test]
@@ -2324,7 +2352,10 @@ mod tests {
 
         app.on_external_event(CTRL_DONE, &mut doc, &root);
         assert_eq!(app.install_state, InstallState::Done);
-        assert!(app.take_focus_reset(), "done sets focus reset for finish row");
+        assert!(
+            app.take_focus_reset(),
+            "done sets focus reset for finish row"
+        );
     }
 
     #[test]
@@ -2446,7 +2477,11 @@ mod tests {
             .children()
             .last()
             .and_then(|nav| nav.children().last().map(|b| b.is_focusable()));
-        assert_eq!(next_enabled, Some(true), "Next enabled once a disk is selected");
+        assert_eq!(
+            next_enabled,
+            Some(true),
+            "Next enabled once a disk is selected"
+        );
     }
 
     #[test]
@@ -2458,6 +2493,10 @@ mod tests {
         let fields = card.children();
         let disk_rows = fields.iter().filter(|c| c.name() == "DiskRow").count();
         assert_eq!(disk_rows, 2, "both sample disks render as rows");
-        assert!(fields.iter().any(|c| c.name() == "DiskRow" && c.is_focusable()));
+        assert!(
+            fields
+                .iter()
+                .any(|c| c.name() == "DiskRow" && c.is_focusable())
+        );
     }
 }

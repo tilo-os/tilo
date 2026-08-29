@@ -14,7 +14,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
 
@@ -44,7 +44,11 @@ impl NodeKind {
         }
     }
     fn from_str(s: &str) -> Self {
-        if s == "dir" { NodeKind::Dir } else { NodeKind::File }
+        if s == "dir" {
+            NodeKind::Dir
+        } else {
+            NodeKind::File
+        }
     }
 }
 
@@ -70,7 +74,6 @@ pub struct Namespace {
     next_id: u64,
 }
 
-
 fn hash_to_hex(h: &Hash) -> String {
     hex::encode(h.as_bytes())
 }
@@ -79,7 +82,6 @@ fn hash_from_hex(s: &str) -> Option<Hash> {
     let arr: [u8; 32] = bytes.try_into().ok()?;
     Some(Hash::from(arr))
 }
-
 
 fn read_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     match doc.get(obj, key) {
@@ -159,7 +161,6 @@ impl Namespace {
         &self.author
     }
 
-
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
     }
@@ -207,9 +208,11 @@ impl Namespace {
         Ok(self.doc.save_incremental())
     }
 
-
     pub fn sync_generate(&mut self, state: &mut automerge::sync::State) -> Option<Vec<u8>> {
-        self.doc.sync().generate_sync_message(state).map(|m| m.encode())
+        self.doc
+            .sync()
+            .generate_sync_message(state)
+            .map(|m| m.encode())
     }
 
     pub fn sync_receive(
@@ -228,7 +231,6 @@ impl Namespace {
         self.resolve();
         self.doc.save_incremental()
     }
-
 
     fn node(&self, id: &str) -> Option<ObjId> {
         match self.doc.get(&self.nodes, id) {
@@ -327,7 +329,6 @@ impl Namespace {
         }
     }
 
-
     fn ino_for_id(&mut self, id: &str) -> u64 {
         if let Some(&ino) = self.id_to_ino.get(id) {
             return ino;
@@ -403,7 +404,6 @@ impl Namespace {
         }
     }
 
-
     pub fn getattr(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?.clone();
         if id == ROOT_ID {
@@ -465,7 +465,6 @@ impl Namespace {
         let id = self.ino_to_id.get(&ino)?;
         self.entry(id)?.hash
     }
-
 
     fn create_node(
         &mut self,
@@ -628,12 +627,25 @@ impl Namespace {
         Some(f(&mut dmut))
     }
 
-    pub fn document_insert_block(&mut self, ino: u64, after: Option<&str>, kind: &str) -> Option<String> {
+    pub fn document_insert_block(
+        &mut self,
+        ino: u64,
+        after: Option<&str>,
+        kind: &str,
+    ) -> Option<String> {
         self.with_doc_mut(ino, |d| d.insert_block(after, kind))
     }
 
-    pub fn document_splice(&mut self, ino: u64, block_id: &str, idx: usize, del: isize, ins: &str) -> bool {
-        self.with_doc_mut(ino, |d| d.splice_text(block_id, idx, del, ins)).is_some()
+    pub fn document_splice(
+        &mut self,
+        ino: u64,
+        block_id: &str,
+        idx: usize,
+        del: isize,
+        ins: &str,
+    ) -> bool {
+        self.with_doc_mut(ino, |d| d.splice_text(block_id, idx, del, ins))
+            .is_some()
     }
 
     pub fn document_blocks(&self, ino: u64) -> Vec<String> {
@@ -657,7 +669,8 @@ impl Namespace {
     }
 
     pub fn document_remove_block(&mut self, ino: u64, block_id: &str) -> bool {
-        self.with_doc_mut(ino, |d| d.remove_block(block_id)).is_some()
+        self.with_doc_mut(ino, |d| d.remove_block(block_id))
+            .is_some()
     }
 
     pub fn document_snapshot(&self, ino: u64) -> Option<qdoc::DocSnapshot> {
@@ -698,7 +711,6 @@ impl Namespace {
         self.set_field(&id, "author", author);
         true
     }
-
 
     /// Attach the content hash of a generated thumbnail blob to `ino`, so the
     /// pointer rides namespace gossip and a peer can preview before fetching the full content.
@@ -787,7 +799,9 @@ impl Namespace {
                 if let Some(h) = self.node_hash(&existing) {
                     self.set_field(&existing, "deleted_hash", hash_to_hex(&h));
                 }
-                let ep = self.parent_of(&existing).unwrap_or_else(|| ROOT_ID.to_string());
+                let ep = self
+                    .parent_of(&existing)
+                    .unwrap_or_else(|| ROOT_ID.to_string());
                 self.set_field(&existing, "prev_parent", ep);
                 self.set_field(&existing, "parent", TRASH_ID);
             }
@@ -955,7 +969,9 @@ mod tests {
     #[test]
     fn create_lookup_and_nested_readdir() {
         let mut ns = Namespace::new("a");
-        let ino = ns.create_file(ROOT_INO, "hello.txt", Some(&h(7)), 12, 1).unwrap();
+        let ino = ns
+            .create_file(ROOT_INO, "hello.txt", Some(&h(7)), 12, 1)
+            .unwrap();
         let attr = ns.lookup(ROOT_INO, "hello.txt").unwrap();
         assert_eq!(attr.ino, INodeNo(ino));
         assert_eq!(attr.size, 12);
@@ -963,9 +979,19 @@ mod tests {
 
         let dir = ns.create_dir(ROOT_INO, "docs", 1).unwrap();
         ns.create_file(dir, "a.txt", Some(&h(1)), 1, 1).unwrap();
-        let names: Vec<String> = ns.readdir(dir).unwrap().into_iter().map(|(_, _, n)| n).collect();
+        let names: Vec<String> = ns
+            .readdir(dir)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, n)| n)
+            .collect();
         assert!(names.contains(&"a.txt".to_string()));
-        let dotdot = ns.readdir(dir).unwrap().into_iter().find(|(_, _, n)| n == "..").unwrap();
+        let dotdot = ns
+            .readdir(dir)
+            .unwrap()
+            .into_iter()
+            .find(|(_, _, n)| n == "..")
+            .unwrap();
         assert_eq!(dotdot.0, ROOT_INO);
     }
 
@@ -976,7 +1002,10 @@ mod tests {
         let child = ns.create_file(dir, "c.txt", Some(&h(1)), 1, 1).unwrap();
         assert!(ns.remove(dir));
         assert!(ns.getattr(dir).is_none(), "removed dir not visible");
-        assert!(ns.getattr(child).is_none(), "child follows parent into trash");
+        assert!(
+            ns.getattr(child).is_none(),
+            "child follows parent into trash"
+        );
         assert!(ns.lookup(ROOT_INO, "d").is_none());
     }
 
@@ -997,7 +1026,10 @@ mod tests {
         let mut ns = Namespace::new("a");
         let d1 = ns.create_dir(ROOT_INO, "d1", 1).unwrap();
         let d2 = ns.create_dir(d1, "d2", 1).unwrap();
-        assert!(!ns.rename(ROOT_INO, "d1", d2, "d1", 2), "cannot move d1 under d1/d2");
+        assert!(
+            !ns.rename(ROOT_INO, "d1", d2, "d1", 2),
+            "cannot move d1 under d1/d2"
+        );
         assert!(ns.lookup(ROOT_INO, "d1").is_some());
     }
 
@@ -1006,13 +1038,14 @@ mod tests {
         let mut a = Namespace::new("a");
         let bytes = a.save();
         let mut b = Namespace::from_bytes("b", &bytes).unwrap();
-        a.create_file(ROOT_INO, "from_a", Some(&h(1)), 1, 1).unwrap();
-        b.create_file(ROOT_INO, "from_b", Some(&h(2)), 1, 1).unwrap();
+        a.create_file(ROOT_INO, "from_a", Some(&h(1)), 1, 1)
+            .unwrap();
+        b.create_file(ROOT_INO, "from_b", Some(&h(2)), 1, 1)
+            .unwrap();
         a.merge_doc(&mut b).unwrap();
         assert!(a.lookup(ROOT_INO, "from_a").is_some());
         assert!(a.lookup(ROOT_INO, "from_b").is_some());
     }
-
 
     #[test]
     fn concurrent_cross_move_resolves_acyclically_and_converges() {
@@ -1036,12 +1069,27 @@ mod tests {
         a2.resolve();
         b2.resolve();
 
-        assert!(a2.find_cycle().is_none(), "a side must be acyclic after resolve");
-        assert!(b2.find_cycle().is_none(), "b side must be acyclic after resolve");
+        assert!(
+            a2.find_cycle().is_none(),
+            "a side must be acyclic after resolve"
+        );
+        assert!(
+            b2.find_cycle().is_none(),
+            "b side must be acyclic after resolve"
+        );
 
-        let xid = a2.live_node_ids().into_iter().find(|i| a2.name_of(i).as_deref() == Some("X"));
-        let yid = a2.live_node_ids().into_iter().find(|i| a2.name_of(i).as_deref() == Some("Y"));
-        assert!(xid.is_some() && yid.is_some(), "both dirs survive resolution");
+        let xid = a2
+            .live_node_ids()
+            .into_iter()
+            .find(|i| a2.name_of(i).as_deref() == Some("X"));
+        let yid = a2
+            .live_node_ids()
+            .into_iter()
+            .find(|i| a2.name_of(i).as_deref() == Some("Y"));
+        assert!(
+            xid.is_some() && yid.is_some(),
+            "both dirs survive resolution"
+        );
 
         for id in a2.live_node_ids() {
             assert_eq!(
@@ -1071,7 +1119,10 @@ mod tests {
             .doc
             .keys(&a.nodes)
             .find(|i| a.name_of(i).as_deref() == Some("new.txt"));
-        assert!(new_id.is_some(), "the node still exists in the doc (not lost)");
+        assert!(
+            new_id.is_some(),
+            "the node still exists in the doc (not lost)"
+        );
         assert!(
             !a.reaches_root(&new_id.unwrap()),
             "but it is not reachable from root (consistently trashed, not orphaned)"
@@ -1097,7 +1148,8 @@ mod tests {
         let snap = a.save();
         let mut b = Namespace::from_bytes("b", &snap).unwrap();
         let _ = a.save_incremental();
-        a.create_file(ROOT_INO, "delta.txt", Some(&h(4)), 7, 1).unwrap();
+        a.create_file(ROOT_INO, "delta.txt", Some(&h(4)), 7, 1)
+            .unwrap();
         let delta = a.save_incremental();
         b.apply_remote_and_resolve(&delta).unwrap();
         assert_eq!(b.lookup(ROOT_INO, "delta.txt").unwrap().size, 7);
@@ -1110,8 +1162,10 @@ mod tests {
         a.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1).unwrap();
         let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
 
-        a.create_file(ROOT_INO, "from_a", Some(&h(2)), 1, 1).unwrap();
-        b.create_file(ROOT_INO, "from_b", Some(&h(3)), 1, 1).unwrap();
+        a.create_file(ROOT_INO, "from_a", Some(&h(2)), 1, 1)
+            .unwrap();
+        b.create_file(ROOT_INO, "from_b", Some(&h(3)), 1, 1)
+            .unwrap();
 
         let mut sa = automerge::sync::State::new();
         let mut sb = automerge::sync::State::new();
@@ -1143,7 +1197,10 @@ mod tests {
         assert!(ns.import_document(ino, &reg, md, 2));
         let out = ns.export_document(ino, &reg).expect("export");
         let s = String::from_utf8_lossy(&out);
-        assert!(s.contains("Title") && s.contains("Hello world"), "round-trip lost content: {s}");
+        assert!(
+            s.contains("Title") && s.contains("Hello world"),
+            "round-trip lost content: {s}"
+        );
     }
 
     #[test]
@@ -1160,7 +1217,10 @@ mod tests {
             "malformed import must be rejected"
         );
         let after = ns.export_document(ino, &reg).unwrap();
-        assert_eq!(before, after, "existing document must survive a rejected import");
+        assert_eq!(
+            before, after,
+            "existing document must survive a rejected import"
+        );
     }
 
     #[test]
@@ -1182,7 +1242,10 @@ mod tests {
         a.merge_doc(&mut b).unwrap();
         let text = a.document_block_text(ino, &bid).unwrap();
         assert!(text.contains("dear"), "A's edit must survive: {text}");
-        assert!(text.contains("(B)"), "B's edit must survive (text-level merge): {text}");
+        assert!(
+            text.contains("(B)"),
+            "B's edit must survive (text-level merge): {text}"
+        );
     }
 
     // test-only helper to merge using a fresh loaded copy

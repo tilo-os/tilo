@@ -71,7 +71,16 @@ pub fn attestation_key(
     require(
         runner,
         "tpm2_createprimary",
-        &argv!["-C", "o", "-g", "sha256", "-G", "ecc", "-c", parent.as_os_str()],
+        &argv![
+            "-C",
+            "o",
+            "-g",
+            "sha256",
+            "-G",
+            "ecc",
+            "-c",
+            parent.as_os_str()
+        ],
         "creating the attestation key's parent",
     )?;
     let akpub = ws.path("ak.pub");
@@ -80,12 +89,18 @@ pub fn attestation_key(
         runner,
         "tpm2_create",
         &argv![
-            "-C", parent.as_os_str(),
-            "-G", "ecc256:ecdsa-sha256:null",
-            "-g", "sha256",
-            "-u", akpub.as_os_str(),
-            "-r", akpriv.as_os_str(),
-            "-a", "fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign",
+            "-C",
+            parent.as_os_str(),
+            "-G",
+            "ecc256:ecdsa-sha256:null",
+            "-g",
+            "sha256",
+            "-u",
+            akpub.as_os_str(),
+            "-r",
+            akpriv.as_os_str(),
+            "-a",
+            "fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign",
         ],
         "creating the floor attestation key",
     )?;
@@ -98,15 +113,18 @@ pub fn attestation_key(
         runner,
         "tpm2_load",
         &argv![
-            "-C", parent.as_os_str(),
-            "-u", akpub.as_os_str(),
-            "-r", akpriv.as_os_str(),
-            "-c", akctx.as_os_str(),
+            "-C",
+            parent.as_os_str(),
+            "-u",
+            akpub.as_os_str(),
+            "-r",
+            akpriv.as_os_str(),
+            "-c",
+            akctx.as_os_str(),
         ],
         "loading the floor attestation key",
     )?;
-    let pubbytes =
-        std::fs::read(&akpub).with_context(|| format!("reading {}", akpub.display()))?;
+    let pubbytes = std::fs::read(&akpub).with_context(|| format!("reading {}", akpub.display()))?;
     Ok((akctx, pubbytes))
 }
 
@@ -130,21 +148,30 @@ pub fn certify_floor(
         runner,
         "tpm2_nvcertify",
         &argv![
-            "-C", akctx.as_os_str(),
-            "-c", &idx,
-            "-g", "sha256",
-            "-f", "plain",
-            "-o", sig.as_os_str(),
-            "--attestation", attest.as_os_str(),
-            "--size", "8",
-            "-q", &qual,
+            "-C",
+            akctx.as_os_str(),
+            "-c",
+            &idx,
+            "-g",
+            "sha256",
+            "-f",
+            "plain",
+            "-o",
+            sig.as_os_str(),
+            "--attestation",
+            attest.as_os_str(),
+            "--size",
+            "8",
+            "-q",
+            &qual,
             &idx,
         ],
         "certifying the rollback floor counter",
     )?;
 
-    let counter = crate::counter::read(runner, nv_index, scratch)?
-        .context("the rollback floor counter has never been incremented, so there is nothing to certify")?;
+    let counter = crate::counter::read(runner, nv_index, scratch)?.context(
+        "the rollback floor counter has never been incremented, so there is nothing to certify",
+    )?;
     policy::flush(runner);
     Ok(FloorAttestation {
         attestation: std::fs::read(&attest)

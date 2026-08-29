@@ -110,7 +110,11 @@ impl Route {
             Route::Keywords(Fallback::Disabled) => "switched off".to_string(),
             Route::Keywords(Fallback::Timeout) => "the call timed out".to_string(),
             Route::Keywords(Fallback::Failed(e)) => format!("the call failed: {e}"),
-            Route::Keywords(Fallback::Exhausted { why, attempts, over }) => format!(
+            Route::Keywords(Fallback::Exhausted {
+                why,
+                attempts,
+                over,
+            }) => format!(
                 "the call kept failing: {why} ({attempts} attempts over {:.1}s)",
                 over.as_secs_f32()
             ),
@@ -185,9 +189,15 @@ impl Chooser {
             // Retried and still no answer. The floor decides exactly as it
             // does for every other unhappy path here — nothing is guessed to
             // paper over the attempts that were spent.
-            Err(AskError::Busy { why, attempts, over }) => {
-                fallback(Fallback::Exhausted { why, attempts, over })
-            }
+            Err(AskError::Busy {
+                why,
+                attempts,
+                over,
+            }) => fallback(Fallback::Exhausted {
+                why,
+                attempts,
+                over,
+            }),
         }
     }
 
@@ -209,7 +219,11 @@ impl Chooser {
 /// Post one request, and post it again while the service is asking for
 /// that. A fresh client per attempt, because the timeout each one runs
 /// under is what is left of the deadline at the moment it goes out.
-fn post(key: &str, body: &Value, remaining: &dyn Fn() -> Option<Duration>) -> Result<String, AskError> {
+fn post(
+    key: &str,
+    body: &Value,
+    remaining: &dyn Fn() -> Option<Duration>,
+) -> Result<String, AskError> {
     while_busy(&RETRIES, remaining, std::thread::sleep, |left| {
         let client = reqwest::blocking::Client::builder()
             // Bounded well below the deadline, and separately from it. A DNS
@@ -429,7 +443,12 @@ fn after_seconds(v: &str) -> Option<Duration> {
 /// only when something was actually retried: a call that was made once and
 /// had no room for a second says exactly what it said before, so a trace
 /// can never claim a patience the run did not have.
-fn while_busy<L, W, A>(policy: &Retries, left: L, mut wait: W, mut attempt: A) -> Result<String, AskError>
+fn while_busy<L, W, A>(
+    policy: &Retries,
+    left: L,
+    mut wait: W,
+    mut attempt: A,
+) -> Result<String, AskError>
 where
     L: Fn() -> Option<Duration>,
     W: FnMut(Duration),
@@ -635,7 +654,10 @@ fn user_turn(rest: &str, blocks: &[Block]) -> String {
         ));
     }
     if blocks.len() > MAX_BLOCKS {
-        s.push_str(&format!("… and {} more blocks\n", blocks.len() - MAX_BLOCKS));
+        s.push_str(&format!(
+            "… and {} more blocks\n",
+            blocks.len() - MAX_BLOCKS
+        ));
     }
 
     s.push_str(&format!(
@@ -772,7 +794,10 @@ mod tests {
 
     #[test]
     fn the_offer_is_exactly_what_the_app_exports() {
-        let body = request_body("turn the bullets into a table", &[block("list_item", "a - 1")]);
+        let body = request_body(
+            "turn the bullets into a table",
+            &[block("list_item", "a - 1")],
+        );
         let schema = &body["output_config"]["format"]["schema"];
         let ids: Vec<&str> = schema["properties"]["action"]["enum"]
             .as_array()
@@ -790,7 +815,9 @@ mod tests {
 
         // The document and the instruction both reach the model, and so do
         // the exported action names behind each entry.
-        let turn = body["messages"][0]["content"].as_str().expect("a user turn");
+        let turn = body["messages"][0]["content"]
+            .as_str()
+            .expect("a user turn");
         assert!(turn.contains("turn the bullets into a table"), "{turn}");
         assert!(turn.contains("list_item: a - 1"), "{turn}");
         assert!(turn.contains("InsertTable"), "{turn}");
@@ -1031,7 +1058,11 @@ mod tests {
             "doubling"
         );
         match out.expect_err("it never answered") {
-            AskError::Busy { why, attempts, over } => {
+            AskError::Busy {
+                why,
+                attempts,
+                over,
+            } => {
                 assert_eq!(attempts, RETRIES.attempts);
                 assert!(why.contains("529"), "{why}");
                 // Three and a half seconds of waiting and four calls at 200ms.

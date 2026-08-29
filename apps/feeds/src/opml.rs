@@ -43,7 +43,9 @@ pub fn parse(text: &str) -> Vec<OpmlFeed> {
             continue;
         }
         // Find the end of the tag.
-        let Some(rel_end) = text[i..].find('>') else { break };
+        let Some(rel_end) = text[i..].find('>') else {
+            break;
+        };
         let tag = &text[i..i + rel_end + 1];
         let self_closing = tag.trim_end().ends_with("/>");
 
@@ -91,8 +93,7 @@ fn attr(tag: &str, key: &str) -> Option<String> {
     while let Some(rel) = tag[search..].find(key) {
         let pos = search + rel;
         // Ensure it's a standalone attribute (preceded by whitespace).
-        let prev_ok = pos == 0
-            || tag.as_bytes()[pos - 1].is_ascii_whitespace();
+        let prev_ok = pos == 0 || tag.as_bytes()[pos - 1].is_ascii_whitespace();
         let after = &tag[pos + key.len()..];
         let after_trim = after.trim_start();
         if prev_ok && after_trim.starts_with('=') {
@@ -196,9 +197,7 @@ pub fn import_into(store: &mut Store, parsed: &[OpmlFeed]) -> usize {
             continue;
         }
         let folder_id = of.folder.as_ref().map(|name| {
-            if let Some(existing) =
-                store.folders.iter().find(|f| &f.name == name)
-            {
+            if let Some(existing) = store.folders.iter().find(|f| &f.name == name) {
                 existing.id
             } else {
                 let id = Uuid::new_v4();

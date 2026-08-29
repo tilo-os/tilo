@@ -3,7 +3,7 @@
 //! `meta:generator`, mapped onto the canonical `meta.props` map both directions, while
 //! preserving any unmodeled child elements verbatim on export.
 
-use crate::model::{doc_prop, DocMut, DocRef};
+use crate::model::{DocMut, DocRef, doc_prop};
 use crate::schema::*;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
@@ -105,8 +105,12 @@ fn element_for_prop(prop: &str) -> Option<&'static str> {
 fn modeled_children(doc: &DocRef) -> String {
     let mut out = String::new();
     for key in DOC_PROP_KEYS {
-        let Some(val) = doc_prop(doc.doc, doc.c, key) else { continue };
-        let Some(el) = element_for_prop(key) else { continue };
+        let Some(val) = doc_prop(doc.doc, doc.c, key) else {
+            continue;
+        };
+        let Some(el) = element_for_prop(key) else {
+            continue;
+        };
         out.push_str(&format!("<{el}>{}</{el}>", escape_text(&val)));
     }
     out
@@ -219,7 +223,10 @@ fn meta_inner(xml: &[u8]) -> Option<Vec<u8>> {
 /// `original`; `None` with no properties and no original avoids a synthesized empty part.
 pub(super) fn export_meta(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8>> {
     let modeled = modeled_children(doc);
-    let preserved = original.and_then(meta_inner).map(|inner| unmodeled_children(&inner)).unwrap_or_default();
+    let preserved = original
+        .and_then(meta_inner)
+        .map(|inner| unmodeled_children(&inner))
+        .unwrap_or_default();
 
     if modeled.is_empty() && preserved.trim().is_empty() && original.is_none() {
         return None;

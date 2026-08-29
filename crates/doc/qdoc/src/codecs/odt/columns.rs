@@ -4,7 +4,7 @@
 //! style:page-layout`. This maps that count/gap onto the document-wide column setting
 //! (both directions), splicing `style:columns` back into the first page-layout in place.
 
-use crate::model::{columns as model_columns, DocMut, DocRef};
+use crate::model::{DocMut, DocRef, columns as model_columns};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
@@ -13,7 +13,9 @@ use super::styles::parse_margin_px;
 /// Import the body column count + gap from the first `style:page-layout`'s `style:columns`
 /// into the document-wide setting. No-op with no `style:columns` (or a count of one).
 pub(super) fn import_page_layout_columns(styles_xml: &[u8], doc: &mut DocMut) {
-    let Some((count, gap)) = parse_columns(styles_xml) else { return };
+    let Some((count, gap)) = parse_columns(styles_xml) else {
+        return;
+    };
     if count <= 1 {
         return;
     }
@@ -35,7 +37,11 @@ fn parse_columns(styles_xml: &[u8]) -> Option<(u32, Option<f64>)> {
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"style:column-count")
-                    .and_then(|a| a.unescape_value().ok().and_then(|v| v.trim().parse::<u32>().ok()))
+                    .and_then(|a| {
+                        a.unescape_value()
+                            .ok()
+                            .and_then(|v| v.trim().parse::<u32>().ok())
+                    })
                     .unwrap_or(1);
                 let gap = e
                     .attributes()
@@ -68,8 +74,12 @@ fn columns_xml(count: u32, gap: Option<f64>) -> Option<String> {
     if count <= 1 {
         return None;
     }
-    let gap_attr = gap.map(|g| format!(r#" style:column-gap="{}""#, px_to_cm(g))).unwrap_or_default();
-    Some(format!(r#"<style:columns style:column-count="{count}"{gap_attr}/>"#))
+    let gap_attr = gap
+        .map(|g| format!(r#" style:column-gap="{}""#, px_to_cm(g)))
+        .unwrap_or_default();
+    Some(format!(
+        r#"<style:columns style:column-count="{count}"{gap_attr}/>"#
+    ))
 }
 
 /// Splice the document's column setting into the first `style:page-layout`, or `None`
@@ -113,7 +123,12 @@ fn splice_into_page_layout(styles_xml: &[u8], cols: &str) -> Vec<u8> {
 /// Replace/insert `cols` inside a known `style:page-layout-properties` span; a self-closing
 /// properties element has `inner_start == inner_end == open_tag_end`.
 fn splice_into_props(s: &str, span: ElementSpan, cols: &str) -> String {
-    let ElementSpan { open_start, open_end, inner, self_closing } = span;
+    let ElementSpan {
+        open_start,
+        open_end,
+        inner,
+        self_closing,
+    } = span;
     match inner {
         // Self-closing — expand to a paired element holding the columns, preserving the original attributes.
         None => {
@@ -159,11 +174,21 @@ fn find_element_span(s: &str, name: &str) -> Option<ElementSpan> {
     let open_end = gt + 1;
     let self_closing = s.as_bytes().get(gt.wrapping_sub(1)) == Some(&b'/');
     if self_closing {
-        return Some(ElementSpan { open_start, open_end, inner: None, self_closing: true });
+        return Some(ElementSpan {
+            open_start,
+            open_end,
+            inner: None,
+            self_closing: true,
+        });
     }
     let close_tag = format!("</{name}>");
     let inner_end = s[open_end..].find(&close_tag)? + open_end;
-    Some(ElementSpan { open_start, open_end, inner: Some((open_end, inner_end)), self_closing: false })
+    Some(ElementSpan {
+        open_start,
+        open_end,
+        inner: Some((open_end, inner_end)),
+        self_closing: false,
+    })
 }
 
 /// Byte index of the start of the first `<{name}` element whose name matches exactly.
@@ -174,7 +199,9 @@ fn find_tag_start(s: &str, name: &str) -> Option<usize> {
         let at = from + rel;
         let after = at + needle.len();
         match s.as_bytes().get(after) {
-            Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n') | Some(b'>') | Some(b'/') => return Some(at),
+            Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n') | Some(b'>') | Some(b'/') => {
+                return Some(at);
+            }
             _ => from = after,
         }
     }

@@ -276,7 +276,11 @@ impl WorkspaceAcl {
     }
 
     /// Convenience: grant read-only on a subtree.
-    pub fn grant_read(&mut self, identity: IdentityKey, path_prefix: impl Into<String>) -> &mut Self {
+    pub fn grant_read(
+        &mut self,
+        identity: IdentityKey,
+        path_prefix: impl Into<String>,
+    ) -> &mut Self {
         self.grant(identity, path_prefix, true, false)
     }
 
@@ -344,7 +348,11 @@ impl WorkspaceAcl {
         direct || {
             let as_peer = peer_actor(peer);
             self.bindings.iter().any(|b| {
-                let actor = if &b.identity == peer { &b.actor } else { &as_peer };
+                let actor = if &b.identity == peer {
+                    &b.actor
+                } else {
+                    &as_peer
+                };
                 b.permits_as(actor, path, access)
             })
         }
@@ -361,7 +369,11 @@ impl WorkspaceAcl {
         direct || {
             let as_peer = peer_actor(peer);
             self.bindings.iter().any(|b| {
-                let actor = if &b.identity == peer { &b.actor } else { &as_peer };
+                let actor = if &b.identity == peer {
+                    &b.actor
+                } else {
+                    &as_peer
+                };
                 b.read_nominations_for(actor)
                     .any(|granted| b.permits_as(actor, granted, Access::Read))
             })
@@ -394,8 +406,7 @@ impl WorkspaceAcl {
             || self.bindings.iter().any(|b| {
                 &b.identity == identity
                     && b.read_nominations().any(|granted| {
-                        path_covers(path, granted)
-                            && self.permits(identity, granted, Access::Read)
+                        path_covers(path, granted) && self.permits(identity, granted, Access::Read)
                     })
             })
     }
@@ -630,7 +641,8 @@ mod tests {
             &[Principal::Room("team".into())],
             Some(0),
         );
-        let outsider = WorkspaceAcl::from_capabilities(BOB, std::slice::from_ref(&cap), &[], Some(0));
+        let outsider =
+            WorkspaceAcl::from_capabilities(BOB, std::slice::from_ref(&cap), &[], Some(0));
 
         assert!(member.permits(&ALICE, "/w/team/plan.md", Access::Write));
         assert!(!outsider.permits(&BOB, "/w/team/plan.md", Access::Read));
@@ -657,7 +669,12 @@ mod tests {
                 "{present} must be part of the view"
             );
         }
-        for absent in ["/w/other", "/w/other/private.md", "/w/docsSECRET", "/elsewhere"] {
+        for absent in [
+            "/w/other",
+            "/w/other/private.md",
+            "/w/docsSECRET",
+            "/elsewhere",
+        ] {
             assert!(
                 !acl.visible(&ALICE, absent),
                 "{absent} must be absent from the view, not merely denied"
@@ -726,7 +743,8 @@ mod tests {
         )
         .expiring(Expiry::AtUnix(500));
 
-        let live = WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&cap), &[], Some(499));
+        let live =
+            WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&cap), &[], Some(499));
         assert!(live.visible(&ALICE, "/w"), "while live, the trail exists");
 
         let lapsed = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(501));
@@ -844,7 +862,10 @@ mod tests {
             Verb::Read,
         );
         let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[room], Some(0));
-        assert!(acl.permits(&ALICE, "/x", Access::Read), "the mount holds it");
+        assert!(
+            acl.permits(&ALICE, "/x", Access::Read),
+            "the mount holds it"
+        );
         assert!(!acl.reads_anything(&BOB), "a caller does not");
         assert!(!acl.permits_peer(&BOB, "/x", Access::Read));
     }

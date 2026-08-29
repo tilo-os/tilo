@@ -130,7 +130,9 @@ fn real_main() -> Result<()> {
         Cmd::Shell(args) => cmd_shell(&store, args),
         Cmd::List => cmd_list(&store),
         Cmd::Diff { name, all } => cmd_diff(&store, &name, all),
-        Cmd::Keep { name, rename, note } => cmd_keep(&store, &name, rename.as_deref(), note.as_deref()),
+        Cmd::Keep { name, rename, note } => {
+            cmd_keep(&store, &name, rename.as_deref(), note.as_deref())
+        }
         Cmd::Discard { name, yes } => cmd_discard(&store, &name, yes),
         Cmd::Revert { name, path } => cmd_revert(&store, &name, &path),
         Cmd::Base(BaseCmd::List) => cmd_base_list(&store),
@@ -193,7 +195,11 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
                 store.create(
                     n,
                     &args.base,
-                    if args.keep { LayerKind::Kept } else { LayerKind::Ephemeral },
+                    if args.keep {
+                        LayerKind::Kept
+                    } else {
+                        LayerKind::Ephemeral
+                    },
                     args.on.clone(),
                 )?;
             }
@@ -204,7 +210,11 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
             store.create(
                 &n,
                 &args.base,
-                if args.keep { LayerKind::Kept } else { LayerKind::Ephemeral },
+                if args.keep {
+                    LayerKind::Kept
+                } else {
+                    LayerKind::Ephemeral
+                },
                 args.on.clone(),
             )?;
             n
@@ -219,7 +229,11 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
         store.home_dir(&name),
         &name,
     );
-    spec.lower_layers = layer.stacked_on.iter().map(|l| store.upper_dir(l)).collect();
+    spec.lower_layers = layer
+        .stacked_on
+        .iter()
+        .map(|l| store.upper_dir(l))
+        .collect();
     spec.network = !args.offline;
     spec.command = args.command.clone();
     for s in &args.share {
@@ -255,8 +269,7 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
 /// exits. It must state the deadline and both commands, because an offer whose
 /// expiry is unclear is an offer people resolve by never using the tool again.
 fn report_ephemeral_exit(name: &str, d: &Diff) {
-    let pkgs: Vec<&str> =
-        d.packages.values().flatten().map(String::as_str).collect();
+    let pkgs: Vec<&str> = d.packages.values().flatten().map(String::as_str).collect();
     eprintln!();
     eprintln!("Layer '{name}' is ephemeral and still on disk.");
     if !pkgs.is_empty() {
@@ -291,7 +304,11 @@ fn parse_share(spec: &str) -> Result<Share> {
     if !host.is_absolute() {
         bail!("--share needs an absolute path, got '{path}'");
     }
-    Ok(Share { guest: host.clone(), host, writable })
+    Ok(Share {
+        guest: host.clone(),
+        host,
+        writable,
+    })
 }
 
 fn cmd_list(store: &Store) -> Result<()> {
@@ -307,7 +324,14 @@ fn cmd_list(store: &Store) -> Result<()> {
         } else {
             format!(" (on {})", l.stacked_on.join(", "))
         };
-        println!("{:<20} {:<12} {:<10} {}{}", l.name, l.base, l.kind.to_string(), l.note, stack);
+        println!(
+            "{:<20} {:<12} {:<10} {}{}",
+            l.name,
+            l.base,
+            l.kind.to_string(),
+            l.note,
+            stack
+        );
     }
     Ok(())
 }
@@ -317,7 +341,10 @@ fn cmd_diff(store: &Store, name: &str, all: bool) -> Result<()> {
     with_mapping(|| {
         let d = diff::compute(&store.upper_dir(name), Some(&store.base_path(&layer.base)))?;
         if d.is_empty() {
-            println!("Layer '{name}' has changed nothing from base '{}'.", layer.base);
+            println!(
+                "Layer '{name}' has changed nothing from base '{}'.",
+                layer.base
+            );
             return Ok(());
         }
         if all {
@@ -335,14 +362,20 @@ fn cmd_diff(store: &Store, name: &str, all: bool) -> Result<()> {
             d.changes.len(),
             d.total_bytes()
         );
-        println!("Base '{}' is untouched; `tinker discard {name}` returns to it exactly.", layer.base);
+        println!(
+            "Base '{}' is untouched; `tinker discard {name}` returns to it exactly.",
+            layer.base
+        );
         Ok(())
     })
 }
 
 fn cmd_keep(store: &Store, name: &str, rename: Option<&str>, note: Option<&str>) -> Result<()> {
     let layer = store.promote(name, rename, note)?;
-    println!("Layer '{}' is kept. `tinker shell {}` reopens it.", layer.name, layer.name);
+    println!(
+        "Layer '{}' is kept. `tinker shell {}` reopens it.",
+        layer.name, layer.name
+    );
     Ok(())
 }
 
@@ -355,7 +388,10 @@ fn cmd_discard(store: &Store, name: &str, yes: bool) -> Result<()> {
     }
     with_mapping(|| {
         store.discard(name)?;
-        println!("Discarded '{name}'. Base '{}' was never modified.", layer.base);
+        println!(
+            "Discarded '{name}'. Base '{}' was never modified.",
+            layer.base
+        );
         Ok(())
     })
 }
@@ -363,7 +399,10 @@ fn cmd_discard(store: &Store, name: &str, yes: bool) -> Result<()> {
 fn cmd_revert(store: &Store, name: &str, path: &Path) -> Result<()> {
     with_mapping(|| {
         store.revert_path(name, path)?;
-        println!("Reverted {} in '{name}' — the base version shows through again.", path.display());
+        println!(
+            "Reverted {} in '{name}' — the base version shows through again.",
+            path.display()
+        );
         Ok(())
     })
 }
@@ -373,7 +412,9 @@ fn cmd_base_list(store: &Store) -> Result<()> {
         Ok(rd) => rd,
         Err(_) => {
             println!("No bases yet. Add one with:");
-            println!("    tinker base add debian --from-image docker.io/library/debian:stable-slim");
+            println!(
+                "    tinker base add debian --from-image docker.io/library/debian:stable-slim"
+            );
             return Ok(());
         }
     };
@@ -398,15 +439,23 @@ fn cmd_base_add(store: &Store, name: &str, image: &str) -> Result<()> {
     std::fs::create_dir_all(&dest)?;
 
     eprintln!("tinker: pulling {image}");
-    let ok = Command::new("podman").args(["pull", image]).status()?.success();
+    let ok = Command::new("podman")
+        .args(["pull", image])
+        .status()?
+        .success();
     if !ok {
         let _ = std::fs::remove_dir(&dest);
         bail!("could not pull {image}");
     }
 
-    let out = Command::new("podman").args(["create", image, "/bin/true"]).output()?;
+    let out = Command::new("podman")
+        .args(["create", image, "/bin/true"])
+        .output()?;
     if !out.status.success() {
-        bail!("podman create failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "podman create failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     let cid = String::from_utf8_lossy(&out.stdout).trim().to_string();
 
@@ -517,7 +566,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = Store::at(d.path());
         let first = next_scratch_name(&s).unwrap();
-        s.create(&first, "debian", LayerKind::Ephemeral, vec![]).unwrap();
+        s.create(&first, "debian", LayerKind::Ephemeral, vec![])
+            .unwrap();
         let second = next_scratch_name(&s).unwrap();
         assert_ne!(first, second);
     }

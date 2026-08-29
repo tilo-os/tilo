@@ -58,11 +58,7 @@ pub struct Remark {
 }
 
 impl Remark {
-    pub fn new(
-        text: impl Into<String>,
-        reference: ResourceRef,
-        destination: Destination,
-    ) -> Self {
+    pub fn new(text: impl Into<String>, reference: ResourceRef, destination: Destination) -> Self {
         Self {
             text: text.into(),
             reference,
@@ -254,8 +250,7 @@ pub fn read_chat_action(encoded: &EncodedAction) -> Option<ReceivedRemark> {
     let fields = value.get("SendMessage")?.as_object()?;
 
     // A message with no reference is an ordinary chat message, not a remark.
-    let reference: ResourceRef =
-        serde_json::from_value(fields.get(REFERENCE_KEY)?.clone()).ok()?;
+    let reference: ResourceRef = serde_json::from_value(fields.get(REFERENCE_KEY)?.clone()).ok()?;
     let delivery: Delivery = serde_json::from_value(fields.get(DELIVERY_KEY)?.clone()).ok()?;
     let mentions: Vec<MentionRef> = fields
         .get("mentions")
@@ -301,7 +296,10 @@ mod tests {
         let encoded = remark.to_chat_action("m_1", "u_me", 1_700_000_000).unwrap();
         let got = read_chat_action(&encoded).expect("a remark is recoverable");
 
-        assert_eq!(got.reference.resource_id().as_str(), "word-processor.block:blk_7");
+        assert_eq!(
+            got.reference.resource_id().as_str(),
+            "word-processor.block:blk_7"
+        );
         assert_eq!(got.reference.kind, "word_processor.block");
         assert_eq!(got.reference.span, Some(Span::chars(12, 41)));
         assert_eq!(got.text, "the times contradict the prose");
@@ -309,7 +307,12 @@ mod tests {
             !got.text.contains("blk_7"),
             "the address must not be smuggled through the body"
         );
-        assert_eq!(got.delivery, Delivery::Channel { channel: "c_general".into() });
+        assert_eq!(
+            got.delivery,
+            Delivery::Channel {
+                channel: "c_general".into()
+            }
+        );
         assert_eq!(got.author, "u_me");
     }
 
@@ -321,9 +324,24 @@ mod tests {
         assert_eq!(encoded.type_id, "chat.action");
 
         let v: Value = serde_json::from_slice(&encoded.payload).unwrap();
-        let f = v.get("SendMessage").expect("externally tagged variant").as_object().unwrap();
-        for key in ["channel", "id", "author", "ts", "text", "parent", "attachment"] {
-            assert!(f.contains_key(key), "chat's `{key}` field must be written explicitly");
+        let f = v
+            .get("SendMessage")
+            .expect("externally tagged variant")
+            .as_object()
+            .unwrap();
+        for key in [
+            "channel",
+            "id",
+            "author",
+            "ts",
+            "text",
+            "parent",
+            "attachment",
+        ] {
+            assert!(
+                f.contains_key(key),
+                "chat's `{key}` field must be written explicitly"
+            );
         }
         assert_eq!(f["channel"], json!("c_general"));
         assert_eq!(f["parent"], Value::Null);
@@ -415,12 +433,20 @@ mod tests {
 
     #[test]
     fn either_member_writes_into_the_same_room() {
-        let to_bob = Remark::new("a", run_sheet(), Destination::participant(BOB, "Bob", false))
-            .to_direct_action(&pair(), "m_1", ADA, 1)
-            .expect("Ada writes to Bob");
-        let to_ada = Remark::new("b", run_sheet(), Destination::participant(ADA, "Ada", false))
-            .to_direct_action(&pair(), "m_2", BOB, 2)
-            .expect("Bob writes to Ada");
+        let to_bob = Remark::new(
+            "a",
+            run_sheet(),
+            Destination::participant(BOB, "Bob", false),
+        )
+        .to_direct_action(&pair(), "m_1", ADA, 1)
+        .expect("Ada writes to Bob");
+        let to_ada = Remark::new(
+            "b",
+            run_sheet(),
+            Destination::participant(ADA, "Ada", false),
+        )
+        .to_direct_action(&pair(), "m_2", BOB, 2)
+        .expect("Bob writes to Ada");
         for encoded in [&to_bob, &to_ada] {
             let v: Value = serde_json::from_slice(&encoded.payload).unwrap();
             assert_eq!(v["SendMessage"]["channel"], json!(ROOM_CONVERSATION));
@@ -480,7 +506,9 @@ mod tests {
         assert_eq!(
             remark.to_direct_action(&pair(), "m_1", ADA, 42),
             Err(Undeliverable::NotPrivate {
-                delivery: Delivery::Channel { channel: "c_general".into() }
+                delivery: Delivery::Channel {
+                    channel: "c_general".into()
+                }
             }),
         );
     }
@@ -497,7 +525,10 @@ mod tests {
         let encoded = remark.to_direct_action(&pair(), "m_1", ADA, 42).unwrap();
         let got = read_chat_action(&encoded).unwrap();
         assert_eq!(got.delivery, Delivery::Private { to: BOB.into() });
-        assert!(got.delivery.is_private(), "a mention must not widen a private remark");
+        assert!(
+            got.delivery.is_private(),
+            "a mention must not widen a private remark"
+        );
     }
 
     #[test]

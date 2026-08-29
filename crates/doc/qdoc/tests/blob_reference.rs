@@ -50,7 +50,10 @@ fn a_saved_document_carries_the_reference_and_not_the_bytes() {
         "the saved document carries the image's own bytes ({} bytes saved)",
         saved.len()
     );
-    assert!(!contains(&saved, &[0xA5u8; 64]), "the saved document carries the image's body");
+    assert!(
+        !contains(&saved, &[0xA5u8; 64]),
+        "the saved document carries the image's body"
+    );
 
     // The hash is the address the content store is keyed by, so it is the one
     // thing that must survive.
@@ -123,7 +126,10 @@ fn the_descriptor_travels_with_the_reference() {
     // The descriptor is written as scalars beside the hash, so the sniffed mime
     // is literal ASCII in the saved bytes. The `blob_*` attrs belong to the
     // materialised snapshot and are added at read time, so they never appear.
-    assert!(contains(&saved, b"image/png"), "the descriptor's mime did not survive the save");
+    assert!(
+        contains(&saved, b"image/png"),
+        "the descriptor's mime did not survive the save"
+    );
 
     let reopened = Document::load(&saved).expect("a saved document reloads");
     assert_eq!(

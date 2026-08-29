@@ -180,7 +180,11 @@ fn list_containers() -> Option<Vec<Container>> {
         .into_iter()
         .map(|e| {
             let name = e.names.first().cloned().unwrap_or_else(|| e.id.clone());
-            let status = ContainerStatus::parse(if !e.state.is_empty() { &e.state } else { &e.status });
+            let status = ContainerStatus::parse(if !e.state.is_empty() {
+                &e.state
+            } else {
+                &e.status
+            });
             let ports = e
                 .ports
                 .into_iter()
@@ -188,7 +192,11 @@ fn list_containers() -> Option<Vec<Container>> {
                 .map(|p| PortMapping {
                     host_port: p.host_port,
                     container_port: p.container_port,
-                    protocol: if p.protocol.is_empty() { "tcp".into() } else { p.protocol },
+                    protocol: if p.protocol.is_empty() {
+                        "tcp".into()
+                    } else {
+                        p.protocol
+                    },
                 })
                 .collect();
             let stat = stats
@@ -385,7 +393,11 @@ fn list_volumes() -> Option<Vec<Volume>> {
             let in_use_by = usage.iter().filter(|n| **n == e.name).count() as u32;
             Volume {
                 name: e.name,
-                driver: if e.driver.is_empty() { "local".into() } else { e.driver },
+                driver: if e.driver.is_empty() {
+                    "local".into()
+                } else {
+                    e.driver
+                },
                 mountpoint: e.mountpoint,
                 created: e.created_at,
                 in_use_by,
@@ -421,7 +433,10 @@ fn volume_usage() -> Vec<String> {
 /// `distrobox list` is the canonical reader; when the CLI is absent we fall
 /// back to filtering podman's container list by label.
 fn list_distroboxes() -> Vec<DistroBox> {
-    let out = match Command::new("distrobox").args(["list", "--no-color"]).output() {
+    let out = match Command::new("distrobox")
+        .args(["list", "--no-color"])
+        .output()
+    {
         Ok(o) if o.status.success() => o,
         _ => return Vec::new(),
     };
@@ -522,8 +537,16 @@ pub fn inspect_into(container: &mut Container) {
         container.mounts = mounts
             .iter()
             .map(|m| Mount {
-                source: m.get("Source").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                destination: m.get("Destination").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                source: m
+                    .get("Source")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                destination: m
+                    .get("Destination")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 read_only: !m.get("RW").and_then(|v| v.as_bool()).unwrap_or(true),
             })
             .collect();
@@ -768,9 +791,15 @@ mod tests {
 
     #[test]
     fn split_reference_separates_tag() {
-        assert_eq!(split_reference("docker.io/library/nginx:1.27"), ("docker.io/library/nginx".into(), "1.27".into()));
+        assert_eq!(
+            split_reference("docker.io/library/nginx:1.27"),
+            ("docker.io/library/nginx".into(), "1.27".into())
+        );
         // registry-with-port host must not be mistaken for a tag.
-        assert_eq!(split_reference("registry.local:5000/app"), ("registry.local:5000/app".into(), "latest".into()));
+        assert_eq!(
+            split_reference("registry.local:5000/app"),
+            ("registry.local:5000/app".into(), "latest".into())
+        );
     }
 
     #[test]

@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use shell::portal::{
-    self, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
-    MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner,
+    self, BUS_NAME, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
+    MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner, OBJECT_PATH,
     PortalCaller, PortalContext, PrintSpoolerHandle, PromptQueueHandle, PromptResolver,
     RecordingInjector, RecordingSpooler, RemoteInputInjectorHandle,
-    ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
+    ScreenCastStreamProvisionerHandle,
 };
 use shell::shell::state::{
     Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Principal, Subject, Workspace,
@@ -45,9 +45,9 @@ async fn bring_up_pair(
         prompts,
         caller_map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "test"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "test",
+        ))),
         RemoteInputInjectorHandle::null(),
         PrintSpoolerHandle::null(),
     )
@@ -468,12 +468,14 @@ fn capability_kind_round_trips_through_grant_store() {
 
 /// Pre-seeded with an `Always` Screencast grant + a forced caller, so the
 /// handshake fast-paths past the prompt.
-fn screencast_always(
-    ws_num: u64,
-    app: &str,
-) -> (GrantStoreHandle, CallerMap, WorkspaceId) {
+fn screencast_always(ws_num: u64, app: &str) -> (GrantStoreHandle, CallerMap, WorkspaceId) {
     let mut ws = empty_workspace(ws_num, "ws");
-    ws.grant_app(app, &Capability::Screencast { scope: GRANT_ALWAYS });
+    ws.grant_app(
+        app,
+        &Capability::Screencast {
+            scope: GRANT_ALWAYS,
+        },
+    );
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
     let map = CallerMap::new();
     map.force_caller_for_tests(PortalCaller::new(ws_id, app));
@@ -529,8 +531,7 @@ async fn screencast_start_honors_selected_source_type_and_cursor_mode() {
     let (r, _) = sc_call(&proxy, "SelectSources", &(&h, &session, app, &opts)).await;
     assert_eq!(r, 0);
 
-    let (r2, results) =
-        sc_call(&proxy, "Start", &(&h, &session, app, "", &empty)).await;
+    let (r2, results) = sc_call(&proxy, "Start", &(&h, &session, app, "", &empty)).await;
     assert_eq!(r2, 0);
     let streams = streams_of(&results);
     assert_eq!(streams.len(), 1);
@@ -553,9 +554,9 @@ async fn screencast_multiple_yields_one_stream_per_source() {
         PromptQueueHandle::new(PromptResolver::Channel),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(80, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            80, "t",
+        ))),
         RemoteInputInjectorHandle::null(),
         PrintSpoolerHandle::null(),
     )
@@ -585,9 +586,9 @@ async fn screencast_restore_token_skips_reprompt() {
         queue.clone(),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(90, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            90, "t",
+        ))),
         RemoteInputInjectorHandle::null(),
         PrintSpoolerHandle::null(),
     )
@@ -606,9 +607,14 @@ async fn screencast_restore_token_skips_reprompt() {
     assert_eq!(r, 0);
     let (rs, results) = sc_call(&proxy, "Start", &(&h, &s1, app, "", &empty)).await;
     assert_eq!(rs, 0);
-    let token: String =
-        String::try_from(results.get("restore_token").expect("token").try_clone().unwrap())
-            .unwrap();
+    let token: String = String::try_from(
+        results
+            .get("restore_token")
+            .expect("token")
+            .try_clone()
+            .unwrap(),
+    )
+    .unwrap();
     assert!(!token.is_empty());
     assert_eq!(queue.queued_len(), 0, "fast path: no prompt queued");
 
@@ -619,9 +625,7 @@ async fn screencast_restore_token_skips_reprompt() {
         if let Some(ws) = t.workspaces.iter_mut().find(|w| w.id == ws_id) {
             // Revoking every app-subject grant proves a restore token
             // can't resurrect access after a revoke.
-            ws.revoke_matching(|c| {
-                matches!(&c.subject, Subject::Principal(Principal::App(_)))
-            });
+            ws.revoke_matching(|c| matches!(&c.subject, Subject::Principal(Principal::App(_))));
         }
     }
 
@@ -641,8 +645,7 @@ async fn screencast_restore_token_skips_reprompt() {
     .await
     .expect("restore token must skip the prompt (would hang otherwise)")
     .expect("SelectSources");
-    let (r2, _): (u32, HashMap<String, OwnedValue>) =
-        sel2.body().deserialize().unwrap();
+    let (r2, _): (u32, HashMap<String, OwnedValue>) = sel2.body().deserialize().unwrap();
     assert_eq!(r2, 0, "valid restore token authorizes without a prompt");
     assert_eq!(queue.queued_len(), 0, "no prompt should have been queued");
 
@@ -653,8 +656,7 @@ async fn screencast_restore_token_skips_reprompt() {
     .await
     .expect("restored Start must not prompt")
     .expect("Start");
-    let (rs2, results2): (u32, HashMap<String, OwnedValue>) =
-        start2.body().deserialize().unwrap();
+    let (rs2, results2): (u32, HashMap<String, OwnedValue>) = start2.body().deserialize().unwrap();
     assert_eq!(rs2, 0);
     let streams2 = streams_of(&results2);
     assert_eq!(
@@ -674,9 +676,9 @@ async fn screencast_open_pipewire_remote_returns_real_fd() {
         PromptQueueHandle::new(PromptResolver::Channel),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "t",
+        ))),
         RemoteInputInjectorHandle::null(),
         PrintSpoolerHandle::null(),
     )
@@ -702,12 +704,21 @@ async fn screencast_open_pipewire_remote_returns_real_fd() {
 #[tokio::test]
 async fn screencast_properties_advertise_capabilities() {
     let (store, _ws) = GrantStoreHandle::test_with_workspace(empty_workspace(205, "ws"));
-    let (_s, client, _ctx) =
-        bring_up_pair(store, PromptQueueHandle::new(PromptResolver::AutoAllow), CallerMap::new())
-            .await;
+    let (_s, client, _ctx) = bring_up_pair(
+        store,
+        PromptQueueHandle::new(PromptResolver::AutoAllow),
+        CallerMap::new(),
+    )
+    .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
-    let types: u32 = proxy.get_property("AvailableSourceTypes").await.expect("types");
-    let modes: u32 = proxy.get_property("AvailableCursorModes").await.expect("modes");
+    let types: u32 = proxy
+        .get_property("AvailableSourceTypes")
+        .await
+        .expect("types");
+    let modes: u32 = proxy
+        .get_property("AvailableCursorModes")
+        .await
+        .expect("modes");
     let version: u32 = proxy.get_property("version").await.expect("version");
     assert_eq!(types, 1 | 2 | 4, "monitor|window|virtual");
     assert_eq!(modes, 1 | 2 | 4, "hidden|embedded|metadata");
@@ -728,9 +739,9 @@ async fn remote_desktop_notify_injects_after_consent() {
         PromptQueueHandle::new(PromptResolver::AutoAllow),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "t",
+        ))),
         RemoteInputInjectorHandle::new(rec.clone()),
         PrintSpoolerHandle::null(),
     )
@@ -759,7 +770,11 @@ async fn remote_desktop_notify_injects_after_consent() {
         .expect("NotifyKeyboardKeycode");
 
     let actions = rec.actions();
-    assert_eq!(actions.len(), 2, "both Notify* injected after consent+Start");
+    assert_eq!(
+        actions.len(),
+        2,
+        "both Notify* injected after consent+Start"
+    );
     assert!(matches!(
         actions[0],
         shell::network::RemoteAction::PointerButton {
@@ -788,9 +803,9 @@ async fn remote_desktop_denial_blocks_injection() {
         PromptQueueHandle::new(PromptResolver::AutoDeny),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "t",
+        ))),
         RemoteInputInjectorHandle::new(rec.clone()),
         PrintSpoolerHandle::null(),
     )
@@ -847,7 +862,10 @@ fn document_fd(bytes: &[u8]) -> (tempfile::NamedTempFile, zbus::zvariant::OwnedF
     f.flush().expect("flush");
     f.as_file_mut().seek(SeekFrom::Start(0)).expect("rewind");
     let dup = f.as_file().try_clone().expect("dup fd");
-    (f, zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(dup)))
+    (
+        f,
+        zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(dup)),
+    )
 }
 
 /// The token minted by PreparePrint is what authorises the Print call.
@@ -865,7 +883,15 @@ async fn print_round_trips_the_document_to_the_spooler() {
     let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
         .call(
             "PreparePrint",
-            &(&handle, "org.example.Editor", "", "Quarterly report", &empty, &empty, &empty),
+            &(
+                &handle,
+                "org.example.Editor",
+                "",
+                "Quarterly report",
+                &empty,
+                &empty,
+                &empty,
+            ),
         )
         .await
         .expect("PreparePrint");
@@ -880,14 +906,25 @@ async fn print_round_trips_the_document_to_the_spooler() {
     let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
         .call(
             "Print",
-            &(&handle, "org.example.Editor", "", "Quarterly report", fd, &opts),
+            &(
+                &handle,
+                "org.example.Editor",
+                "",
+                "Quarterly report",
+                fd,
+                &opts,
+            ),
         )
         .await
         .expect("Print");
     assert_eq!(response, 0, "Print succeeded: {results:?}");
 
     let jobs = spooler.jobs();
-    assert_eq!(jobs.len(), 1, "exactly one job reached the spooler: {jobs:?}");
+    assert_eq!(
+        jobs.len(),
+        1,
+        "exactly one job reached the spooler: {jobs:?}"
+    );
     assert_eq!(
         jobs[0].document, b"%PDF-1.7\nthe quarterly report\n",
         "the spooler received the bytes behind the descriptor"
@@ -912,7 +949,10 @@ async fn a_denied_print_never_reaches_the_spooler() {
     let (doc, fd) = document_fd(b"%PDF-1.7\nsecret\n");
     let opts: HashMap<String, Value<'_>> = HashMap::new();
     let (response, _results): (u32, HashMap<String, OwnedValue>) = proxy
-        .call("Print", &(&handle, "org.example.Editor", "", "Secret", fd, &opts))
+        .call(
+            "Print",
+            &(&handle, "org.example.Editor", "", "Secret", fd, &opts),
+        )
         .await
         .expect("Print call completes");
     assert_eq!(response, 1, "a denied request reports user-cancelled");
@@ -943,7 +983,10 @@ async fn an_app_cannot_name_a_destination_that_does_not_exist() {
         Value::from("../../etc/cups/printers.conf"),
     );
     let (response, _results): (u32, HashMap<String, OwnedValue>) = proxy
-        .call("Print", &(&handle, "org.example.Editor", "", "x", fd, &opts))
+        .call(
+            "Print",
+            &(&handle, "org.example.Editor", "", "x", fd, &opts),
+        )
         .await
         .expect("Print call completes");
     assert_eq!(response, 0, "the job still goes to a real printer");

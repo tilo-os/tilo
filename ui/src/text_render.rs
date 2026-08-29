@@ -1,9 +1,11 @@
+use cosmic_text::fontdb::Weight;
+use cosmic_text::{
+    Buffer, Family, FontSystem, Metrics, Shaping, Style as FontStyle, SwashCache, Wrap,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
-use cosmic_text::{FontSystem, SwashCache, Buffer, Family, Metrics, Shaping, Style as FontStyle, Wrap};
-use cosmic_text::fontdb::Weight;
 use vello::Scene;
 use vello::kurbo::Affine;
 use vello::peniko::{Color, FontData as Font, StyleRef};
@@ -11,8 +13,7 @@ use vello::peniko::{Color, FontData as Font, StyleRef};
 /// Named weight tiers mapping 1:1 to [`cosmic_text::fontdb::Weight`]'s
 /// numeric constants (Tailwind's font-medium/semibold/bold), so call sites
 /// read declaratively instead of passing raw u16s.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum TextWeight {
     /// 400 — body / subtitle / explanatory text. Default.
     #[default]
@@ -40,12 +41,10 @@ impl TextWeight {
     }
 }
 
-
 /// A font family to shape with. The three generic classes resolve to the
 /// system's default face for that class; `Named` targets a specific
 /// installed family by name.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub enum FontChoice {
     #[default]
     SansSerif,
@@ -53,7 +52,6 @@ pub enum FontChoice {
     Monospace,
     Named(String),
 }
-
 
 impl FontChoice {
     fn to_cosmic(&self) -> Family<'_> {
@@ -230,7 +228,13 @@ impl TextRenderer {
         self.measure_cache.insert(key, value);
     }
 
-    fn make_measure_key(&self, text: &str, size: f32, max_width: Option<f32>, weight: TextWeight) -> MeasureKey {
+    fn make_measure_key(
+        &self,
+        text: &str,
+        size: f32,
+        max_width: Option<f32>,
+        weight: TextWeight,
+    ) -> MeasureKey {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -258,7 +262,9 @@ impl TextRenderer {
         max_width: Option<f32>,
         weight: TextWeight,
     ) -> (f32, f32) {
-        if text.is_empty() { return (0.0, 0.0); }
+        if text.is_empty() {
+            return (0.0, 0.0);
+        }
 
         let key = self.make_measure_key(text, size, max_width, weight);
         if let Some(cached) = self.measure_lookup(key) {
@@ -404,7 +410,15 @@ impl TextRenderer {
         transform: Affine,
         max_width: Option<f32>,
     ) {
-        self.draw_text_weighted(scene, text, size, color, transform, max_width, TextWeight::Regular)
+        self.draw_text_weighted(
+            scene,
+            text,
+            size,
+            color,
+            transform,
+            max_width,
+            TextWeight::Regular,
+        )
     }
 
     /// Draw `text` with explicit weight + italic + optional monospace family
@@ -423,8 +437,14 @@ impl TextRenderer {
         italic: bool,
         monospace: bool,
     ) {
-        if text.is_empty() { return; }
-        let family = if monospace { FontChoice::Monospace } else { FontChoice::SansSerif };
+        if text.is_empty() {
+            return;
+        }
+        let family = if monospace {
+            FontChoice::Monospace
+        } else {
+            FontChoice::SansSerif
+        };
         let runs = self.shaped_runs(text, size, max_width, weight, italic, &family);
         self.paint_runs(scene, &runs, size, color, transform);
     }
@@ -444,7 +464,9 @@ impl TextRenderer {
         italic: bool,
         family: &FontChoice,
     ) {
-        if text.is_empty() { return; }
+        if text.is_empty() {
+            return;
+        }
         let runs = self.shaped_runs(text, size, max_width, weight, italic, family);
         self.paint_runs(scene, &runs, size, color, transform);
     }
@@ -558,7 +580,9 @@ impl TextRenderer {
         max_width: Option<f32>,
         weight: TextWeight,
     ) {
-        if text.is_empty() { return; }
+        if text.is_empty() {
+            return;
+        }
         let runs = self.shaped_runs(text, size, max_width, weight, false, &FontChoice::SansSerif);
         self.paint_runs(scene, &runs, size, color, transform);
     }
@@ -674,13 +698,19 @@ impl TextRenderer {
         self.font_cache
             .entry(face_id)
             .or_insert_with(|| {
-                let font_data = self.font_system.db().face(face_id).and_then(|f| {
-                    match &f.source {
-                        cosmic_text::fontdb::Source::Binary(data) => Some(data.as_ref().as_ref().to_vec()),
+                let font_data = self
+                    .font_system
+                    .db()
+                    .face(face_id)
+                    .and_then(|f| match &f.source {
+                        cosmic_text::fontdb::Source::Binary(data) => {
+                            Some(data.as_ref().as_ref().to_vec())
+                        }
                         cosmic_text::fontdb::Source::File(path) => fs::read(path).ok(),
-                        cosmic_text::fontdb::Source::SharedFile(_, data) => Some(data.as_ref().as_ref().to_vec()),
-                    }
-                });
+                        cosmic_text::fontdb::Source::SharedFile(_, data) => {
+                            Some(data.as_ref().as_ref().to_vec())
+                        }
+                    });
                 if let Some(data) = font_data {
                     Font::new(data.into(), 0)
                 } else {
@@ -701,7 +731,8 @@ impl TextRenderer {
     ) {
         use crate::richtext::BaselineShift;
         let resolve = |c: Option<cosmic_text::Color>| {
-            c.map(|c| Color::from_rgb8(c.r(), c.g(), c.b())).unwrap_or(color)
+            c.map(|c| Color::from_rgb8(c.r(), c.g(), c.b()))
+                .unwrap_or(color)
         };
 
         // Highlight bands paint behind glyphs so the ink reads on top.
@@ -731,7 +762,15 @@ impl TextRenderer {
                     || cur_shift != g_shift;
                 if changed && !batch.is_empty() {
                     let dy = cur_shift.offset(batch_size);
-                    self.flush_glyphs(scene, face.unwrap(), &batch, batch_size, resolve(cur_color), transform, run.line_y + dy);
+                    self.flush_glyphs(
+                        scene,
+                        face.unwrap(),
+                        &batch,
+                        batch_size,
+                        resolve(cur_color),
+                        transform,
+                        run.line_y + dy,
+                    );
                     batch.clear();
                 }
                 face = Some(g.font_id);
@@ -745,7 +784,15 @@ impl TextRenderer {
                 && !batch.is_empty()
             {
                 let dy = cur_shift.offset(batch_size);
-                self.flush_glyphs(scene, f, &batch, size, resolve(cur_color), transform, run.line_y + dy);
+                self.flush_glyphs(
+                    scene,
+                    f,
+                    &batch,
+                    size,
+                    resolve(cur_color),
+                    transform,
+                    run.line_y + dy,
+                );
             }
         }
         for &(s, e) in &layout.underlines {
@@ -780,21 +827,23 @@ impl TextRenderer {
     ) {
         let vello_font = self.vello_font(face_id);
 
-        let vello_glyphs: Vec<vello::Glyph> = glyphs.iter().map(|g| {
-            vello::Glyph {
+        let vello_glyphs: Vec<vello::Glyph> = glyphs
+            .iter()
+            .map(|g| vello::Glyph {
                 id: g.glyph_id as u32,
                 x: g.x,
                 y: line_y + g.y,
-            }
-        }).collect();
+            })
+            .collect();
 
-        scene.draw_glyphs(&vello_font)
+        scene
+            .draw_glyphs(&vello_font)
             .font_size(size)
             .brush(color)
             .transform(transform)
             .draw(
                 StyleRef::Fill(vello::peniko::Fill::NonZero),
-                vello_glyphs.into_iter()
+                vello_glyphs.into_iter(),
             );
     }
 }
@@ -856,21 +905,47 @@ mod tests {
 
         let plain_spans = [RichSpan::new("highlighted")];
         let plain = RichTextLayout::shape(
-            &mut tr.font_system, &plain_spans, false, 16.0, 400.0,
-            TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut tr.font_system,
+            &plain_spans,
+            false,
+            16.0,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
         let hl_spans = [RichSpan::new("highlighted").background(Some([255, 235, 59]))];
         let highlighted = RichTextLayout::shape(
-            &mut tr.font_system, &hl_spans, false, 16.0, 400.0,
-            TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut tr.font_system,
+            &hl_spans,
+            false,
+            16.0,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
 
         let mut plain_scene = Scene::new();
-        tr.draw_rich(&mut plain_scene, &plain, Affine::IDENTITY, Color::from_rgb8(0, 0, 0));
+        tr.draw_rich(
+            &mut plain_scene,
+            &plain,
+            Affine::IDENTITY,
+            Color::from_rgb8(0, 0, 0),
+        );
         let plain_paths = plain_scene.encoding().n_paths;
 
         let mut hl_scene = Scene::new();
-        tr.draw_rich(&mut hl_scene, &highlighted, Affine::IDENTITY, Color::from_rgb8(0, 0, 0));
+        tr.draw_rich(
+            &mut hl_scene,
+            &highlighted,
+            Affine::IDENTITY,
+            Color::from_rgb8(0, 0, 0),
+        );
         let hl_paths = hl_scene.encoding().n_paths;
 
         assert!(
@@ -896,8 +971,14 @@ mod tests {
         let (full_w, _) = tr.measure(s, 14.0, None);
         let budget = full_w / 3.0; // force truncation
         let out = tr.elide_to_width(s, 14.0, budget);
-        assert!(out.ends_with('\u{2026}'), "truncated text must end with …, got {out:?}");
-        assert!(out.chars().count() < s.chars().count(), "must drop characters");
+        assert!(
+            out.ends_with('\u{2026}'),
+            "truncated text must end with …, got {out:?}"
+        );
+        assert!(
+            out.chars().count() < s.chars().count(),
+            "must drop characters"
+        );
         let (out_w, _) = tr.measure(&out, 14.0, None);
         assert!(
             out_w <= budget + 0.5,
@@ -916,12 +997,15 @@ mod tests {
     #[test]
     fn clamp_to_lines_caps_line_count_and_elides_last() {
         let mut tr = TextRenderer::new();
-        let paragraph =
-            "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
+        let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
              incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
         // Narrow width forces several wrapped lines; cap to 2.
         let lines = tr.clamp_to_lines(paragraph, 14.0, 120.0, 2);
-        assert!(lines.len() <= 2, "must not exceed max_lines, got {}", lines.len());
+        assert!(
+            lines.len() <= 2,
+            "must not exceed max_lines, got {}",
+            lines.len()
+        );
         assert_eq!(lines.len(), 2, "this paragraph wraps to more than 2 lines");
         assert!(
             lines.last().unwrap().ends_with('\u{2026}'),
@@ -976,10 +1060,26 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
-        tr.draw_text_weighted(&mut scene, "Clear", 16.0, Color::WHITE, t, None, TextWeight::Regular);
+        tr.draw_text_weighted(
+            &mut scene,
+            "Clear",
+            16.0,
+            Color::WHITE,
+            t,
+            None,
+            TextWeight::Regular,
+        );
         let _ = tr.take_shape_stats();
         // Same string + size + weight, different colour (dark→light theme).
-        tr.draw_text_weighted(&mut scene, "Clear", 16.0, Color::BLACK, t, None, TextWeight::Regular);
+        tr.draw_text_weighted(
+            &mut scene,
+            "Clear",
+            16.0,
+            Color::BLACK,
+            t,
+            None,
+            TextWeight::Regular,
+        );
         let (h, m, _ns) = tr.take_shape_stats();
         assert_eq!(m, 0, "recolour must not reshape");
         assert_eq!(h, 1, "recolour must hit the cached geometry");
@@ -993,9 +1093,33 @@ mod tests {
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
         let s = "the quick brown fox";
-        tr.draw_text_weighted(&mut scene, s, 16.0, Color::WHITE, t, Some(200.0), TextWeight::Regular);
-        tr.draw_text_weighted(&mut scene, s, 16.0, Color::WHITE, t, Some(60.0), TextWeight::Regular);
-        tr.draw_text_weighted(&mut scene, s, 16.0, Color::WHITE, t, Some(200.0), TextWeight::Regular); // hit
+        tr.draw_text_weighted(
+            &mut scene,
+            s,
+            16.0,
+            Color::WHITE,
+            t,
+            Some(200.0),
+            TextWeight::Regular,
+        );
+        tr.draw_text_weighted(
+            &mut scene,
+            s,
+            16.0,
+            Color::WHITE,
+            t,
+            Some(60.0),
+            TextWeight::Regular,
+        );
+        tr.draw_text_weighted(
+            &mut scene,
+            s,
+            16.0,
+            Color::WHITE,
+            t,
+            Some(200.0),
+            TextWeight::Regular,
+        ); // hit
         let (h, m, _ns) = tr.take_shape_stats();
         assert_eq!(m, 2, "each distinct width shapes once");
         assert_eq!(h, 1, "the repeated width hits");
@@ -1008,13 +1132,37 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
-        tr.draw_text_weighted(&mut scene, "Send", 16.0, Color::WHITE, t, None, TextWeight::Regular);
+        tr.draw_text_weighted(
+            &mut scene,
+            "Send",
+            16.0,
+            Color::WHITE,
+            t,
+            None,
+            TextWeight::Regular,
+        );
         let _ = tr.take_shape_stats();
-        tr.draw_text_weighted(&mut scene, "Send", 16.0, Color::WHITE, t, None, TextWeight::Regular);
+        tr.draw_text_weighted(
+            &mut scene,
+            "Send",
+            16.0,
+            Color::WHITE,
+            t,
+            None,
+            TextWeight::Regular,
+        );
         let (h, _m, _ns) = tr.take_shape_stats();
         assert_eq!(h, 1, "second draw hits before bump");
         tr.bump_generation();
-        tr.draw_text_weighted(&mut scene, "Send", 16.0, Color::WHITE, t, None, TextWeight::Regular);
+        tr.draw_text_weighted(
+            &mut scene,
+            "Send",
+            16.0,
+            Color::WHITE,
+            t,
+            None,
+            TextWeight::Regular,
+        );
         let (_h, m, _ns) = tr.take_shape_stats();
         assert_eq!(m, 1, "draw after bump must reshape");
     }
@@ -1028,8 +1176,14 @@ mod tests {
         assert!(!fams.is_empty(), "the system font db exposes some families");
 
         // Both generic families measure to a positive advance for real text.
-        let (ws, _) =
-            tr.measure_font("Reading", 20.0, None, TextWeight::Regular, false, &FontChoice::Serif);
+        let (ws, _) = tr.measure_font(
+            "Reading",
+            20.0,
+            None,
+            TextWeight::Regular,
+            false,
+            &FontChoice::Serif,
+        );
         let (wn, _) = tr.measure_font(
             "Reading",
             20.0,

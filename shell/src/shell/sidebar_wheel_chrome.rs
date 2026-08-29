@@ -477,8 +477,7 @@ impl Widget for SidebarWheelChrome {
                 };
                 for i in 0..shown {
                     let dx = base_x + dot_r + i as f64 * (dot_r * 2.0 + gap);
-                    let dot_rect =
-                        Rect::new(dx - dot_r, dot_y - dot_r, dx + dot_r, dot_y + dot_r);
+                    let dot_rect = Rect::new(dx - dot_r, dot_y - dot_r, dx + dot_r, dot_y + dot_r);
                     ui::widget::Avatar::draw_at(
                         scene,
                         card_xform,

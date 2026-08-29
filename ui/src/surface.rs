@@ -16,8 +16,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as Image,
-    ImageFormat as Format,
+    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format,
 };
 
 use crate::theme::Theme;
@@ -144,7 +143,9 @@ fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
     // A panic elsewhere while the lock was held can't corrupt this map (a
     // plain sprite cache, not an invariant-bearing structure), so recover
     // the data instead of taking the whole render path down with it.
-    let mut map = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut map = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     map.entry((r, g, b))
         .or_insert_with(|| Arc::new(build_shadow_sprites(r, g, b)))
         .clone()
@@ -317,13 +318,7 @@ pub fn soft_shadow(
 /// The token's `color` alpha is the shadow's strength and is honoured
 /// here; [`soft_shadow`] ignores it in favour of a separate `intensity`
 /// argument. No-op for a degenerate rect or a token with no blur.
-pub fn shadow(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    radius: f64,
-    token: &Shadow,
-) {
+pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, token: &Shadow) {
     if token.blur <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
@@ -408,9 +403,15 @@ mod tests {
     fn sprite_is_cached_per_tint() {
         let a = sprites_for(0, 0, 0);
         let b = sprites_for(0, 0, 0);
-        assert!(Arc::ptr_eq(&a, &b), "same tint must return the cached sprite");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "same tint must return the cached sprite"
+        );
         let c = sprites_for(99, 102, 241);
-        assert!(!Arc::ptr_eq(&a, &c), "different tint must bake a new sprite");
+        assert!(
+            !Arc::ptr_eq(&a, &c),
+            "different tint must bake a new sprite"
+        );
     }
 
     fn alpha_at(img: &Image, x: u32, y: u32) -> u8 {
@@ -423,7 +424,10 @@ mod tests {
     fn edge_sprite_runs_from_zero_through_the_peak_back_to_zero() {
         let s = build_shadow_sprites(0, 0, 0);
         let n = SHADOW_SPRITE_SIZE;
-        assert!(alpha_at(&s.edge, 0, 0) <= 2, "inner end of the band must be ~0");
+        assert!(
+            alpha_at(&s.edge, 0, 0) <= 2,
+            "inner end of the band must be ~0"
+        );
         assert!(
             alpha_at(&s.edge, n - 1, 0) <= 2,
             "outer end of the band must be ~0"
@@ -527,7 +531,11 @@ mod tests {
         let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
         let radius = 24.0;
         // offset_y 0 isolates shape from the deliberate downward shift.
-        let token = Shadow { offset_y: 0.0, blur: 16.0, color: Color::WHITE };
+        let token = Shadow {
+            offset_y: 0.0,
+            blur: 16.0,
+            color: Color::WHITE,
+        };
         let at = render_token_shadow(400, 400, rect, radius, &token);
 
         // Corner arc centre, and the point where the arc meets the
@@ -584,7 +592,11 @@ mod tests {
     #[test]
     fn token_shadow_reach_follows_blur() {
         let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
-        let token = Shadow { offset_y: 0.0, blur: 16.0, color: Color::WHITE };
+        let token = Shadow {
+            offset_y: 0.0,
+            blur: 16.0,
+            color: Color::WHITE,
+        };
         let at = render_token_shadow(400, 400, rect, 24.0, &token);
         let reach = std_dev_for(token.blur) * 2.5;
         let mut last = 0.0_f64;

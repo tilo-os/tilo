@@ -8,8 +8,8 @@
 //! tree structurally dirty so the App rebuilds the composition on the next
 //! frame. See [`crate::command`].
 
-use crate::command::{new_sink, CommandSink, FileCommand};
-use crate::model::{initial_path, read_dir_sync, sort_entries, Entry, SortBy, SortOrder, ViewMode};
+use crate::command::{CommandSink, FileCommand, new_sink};
+use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
 use crate::views::file_view::ThumbCtx;
 use crate::{config, favorites, fileops, templates};
@@ -20,13 +20,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thumbnail::{ThumbKey, ThumbnailService};
-use vello::peniko::ImageData as PenikoImage;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
     Column, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
+use vello::peniko::ImageData as PenikoImage;
 
 /// CRDT map key holding the inline-rename field's `Text` object. Seeded with
 /// the current name when a rename begins; the in-place editor's `TextInput`
@@ -318,15 +318,12 @@ impl FileExplorerWidget {
             // when wide, an overlay drawer over it when narrow. Sidebar width
             // matches the historical fixed sidebar so the docked layout is
             // pixel-stable.
-            nav: NavShell::sidebar_over_content(
-                Box::new(Text::new("")),
-                Box::new(Text::new("")),
-            )
-            .with_sidebar_width(places_sidebar::SIDEBAR_WIDTH)
-            .with_breakpoint(BODY_BREAKPOINT_PX)
-            // The docked places list is permanent — no in-sidebar collapse chip;
-            // the hamburger still summons the drawer when narrow.
-            .hide_toggle_when_docked(),
+            nav: NavShell::sidebar_over_content(Box::new(Text::new("")), Box::new(Text::new("")))
+                .with_sidebar_width(places_sidebar::SIDEBAR_WIDTH)
+                .with_breakpoint(BODY_BREAKPOINT_PX)
+                // The docked places list is permanent — no in-sidebar collapse chip;
+                // the hamburger still summons the drawer when narrow.
+                .hide_toggle_when_docked(),
             toolbar: crate::toolbar::FileToolbar::new(cmds.clone()),
             status_bubble: ui::StatusBubble::new(),
             last_status_label: String::new(),
@@ -419,9 +416,13 @@ impl FileExplorerWidget {
     /// `FavStore`) so a reorder survives the per-frame rebuild.
     fn build_places_pane(&self) -> Box<dyn Widget> {
         Box::new(
-            PlacesSidebar::new(self.favs.clone(), self.current_path.clone(), self.cmds.clone())
-                .with_cursor(self.last_cursor)
-                .with_workspaces(self.workspace_roots.clone()),
+            PlacesSidebar::new(
+                self.favs.clone(),
+                self.current_path.clone(),
+                self.cmds.clone(),
+            )
+            .with_cursor(self.last_cursor)
+            .with_workspaces(self.workspace_roots.clone()),
         )
     }
 
@@ -554,7 +555,8 @@ impl FileExplorerWidget {
             self.rect.x1 - margin,
             self.rect.y1 - margin,
         );
-        let zone = vello::kurbo::Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        let zone =
+            vello::kurbo::Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
         let over = self.shots_status || zone.contains(self.last_cursor);
         self.status_bubble.set_hover(over, now);
         let alpha = self.status_bubble.alpha(now);
@@ -582,7 +584,9 @@ impl FileExplorerWidget {
         &self.entries
     }
     pub fn selected_index(&self) -> Option<usize> {
-        self.selection.primary().filter(|&i| self.selection.is_selected(i))
+        self.selection
+            .primary()
+            .filter(|&i| self.selection.is_selected(i))
     }
     /// All currently-selected displayed-entry indices.
     pub fn selected_indices(&self) -> Vec<usize> {
@@ -846,10 +850,8 @@ impl FileExplorerWidget {
                         self.refresh();
                         // Select the freshly-created folder and drop into
                         // inline-rename so the user names it right away.
-                        if let Some(i) = self
-                            .displayed_entries()
-                            .iter()
-                            .position(|e| e.path == path)
+                        if let Some(i) =
+                            self.displayed_entries().iter().position(|e| e.path == path)
                         {
                             self.selection.select_only(i);
                             self.begin_rename();
@@ -950,7 +952,9 @@ impl FileExplorerWidget {
                 match templates::create_from_template(&template, &self.current_path) {
                     Ok(path) => {
                         self.refresh();
-                        if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
+                        if let Some(i) =
+                            self.displayed_entries().iter().position(|e| e.path == path)
+                        {
                             self.selection.select_only(i);
                             self.begin_rename();
                         }
@@ -978,7 +982,11 @@ impl FileExplorerWidget {
                 // landed inside it (captured in `drag_seed` before the click
                 // collapsed it, Finder/Nautilus behaviour), else just this row.
                 let seed = std::mem::take(&mut self.drag_seed);
-                self.drag_paths = if seed.contains(&path) { seed } else { vec![path.clone()] };
+                self.drag_paths = if seed.contains(&path) {
+                    seed
+                } else {
+                    vec![path.clone()]
+                };
                 self.drag_origin_is_dir = is_dir;
                 self.pin_drag = Some(path);
                 self.drag_hover = None;
@@ -1221,7 +1229,11 @@ impl FileExplorerWidget {
     /// tests / the shots demo to pick a real target.
     #[doc(hidden)]
     pub fn debug_folder_targets(&self) -> Vec<(PathBuf, vello::kurbo::Rect)> {
-        self.drop_targets.borrow().iter().map(|t| (t.path.clone(), t.rect)).collect()
+        self.drop_targets
+            .borrow()
+            .iter()
+            .map(|t| (t.path.clone(), t.rect))
+            .collect()
     }
 
     /// The Up nav button's rect — the drop target that moves carried items into
@@ -1237,8 +1249,6 @@ impl FileExplorerWidget {
     pub fn debug_body_mode(&self) -> ShellMode {
         self.nav.mode()
     }
-
-
 
     /// Select the given displayed-entry indices (headless shots demo).
     #[doc(hidden)]
@@ -1594,7 +1604,8 @@ impl FileExplorerWidget {
         }
         if let Some(rect) = self.rename_rect.get() {
             self.rename_input.apply_layout_external(rect);
-            self.rename_input.draw(scene, transform, text_renderer, theme, presence);
+            self.rename_input
+                .draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -1608,7 +1619,9 @@ impl FileExplorerWidget {
     ) {
         use vello::kurbo::{Rect, RoundedRect, Stroke};
         use vello::peniko::Fill;
-        let Some(hover) = &self.drag_hover else { return };
+        let Some(hover) = &self.drag_hover else {
+            return;
+        };
         // A row target carries its published rect; the parent (Up) target uses
         // the Up button's rect.
         let rect = self
@@ -1627,7 +1640,13 @@ impl FileExplorerWidget {
         let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let inset = Rect::new(rect.x0 + 6.0, rect.y0 + 2.0, rect.x1 - 6.0, rect.y1 - 2.0);
         let shape = RoundedRect::from_rect(inset, 8.0);
-        scene.fill(Fill::NonZero, transform, accent.with_alpha_factor(0.25), None, &shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            accent.with_alpha_factor(0.25),
+            None,
+            &shape,
+        );
         scene.stroke(&Stroke::new(2.0), transform, accent, None, &shape);
     }
 
@@ -1663,8 +1682,20 @@ impl FileExplorerWidget {
         let y0 = self.last_cursor.y + 6.0;
         let rect = Rect::new(x0, y0, x0 + w, y0 + h);
         let shape = RoundedRect::from_rect(rect, tokens.radii.md as f64);
-        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &shape,
+        );
         let accent = tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let iy = y0 + (h - icon) / 2.0;
         ui::icons::draw_icon(
@@ -1691,7 +1722,9 @@ impl FileExplorerWidget {
     /// blank or unchanged name just closes the bar; an fs error keeps the
     /// bar open with a status message so the user can retry.
     pub fn commit_rename(&mut self) -> bool {
-        let Some(idx) = self.renaming else { return false };
+        let Some(idx) = self.renaming else {
+            return false;
+        };
         let disp = self.displayed_entries();
         let Some(entry) = disp.get(idx) else {
             self.end_rename_editor();
@@ -1750,7 +1783,12 @@ fn layout_menu_widget(menu: &mut ContextMenu) {
 /// verifiable without actually spawning anything.
 pub trait CommandRunner {
     fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()>;
-    fn spawn_arg(&mut self, program: &str, arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()>;
+    fn spawn_arg(
+        &mut self,
+        program: &str,
+        arg: &std::path::Path,
+        cwd: &std::path::Path,
+    ) -> std::io::Result<()>;
     /// Open `path` with the system default handler. This is the fallback for
     /// every file type qOS has no registered app for (images, PDFs, video,
     /// audio, plain text, …) so double-click/Enter/Open never silently do
@@ -1762,10 +1800,22 @@ pub struct SystemRunner;
 
 impl CommandRunner for SystemRunner {
     fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()> {
-        std::process::Command::new(program).current_dir(cwd).spawn().map(|_c| ())
+        std::process::Command::new(program)
+            .current_dir(cwd)
+            .spawn()
+            .map(|_c| ())
     }
-    fn spawn_arg(&mut self, program: &str, arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()> {
-        std::process::Command::new(program).arg(arg).current_dir(cwd).spawn().map(|_c| ())
+    fn spawn_arg(
+        &mut self,
+        program: &str,
+        arg: &std::path::Path,
+        cwd: &std::path::Path,
+    ) -> std::io::Result<()> {
+        std::process::Command::new(program)
+            .arg(arg)
+            .current_dir(cwd)
+            .spawn()
+            .map(|_c| ())
     }
     fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()> {
         open::that(path)
@@ -1841,9 +1891,15 @@ impl FileExplorerWidget {
 
     /// Activate entry `idx` (by displayed index): navigate into a directory
     /// or launch the associated app.
-    pub fn open_entry<R: CommandRunner>(&mut self, idx: usize, runner: &mut R) -> std::io::Result<bool> {
+    pub fn open_entry<R: CommandRunner>(
+        &mut self,
+        idx: usize,
+        runner: &mut R,
+    ) -> std::io::Result<bool> {
         let disp = self.displayed_entries();
-        let Some(entry) = disp.get(idx) else { return Ok(false) };
+        let Some(entry) = disp.get(idx) else {
+            return Ok(false);
+        };
         let path = entry.path.clone();
         self.open_target(path, runner)
     }
@@ -1873,7 +1929,10 @@ impl FileExplorerWidget {
         // in place.
         if in_trash {
             if has_sel {
-                spec.push(("Open".into(), self.selection.primary().map(FileCommand::Activate)));
+                spec.push((
+                    "Open".into(),
+                    self.selection.primary().map(FileCommand::Activate),
+                ));
                 spec.push((String::new(), None));
                 spec.push(("Restore".into(), Some(FileCommand::RestoreFromTrash)));
                 spec.push(("Delete Permanently".into(), Some(FileCommand::Delete)));
@@ -1884,7 +1943,10 @@ impl FileExplorerWidget {
         }
 
         if has_sel {
-            spec.push(("Open".into(), self.selection.primary().map(FileCommand::Activate)));
+            spec.push((
+                "Open".into(),
+                self.selection.primary().map(FileCommand::Activate),
+            ));
             spec.push(("Rename".into(), Some(FileCommand::Rename)));
             spec.push((String::new(), None));
             spec.push(("Cut".into(), Some(FileCommand::Cut)));
@@ -1897,7 +1959,10 @@ impl FileExplorerWidget {
         spec.push(("New Folder".into(), Some(FileCommand::NewFolder)));
         // Only offer "New File ▸" when the Templates dir actually has files.
         if has_templates {
-            spec.push(("New File  \u{203A}".into(), Some(FileCommand::OpenTemplatesMenu)));
+            spec.push((
+                "New File  \u{203A}".into(),
+                Some(FileCommand::OpenTemplatesMenu),
+            ));
         }
         if has_sel {
             spec.push((String::new(), None));
@@ -1908,7 +1973,10 @@ impl FileExplorerWidget {
         // directory when it is a (non-home) favourite.
         if let Some(dir) = self.single_selected_dir() {
             spec.push((String::new(), None));
-            spec.push(("Add to Favourites".into(), Some(FileCommand::AddFavorite(dir))));
+            spec.push((
+                "Add to Favourites".into(),
+                Some(FileCommand::AddFavorite(dir)),
+            ));
         } else if self.current_is_removable_favourite() {
             spec.push((String::new(), None));
             spec.push((
@@ -1920,7 +1988,11 @@ impl FileExplorerWidget {
         // View section: show/hide hidden files.
         spec.push((String::new(), None));
         spec.push((
-            if self.show_hidden { "Hide Hidden Files".into() } else { "Show Hidden Files".into() },
+            if self.show_hidden {
+                "Hide Hidden Files".into()
+            } else {
+                "Show Hidden Files".into()
+            },
             Some(FileCommand::ToggleHidden),
         ));
 
@@ -1928,10 +2000,22 @@ impl FileExplorerWidget {
         // mode (which has no clickable column header) and the only way to
         // reach "Sort by Type" at all.
         spec.push((String::new(), None));
-        spec.push(("Sort by Name".into(), Some(FileCommand::SetSort(SortBy::Name))));
-        spec.push(("Sort by Size".into(), Some(FileCommand::SetSort(SortBy::Size))));
-        spec.push(("Sort by Type".into(), Some(FileCommand::SetSort(SortBy::Type))));
-        spec.push(("Sort by Date".into(), Some(FileCommand::SetSort(SortBy::Modified))));
+        spec.push((
+            "Sort by Name".into(),
+            Some(FileCommand::SetSort(SortBy::Name)),
+        ));
+        spec.push((
+            "Sort by Size".into(),
+            Some(FileCommand::SetSort(SortBy::Size)),
+        ));
+        spec.push((
+            "Sort by Type".into(),
+            Some(FileCommand::SetSort(SortBy::Type)),
+        ));
+        spec.push((
+            "Sort by Date".into(),
+            Some(FileCommand::SetSort(SortBy::Modified)),
+        ));
         spec.push((String::new(), None));
         spec.push(("Open Terminal Here".into(), Some(FileCommand::OpenTerminal)));
         spec
@@ -1951,7 +2035,9 @@ impl FileExplorerWidget {
         if sel.len() != 1 {
             return None;
         }
-        disp.get(sel[0]).filter(|e| e.is_dir).map(|e| e.path.clone())
+        disp.get(sel[0])
+            .filter(|e| e.is_dir)
+            .map(|e| e.path.clone())
     }
 
     /// Whether the current directory is a favourite that may be removed (i.e.
@@ -2006,11 +2092,7 @@ impl FileExplorerWidget {
     /// by the labelled View / Sort menus, whose triggers hug the window's right
     /// edge where a left-anchored menu would spill off-screen. A `None` command
     /// with an empty label is a separator.
-    fn open_menu_right_aligned(
-        &mut self,
-        spec: Vec<(String, Option<FileCommand>)>,
-        anchor: Point,
-    ) {
+    fn open_menu_right_aligned(&mut self, spec: Vec<(String, Option<FileCommand>)>, anchor: Point) {
         self.submenu.close();
         let mut menu = ContextMenu::new();
         let mut cmds = Vec::with_capacity(spec.len());
@@ -2043,7 +2125,10 @@ impl FileExplorerWidget {
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
         spec.push(("New Folder".into(), Some(FileCommand::NewFolder)));
         if !self.available_templates().is_empty() {
-            spec.push(("New File  \u{203A}".into(), Some(FileCommand::OpenTemplatesMenu)));
+            spec.push((
+                "New File  \u{203A}".into(),
+                Some(FileCommand::OpenTemplatesMenu),
+            ));
         }
         spec.push((String::new(), None));
         spec.push((
@@ -2203,25 +2288,47 @@ impl FileExplorerWidget {
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
     ) {
-        let Ok(children) = taffy.children(node_id) else { return };
+        let Ok(children) = taffy.children(node_id) else {
+            return;
+        };
         let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1)) else {
             return;
         };
         if !*handled {
             self.toolbar.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, above_n, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                above_n,
+                taffy,
             );
         }
         if !*handled {
             self.nav.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, nav_n, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                nav_n,
+                taffy,
             );
         }
     }
 
     /// App-level keyboard navigation, applied when a key isn't consumed by
     /// a focused child (search field, etc.). Returns whether it acted.
-    fn handle_app_key(&mut self, ke: &winit::event::KeyEvent, modifiers: &winit::event::Modifiers) -> bool {
+    fn handle_app_key(
+        &mut self,
+        ke: &winit::event::KeyEvent,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
         use winit::keyboard::{Key, NamedKey};
         if ke.state != winit::event::ElementState::Pressed {
             return false;
@@ -2242,12 +2349,20 @@ impl FileExplorerWidget {
                 true
             }
             Key::Named(NamedKey::ArrowDown) if len > 0 => {
-                let next = self.selection.primary().map(|i| (i + 1).min(len - 1)).unwrap_or(0);
+                let next = self
+                    .selection
+                    .primary()
+                    .map(|i| (i + 1).min(len - 1))
+                    .unwrap_or(0);
                 self.selection.move_to(next, shift);
                 true
             }
             Key::Named(NamedKey::ArrowUp) if len > 0 => {
-                let next = self.selection.primary().map(|i| i.saturating_sub(1)).unwrap_or(0);
+                let next = self
+                    .selection
+                    .primary()
+                    .map(|i| i.saturating_sub(1))
+                    .unwrap_or(0);
                 self.selection.move_to(next, shift);
                 true
             }
@@ -2441,8 +2556,10 @@ impl Widget for FileExplorerWidget {
         presence: &ui::presence::PresenceCtx,
     ) {
         self.paint_background(scene, transform, theme);
-        self.toolbar.draw(scene, transform, text_renderer, theme, presence);
-        self.nav.draw(scene, transform, text_renderer, theme, presence);
+        self.toolbar
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.nav
+            .draw(scene, transform, text_renderer, theme, presence);
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
@@ -2462,10 +2579,22 @@ impl Widget for FileExplorerWidget {
         // rows outside it. The default trait impl would call our own `draw`,
         // which breaks that chain — a long directory would then emit every
         // row's glyphs every frame regardless of what's visible.
-        self.toolbar
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
-        self.nav
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        self.toolbar.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
+        self.nav.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
@@ -2481,18 +2610,22 @@ impl Widget for FileExplorerWidget {
         // Child overlays (the path bar's completion popover, dropdowns) first,
         // then our top-layer context menu (and its flyout) so they composite
         // above everything.
-        self.toolbar.draw_overlay(scene, transform, text_renderer, theme, presence);
-        self.nav.draw_overlay(scene, transform, text_renderer, theme, presence);
+        self.toolbar
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+        self.nav
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
         // Floating status bubble (item count / status + selection), above the
         // content but below any open menus / drag ghost.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
         if self.context_menu.is_open() {
             layout_menu_widget(&mut self.context_menu);
-            self.context_menu.draw(scene, transform, text_renderer, theme, presence);
+            self.context_menu
+                .draw(scene, transform, text_renderer, theme, presence);
         }
         if self.submenu.is_open() {
             layout_menu_widget(&mut self.submenu);
-            self.submenu.draw(scene, transform, text_renderer, theme, presence);
+            self.submenu
+                .draw(scene, transform, text_renderer, theme, presence);
         }
         // The drop-target highlight sits on the target folder; the drag ghost
         // floats above everything else.
@@ -2578,7 +2711,11 @@ impl Widget for FileExplorerWidget {
         // The open context menu (or its flyout) gets first dibs on clicks + Escape.
         if self.context_menu.is_open() || self.submenu.is_open() {
             match event {
-                WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } => {
                     if self.route_menu_click(self.last_cursor) {
                         *handled = true;
                         self.structure_dirty = true;
@@ -2588,7 +2725,10 @@ impl Widget for FileExplorerWidget {
                 }
                 WindowEvent::KeyboardInput { event: ke, .. }
                     if ke.state == ElementState::Pressed
-                        && matches!(ke.logical_key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)) =>
+                        && matches!(
+                            ke.logical_key,
+                            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                        ) =>
                 {
                     self.submenu.close();
                     self.context_menu.close();
@@ -2605,11 +2745,23 @@ impl Widget for FileExplorerWidget {
         // `ContextSelect`); draining that before building the menu is what makes
         // the menu's actions target what was actually clicked rather than a
         // stale selection from an earlier click.
-        if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } = event {
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+            ..
+        } = event
+        {
             let mut child_handled = false;
             self.forward_to_body(
-                event, scale_factor, modifiers, state, path, &mut child_handled, focus_target,
-                node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                &mut child_handled,
+                focus_target,
+                node_id,
+                taffy,
             );
             self.drain_commands();
             // A right-press over a sidebar favourite pushes `OpenFavoriteMenu`,
@@ -2684,8 +2836,15 @@ impl Widget for FileExplorerWidget {
                     }
                     // Typing / editing keys go to the field (it splices the CRDT).
                     self.rename_input.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target,
-                        node_id, taffy,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        node_id,
+                        taffy,
                     );
                     *handled = true;
                     self.structure_dirty = true;
@@ -2704,8 +2863,15 @@ impl Widget for FileExplorerWidget {
                     if inside {
                         // Reposition the caret within the field.
                         self.rename_input.handle_event(
-                            event, scale_factor, modifiers, state, path, handled, focus_target,
-                            node_id, taffy,
+                            event,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            handled,
+                            focus_target,
+                            node_id,
+                            taffy,
                         );
                     } else {
                         // A click away commits the rename (then this click is
@@ -2727,7 +2893,15 @@ impl Widget for FileExplorerWidget {
         // Deliver to the body first (toolbar/breadcrumb, places list, file
         // view), stopping at the first that consumes it.
         self.forward_to_body(
-            event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
         );
 
         // App-level keyboard nav for keys the children didn't consume.
@@ -2780,7 +2954,8 @@ impl Widget for FileExplorerWidget {
         _doc: &mut automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) {
-        if let Some(dest) = crate::search_provider::PlacesSearchProvider::parse_action_id(action_id) {
+        if let Some(dest) = crate::search_provider::PlacesSearchProvider::parse_action_id(action_id)
+        {
             self.navigate(dest);
         }
     }
@@ -2853,7 +3028,8 @@ mod open_with_tests {
             Ok(())
         }
         fn spawn_arg(&mut self, program: &str, arg: &Path, _cwd: &Path) -> std::io::Result<()> {
-            self.calls.push((program.to_string(), Some(arg.to_path_buf())));
+            self.calls
+                .push((program.to_string(), Some(arg.to_path_buf())));
             Ok(())
         }
         fn open_default(&mut self, path: &Path) -> std::io::Result<()> {
@@ -2863,7 +3039,15 @@ mod open_with_tests {
     }
 
     fn file_entry(name: &str) -> Entry {
-        Entry { name: name.into(), path: PathBuf::from("/docs").join(name), is_dir: false, size: 0, modified: None, mime: String::new(), sync_state: None }
+        Entry {
+            name: name.into(),
+            path: PathBuf::from("/docs").join(name),
+            is_dir: false,
+            size: 0,
+            modified: None,
+            mime: String::new(),
+            sync_state: None,
+        }
     }
 
     #[test]
@@ -2931,7 +3115,10 @@ mod open_with_tests {
         w.entries = vec![file_entry("thing.zzz")];
         let mut runner = RecRunner::default();
         assert!(w.open_entry(0, &mut runner).unwrap());
-        let status = w.status.clone().expect("the refusal reaches the status bar");
+        let status = w
+            .status
+            .clone()
+            .expect("the refusal reaches the status bar");
         assert!(status.contains("thing.zzz"), "must name the file: {status}");
         assert!(runner.opened.is_empty(), "a refusal is not a fallback");
         clear_document_opener();
@@ -2943,7 +3130,14 @@ mod open_with_tests {
     #[test]
     fn without_a_host_every_type_falls_back_to_the_desktop_handler() {
         clear_document_opener();
-        for f in ["pic.jpg", "movie.mp4", "song.flac", "doc.pdf", "main.rs", "report.odt"] {
+        for f in [
+            "pic.jpg",
+            "movie.mp4",
+            "song.flac",
+            "doc.pdf",
+            "main.rs",
+            "report.odt",
+        ] {
             let mut w = FileExplorerWidget::new();
             w.entries = vec![file_entry(f)];
             let mut runner = RecRunner::default();
@@ -2967,8 +3161,18 @@ mod open_with_tests {
             .filter_map(|i| i.label().map(|s| s.to_string()))
             .collect();
         // Selection-aware actions are present.
-        for expected in ["Open", "Rename", "Cut", "Copy", "Move to Trash", "New Folder"] {
-            assert!(labels.contains(&expected.to_string()), "menu missing {expected}: {labels:?}");
+        for expected in [
+            "Open",
+            "Rename",
+            "Cut",
+            "Copy",
+            "Move to Trash",
+            "New Folder",
+        ] {
+            assert!(
+                labels.contains(&expected.to_string()),
+                "menu missing {expected}: {labels:?}"
+            );
         }
         // No clipboard yet → no Paste.
         assert!(!labels.contains(&"Paste".to_string()));
@@ -3044,7 +3248,11 @@ mod command_path_tests {
         // so exercising it proves the previously-unreachable key now works.
         assert!(w.apply_command(FileCommand::SetSort(SortBy::Type)));
         assert_eq!(w.sort_by(), SortBy::Type);
-        assert_eq!(w.entries_snapshot()[0].name, "b.png", "image/png < text/plain");
+        assert_eq!(
+            w.entries_snapshot()[0].name,
+            "b.png",
+            "image/png < text/plain"
+        );
 
         assert!(w.apply_command(FileCommand::SetSort(SortBy::Name)));
         assert_eq!(w.sort_by(), SortBy::Name);
@@ -3053,7 +3261,9 @@ mod command_path_tests {
 
     #[test]
     fn trash_view_menu_offers_restore_and_empty_not_move_to_trash() {
-        let Some(trash) = crate::fileops::trash_dir() else { return };
+        let Some(trash) = crate::fileops::trash_dir() else {
+            return;
+        };
         let mut w = FileExplorerWidget::new();
         // Pretend we are viewing the Trash (without touching the real trash).
         w.current_path = trash;
@@ -3066,11 +3276,26 @@ mod command_path_tests {
             .iter()
             .filter_map(|i| i.label().map(str::to_string))
             .collect();
-        assert!(labels.contains(&"Restore".to_string()), "trash menu offers Restore: {labels:?}");
-        assert!(labels.contains(&"Empty Trash".to_string()), "and Empty Trash: {labels:?}");
-        assert!(labels.contains(&"Delete Permanently".to_string()), "and a permanent delete");
-        assert!(!labels.contains(&"Move to Trash".to_string()), "not re-trash (already trashed)");
-        assert!(!labels.contains(&"Rename".to_string()), "no in-place editing in the trash");
+        assert!(
+            labels.contains(&"Restore".to_string()),
+            "trash menu offers Restore: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"Empty Trash".to_string()),
+            "and Empty Trash: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"Delete Permanently".to_string()),
+            "and a permanent delete"
+        );
+        assert!(
+            !labels.contains(&"Move to Trash".to_string()),
+            "not re-trash (already trashed)"
+        );
+        assert!(
+            !labels.contains(&"Rename".to_string()),
+            "no in-place editing in the trash"
+        );
     }
 
     #[test]
@@ -3084,8 +3309,16 @@ mod command_path_tests {
             .iter()
             .filter_map(|i| i.label().map(str::to_string))
             .collect();
-        for s in ["Sort by Name", "Sort by Size", "Sort by Type", "Sort by Date"] {
-            assert!(labels.contains(&s.to_string()), "menu missing {s}: {labels:?}");
+        for s in [
+            "Sort by Name",
+            "Sort by Size",
+            "Sort by Type",
+            "Sort by Date",
+        ] {
+            assert!(
+                labels.contains(&s.to_string()),
+                "menu missing {s}: {labels:?}"
+            );
         }
     }
 
@@ -3133,7 +3366,10 @@ mod command_path_tests {
         // Once the directory exists, the same retry clears the error.
         std::fs::create_dir(&target).unwrap();
         assert!(w.apply_command(FileCommand::Refresh));
-        assert!(w.error_message().is_none(), "retry succeeds once the dir exists");
+        assert!(
+            w.error_message().is_none(),
+            "retry succeeds once the dir exists"
+        );
     }
 
     #[test]
@@ -3142,7 +3378,11 @@ mod command_path_tests {
         std::fs::write(d.path().join("old.txt"), b"x").unwrap();
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
-        let idx = w.displayed_entries().iter().position(|e| e.name == "old.txt").unwrap();
+        let idx = w
+            .displayed_entries()
+            .iter()
+            .position(|e| e.name == "old.txt")
+            .unwrap();
         w.select(Some(idx));
 
         // Begin the rename via the real command; the bar seeds the name.
@@ -3204,7 +3444,11 @@ mod command_path_tests {
         std::fs::write(d.path().join("keep.txt"), b"x").unwrap();
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
-        let idx = w.displayed_entries().iter().position(|e| e.name == "keep.txt").unwrap();
+        let idx = w
+            .displayed_entries()
+            .iter()
+            .position(|e| e.name == "keep.txt")
+            .unwrap();
 
         w.select(Some(idx));
         w.begin_rename();
@@ -3226,7 +3470,11 @@ mod command_path_tests {
         std::fs::write(d.path().join("stay.txt"), b"x").unwrap();
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
-        let idx = w.displayed_entries().iter().position(|e| e.name == "stay.txt").unwrap();
+        let idx = w
+            .displayed_entries()
+            .iter()
+            .position(|e| e.name == "stay.txt")
+            .unwrap();
         w.select(Some(idx));
         w.apply_command(FileCommand::Rename);
         w.set_rename_buffer("other.txt".into());
@@ -3242,7 +3490,10 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
         assert!(w.apply_command(FileCommand::NewFolder));
-        assert!(d.path().join("New Folder").is_dir(), "folder actually created");
+        assert!(
+            d.path().join("New Folder").is_dir(),
+            "folder actually created"
+        );
         assert!(w.is_renaming(), "new folder drops straight into rename");
         assert_eq!(w.rename_buffer(), "New Folder");
     }
@@ -3258,7 +3509,11 @@ mod command_path_tests {
 
         let mut w = FileExplorerWidget::new();
         w.navigate(src.clone());
-        let idx = w.displayed_entries().iter().position(|e| e.name == "a.txt").unwrap();
+        let idx = w
+            .displayed_entries()
+            .iter()
+            .position(|e| e.name == "a.txt")
+            .unwrap();
         w.select(Some(idx));
         assert!(w.apply_command(FileCommand::Copy));
         w.navigate(dest.clone());
@@ -3278,7 +3533,11 @@ mod command_path_tests {
 
         let mut w = FileExplorerWidget::new();
         w.navigate(src.clone());
-        let idx = w.displayed_entries().iter().position(|e| e.name == "m.txt").unwrap();
+        let idx = w
+            .displayed_entries()
+            .iter()
+            .position(|e| e.name == "m.txt")
+            .unwrap();
         w.select(Some(idx));
         assert!(w.apply_command(FileCommand::Cut));
         w.navigate(dest.clone());
@@ -3327,14 +3586,30 @@ mod command_path_tests {
         std::fs::create_dir(d.path().join("sub")).unwrap();
         let (mut w, _cfg) = hermetic();
         w.navigate(d.path().to_path_buf());
-        let idx = w.displayed_entries().iter().position(|e| e.name == "sub").unwrap();
+        let idx = w
+            .displayed_entries()
+            .iter()
+            .position(|e| e.name == "sub")
+            .unwrap();
 
-        w.apply_command(FileCommand::Click { index: idx, ctrl: false, shift: false });
+        w.apply_command(FileCommand::Click {
+            index: idx,
+            ctrl: false,
+            shift: false,
+        });
         assert_eq!(w.current_path(), d.path(), "first click only selects");
         assert_eq!(w.selected_index(), Some(idx));
 
-        w.apply_command(FileCommand::Click { index: idx, ctrl: false, shift: false });
-        assert_eq!(w.current_path(), d.path().join("sub"), "double-click opens the directory");
+        w.apply_command(FileCommand::Click {
+            index: idx,
+            ctrl: false,
+            shift: false,
+        });
+        assert_eq!(
+            w.current_path(),
+            d.path().join("sub"),
+            "double-click opens the directory"
+        );
     }
 
     #[test]
@@ -3350,7 +3625,11 @@ mod command_path_tests {
         for _ in 0..50 {
             w.apply_command(FileCommand::ZoomOut);
         }
-        assert_eq!(w.zoom_level(), config::ZOOM_MIN, "zoom clamps at the minimum");
+        assert_eq!(
+            w.zoom_level(),
+            config::ZOOM_MIN,
+            "zoom clamps at the minimum"
+        );
     }
 
     #[test]
@@ -3403,7 +3682,10 @@ mod command_path_tests {
         w3.apply_command(FileCommand::RemoveFavorite(sub.clone()));
         assert!(!w3.favorites().iter().any(|f| f.path == sub));
         let w4 = make();
-        assert!(!w4.favorites().iter().any(|f| f.path == sub), "removal persists");
+        assert!(
+            !w4.favorites().iter().any(|f| f.path == sub),
+            "removal persists"
+        );
     }
 
     #[test]
@@ -3429,14 +3711,24 @@ mod command_path_tests {
         let labels: Vec<String> = w.favorites().iter().map(|f| f.label.clone()).collect();
         // The sidebar shows the user's real localized names, not hard-coded
         // English ones.
-        assert!(labels.contains(&"Dokumente".to_string()), "labels: {labels:?}");
+        assert!(
+            labels.contains(&"Dokumente".to_string()),
+            "labels: {labels:?}"
+        );
         assert!(labels.contains(&"Bilder".to_string()), "labels: {labels:?}");
         assert!(labels.contains(&"Musik".to_string()), "labels: {labels:?}");
-        assert!(!labels.contains(&"Documents".to_string()), "must not show hard-coded English Documents");
+        assert!(
+            !labels.contains(&"Documents".to_string()),
+            "must not show hard-coded English Documents"
+        );
         // The Documents favourite points at the actual localized directory (so
         // clicking it opens ~/Dokumente, where the files really are) and keeps
         // its evocative glyph despite the localized label.
-        let docs = w.favorites().into_iter().find(|f| f.kind == FavKind::Documents).unwrap();
+        let docs = w
+            .favorites()
+            .into_iter()
+            .find(|f| f.kind == FavKind::Documents)
+            .unwrap();
         assert_eq!(docs.path, home.join("Dokumente"));
         assert_eq!(docs.icon(), ui::icons::Icon::FileText);
     }
@@ -3452,9 +3744,18 @@ mod command_path_tests {
         let (mut w, _cfg) = hermetic();
         w.navigate(work.clone());
         w.apply_command(FileCommand::NewFromTemplate(tmpl));
-        assert!(work.join("Doc.md").exists(), "template copied into the current dir");
-        assert_eq!(std::fs::read(work.join("Doc.md")).unwrap(), b"template body");
-        assert!(w.is_renaming(), "new file drops straight into inline-rename");
+        assert!(
+            work.join("Doc.md").exists(),
+            "template copied into the current dir"
+        );
+        assert_eq!(
+            std::fs::read(work.join("Doc.md")).unwrap(),
+            b"template body"
+        );
+        assert!(
+            w.is_renaming(),
+            "new file drops straight into inline-rename"
+        );
     }
 
     #[test]
@@ -3464,12 +3765,21 @@ mod command_path_tests {
         std::fs::write(d.path().join("visible.txt"), b"x").unwrap();
         let (mut w, _cfg) = hermetic();
         w.navigate(d.path().to_path_buf());
-        assert!(!w.entries_snapshot().iter().any(|e| e.name == ".secret"), "dotfiles hidden by default");
+        assert!(
+            !w.entries_snapshot().iter().any(|e| e.name == ".secret"),
+            "dotfiles hidden by default"
+        );
         w.apply_command(FileCommand::ToggleHidden);
         assert!(w.show_hidden());
-        assert!(w.entries_snapshot().iter().any(|e| e.name == ".secret"), "dotfiles shown after toggle");
+        assert!(
+            w.entries_snapshot().iter().any(|e| e.name == ".secret"),
+            "dotfiles shown after toggle"
+        );
         w.apply_command(FileCommand::ToggleHidden);
-        assert!(!w.entries_snapshot().iter().any(|e| e.name == ".secret"), "toggled back off");
+        assert!(
+            !w.entries_snapshot().iter().any(|e| e.name == ".secret"),
+            "toggled back off"
+        );
     }
 
     /// A file manager pointed at a directory that has files in it lists
@@ -3489,7 +3799,13 @@ mod command_path_tests {
     #[test]
     fn a_populated_directory_lists_exactly_its_contents() {
         let d = tempfile::tempdir().unwrap();
-        let names = ["alpha.txt", "beta.md", "delta.rs", "epsilon.png", "gamma.odt"];
+        let names = [
+            "alpha.txt",
+            "beta.md",
+            "delta.rs",
+            "epsilon.png",
+            "gamma.odt",
+        ];
         for n in names {
             std::fs::write(d.path().join(n), b"x").unwrap();
         }
@@ -3503,7 +3819,11 @@ mod command_path_tests {
             "a directory that reads cleanly reports no error",
         );
 
-        let mut listed: Vec<String> = w.entries_snapshot().iter().map(|e| e.name.clone()).collect();
+        let mut listed: Vec<String> = w
+            .entries_snapshot()
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
         listed.sort();
         let mut expected: Vec<String> = names.iter().map(|s| (*s).to_string()).collect();
         expected.sort();
@@ -3543,15 +3863,31 @@ mod command_path_tests {
         w.scroll_offset.set((0.0, 240.0));
 
         // Selecting a row is a structural rebuild — scroll must hold.
-        w.apply_command(FileCommand::Click { index: 0, ctrl: false, shift: false });
-        assert_eq!(w.scroll_offset.get().1, 240.0, "selecting a row keeps the scroll");
+        w.apply_command(FileCommand::Click {
+            index: 0,
+            ctrl: false,
+            shift: false,
+        });
+        assert_eq!(
+            w.scroll_offset.get().1,
+            240.0,
+            "selecting a row keeps the scroll"
+        );
         // Re-sorting is a structural rebuild — scroll must hold.
         w.apply_command(FileCommand::SetSort(SortBy::Size));
-        assert_eq!(w.scroll_offset.get().1, 240.0, "re-sorting keeps the scroll");
+        assert_eq!(
+            w.scroll_offset.get().1,
+            240.0,
+            "re-sorting keeps the scroll"
+        );
 
         // Navigating to a different directory starts at the top.
         w.navigate(b.clone());
-        assert_eq!(w.scroll_offset.get(), (0.0, 0.0), "a new directory scrolls to the top");
+        assert_eq!(
+            w.scroll_offset.get(),
+            (0.0, 0.0),
+            "a new directory scrolls to the top"
+        );
     }
 
     #[test]
@@ -3569,7 +3905,11 @@ mod command_path_tests {
         w.selection.select_only(0);
         // Right-press on row 2 moves the selection there.
         assert!(w.apply_command(FileCommand::ContextSelect(Some(2))));
-        assert_eq!(w.selected_indices(), vec![2], "context select targets the clicked row");
+        assert_eq!(
+            w.selected_indices(),
+            vec![2],
+            "context select targets the clicked row"
+        );
 
         // A right-press inside an existing multi-selection preserves all of it
         // (so a menu action applies to every highlighted item).
@@ -3578,11 +3918,18 @@ mod command_path_tests {
         w.apply_command(FileCommand::ContextSelect(Some(1)));
         let mut got = w.selected_indices();
         got.sort_unstable();
-        assert_eq!(got, vec![1, 2], "right-click within a multi-selection keeps it");
+        assert_eq!(
+            got,
+            vec![1, 2],
+            "right-click within a multi-selection keeps it"
+        );
 
         // A right-press on empty space clears the selection.
         w.apply_command(FileCommand::ContextSelect(None));
-        assert!(w.selected_indices().is_empty(), "empty-space right-click clears selection");
+        assert!(
+            w.selected_indices().is_empty(),
+            "empty-space right-click clears selection"
+        );
     }
 
     #[test]
@@ -3605,11 +3952,13 @@ mod command_path_tests {
 
         // Two templates → the "New File ▸" entry appears.
         let two = w.context_menu_spec(&[PathBuf::from("Doc.md"), PathBuf::from("Sheet.csv")]);
-        assert!(has_new_file(&two), "templates present → New File entry shown");
+        assert!(
+            has_new_file(&two),
+            "templates present → New File entry shown"
+        );
         assert!(has_new_folder(&two));
     }
 }
-
 
 #[cfg(test)]
 mod responsive_body_tests {
@@ -3915,7 +4264,11 @@ mod responsive_body_tests {
         // `handle_event` drains it and applies the dismissal wiring.
         crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
         h.cursor(10.0, 10.0);
-        assert_eq!(h.w.current_path(), dir.path().join("sub"), "the navigation applied");
+        assert_eq!(
+            h.w.current_path(),
+            dir.path().join("sub"),
+            "the navigation applied"
+        );
         assert!(
             !h.w.debug_places_open(),
             "navigating dismisses the drawer so the files are what remains",
@@ -3935,7 +4288,11 @@ mod responsive_body_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("old.txt"), b"x").unwrap();
         let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
-        let idx = h.w.displayed_entries().iter().position(|e| e.name == "old.txt").unwrap();
+        let idx =
+            h.w.displayed_entries()
+                .iter()
+                .position(|e| e.name == "old.txt")
+                .unwrap();
         h.w.select(Some(idx));
         assert!(h.w.apply_command(FileCommand::Rename));
         assert!(h.w.is_renaming());
@@ -3945,20 +4302,29 @@ mod responsive_body_tests {
         h.lay_out(1000.0, 720.0);
         h.draw();
 
-        let field = h.w.rename_rect.get().expect("the in-place editor is placed over the row");
+        let field =
+            h.w.rename_rect
+                .get()
+                .expect("the in-place editor is placed over the row");
         let files = h.rect_of("FileView").expect("the file view is present");
         assert!(
             field.y0 >= files.y0 - 1.0 && field.y1 <= files.y1 + 1.0,
             "the rename field sits within the file rows (in place), not a bottom bar: \
              field={field:?} files={files:?}",
         );
-        assert!(field.width() > 40.0, "the field spans the name column: {field:?}");
+        assert!(
+            field.width() > 40.0,
+            "the field spans the name column: {field:?}"
+        );
 
         // Cancelling clears the published rect (nothing left drawn).
         h.w.cancel_rename();
         h.lay_out(1000.0, 720.0);
         h.draw();
-        assert!(h.w.rename_rect.get().is_none(), "cancel removes the in-place editor");
+        assert!(
+            h.w.rename_rect.get().is_none(),
+            "cancel removes the in-place editor"
+        );
     }
 
     /// Typing into the in-place editor and pressing Enter renames the file on
@@ -3969,7 +4335,11 @@ mod responsive_body_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
         let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
-        let idx = h.w.displayed_entries().iter().position(|e| e.name == "a.txt").unwrap();
+        let idx =
+            h.w.displayed_entries()
+                .iter()
+                .position(|e| e.name == "a.txt")
+                .unwrap();
         h.w.select(Some(idx));
 
         // F2 begins the rename; rebuild + paint places + seeds the editor.
@@ -3985,7 +4355,10 @@ mod responsive_body_tests {
         h.press_named(winit::keyboard::NamedKey::Enter);
 
         assert!(!h.w.is_renaming(), "Enter commits and closes the editor");
-        assert!(dir.path().join("b.md").exists(), "the typed name renamed the file on disk");
+        assert!(
+            dir.path().join("b.md").exists(),
+            "the typed name renamed the file on disk"
+        );
         assert!(!dir.path().join("a.txt").exists(), "the old name is gone");
     }
 
@@ -4004,7 +4377,10 @@ mod responsive_body_tests {
         let folder = PathBuf::from("/home/tester/Projects/qos");
 
         // Begin the drag (what the file view emits once a folder press travels).
-        assert!(h.w.apply_command(FileCommand::BeginDrag { path: folder.clone(), is_dir: true }));
+        assert!(h.w.apply_command(FileCommand::BeginDrag {
+            path: folder.clone(),
+            is_dir: true
+        }));
         assert!(h.w.debug_pin_dragging(), "the drag is in flight");
 
         // Move over the sidebar, then release → pin.
@@ -4013,7 +4389,10 @@ mod responsive_body_tests {
         h.left_release();
         assert!(!h.w.debug_pin_dragging(), "the drop ends the drag");
         assert_eq!(h.w.favorites().len(), before + 1, "the folder was pinned");
-        assert!(h.w.favorites().iter().any(|f| f.path == folder), "and it is the dropped folder");
+        assert!(
+            h.w.favorites().iter().any(|f| f.path == folder),
+            "and it is the dropped folder"
+        );
     }
 
     #[test]
@@ -4025,13 +4404,20 @@ mod responsive_body_tests {
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
         let before = h.w.favorites().len();
-        h.w.apply_command(FileCommand::BeginDrag { path: PathBuf::from("/home/tester/Downloads/tmp"), is_dir: true });
+        h.w.apply_command(FileCommand::BeginDrag {
+            path: PathBuf::from("/home/tester/Downloads/tmp"),
+            is_dir: true,
+        });
         // Release over the content pane (not the sidebar).
         let content = h.w.debug_content_rect();
         h.cursor(content.center().x, content.center().y);
         h.left_release();
         assert!(!h.w.debug_pin_dragging());
-        assert_eq!(h.w.favorites().len(), before, "a drop off the sidebar pins nothing");
+        assert_eq!(
+            h.w.favorites().len(),
+            before,
+            "a drop off the sidebar pins nothing"
+        );
     }
 
     /// A press on a row, a frame (the click changed the selection, so the
@@ -4053,7 +4439,10 @@ mod responsive_body_tests {
         // The frame after the click rebuilds the content pane.
         h.lay_out(1200.0, 720.0);
         h.cursor(row.0 + 40.0, row.1 + 20.0);
-        assert!(h.w.debug_pin_dragging(), "the armed press must start the drag after the rebuild");
+        assert!(
+            h.w.debug_pin_dragging(),
+            "the armed press must start the drag after the rebuild"
+        );
         assert_eq!(
             crate::external_drag::unclaimed().map(|d| d.paths),
             Some(vec![dir.path().join("photo.png")]),
@@ -4075,9 +4464,17 @@ mod responsive_body_tests {
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide, "wide docks the sidebar");
+        assert_eq!(
+            h.w.debug_body_mode(),
+            ShellMode::Wide,
+            "wide docks the sidebar"
+        );
 
-        let band = h.w.favorites_store().borrow().band.expect("sidebar laid out");
+        let band =
+            h.w.favorites_store()
+                .borrow()
+                .band
+                .expect("sidebar laid out");
         // Row 1 is a removable favourite (row 0 is the pinned Home).
         let (x, y) = (band.center_x(), band.row_center_y(1));
         h.cursor(x, y);
@@ -4087,9 +4484,15 @@ mod responsive_body_tests {
             labels.iter().any(|l| l == "Remove from Favourites"),
             "the favourite's own menu is shown: {labels:?}",
         );
-        assert!(labels.iter().any(|l| l == "Open"), "with the Open folder action: {labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "Open"),
+            "with the Open folder action: {labels:?}"
+        );
         // It is NOT the file-view context menu (which would offer New Folder).
-        assert!(!labels.iter().any(|l| l == "New Folder"), "not the file menu: {labels:?}");
+        assert!(
+            !labels.iter().any(|l| l == "New Folder"),
+            "not the file menu: {labels:?}"
+        );
 
         // The pinned Home favourite (row 0) has no Remove.
         let (hx, hy) = (band.center_x(), band.row_center_y(0));
@@ -4185,14 +4588,11 @@ mod breadcrumb_home_tests {
         // under, it falls through to the `/`-rooted branch and emits a
         // component per directory from the filesystem root.
         let deep = granted_path.join("Documents").join("Investors");
-        let labels: Vec<String> = crate::breadcrumbs::breadcrumb_components(
-            &deep,
-            widget_home.as_deref(),
-            &[],
-        )
-        .into_iter()
-        .map(|(label, _)| label)
-        .collect();
+        let labels: Vec<String> =
+            crate::breadcrumbs::breadcrumb_components(&deep, widget_home.as_deref(), &[])
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect();
         assert_eq!(
             labels,
             vec!["Home", "Documents", "Investors"],

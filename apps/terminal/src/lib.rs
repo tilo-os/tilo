@@ -9,7 +9,10 @@
 
 pub mod actions;
 
-pub use crate::inner::{Attr, CellColor, GridPos, Selection, TermModes, TerminalBackend, TerminalPerformer, TerminalWidget, resolve_login_shell};
+pub use crate::inner::{
+    Attr, CellColor, GridPos, Selection, TermModes, TerminalBackend, TerminalPerformer,
+    TerminalWidget, resolve_login_shell,
+};
 
 /// Re-exported so hosts can build a command for [`TerminalWidget::spawn_command`]
 /// without taking a direct dependency on `portable-pty`.

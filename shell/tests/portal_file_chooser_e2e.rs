@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use shell::portal::{
     self, CallerMap, FilePickerQueue, FilePickerSpawnerHandle, GrantStoreHandle,
-    MockScreenCastProvisioner, PortalCaller, PortalContext, PromptQueueHandle, PromptResolver,
-    RemoteInputInjectorHandle, ScreenCastStreamProvisionerHandle, OBJECT_PATH,
+    MockScreenCastProvisioner, OBJECT_PATH, PortalCaller, PortalContext, PromptQueueHandle,
+    PromptResolver, RemoteInputInjectorHandle, ScreenCastStreamProvisionerHandle,
 };
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{Capability, FsMode, Workspace, WorkspaceId, WorkspaceTree};
@@ -28,7 +28,6 @@ use zbus::{Connection, Proxy};
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 const WS: u64 = 1;
 const APP: &str = "org.example.editor";
-
 
 fn synth_device() -> winit::event::DeviceId {
     // SAFETY: `DeviceId` is opaque; the same pattern the other shell
@@ -173,9 +172,8 @@ async fn portal_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'sta
     // Both sides of a p2p handshake must be driven at once — awaiting the
     // server's `build()` first parks it waiting for a client this function
     // hasn't created yet, hanging the test.
-    let (server, client) =
-        futures_util::try_join!(server_builder.build(), client_builder.build())
-            .expect("p2p connection pair");
+    let (server, client) = futures_util::try_join!(server_builder.build(), client_builder.build())
+        .expect("p2p connection pair");
     let proxy = Proxy::new(
         &client,
         "org.freedesktop.impl.portal.desktop.qos",
@@ -245,9 +243,7 @@ async fn await_response(
 }
 
 fn picker_rect() -> vello::kurbo::Rect {
-    shell::shell::overlay_host::file_picker_rect(vello::kurbo::Rect::new(
-        0.0, 0.0, 1280.0, 800.0,
-    ))
+    shell::shell::overlay_host::file_picker_rect(vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 800.0))
 }
 
 fn uris_of(results: &std::collections::HashMap<String, OwnedValue>) -> Vec<String> {
@@ -258,7 +254,6 @@ fn uris_of(results: &std::collections::HashMap<String, OwnedValue>) -> Vec<Strin
 fn path_of_uri(uri: &str) -> PathBuf {
     PathBuf::from(uri.strip_prefix("file://").expect("file:// uri"))
 }
-
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
@@ -337,7 +332,10 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
     let handed = path_of_uri(&uris[0]);
     let read_back = std::fs::read_to_string(&handed)
         .unwrap_or_else(|e| panic!("the app cannot read {}: {e}", handed.display()));
-    assert_eq!(read_back, BYTES, "the app must get the file the user picked");
+    assert_eq!(
+        read_back, BYTES,
+        "the app must get the file the user picked"
+    );
 
     // And the grant that was recorded names that file — not "/".
     let tree = grants.tree_handle();

@@ -69,12 +69,18 @@ pub struct FullscreenRequest {
 impl FullscreenRequest {
     /// A request to fullscreen the app's own window on `target` (immersive).
     pub fn mirror(target: FullscreenTarget) -> Self {
-        Self { target, view: FullscreenView::Mirror }
+        Self {
+            target,
+            view: FullscreenView::Mirror,
+        }
     }
 
     /// A request to present a distinct view on `target` (presentation).
     pub fn distinct(target: FullscreenTarget) -> Self {
-        Self { target, view: FullscreenView::Distinct }
+        Self {
+            target,
+            view: FullscreenView::Distinct,
+        }
     }
 
     /// Whether this request wants a distinct presentation view.
@@ -117,7 +123,13 @@ mod tests {
     use super::*;
 
     fn mon(index: u32, w: u32, h: u32, primary: bool) -> MonitorInfo {
-        MonitorInfo { index, width: w, height: h, primary, scale: 1.0 }
+        MonitorInfo {
+            index,
+            width: w,
+            height: h,
+            primary,
+            scale: 1.0,
+        }
     }
 
     #[test]
@@ -151,7 +163,10 @@ mod tests {
         let mons = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, true)];
         assert_eq!(select_output(&mons, FullscreenTarget::Primary), Some(1));
         let none_primary = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, false)];
-        assert_eq!(select_output(&none_primary, FullscreenTarget::Primary), Some(0));
+        assert_eq!(
+            select_output(&none_primary, FullscreenTarget::Primary),
+            Some(0)
+        );
     }
 
     #[test]

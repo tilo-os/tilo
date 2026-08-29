@@ -68,7 +68,8 @@ pub const NO_RECOVERY_POINTS: &[&str] = &[
 ];
 
 /// The acknowledgement, phrased as the consequence rather than "I agree" — the user confirms they understood a fact, not accepted terms.
-pub const ACKNOWLEDGEMENT: &str = "I understand that losing this device means losing this identity.";
+pub const ACKNOWLEDGEMENT: &str =
+    "I understand that losing this device means losing this identity.";
 
 pub const DONE_TITLE: &str = "Your identity is ready";
 pub const DONE_BODY: &str = "This is the fingerprint others will see. You never have to type it — \
@@ -199,7 +200,7 @@ impl Error for OnboardingError {}
 /// Delegates to [`crate::firstboot::ensure_primary_identity`] so there's
 /// exactly one writer of the on-disk record, and the ceremony can't drift from what the rest of the system reads.
 pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
-    use crate::firstboot::{ensure_primary_identity, ProvisionOutcome};
+    use crate::firstboot::{ProvisionOutcome, ensure_primary_identity};
     let path = identity_dir.join("primary.json");
     match ensure_primary_identity(identity_dir).map_err(|e| OnboardingError::Mint(e.to_string()))? {
         ProvisionOutcome::Created { pubkey_hex } => Ok(MintedIdentity {
@@ -208,8 +209,9 @@ pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError>
         }),
         // Already there — read its fingerprint back rather than reporting a key that wasn't the one minted.
         ProvisionOutcome::Existing => {
-            let fingerprint = read_fingerprint(&path)
-                .map_err(|e| OnboardingError::Mint(format!("identity exists but is unreadable: {e}")))?;
+            let fingerprint = read_fingerprint(&path).map_err(|e| {
+                OnboardingError::Mint(format!("identity exists but is unreadable: {e}"))
+            })?;
             Ok(MintedIdentity { fingerprint, path })
         }
     }
@@ -246,7 +248,10 @@ mod tests {
         assert!(!o.can_create(), "cannot create from the intro screen");
         o.begin();
         assert_eq!(o.screen(), Screen::NoRecovery);
-        assert!(!o.can_create(), "reaching the screen is not acknowledging it");
+        assert!(
+            !o.can_create(),
+            "reaching the screen is not acknowledging it"
+        );
         o.set_acknowledged(true);
         assert!(o.can_create());
     }
@@ -269,7 +274,10 @@ mod tests {
             fingerprint: "ab".repeat(32),
             path: PathBuf::from("/nowhere/primary.json"),
         };
-        assert!(!o.complete(minted.clone()), "complete refuses before the gate");
+        assert!(
+            !o.complete(minted.clone()),
+            "complete refuses before the gate"
+        );
         assert_eq!(o.screen(), Screen::Intro);
         assert!(o.minted().is_none());
         assert!(!o.is_done());
@@ -324,7 +332,10 @@ mod tests {
     #[test]
     fn the_acknowledgement_names_the_consequence() {
         let a = ACKNOWLEDGEMENT.to_lowercase();
-        assert!(a.contains("losing"), "must name the loss: {ACKNOWLEDGEMENT}");
+        assert!(
+            a.contains("losing"),
+            "must name the loss: {ACKNOWLEDGEMENT}"
+        );
         assert!(
             a.contains("identity"),
             "must name what is lost: {ACKNOWLEDGEMENT}"

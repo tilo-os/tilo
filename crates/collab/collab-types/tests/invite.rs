@@ -7,8 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use collab_types::caps::Verb;
 use collab_types::{
-    ArtifactId, InviteError, InviteSpec, Role, attenuate, generate_keypair, mint_root,
-    verify_chain,
+    ArtifactId, InviteError, InviteSpec, Role, attenuate, generate_keypair, mint_root, verify_chain,
 };
 
 fn t(secs: u64) -> SystemTime {
@@ -23,11 +22,7 @@ const WORKSPACE: u64 = 0xA11CE;
 
 /// Root grant: `role` + `caps` for `subject`, whole-workspace, no
 /// expiry unless overridden.
-fn spec(
-    subject: collab_types::Ed25519PublicKey,
-    role: Role,
-    caps: &[Verb],
-) -> InviteSpec {
+fn spec(subject: collab_types::Ed25519PublicKey, role: Role, caps: &[Verb]) -> InviteSpec {
     InviteSpec {
         subject,
         workspace: WORKSPACE,
@@ -48,7 +43,11 @@ fn derived_token_may_drop_caps() {
 
     // Root grants Alice an Editor bundle: read/comment/write.
     let root = mint_root(
-        spec(alice_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write]),
+        spec(
+            alice_pk,
+            Role::Editor,
+            &[Verb::Read, Verb::Comment, Verb::Write],
+        ),
         &root_sk,
     )
     .unwrap();
@@ -64,8 +63,7 @@ fn derived_token_may_drop_caps() {
     // The chain verifies and the effective (tightest) grant is Bob's
     // comment-only bundle.
     let chain = [root, child];
-    let effective =
-        verify_chain(&chain, t(10), &[root_pk]).expect("narrowing chain must verify");
+    let effective = verify_chain(&chain, t(10), &[root_pk]).expect("narrowing chain must verify");
     assert_eq!(effective.subject, bob_pk);
     assert_eq!(effective.caps, verbs(&[Verb::Read, Verb::Comment]));
     assert!(!effective.caps.contains(&Verb::Write), "write was dropped");
@@ -89,7 +87,11 @@ fn derived_token_cannot_add_a_cap_the_parent_lacks() {
     // Alice tries to hand Bob a token that ADDS Write — a widening.
     let err = attenuate(
         &root,
-        spec(bob_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write]),
+        spec(
+            bob_pk,
+            Role::Editor,
+            &[Verb::Read, Verb::Comment, Verb::Write],
+        ),
         &alice_sk,
     )
     .unwrap_err();
@@ -120,7 +122,10 @@ fn derived_token_cannot_raise_role() {
         &alice_sk,
     )
     .unwrap_err();
-    assert!(matches!(err, InviteError::Widens(_)), "raising role must widen");
+    assert!(
+        matches!(err, InviteError::Widens(_)),
+        "raising role must widen"
+    );
 }
 
 // A child may pin to ONE sub-resource; it may not unpin or repoint.
@@ -136,7 +141,11 @@ fn sub_resource_pin_only_narrows() {
 
     // Root: whole-workspace editor.
     let root = mint_root(
-        spec(alice_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write]),
+        spec(
+            alice_pk,
+            Role::Editor,
+            &[Verb::Read, Verb::Comment, Verb::Write],
+        ),
         &root_sk,
     )
     .unwrap();
@@ -146,7 +155,11 @@ fn sub_resource_pin_only_narrows() {
         &root,
         InviteSpec {
             sub_resource: Some(doc),
-            ..spec(bob_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write])
+            ..spec(
+                bob_pk,
+                Role::Editor,
+                &[Verb::Read, Verb::Comment, Verb::Write],
+            )
         },
         &alice_sk,
     )
@@ -158,7 +171,11 @@ fn sub_resource_pin_only_narrows() {
         &pinned,
         InviteSpec {
             sub_resource: Some(other),
-            ..spec(carol_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write])
+            ..spec(
+                carol_pk,
+                Role::Editor,
+                &[Verb::Read, Verb::Comment, Verb::Write],
+            )
         },
         &bob_sk,
     )
@@ -192,7 +209,11 @@ fn expired_token_is_rejected() {
     let root = mint_root(
         InviteSpec {
             not_after: Some(t(100)),
-            ..spec(alice_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write])
+            ..spec(
+                alice_pk,
+                Role::Editor,
+                &[Verb::Read, Verb::Comment, Verb::Write],
+            )
         },
         &root_sk,
     )
@@ -223,7 +244,11 @@ fn child_expiry_cannot_exceed_parent() {
     let root = mint_root(
         InviteSpec {
             not_after: Some(t(100)),
-            ..spec(alice_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write])
+            ..spec(
+                alice_pk,
+                Role::Editor,
+                &[Verb::Read, Verb::Comment, Verb::Write],
+            )
         },
         &root_sk,
     )
@@ -234,19 +259,30 @@ fn child_expiry_cannot_exceed_parent() {
         &root,
         InviteSpec {
             not_after: Some(t(500)),
-            ..spec(bob_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write])
+            ..spec(
+                bob_pk,
+                Role::Editor,
+                &[Verb::Read, Verb::Comment, Verb::Write],
+            )
         },
         &alice_sk,
     )
     .unwrap_err();
-    assert!(matches!(err, InviteError::Widens(_)), "later expiry must widen");
+    assert!(
+        matches!(err, InviteError::Widens(_)),
+        "later expiry must widen"
+    );
 
     // A child that tightens the window (earlier expiry) is fine.
     let ok = attenuate(
         &root,
         InviteSpec {
             not_after: Some(t(80)),
-            ..spec(bob_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write])
+            ..spec(
+                bob_pk,
+                Role::Editor,
+                &[Verb::Read, Verb::Comment, Verb::Write],
+            )
         },
         &alice_sk,
     )
@@ -264,7 +300,11 @@ fn only_the_holder_may_attenuate() {
     let (_bob_sk, bob_pk) = generate_keypair();
 
     let root = mint_root(
-        spec(alice_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write]),
+        spec(
+            alice_pk,
+            Role::Editor,
+            &[Verb::Read, Verb::Comment, Verb::Write],
+        ),
         &root_sk,
     )
     .unwrap();
@@ -288,7 +328,11 @@ fn untrusted_root_is_rejected() {
     let (_stranger_sk, stranger_pk) = generate_keypair();
 
     let root = mint_root(
-        spec(alice_pk, Role::Editor, &[Verb::Read, Verb::Comment, Verb::Write]),
+        spec(
+            alice_pk,
+            Role::Editor,
+            &[Verb::Read, Verb::Comment, Verb::Write],
+        ),
         &root_sk,
     )
     .unwrap();

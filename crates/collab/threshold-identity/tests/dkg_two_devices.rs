@@ -149,7 +149,9 @@ fn single_partial_cannot_aggregate_below_threshold() {
     let r1_a = a.sign_round1(&mut rng_a).unwrap();
     let r1_b = b.sign_round1(&mut rng_b).unwrap();
     let commitments = vec![r1_a.commitment.clone(), r1_b.commitment.clone()];
-    let p_a = a.sign_round2_raw(r1_a.nonces, &canon, &commitments).unwrap();
+    let p_a = a
+        .sign_round2_raw(r1_a.nonces, &canon, &commitments)
+        .unwrap();
     // Drop B's partial — pretend it never made it back.
     let _drop_b_partial = b
         .sign_round2_raw(r1_b.nonces, &canon, &commitments)

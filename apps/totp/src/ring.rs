@@ -20,9 +20,9 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Point, Rect, Stroke};
 use vello::peniko::Color;
-use vello::Scene;
 use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;

@@ -59,14 +59,28 @@ fn make_role_attestation(
 /// attestation id, and the artifact id.
 fn channel_with_author(
     role: Role,
-) -> (ChannelState, SigningKey, Ed25519PublicKey, AttestationId, ArtifactId, ChannelId) {
+) -> (
+    ChannelState,
+    SigningKey,
+    Ed25519PublicKey,
+    AttestationId,
+    ArtifactId,
+    ChannelId,
+) {
     let (owner_sk, owner_pk) = generate_keypair();
     let (author_sk, author_pk) = generate_keypair();
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
 
     let ra = make_role_attestation(
-        &owner_sk, owner_pk, author_pk, channel, role, t(0), t(100_000), vec![],
+        &owner_sk,
+        owner_pk,
+        author_pk,
+        channel,
+        role,
+        t(0),
+        t(100_000),
+        vec![],
     );
     let attestation_id = ra.attestation.id;
 
@@ -75,7 +89,14 @@ fn channel_with_author(
     state.artifacts.insert(artifact, ArtifactKind::Note);
     state.register_attestation(ra);
 
-    (state, author_sk, author_pk, attestation_id, artifact, channel)
+    (
+        state,
+        author_sk,
+        author_pk,
+        attestation_id,
+        artifact,
+        channel,
+    )
 }
 
 fn build_op(
@@ -114,7 +135,11 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
         state.apply_and_relay(&comment).is_ok(),
         "commenter's comment op must validate + apply"
     );
-    assert_eq!(state.op_log.len(), 1, "the comment op was applied (relayable)");
+    assert_eq!(
+        state.op_log.len(),
+        1,
+        "the comment op was applied (relayable)"
+    );
     assert_eq!(
         state.last_seq_per_author.get(&author_pk).copied(),
         Some(1),
@@ -136,7 +161,11 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
     let before_seq = state.last_seq_per_author.get(&author_pk).copied();
     let res = state.apply_and_relay(&edit);
     assert_eq!(res, Err(ValidationError::RoleForbidsOpClass));
-    assert_eq!(state.op_log.len(), before_log, "rejected edit was NOT applied");
+    assert_eq!(
+        state.op_log.len(),
+        before_log,
+        "rejected edit was NOT applied"
+    );
     assert_eq!(
         state.last_seq_per_author.get(&author_pk).copied(),
         before_seq,
@@ -148,7 +177,11 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
         state.apply_and_relay(&splice),
         Err(ValidationError::RoleForbidsOpClass)
     );
-    assert_eq!(state.op_log.len(), before_log, "rejected splice was NOT applied");
+    assert_eq!(
+        state.op_log.len(),
+        before_log,
+        "rejected splice was NOT applied"
+    );
 }
 
 // The richer layer does real work: an app-scoped Restrict narrows an
@@ -156,12 +189,15 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
 
 #[test]
 fn app_scoped_restriction_caps_an_editor_to_comment_only() {
-    let (mut state, author_sk, author_pk, att, artifact, _ch) =
-        channel_with_author(Role::Editor);
+    let (mut state, author_sk, author_pk, att, artifact, _ch) = channel_with_author(Role::Editor);
 
     // Baseline: the coarse role table permits an Editor to splice, and
     // with no overrides the op applies.
-    assert!(role_permits(Role::Editor, ArtifactKind::Note, OpClass::Splice));
+    assert!(role_permits(
+        Role::Editor,
+        ArtifactKind::Note,
+        OpClass::Splice
+    ));
     let splice_ok = build_op(artifact, author_pk, &author_sk, att, OpClass::Splice, 1);
     assert!(
         state.clone().apply_and_relay(&splice_ok).is_ok(),
@@ -171,9 +207,11 @@ fn app_scoped_restriction_caps_an_editor_to_comment_only() {
     // Mark the artifact as owned by the "finance" app, then restrict the
     // Editor role to comment-only within that app.
     state.artifact_apps.insert(artifact, "finance".to_string());
-    state
-        .cap_overrides
-        .push(CapOverride::restrict_role_in_app(Role::Editor, "finance", Verb::Comment));
+    state.cap_overrides.push(CapOverride::restrict_role_in_app(
+        Role::Editor,
+        "finance",
+        Verb::Comment,
+    ));
 
     // Now a splice inside the finance app is denied by the CAPABILITY
     // layer (distinct from a pure role denial) on the real path...
@@ -202,8 +240,7 @@ fn app_scoped_restriction_caps_an_editor_to_comment_only() {
 
 #[test]
 fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
-    let (mut state, author_sk, author_pk, att, artifact, _ch) =
-        channel_with_author(Role::Viewer);
+    let (mut state, author_sk, author_pk, att, artifact, _ch) = channel_with_author(Role::Viewer);
 
     // A second artifact the viewer is NOT shared on.
     let other = ArtifactId::new();
@@ -250,8 +287,7 @@ fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
 
 #[test]
 fn denied_role_cannot_be_rescued_by_a_grant() {
-    let (mut state, author_sk, author_pk, att, artifact, _ch) =
-        channel_with_author(Role::Denied);
+    let (mut state, author_sk, author_pk, att, artifact, _ch) = channel_with_author(Role::Denied);
 
     // Even a workspace-wide Admin grant to this exact user is inert
     // against an explicit Denied block.
@@ -277,7 +313,13 @@ fn denied_role_cannot_be_rescued_by_a_grant() {
 
 #[test]
 fn caps_agree_with_role_table() {
-    let roles = [Role::Owner, Role::Editor, Role::Commenter, Role::Viewer, Role::Denied];
+    let roles = [
+        Role::Owner,
+        Role::Editor,
+        Role::Commenter,
+        Role::Viewer,
+        Role::Denied,
+    ];
     let ops = [
         OpClass::Splice,
         OpClass::Move,

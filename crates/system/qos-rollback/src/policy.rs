@@ -56,8 +56,12 @@ pub struct Prediction {
 /// Layout: `sigAlg` = `TPM_ALG_RSASSA` (0x0014), `hash` = `TPM_ALG_SHA256` (0x000B), then a
 /// `TPM2B_PUBLIC_KEY_RSA` (big-endian size, then the bytes).
 pub fn marshal_rsassa_sha256(signature: &[u8]) -> Result<Vec<u8>> {
-    let len = u16::try_from(signature.len())
-        .with_context(|| format!("a {}-byte signature does not fit TPM2B_PUBLIC_KEY_RSA", signature.len()))?;
+    let len = u16::try_from(signature.len()).with_context(|| {
+        format!(
+            "a {}-byte signature does not fit TPM2B_PUBLIC_KEY_RSA",
+            signature.len()
+        )
+    })?;
     let mut out = Vec::with_capacity(signature.len() + 6);
     out.extend_from_slice(&0x0014u16.to_be_bytes()); // TPM_ALG_RSASSA
     out.extend_from_slice(&0x000Bu16.to_be_bytes()); // TPM_ALG_SHA256
@@ -187,10 +191,14 @@ pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> R
         runner,
         "tpm2_loadexternal",
         &argv![
-            "-C", "o",
-            "-G", "rsa",
-            "-u", public_key_pem.as_os_str(),
-            "-c", ctx.as_os_str(),
+            "-C",
+            "o",
+            "-G",
+            "rsa",
+            "-u",
+            public_key_pem.as_os_str(),
+            "-c",
+            ctx.as_os_str(),
         ],
         "loading the PCR prediction public key",
     )?;
@@ -228,7 +236,12 @@ pub fn approved_policy(
         args.push(OsStr::new("-f"));
         args.push(p.as_os_str());
     }
-    let r = require(runner, "tpm2_policypcr", &args, "computing the PCR policy digest");
+    let r = require(
+        runner,
+        "tpm2_policypcr",
+        &args,
+        "computing the PCR policy digest",
+    );
     let out = ws.path("approved.bin");
     let digest = match r {
         Ok(_) => {
@@ -277,9 +290,12 @@ pub fn seal_policy(
             runner,
             "tpm2_policyauthorize",
             &argv![
-                "-S", sess.as_os_str(),
-                "-n", name_file.as_os_str(),
-                "-q", ref_file.as_os_str(),
+                "-S",
+                sess.as_os_str(),
+                "-n",
+                name_file.as_os_str(),
+                "-q",
+                ref_file.as_os_str(),
             ],
             "computing the PolicyAuthorize digest",
         )?;
@@ -287,10 +303,14 @@ pub fn seal_policy(
             runner,
             "tpm2_policynv",
             &argv![
-                "-S", sess.as_os_str(),
-                "-i", operand_file.as_os_str(),
-                &idx, "ule",
-                "-C", &idx,
+                "-S",
+                sess.as_os_str(),
+                "-i",
+                operand_file.as_os_str(),
+                &idx,
+                "ule",
+                "-C",
+                &idx,
             ],
             "computing the rollback-floor PolicyNV digest",
         )?;
@@ -333,9 +353,12 @@ pub fn sign_prediction(
         runner,
         "openssl",
         &argv![
-            "dgst", "-sha256",
-            "-sign", private_key_pem.as_os_str(),
-            "-out", sig.as_os_str(),
+            "dgst",
+            "-sha256",
+            "-sign",
+            private_key_pem.as_os_str(),
+            "-out",
+            sig.as_os_str(),
             msg.as_os_str(),
         ],
         "signing the PCR prediction",
@@ -381,10 +404,14 @@ pub fn satisfy(
         runner,
         "tpm2_loadexternal",
         &argv![
-            "-C", "o",
-            "-G", "rsa",
-            "-u", public_key_pem.as_os_str(),
-            "-c", sk.as_os_str(),
+            "-C",
+            "o",
+            "-G",
+            "rsa",
+            "-u",
+            public_key_pem.as_os_str(),
+            "-c",
+            sk.as_os_str(),
         ],
         "loading the PCR prediction public key",
     )?;
@@ -392,14 +419,22 @@ pub fn satisfy(
     let mut message = prediction.approved_policy.to_vec();
     message.extend_from_slice(&generation::policy_ref(gen_num));
     let msg = ws.put("verify_msg.bin", &message)?;
-    let sig = ws.put("prediction.sig", &marshal_rsassa_sha256(&prediction.signature)?)?;
+    let sig = ws.put(
+        "prediction.sig",
+        &marshal_rsassa_sha256(&prediction.signature)?,
+    )?;
     let ticket = ws.path("ticket.bin");
     let verify_args = argv![
-        "-c", sk.as_os_str(),
-        "-g", "sha256",
-        "-m", msg.as_os_str(),
-        "-s", sig.as_os_str(),
-        "-t", ticket.as_os_str(),
+        "-c",
+        sk.as_os_str(),
+        "-g",
+        "sha256",
+        "-m",
+        msg.as_os_str(),
+        "-s",
+        sig.as_os_str(),
+        "-t",
+        ticket.as_os_str(),
     ];
     let vs = runner.run("tpm2_verifysignature", &verify_args, None)?;
     let _ = runner.run("tpm2_flushcontext", &argv!["-t"], None);
@@ -430,15 +465,23 @@ pub fn satisfy(
             None,
         )?;
         if !pcr.ok() {
-            bail!("reading live PCRs for the policy session failed: {}", pcr.last_error_line());
+            bail!(
+                "reading live PCRs for the policy session failed: {}",
+                pcr.last_error_line()
+            );
         }
         // Does the live state match what was signed?
         let auth_args = argv![
-            "-S", sess.as_os_str(),
-            "-i", approved.as_os_str(),
-            "-n", name_file.as_os_str(),
-            "-q", ref_file.as_os_str(),
-            "-t", ticket.as_os_str(),
+            "-S",
+            sess.as_os_str(),
+            "-i",
+            approved.as_os_str(),
+            "-n",
+            name_file.as_os_str(),
+            "-q",
+            ref_file.as_os_str(),
+            "-t",
+            ticket.as_os_str(),
         ];
         let auth = runner.run("tpm2_policyauthorize", &auth_args, None)?;
         if !auth.ok() {
@@ -449,10 +492,14 @@ pub fn satisfy(
         let nv = runner.run(
             "tpm2_policynv",
             &argv![
-                "-S", sess.as_os_str(),
-                "-i", operand_file.as_os_str(),
-                &idx, "ule",
-                "-C", &idx,
+                "-S",
+                sess.as_os_str(),
+                "-i",
+                operand_file.as_os_str(),
+                &idx,
+                "ule",
+                "-C",
+                &idx,
             ],
             None,
         )?;

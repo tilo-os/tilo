@@ -83,7 +83,8 @@ fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
 
 fn main() {
     ui::i18n::I18nManager::init("en-US");
-    let dir = std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string());
+    let dir =
+        std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
 

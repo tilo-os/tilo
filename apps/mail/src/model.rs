@@ -136,7 +136,10 @@ impl Addr {
     }
 
     pub fn bare(email: impl Into<String>) -> Self {
-        Self { name: None, email: email.into() }
+        Self {
+            name: None,
+            email: email.into(),
+        }
     }
 
     /// Best display string: the name if present, otherwise the local-part
@@ -193,12 +196,28 @@ pub struct Attachment {
 impl Attachment {
     /// A metadata-only attachment (no bytes yet — projection, not hydrated).
     pub fn projected(filename: impl Into<String>, mime: impl Into<String>, size: u64) -> Self {
-        Self { filename: filename.into(), mime: mime.into(), size, hydrated: false, content: Vec::new() }
+        Self {
+            filename: filename.into(),
+            mime: mime.into(),
+            size,
+            hydrated: false,
+            content: Vec::new(),
+        }
     }
 
     /// A fully-hydrated attachment carrying its decoded bytes.
-    pub fn hydrated(filename: impl Into<String>, mime: impl Into<String>, content: Vec<u8>) -> Self {
-        Self { filename: filename.into(), mime: mime.into(), size: content.len() as u64, hydrated: true, content }
+    pub fn hydrated(
+        filename: impl Into<String>,
+        mime: impl Into<String>,
+        content: Vec<u8>,
+    ) -> Self {
+        Self {
+            filename: filename.into(),
+            mime: mime.into(),
+            size: content.len() as u64,
+            hydrated: true,
+            content,
+        }
     }
 
     /// Whether the bytes are present locally and this attachment can be saved.
@@ -220,7 +239,11 @@ impl Attachment {
             Icon::FileText
         } else if m.starts_with("text/") {
             Icon::FileText
-        } else if m.contains("zip") || m.contains("compressed") || m.contains("tar") || m.contains("gzip") {
+        } else if m.contains("zip")
+            || m.contains("compressed")
+            || m.contains("tar")
+            || m.contains("gzip")
+        {
             Icon::Archive
         } else if m.contains("calendar") {
             Icon::Calendar
@@ -547,7 +570,11 @@ pub struct Mailbox {
 
 impl Mailbox {
     pub fn new(account: AccountConfig) -> Self {
-        Self { account, messages: HashMap::new(), order: Vec::new() }
+        Self {
+            account,
+            messages: HashMap::new(),
+            order: Vec::new(),
+        }
     }
 
     pub fn insert(&mut self, msg: Message) {
@@ -596,16 +623,16 @@ impl Mailbox {
     pub fn threads_in(&self, folder: Folder) -> Vec<Thread> {
         let mut by_subject: HashMap<String, Vec<MessageId>> = HashMap::new();
         for m in self.messages_in(folder) {
-            by_subject
-                .entry(m.thread_subject())
-                .or_default()
-                .push(m.id);
+            by_subject.entry(m.thread_subject()).or_default().push(m.id);
         }
         let mut threads: Vec<Thread> = by_subject
             .into_iter()
             .map(|(subject, mut ids)| {
                 ids.sort_by_key(|id| self.messages[id].timestamp_min);
-                Thread { subject, message_ids: ids }
+                Thread {
+                    subject,
+                    message_ids: ids,
+                }
             })
             .collect();
         // Order threads by their newest message, descending.
@@ -786,7 +813,10 @@ mod tests {
 
     #[test]
     fn autofill_recognises_gmail() {
-        let mut cfg = AccountConfig { email: "person@gmail.com".into(), ..Default::default() };
+        let mut cfg = AccountConfig {
+            email: "person@gmail.com".into(),
+            ..Default::default()
+        };
         assert!(cfg.autofill_from_email());
         assert_eq!(cfg.imap_host, "imap.gmail.com");
         assert_eq!(cfg.smtp_host, "smtp.gmail.com");

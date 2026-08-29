@@ -36,16 +36,16 @@ pub mod source;
 pub mod transport;
 
 pub use audio::{
-    enumerate as enumerate_audio, AudioDevice, AudioEnumerator, AudioGraph, AudioStream,
-    GraphControl, GraphDelta, RealEnumerator, RealGraphControl,
+    AudioDevice, AudioEnumerator, AudioGraph, AudioStream, GraphControl, GraphDelta,
+    RealEnumerator, RealGraphControl, enumerate as enumerate_audio,
 };
 pub use engine::MediaEngine;
 pub use event::{MediaEvent, VideoFrame};
 pub use ring::{PrefetchProgress, Prefetcher, RingBuffer};
 pub use source::{Source, WORKSPACE_ROOT};
 pub use transport::{
-    correction, Correction, CrdtTransport, LocalTransport, TransportState, TransportSync,
-    DRIFT_SEEK_THRESHOLD_MS,
+    Correction, CrdtTransport, DRIFT_SEEK_THRESHOLD_MS, LocalTransport, TransportState,
+    TransportSync, correction,
 };
 
 /// Wall-clock time in unix milliseconds, for stamping a [`TransportState`]'s

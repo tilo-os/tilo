@@ -4,18 +4,18 @@
 //! widget up to a `ui::App`. Everything else — data model, storage,
 //! widgets — lives here so we can test each layer in isolation.
 
-pub mod model;
 pub mod actions;
-pub mod doc;
-pub mod storage;
-pub mod markdown;
-pub mod main_panel;
-pub mod sidebar;
-pub mod shortcuts_overlay;
-pub mod status_bar;
 pub mod app;
+pub mod doc;
+pub mod main_panel;
+pub mod markdown;
+pub mod model;
 pub mod search_provider;
+pub mod shortcuts_overlay;
 pub mod shots;
+pub mod sidebar;
+pub mod status_bar;
+pub mod storage;
 
 pub use app::NotesApp;
 pub use app::WELCOME_BODY;

@@ -119,7 +119,10 @@ impl SearchResultsView {
             if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
                 g.results.push(r);
             } else {
-                groups.push(SearchGroup { kind: r.kind.clone(), results: vec![r] });
+                groups.push(SearchGroup {
+                    kind: r.kind.clone(),
+                    results: vec![r],
+                });
             }
         }
         self.set_groups(groups);
@@ -283,7 +286,11 @@ impl SearchResultsView {
                 Point::new(text_x + ICON_D / 2.0, row.rect.center().y),
                 (ICON_D, ICON_D),
             );
-            let icon_col = if selected { colors.text_primary } else { colors.text_dim };
+            let icon_col = if selected {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
             icon.draw_with_stroke(scene, transform, icon_rect, icon_col, 1.6);
             text_x += ICON_COL;
         }
@@ -311,7 +318,11 @@ impl SearchResultsView {
         // Subtitle (dim; on a selected row it stays readable on the fill).
         if let Some(sub) = &result.subtitle {
             let sy = row.rect.y1 - sub_size as f64 - 9.0;
-            let sub_col = if selected { colors.text_primary } else { colors.text_dim };
+            let sub_col = if selected {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
             tr.draw_text(
                 scene,
                 sub,
@@ -397,7 +408,13 @@ impl Widget for SearchResultsView {
             return;
         }
         let card = RoundedRect::from_rect(self.rect, theme.tokens.radii.lg as f64);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &card);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &card,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -471,7 +488,12 @@ impl Widget for SearchResultsView {
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 if self.flat.is_empty() {
@@ -583,18 +605,52 @@ mod tests {
         };
 
         assert_eq!(v.cursor(), 0);
-        v.handle_event(&key(NamedKey::ArrowDown), 1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        v.handle_event(
+            &key(NamedKey::ArrowDown),
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         assert!(handled, "arrow-down consumed");
         assert_eq!(v.cursor(), 1);
         // Wrap: up from the top lands on the last row.
         v.set_cursor(0);
-        v.handle_event(&key(NamedKey::ArrowUp), 1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        v.handle_event(
+            &key(NamedKey::ArrowUp),
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
 
         // Enter activates the highlighted row and drains once.
         v.set_cursor(0);
-        v.handle_event(&key(NamedKey::Enter), 1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy);
-        assert_eq!(v.take_activated().as_deref(), Some("c:alice"), "enter fires the selected action-id");
+        v.handle_event(
+            &key(NamedKey::Enter),
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
+        assert_eq!(
+            v.take_activated().as_deref(),
+            Some("c:alice"),
+            "enter fires the selected action-id"
+        );
         assert_eq!(v.take_activated(), None, "activation drains after one read");
     }
 
@@ -619,7 +675,14 @@ mod tests {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(target.x, target.y),
             },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
         );
         v.handle_event(
             &WindowEvent::MouseInput {
@@ -627,11 +690,26 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
         );
         assert!(handled, "row click consumed");
-        assert_eq!(v.cursor(), 2, "click moves the highlight to the clicked row");
-        assert_eq!(v.take_activated().as_deref(), Some("app:calc"), "click fires that row's action-id");
+        assert_eq!(
+            v.cursor(),
+            2,
+            "click moves the highlight to the clicked row"
+        );
+        assert_eq!(
+            v.take_activated().as_deref(),
+            Some("app:calc"),
+            "click fires that row's action-id"
+        );
     }
 
     #[test]
@@ -649,6 +727,9 @@ mod tests {
     fn desired_height_grows_with_content() {
         let empty = SearchResultsView::new().desired_height();
         let full = view_from("").desired_height();
-        assert!(full > empty, "populated overlay is taller than the empty state");
+        assert!(
+            full > empty,
+            "populated overlay is taller than the empty state"
+        );
     }
 }

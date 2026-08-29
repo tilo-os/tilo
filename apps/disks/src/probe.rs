@@ -195,7 +195,9 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
     let passed = json
         .pointer("/smart_status/passed")
         .and_then(|v| v.as_bool());
-    let temp = json.pointer("/temperature/current").and_then(|v| v.as_i64());
+    let temp = json
+        .pointer("/temperature/current")
+        .and_then(|v| v.as_i64());
     let poh = json
         .pointer("/power_on_time/hours")
         .and_then(|v| v.as_i64());
@@ -223,12 +225,23 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
                 .pointer("/raw/string")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .or_else(|| a.pointer("/raw/value").and_then(|v| v.as_i64()).map(|n| n.to_string()))
+                .or_else(|| {
+                    a.pointer("/raw/value")
+                        .and_then(|v| v.as_i64())
+                        .map(|n| n.to_string())
+                })
                 .unwrap_or_default();
             let when_failed = a.get("when_failed").and_then(|v| v.as_str()).unwrap_or("-");
             let sev = if when_failed != "-" && !when_failed.is_empty() {
                 AttrSeverity::Crit
-            } else if (id == 5 || id == 197) && raw.split_whitespace().next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) > 0 {
+            } else if (id == 5 || id == 197)
+                && raw
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0)
+                    > 0
+            {
                 AttrSeverity::Warn
             } else {
                 AttrSeverity::Ok
@@ -255,7 +268,11 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
                 id: 5,
                 name: "Available Spare".into(),
                 value: format!("{spare} %"),
-                severity: if spare < 10 { AttrSeverity::Warn } else { AttrSeverity::Ok },
+                severity: if spare < 10 {
+                    AttrSeverity::Warn
+                } else {
+                    AttrSeverity::Ok
+                },
             });
         }
         if let Some(pu) = pct_used {
@@ -263,7 +280,11 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
                 id: 9,
                 name: "Percentage Used".into(),
                 value: format!("{pu} %"),
-                severity: if pu > 90 { AttrSeverity::Warn } else { AttrSeverity::Ok },
+                severity: if pu > 90 {
+                    AttrSeverity::Warn
+                } else {
+                    AttrSeverity::Ok
+                },
             });
         }
         if let Some(me) = log.get("media_errors").and_then(|v| v.as_i64()) {
@@ -271,7 +292,11 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
                 id: 1,
                 name: "Media Errors".into(),
                 value: me.to_string(),
-                severity: if me > 0 { AttrSeverity::Warn } else { AttrSeverity::Ok },
+                severity: if me > 0 {
+                    AttrSeverity::Warn
+                } else {
+                    AttrSeverity::Ok
+                },
             });
         }
     }
@@ -415,7 +440,10 @@ mod tests {
         let d = &parse_lsblk(&j)[0];
         let p = &d.partitions[0];
         assert_eq!(p.fstype.as_deref(), Some("btrfs"));
-        assert_eq!(p.used, None, "pool-wide usage over the partition size is dropped, not clamped to 100%");
+        assert_eq!(
+            p.used, None,
+            "pool-wide usage over the partition size is dropped, not clamped to 100%"
+        );
         assert_eq!(p.used_frac(), None);
     }
 
@@ -450,7 +478,11 @@ mod tests {
         });
         let d = &parse_lsblk(&j)[0];
         assert_eq!(d.kind, DriveKind::Usb);
-        assert_eq!(d.partitions.len(), 1, "the whole-disk filesystem is one span");
+        assert_eq!(
+            d.partitions.len(),
+            1,
+            "the whole-disk filesystem is one span"
+        );
         let p = &d.partitions[0];
         assert_eq!(p.fstype.as_deref(), Some("exfat"));
         assert_eq!(p.mountpoint.as_deref(), Some("/run/media/u/ULTRA"));
@@ -481,7 +513,10 @@ mod tests {
         let s = parse_smart(&j, DriveKind::Nvme);
         assert_eq!(s.status.0, SmartStatus::Unknown);
         let detail = s.detail.expect("permission failure carries an explanation");
-        assert!(detail.contains("administrator access"), "explains it is a privilege issue, not absent SMART: {detail}");
+        assert!(
+            detail.contains("administrator access"),
+            "explains it is a privilege issue, not absent SMART: {detail}"
+        );
     }
 
     #[test]
@@ -503,7 +538,10 @@ mod tests {
         assert_eq!(s.temp_c, Some(41));
         assert_eq!(s.power_on_hours, Some(2196));
         assert_eq!(s.pct_used, Some(3));
-        assert!(s.detail.is_none(), "real data carries no 'unavailable' note");
+        assert!(
+            s.detail.is_none(),
+            "real data carries no 'unavailable' note"
+        );
         assert!(s.attrs.iter().any(|a| a.name == "Percentage Used"));
     }
 
@@ -522,7 +560,11 @@ mod tests {
         // Passing overall, but non-zero reallocations pull it to Warning.
         assert_eq!(s.status.0, SmartStatus::Warning);
         assert_eq!(s.reallocated, Some(8));
-        assert!(s.attrs.iter().any(|a| a.id == 5 && a.severity == AttrSeverity::Warn));
+        assert!(
+            s.attrs
+                .iter()
+                .any(|a| a.id == 5 && a.severity == AttrSeverity::Warn)
+        );
     }
 
     #[test]

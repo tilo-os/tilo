@@ -172,5 +172,4 @@ pub fn starter_queries() -> &'static [(&'static str, &'static str)] {
 }
 
 /// The query the editor opens with on first launch.
-pub const DEFAULT_QUERY: &str =
-    "SELECT al.title AS album, ar.name AS artist, al.rating, al.release_date\nFROM albums al\nJOIN artists ar ON ar.artist_id = al.artist_id\nORDER BY al.rating DESC;";
+pub const DEFAULT_QUERY: &str = "SELECT al.title AS album, ar.name AS artist, al.rating, al.release_date\nFROM albums al\nJOIN artists ar ON ar.artist_id = al.artist_id\nORDER BY al.rating DESC;";

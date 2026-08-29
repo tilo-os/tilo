@@ -84,22 +84,58 @@ fn call_grid() -> (u32, u32, Vec<u8>) {
     let th = (h as f64 - 2.0 * margin - gap) / 2.0;
     let tiles = [
         (margin, margin, [58, 74, 120], [120, 158, 255], true),
-        (margin + tw + gap, margin, [70, 60, 96], [176, 150, 244], false),
-        (margin, margin + th + gap, [54, 84, 84], [120, 214, 200], false),
-        (margin + tw + gap, margin + th + gap, [92, 72, 66], [240, 178, 150], false),
+        (
+            margin + tw + gap,
+            margin,
+            [70, 60, 96],
+            [176, 150, 244],
+            false,
+        ),
+        (
+            margin,
+            margin + th + gap,
+            [54, 84, 84],
+            [120, 214, 200],
+            false,
+        ),
+        (
+            margin + tw + gap,
+            margin + th + gap,
+            [92, 72, 66],
+            [240, 178, 150],
+            false,
+        ),
     ];
     for (x, y, base, accent, active) in tiles {
         let r = Rectf { x, y, w: tw, h: th };
         c.round_rect(r, 12.0, base);
         // A camera "surface" sheen across the upper half.
-        c.round_rect(Rectf { x, y, w: tw, h: th * 0.5 }, 12.0, lighten(base, 18));
+        c.round_rect(
+            Rectf {
+                x,
+                y,
+                w: tw,
+                h: th * 0.5,
+            },
+            12.0,
+            lighten(base, 18),
+        );
         // Centred avatar disc.
         let cx = x + tw * 0.5;
         let cy = y + th * 0.46;
         c.disc(cx, cy, th * 0.24, accent);
         c.disc(cx, cy, th * 0.24 - 6.0, lighten(accent, 26));
         // Name plate.
-        c.round_rect(Rectf { x: x + 12.0, y: y + th - 30.0, w: tw * 0.44, h: 18.0 }, 6.0, [12, 13, 18]);
+        c.round_rect(
+            Rectf {
+                x: x + 12.0,
+                y: y + th - 30.0,
+                w: tw * 0.44,
+                h: 18.0,
+            },
+            6.0,
+            [12, 13, 18],
+        );
         if active {
             c.stroke_round(r, 12.0, [88, 214, 140], 3.0);
         }
@@ -113,20 +149,57 @@ fn shared_shot() -> (u32, u32, Vec<u8>) {
     let (w, h) = (620u32, 400u32);
     let mut c = Canvas::new(w, h);
     c.vgradient([32, 34, 44], [22, 23, 31]);
-    let card = Rectf { x: 28.0, y: 28.0, w: w as f64 - 56.0, h: h as f64 - 56.0 };
+    let card = Rectf {
+        x: 28.0,
+        y: 28.0,
+        w: w as f64 - 56.0,
+        h: h as f64 - 56.0,
+    };
     c.round_rect(card, 16.0, [244, 245, 248]);
     // Header bar.
-    c.round_rect(Rectf { x: card.x, y: card.y, w: card.w, h: 46.0 }, 16.0, [94, 122, 232]);
+    c.round_rect(
+        Rectf {
+            x: card.x,
+            y: card.y,
+            w: card.w,
+            h: 46.0,
+        },
+        16.0,
+        [94, 122, 232],
+    );
     for i in 0..3 {
-        c.disc(card.x + 22.0 + i as f64 * 20.0, card.y + 23.0, 6.0, [255, 255, 255]);
+        c.disc(
+            card.x + 22.0 + i as f64 * 20.0,
+            card.y + 23.0,
+            6.0,
+            [255, 255, 255],
+        );
     }
     // Content rows.
     let mut ry = card.y + 74.0;
     for i in 0..6 {
         let rw = card.w * if i % 3 == 0 { 0.82 } else { 0.62 };
-        c.round_rect(Rectf { x: card.x + 24.0, y: ry, w: rw, h: 16.0 }, 5.0, [212, 216, 224]);
+        c.round_rect(
+            Rectf {
+                x: card.x + 24.0,
+                y: ry,
+                w: rw,
+                h: 16.0,
+            },
+            5.0,
+            [212, 216, 224],
+        );
         if i % 3 == 0 {
-            c.round_rect(Rectf { x: card.x + 24.0, y: ry, w: 90.0, h: 16.0 }, 5.0, [126, 150, 240]);
+            c.round_rect(
+                Rectf {
+                    x: card.x + 24.0,
+                    y: ry,
+                    w: 90.0,
+                    h: 16.0,
+                },
+                5.0,
+                [126, 150, 240],
+            );
         }
         ry += 38.0;
     }
@@ -153,7 +226,11 @@ struct Canvas {
 
 impl Canvas {
     fn new(w: u32, h: u32) -> Self {
-        Self { w, h, px: vec![0u8; (w * h * 4) as usize] }
+        Self {
+            w,
+            h,
+            px: vec![0u8; (w * h * 4) as usize],
+        }
     }
 
     fn blend(&mut self, x: i32, y: i32, rgb: [u8; 3], a: f64) {

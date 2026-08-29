@@ -199,10 +199,16 @@ impl Library {
         self.tracks.get(id)
     }
     pub fn artist_name(&self, id: &str) -> &str {
-        self.artists.get(id).map(|a| a.name.as_str()).unwrap_or("Unknown Artist")
+        self.artists
+            .get(id)
+            .map(|a| a.name.as_str())
+            .unwrap_or("Unknown Artist")
     }
     pub fn album_title(&self, id: &str) -> &str {
-        self.albums.get(id).map(|a| a.title.as_str()).unwrap_or("Unknown Album")
+        self.albums
+            .get(id)
+            .map(|a| a.title.as_str())
+            .unwrap_or("Unknown Album")
     }
     pub fn cache_state(&self, id: &str) -> CacheState {
         self.cache.get(id).copied().unwrap_or_default()
@@ -210,16 +216,22 @@ impl Library {
 
     /// Tracks of an album, ordered by track number.
     pub fn album_tracks(&self, album: &str) -> Vec<&Track> {
-        let mut v: Vec<&Track> =
-            self.tracks.values().filter(|t| t.album_id == album).collect();
+        let mut v: Vec<&Track> = self
+            .tracks
+            .values()
+            .filter(|t| t.album_id == album)
+            .collect();
         v.sort_by_key(|t| t.track_no);
         v
     }
 
     /// Albums of an artist, newest first.
     pub fn artist_albums(&self, artist: &str) -> Vec<&Album> {
-        let mut v: Vec<&Album> =
-            self.albums.values().filter(|a| a.artist_id == artist).collect();
+        let mut v: Vec<&Album> = self
+            .albums
+            .values()
+            .filter(|a| a.artist_id == artist)
+            .collect();
         v.sort_by_key(|a| std::cmp::Reverse(a.year));
         v
     }
@@ -248,7 +260,10 @@ impl Library {
         v.sort_by(|a, b| {
             self.artist_name(&a.artist_id)
                 .cmp(self.artist_name(&b.artist_id))
-                .then(self.album_title(&a.album_id).cmp(self.album_title(&b.album_id)))
+                .then(
+                    self.album_title(&a.album_id)
+                        .cmp(self.album_title(&b.album_id)),
+                )
                 .then(a.track_no.cmp(&b.track_no))
         });
         v
@@ -291,7 +306,10 @@ impl Library {
             .values()
             .filter(|t| {
                 t.title.to_lowercase().contains(&needle)
-                    || self.artist_name(&t.artist_id).to_lowercase().contains(&needle)
+                    || self
+                        .artist_name(&t.artist_id)
+                        .to_lowercase()
+                        .contains(&needle)
                     || artist_genre(&t.artist_id).contains(&needle)
             })
             .map(|t| t.id.clone())
@@ -314,7 +332,11 @@ impl Library {
             })
             .map(|a| a.id.clone())
             .collect();
-        SearchResults { tracks, albums, artists }
+        SearchResults {
+            tracks,
+            albums,
+            artists,
+        }
     }
 
     pub fn playlist(&self, id: &str) -> Option<&Playlist> {
@@ -343,12 +365,18 @@ impl Library {
     /// Liked tracks ordered by artist / album / track number (a virtual
     /// "Liked Songs" playlist surfaced in the UI).
     pub fn liked_tracks(&self) -> Vec<&Track> {
-        let mut v: Vec<&Track> =
-            self.liked.iter().filter_map(|id| self.tracks.get(id)).collect();
+        let mut v: Vec<&Track> = self
+            .liked
+            .iter()
+            .filter_map(|id| self.tracks.get(id))
+            .collect();
         v.sort_by(|a, b| {
             self.artist_name(&a.artist_id)
                 .cmp(self.artist_name(&b.artist_id))
-                .then(self.album_title(&a.album_id).cmp(self.album_title(&b.album_id)))
+                .then(
+                    self.album_title(&a.album_id)
+                        .cmp(self.album_title(&b.album_id)),
+                )
                 .then(a.track_no.cmp(&b.track_no))
         });
         v
@@ -356,7 +384,10 @@ impl Library {
 
     /// Track ids of the "Liked Songs" virtual playlist, in display order.
     pub fn liked_ids(&self) -> Vec<TrackId> {
-        self.liked_tracks().into_iter().map(|t| t.id.clone()).collect()
+        self.liked_tracks()
+            .into_iter()
+            .map(|t| t.id.clone())
+            .collect()
     }
 }
 

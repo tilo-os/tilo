@@ -150,7 +150,10 @@ mod tests {
         unsafe { std::env::set_var("QOS_PACKAGE_ID", "dev.example.notes") };
         let p = resolve_workspace_path("inbox.md").unwrap();
         assert!(p.starts_with(tmp.path().join("dev.example.notes")));
-        assert!(p.parent().unwrap().exists(), "parent dir should be pre-created");
+        assert!(
+            p.parent().unwrap().exists(),
+            "parent dir should be pre-created"
+        );
         unsafe {
             std::env::remove_var("XDG_DATA_HOME");
             std::env::remove_var("QOS_PACKAGE_ID");

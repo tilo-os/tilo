@@ -149,10 +149,7 @@ impl FrameBuilder {
         (host.with_status_bridge(bridge), chrome)
     }
 
-    fn from_parts(
-        (host, chrome): (ShellOverlayHost, Chrome),
-        viewport: (u32, u32),
-    ) -> Self {
+    fn from_parts((host, chrome): (ShellOverlayHost, Chrome), viewport: (u32, u32)) -> Self {
         let theme = Self::shots_theme_override().unwrap_or_else(Theme::dark);
         let mut builder = Self {
             host,
@@ -780,7 +777,9 @@ mod tests {
         let mut host = WorkspaceTree::default();
         let host_ws = host.append_empty_workspace("Shared");
         host.adopt_ownerless_workspaces(&owner);
-        let room = host.room_of(host_ws).expect("the host's workspace has a room");
+        let room = host
+            .room_of(host_ws)
+            .expect("the host's workspace has a room");
         host.grant_in_workspace(
             host_ws,
             &owner,
@@ -820,7 +819,10 @@ mod tests {
             tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
                 .expect("well-formed changes parse")
         };
-        assert!(landed, "the peer's changes must merge into this session's tree");
+        assert!(
+            landed,
+            "the peer's changes must merge into this session's tree"
+        );
 
         fb.pump_apps(&mut doc, &root);
         assert!(
@@ -920,7 +922,10 @@ mod tests {
                 .position(|w| w.id == tree.active)
                 .expect("active workspace is in the tree")
         };
-        assert!(idx(&fb) > 0, "one step up from the last workspace cannot be the first");
+        assert!(
+            idx(&fb) > 0,
+            "one step up from the last workspace cannot be the first"
+        );
         assert!(
             reg.contains_key("topbar_workspace_down_enabled"),
             "with the new workspace below, the down-chevron must read enabled"

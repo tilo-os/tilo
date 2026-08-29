@@ -29,11 +29,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // (mid-drag ghost + reflow), `menu` (row context menu), `slash`
         // (editor block menu).
         let scenario = parse_flag(&args, "--scenario");
-        shots::render_to_path(
-            viewport,
-            std::path::Path::new(&out),
-            scenario.as_deref(),
-        )?;
+        shots::render_to_path(viewport, std::path::Path::new(&out), scenario.as_deref())?;
         return Ok(());
     }
 
@@ -42,8 +38,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // attribution, and (c) the per-peer presence colour. A missing
     // QUICK_APP_ID falls back to a random id so two un-configured
     // instances still get distinct actors.
-    let app_id = std::env::var("QUICK_APP_ID")
-        .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let app_id = std::env::var("QUICK_APP_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
 
     let mut app_widget = NotesApp::spawn_default()?;
     // Attribute this instance's edits to `app_id` so peers can highlight

@@ -129,7 +129,12 @@ impl Default for DocumentStoreHandle {
 pub struct HostPathStore;
 
 impl DocumentStore for HostPathStore {
-    fn publish(&self, _caller: &PortalCaller, paths: &[PathBuf], mode: FsMode) -> Vec<PublishedDoc> {
+    fn publish(
+        &self,
+        _caller: &PortalCaller,
+        paths: &[PathBuf],
+        mode: FsMode,
+    ) -> Vec<PublishedDoc> {
         paths
             .iter()
             .map(|p| PublishedDoc {

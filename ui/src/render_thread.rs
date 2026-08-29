@@ -22,8 +22,8 @@
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 
-use vello::peniko::Color;
 use crate::gpu::RenderContext;
+use vello::peniko::Color;
 use vello::util::RenderSurface;
 use vello::{RenderParams, Renderer, Scene};
 
@@ -147,9 +147,12 @@ pub fn spawn_render_thread(
             let mut frame_ix: u64 = 0;
             while let Ok(msg) = rx.recv() {
                 let (mut scene, width, height, base_color) = match msg {
-                    RenderRequest::Frame { scene, width, height, base_color } => {
-                        (*scene, width, height, base_color)
-                    }
+                    RenderRequest::Frame {
+                        scene,
+                        width,
+                        height,
+                        base_color,
+                    } => (*scene, width, height, base_color),
                     RenderRequest::Shutdown => break,
                 };
 
@@ -157,14 +160,15 @@ pub fn spawn_render_thread(
                 // spawn — simpler than an explicit Resize variant, and keeps
                 // every wgpu call on the thread that owns the surface.
                 if (surface.config.width != width || surface.config.height != height)
-                    && let Err(err) = resize_surface_checked(&render_cx, &mut surface, width, height)
-                    {
-                        // Re-attempting the same reconfigure on a destroyed
-                        // surface fails identically forever.
-                        tracing::info!(%err, "drawing surface is gone; stopping the render thread");
-                        let _ = outcome_tx.send(FrameOutcome::SurfaceGone);
-                        break;
-                    }
+                    && let Err(err) =
+                        resize_surface_checked(&render_cx, &mut surface, width, height)
+                {
+                    // Re-attempting the same reconfigure on a destroyed
+                    // surface fails identically forever.
+                    tracing::info!(%err, "drawing surface is gone; stopping the render thread");
+                    let _ = outcome_tx.send(FrameOutcome::SurfaceGone);
+                    break;
+                }
 
                 let outcome = render_one_frame(
                     &render_cx,
@@ -333,11 +337,12 @@ fn render_one_frame(
     let acquire_us = t_acquire.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_submit = present_dbg.then(Instant::now);
-    let mut encoder = device_handle.device.create_command_encoder(
-        &vello::wgpu::CommandEncoderDescriptor {
-            label: Some("ui-render-thread blit-to-surface"),
-        },
-    );
+    let mut encoder =
+        device_handle
+            .device
+            .create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
+                label: Some("ui-render-thread blit-to-surface"),
+            });
     surface.blitter.copy(
         &device_handle.device,
         &mut encoder,
@@ -353,7 +358,9 @@ fn render_one_frame(
     let t_present = present_dbg.then(Instant::now);
     surface_texture.present();
     if present_dbg {
-        let present_us = t_present.map(|t| t.elapsed().as_secs_f64() * 1e6).unwrap_or(0.0);
+        let present_us = t_present
+            .map(|t| t.elapsed().as_secs_f64() * 1e6)
+            .unwrap_or(0.0);
         eprintln!(
             "present-frame {frame_ix}: encode={:.0}us acquire={:.0}us submit={:.0}us present={:.0}us  ({}x{})",
             encode_us.unwrap_or(0.0),

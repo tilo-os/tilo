@@ -3,7 +3,7 @@
 //! keywords/created/modified) and `app.xml`'s `Properties > Application` generator string.
 //! This maps those onto `meta.props`, preserving unmodeled `core.xml` children on export.
 
-use crate::model::{doc_prop, DocMut, DocRef};
+use crate::model::{DocMut, DocRef, doc_prop};
 use crate::schema::*;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
@@ -75,7 +75,13 @@ pub(super) fn import_core(xml: &[u8], doc: &mut DocMut) {
 }
 
 pub(super) fn import_app(xml: &[u8], doc: &mut DocMut) {
-    import_elements(xml, doc, |local| if local == b"Application" { Some(PROP_GENERATOR) } else { None });
+    import_elements(xml, doc, |local| {
+        if local == b"Application" {
+            Some(PROP_GENERATOR)
+        } else {
+            None
+        }
+    });
 }
 
 fn escape_text(s: &str) -> String {
@@ -102,7 +108,14 @@ const APP_NS: &str =
     r#"xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties""#;
 
 /// The modeled child elements (by local name) of `cp:coreProperties` we own.
-const CORE_MODELED: [&[u8]; 6] = [b"title", b"creator", b"subject", b"keywords", b"created", b"modified"];
+const CORE_MODELED: [&[u8]; 6] = [
+    b"title",
+    b"creator",
+    b"subject",
+    b"keywords",
+    b"created",
+    b"modified",
+];
 
 /// Serialize the modeled `core.xml` children in canonical key order. `dcterms:created`/
 /// `modified` carry the W3CDTF type attr Word writes, so the value round-trips as a timestamp.
@@ -119,8 +132,16 @@ fn core_modeled_children(doc: &DocRef) -> String {
     emit(PROP_AUTHOR, "<dc:creator>", "</dc:creator>");
     emit(PROP_SUBJECT, "<dc:subject>", "</dc:subject>");
     emit(PROP_KEYWORDS, "<cp:keywords>", "</cp:keywords>");
-    emit(PROP_CREATED, r#"<dcterms:created xsi:type="dcterms:W3CDTF">"#, "</dcterms:created>");
-    emit(PROP_MODIFIED, r#"<dcterms:modified xsi:type="dcterms:W3CDTF">"#, "</dcterms:modified>");
+    emit(
+        PROP_CREATED,
+        r#"<dcterms:created xsi:type="dcterms:W3CDTF">"#,
+        "</dcterms:created>",
+    );
+    emit(
+        PROP_MODIFIED,
+        r#"<dcterms:modified xsi:type="dcterms:W3CDTF">"#,
+        "</dcterms:modified>",
+    );
     out
 }
 
@@ -214,10 +235,17 @@ fn element_inner(xml: &[u8], local: &str) -> Option<Vec<u8>> {
         let before = text[..pos].rfind('<')?;
         let between = &text[before + 1..pos];
         // `between` must be empty or a `prefix:` (alnum + trailing colon).
-        let is_tag = between.is_empty() || (between.ends_with(':') && between[..between.len() - 1].chars().all(|c| c.is_alphanumeric()));
+        let is_tag = between.is_empty()
+            || (between.ends_with(':')
+                && between[..between.len() - 1]
+                    .chars()
+                    .all(|c| c.is_alphanumeric()));
         // The char after the name must end the name (space, `>`, `/`).
         let after_ch = text[pos + needle.len()..].chars().next();
-        let name_ends = matches!(after_ch, Some(' ') | Some('>') | Some('/') | Some('\t') | Some('\n') | Some('\r'));
+        let name_ends = matches!(
+            after_ch,
+            Some(' ') | Some('>') | Some('/') | Some('\t') | Some('\n') | Some('\r')
+        );
         if is_tag && name_ends {
             let gt = text[before..].find('>')? + before;
             break (before, gt);
@@ -266,8 +294,12 @@ pub(super) fn export_app(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8
     if generator.is_none() && original.is_none() {
         return None;
     }
-    let preserved = original.map(|o| app_unmodeled_children(o)).unwrap_or_default();
-    let app = generator.map(|g| format!("<Application>{}</Application>", escape_text(&g))).unwrap_or_default();
+    let preserved = original
+        .map(|o| app_unmodeled_children(o))
+        .unwrap_or_default();
+    let app = generator
+        .map(|g| format!("<Application>{}</Application>", escape_text(&g)))
+        .unwrap_or_default();
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Properties {APP_NS}>{preserved}{app}</Properties>"#

@@ -31,8 +31,7 @@ use std::time::{Duration, Instant};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage,
-    ImageFormat as Format,
+    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
 };
 
 use ui::theme::Theme;
@@ -108,7 +107,11 @@ impl TileStyle {
     pub fn from_theme(theme: &Theme) -> Self {
         let c = theme.tokens.colors.surfaces.base.to_rgba8();
         let lum = 0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64;
-        if lum < 128.0 { TileStyle::Dark } else { TileStyle::Light }
+        if lum < 128.0 {
+            TileStyle::Dark
+        } else {
+            TileStyle::Light
+        }
     }
 }
 
@@ -553,7 +556,10 @@ impl TileLayer {
             let base_y = parent.y << depth;
             for j in 0..span {
                 for i in 0..span {
-                    if self.mem.contains_key(&TileId::new(cz, base_x + i, base_y + j)) {
+                    if self
+                        .mem
+                        .contains_key(&TileId::new(cz, base_x + i, base_y + j))
+                    {
                         return true;
                     }
                 }
@@ -619,7 +625,10 @@ impl TileLayer {
         self.inflight.clear();
         self.failed.clear();
         self.progress = DownloadProgress::default();
-        let target = self.cache_root.clone().unwrap_or_else(|| self.cache_dir.clone());
+        let target = self
+            .cache_root
+            .clone()
+            .unwrap_or_else(|| self.cache_dir.clone());
         let freed = dir_size(&target);
         let _ = std::fs::remove_dir_all(&target);
         freed
@@ -972,10 +981,15 @@ pub fn paint_tile(scene: &mut Scene, transform: Affine, img: &PenikoImage, dst: 
     let ih = img.height.max(1) as f64;
     let sx = dst.width() / iw;
     let sy = dst.height() / ih;
-    let brush_transform =
-        Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(sx, sy);
+    let brush_transform = Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(sx, sy);
     let brush = ImageBrush::new(img.clone());
-    scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &dst);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        &dst,
+    );
 }
 
 /// Paint only the sub-quadrant of an ancestor `img` that corresponds to the
@@ -1016,7 +1030,13 @@ pub fn paint_ancestor(
     // fresh zoom-in fills *every* visible tile from an ancestor, so dropping the
     // per-tile push/pop_layer removes a clip layer per tile from the hottest
     // frames (the whole tile pass is already clipped to the viewport upstream).
-    scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &dst);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        &dst,
+    );
 }
 
 /// Fill a zoom-out hole from *cached descendant* (higher-z, sharper) tiles.
@@ -1299,7 +1319,11 @@ mod tests {
         }
         assert!(layer.mem_len() <= MEM_CACHE_CAP);
         // The most-recently-inserted tile must still be resident.
-        assert!(layer.mem.contains_key(&TileId::new(14, MEM_CACHE_CAP as u32 + 49, 0)));
+        assert!(
+            layer
+                .mem
+                .contains_key(&TileId::new(14, MEM_CACHE_CAP as u32 + 49, 0))
+        );
     }
 
     /// Starting an offline download enqueues exactly the estimated number of
@@ -1378,9 +1402,15 @@ mod tests {
             layer.drain();
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(!layer.is_inflight(id), "a failed fetch must clear in-flight");
+        assert!(
+            !layer.is_inflight(id),
+            "a failed fetch must clear in-flight"
+        );
         assert!(layer.get(id).is_none(), "a failed tile is not resident");
-        assert!(layer.is_backing_off(id), "a failed tile must be negative-cached");
+        assert!(
+            layer.is_backing_off(id),
+            "a failed tile must be negative-cached"
+        );
         assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
 
         // The decisive assertion: re-requesting the doomed tile is a no-op while
@@ -1419,7 +1449,10 @@ mod tests {
         layer.failed.remove(&id);
         let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
         layer.insert(id, DecodedTile { image: img });
-        assert!(layer.failed_delay(id).is_none(), "success clears the backoff");
+        assert!(
+            layer.failed_delay(id).is_none(),
+            "success clears the backoff"
+        );
         assert!(!layer.is_backing_off(id));
     }
 
@@ -1512,7 +1545,11 @@ mod tests {
         // A well-formed z/x/y URL is produced for a sample tile.
         let id = TileId::new(14, 8800, 5680);
         let url = TileStyle::Dark.base_url();
-        assert!(id.url(url).ends_with("/14/8800/5680.png"), "{}", id.url(url));
+        assert!(
+            id.url(url).ends_with("/14/8800/5680.png"),
+            "{}",
+            id.url(url)
+        );
     }
 
     /// The basemap style tracks the theme: a dark chrome theme resolves to the
@@ -1582,7 +1619,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(layer.progress().done, queued, "download did not complete");
-        assert_eq!(layer.progress().failed, 0, "the mock server serves every tile");
+        assert_eq!(
+            layer.progress().failed,
+            0,
+            "the mock server serves every tile"
+        );
 
         // Every queued tile is now a real PNG on disk — that is what makes the
         // region available offline.
@@ -1647,8 +1688,14 @@ mod tests {
 
         let freed = layer.delete_tiles(&[doomed]);
         assert!(freed > 0, "deleting a real tile frees its bytes");
-        assert!(!cache.join(doomed.cache_rel()).exists(), "the tile is gone from disk");
-        assert!(cache.join(kept.cache_rel()).exists(), "an untouched tile is kept");
+        assert!(
+            !cache.join(doomed.cache_rel()).exists(),
+            "the tile is gone from disk"
+        );
+        assert!(
+            cache.join(kept.cache_rel()).exists(),
+            "an untouched tile is kept"
+        );
 
         let _ = std::fs::remove_dir_all(&cache);
     }

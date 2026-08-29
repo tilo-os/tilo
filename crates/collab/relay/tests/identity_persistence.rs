@@ -45,7 +45,12 @@ fn corrupted_file_is_an_error_not_a_panic() {
 #[test]
 fn nested_parents_are_created() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("a").join("b").join("c").join("identity.key");
+    let path = dir
+        .path()
+        .join("a")
+        .join("b")
+        .join("c")
+        .join("identity.key");
     assert!(!path.parent().unwrap().exists());
     let _ = load_or_create_keypair(&path).expect("creates dirs + file");
     assert!(path.exists());

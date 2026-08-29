@@ -10,7 +10,7 @@
 //! (203-nit white, BT.709->2020, PQ inverse EOTF).
 
 use shell::shell::color_pipeline::{
-    map_sdr_pixel_to_pq_bt2020, pq_eotf, OUTPUT_ENCODE_SHADER_SOURCE, SDR_REFERENCE_WHITE_NITS,
+    OUTPUT_ENCODE_SHADER_SOURCE, SDR_REFERENCE_WHITE_NITS, map_sdr_pixel_to_pq_bt2020, pq_eotf,
 };
 
 #[test]
@@ -38,7 +38,10 @@ fn cpu_encode_mid_gray_is_below_reference_white() {
     let code = map_sdr_pixel_to_pq_bt2020([128, 128, 128]);
     for c in code {
         let nits = pq_eotf(c as f32 / 1023.0);
-        assert!(nits > 5.0 && nits < SDR_REFERENCE_WHITE_NITS, "mid-gray = {nits} nits");
+        assert!(
+            nits > 5.0 && nits < SDR_REFERENCE_WHITE_NITS,
+            "mid-gray = {nits} nits"
+        );
     }
 }
 
@@ -59,8 +62,9 @@ fn wgsl_output_encode_parses_and_validates() {
 fn wgsl_output_encode_has_compute_entry_point() {
     let module = naga::front::wgsl::parse_str(OUTPUT_ENCODE_SHADER_SOURCE)
         .expect("output-encode WGSL parses");
-    let has_entry = module.entry_points.iter().any(|ep| {
-        ep.name == "encode_main" && matches!(ep.stage, naga::ShaderStage::Compute)
-    });
+    let has_entry = module
+        .entry_points
+        .iter()
+        .any(|ep| ep.name == "encode_main" && matches!(ep.stage, naga::ShaderStage::Compute));
     assert!(has_entry, "WGSL missing compute entry point `encode_main`");
 }

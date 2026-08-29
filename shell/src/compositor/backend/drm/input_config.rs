@@ -60,7 +60,8 @@ impl InputSettings {
     /// independently, so a document that only sets `tap_to_click` leaves the rest alone, and a wrong-typed value is treated as absent rather than discarding the whole section.
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
-        let bool_at = |k: &str, fallback: bool| section.get(k).and_then(|v| v.as_bool()).unwrap_or(fallback);
+        let bool_at =
+            |k: &str, fallback: bool| section.get(k).and_then(|v| v.as_bool()).unwrap_or(fallback);
         let unit_at = |k: &str, fallback: f64| {
             section
                 .get(k)
@@ -355,8 +356,14 @@ mod tests {
         let (fast_delay, fast_rate) = fast.key_repeat_params();
         assert_eq!(slow_rate, REPEAT_RATE_MIN);
         assert_eq!(fast_rate, REPEAT_RATE_MAX);
-        assert_eq!(slow_delay, Duration::from_millis(REPEAT_DELAY_MAX_MS as u64));
-        assert_eq!(fast_delay, Duration::from_millis(REPEAT_DELAY_MIN_MS as u64));
+        assert_eq!(
+            slow_delay,
+            Duration::from_millis(REPEAT_DELAY_MAX_MS as u64)
+        );
+        assert_eq!(
+            fast_delay,
+            Duration::from_millis(REPEAT_DELAY_MIN_MS as u64)
+        );
         assert!(
             fast_rate > slow_rate && fast_delay < slow_delay,
             "one slider, both directions"
@@ -468,7 +475,8 @@ mod tests {
     // settings watch
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("qos-input-watch-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("qos-input-watch-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir.join("settings.json")
     }
@@ -529,8 +537,7 @@ mod tests {
         // The loop runs at the display's cadence; stat'ing 144 times a second for a rarely-edited file is waste.
         let path = scratch("ratelimit");
         std::fs::write(&path, "{}").expect("write");
-        let mut w =
-            SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
+        let mut w = SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
         let now = Instant::now();
         assert!(!w.changed(now), "baseline");
         std::fs::remove_file(&path).expect("remove");

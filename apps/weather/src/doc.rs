@@ -26,7 +26,10 @@ impl WeatherDoc {
     /// True when the document has been seeded with at least a `units`
     /// map — used to decide whether to write the initial sample model.
     pub fn is_initialised(doc: &AutoCommit) -> bool {
-        matches!(doc.get(&ROOT, "units"), Ok(Some((Value::Object(ObjType::Map), _))))
+        matches!(
+            doc.get(&ROOT, "units"),
+            Ok(Some((Value::Object(ObjType::Map), _)))
+        )
     }
 
     /// Mirror the entire model into the document (idempotent overwrite).
@@ -53,7 +56,9 @@ impl WeatherDoc {
 
         let units = match doc.get(&ROOT, "units") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc.put_object(&ROOT, "units", ObjType::Map).expect("put units map"),
+            _ => doc
+                .put_object(&ROOT, "units", ObjType::Map)
+                .expect("put units map"),
         };
         let _ = doc.put(
             &units,
@@ -139,7 +144,9 @@ impl WeatherDoc {
                 let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
                     continue;
                 };
-                let id = Self::str_field(doc, &m, "id").parse().unwrap_or_else(|_| uuid::Uuid::new_v4());
+                let id = Self::str_field(doc, &m, "id")
+                    .parse()
+                    .unwrap_or_else(|_| uuid::Uuid::new_v4());
                 model.locations.push(SavedLocation {
                     id,
                     name: Self::str_field(doc, &m, "name"),

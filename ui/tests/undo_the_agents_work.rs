@@ -9,12 +9,12 @@
 //! success while leaving the text alone fails these tests.
 
 use automerge::transaction::Transactable;
-use automerge::{ActorId, AutoCommit, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use ui::history_source::revert::{latest_run_by, plan_revert, revert_run, RevertError, Slot};
-use ui::history_source::run_undo::{refuse_run, undo_run, unreachable_steps, StepState};
-use ui::history_source::runs::{read_runs, record_run, AgentRun, RunStep};
-use ui::history_source::{entry_id_from_hash, AuthorDirectory, HistorySource};
+use ui::history_source::revert::{RevertError, Slot, latest_run_by, plan_revert, revert_run};
+use ui::history_source::run_undo::{StepState, refuse_run, undo_run, unreachable_steps};
+use ui::history_source::runs::{AgentRun, RunStep, read_runs, record_run};
+use ui::history_source::{AuthorDirectory, HistorySource, entry_id_from_hash};
 use ui::permissions::UserId;
 use ui::state::State;
 
@@ -225,9 +225,7 @@ fn the_undo_is_a_new_change_and_leaves_the_agents_authorship_standing() {
         "the undo is attributed to the person who asked for it"
     );
     assert!(
-        versions
-            .iter()
-            .any(|v| v.actor_hex == actor_hex(AGENT)),
+        versions.iter().any(|v| v.actor_hex == actor_hex(AGENT)),
         "and the agent's own changes are still in the history, still its own"
     );
 
@@ -237,7 +235,9 @@ fn the_undo_is_a_new_change_and_leaves_the_agents_authorship_standing() {
     assert!(
         rows.iter().any(|r| r.author.name == AGENT),
         "the timeline names the agent: {:?}",
-        rows.iter().map(|r| r.author.name.clone()).collect::<Vec<_>>()
+        rows.iter()
+            .map(|r| r.author.name.clone())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -263,7 +263,8 @@ fn every_peer_converges_on_the_undo() {
         .map(|b| b.text)
         .collect();
     assert_eq!(
-        bob_text, report.text(),
+        bob_text,
+        report.text(),
         "both peers see the same document after the undo"
     );
     assert_eq!(
@@ -310,7 +311,10 @@ fn a_paragraph_the_person_edited_afterwards_is_kept_and_reported() {
         "a revert that kept something must not read as complete"
     );
     assert_eq!(
-        out.blocked_by().iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
+        out.blocked_by()
+            .iter()
+            .map(|a| a.name.clone())
+            .collect::<Vec<_>>(),
         vec!["Alice".to_string()],
         "and it names who held it back"
     );
@@ -346,7 +350,8 @@ fn a_persons_edit_elsewhere_does_not_block_the_undo() {
 
     let run = agents_run(&mut report.doc);
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
-    let out = revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+    let out =
+        revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
     qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
     assert!(
@@ -359,7 +364,10 @@ fn a_persons_edit_elsewhere_does_not_block_the_undo() {
         body.contains("Draft. Our findings for the quarter."),
         "her edit to her own paragraph survived: {body:?}"
     );
-    assert!(body.contains("My own note."), "her paragraph survived: {body:?}");
+    assert!(
+        body.contains("My own note."),
+        "her paragraph survived: {body:?}"
+    );
     assert!(!body.contains("Revenue grew by a fifth."), "{body:?}");
     assert!(!body.contains("Figure 1"), "{body:?}");
 }
@@ -376,7 +384,8 @@ fn undoing_a_run_twice_does_not_undo_it_twice_over() {
     qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
     let once = report.body();
 
-    let again = revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+    let again =
+        revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
     qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_500);
 
     assert_eq!(report.body(), once, "the second undo changed nothing");
@@ -618,13 +627,21 @@ fn a_field_somebody_overwrote_afterwards_is_kept() {
     photo.put(&img, "crop_w", 1600).unwrap();
     qdoc::history::commit_stamped_at(&mut photo, 1_780_000_450);
 
-    let step = run.step_for(PHOTO_EDITOR, "file:/photos/figure-1.png").unwrap();
-    let out = revert_run(&mut photo, &step.run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+    let step = run
+        .step_for(PHOTO_EDITOR, "file:/photos/figure-1.png")
+        .unwrap();
+    let out =
+        revert_run(&mut photo, &step.run, Some(&actor_hex(AGENT)), &directory()).expect("run");
     qdoc::history::commit_stamped_at(&mut photo, 1_780_000_500);
 
-    assert!(!out.is_complete(), "the overwritten field held part of it back");
     assert!(
-        out.kept.iter().any(|k| matches!(&k.slot, Slot::Field(_, k2) if k2 == "crop_w")),
+        !out.is_complete(),
+        "the overwritten field held part of it back"
+    );
+    assert!(
+        out.kept
+            .iter()
+            .any(|k| matches!(&k.slot, Slot::Field(_, k2) if k2 == "crop_w")),
         "and says which field: {:?}",
         out.kept
     );
@@ -673,7 +690,10 @@ fn a_pre_flight_names_every_missing_application_before_anything_is_written() {
     assert_eq!(missing.len(), 2, "nothing is open");
     let refused = refuse_run(&run, &missing);
     assert!(refused.is_refusal());
-    assert_eq!(refused.unreachable_apps(), vec![PHOTO_EDITOR, WORD_PROCESSOR]);
+    assert_eq!(
+        refused.unreachable_apps(),
+        vec![PHOTO_EDITOR, WORD_PROCESSOR]
+    );
 
     // With one open, the other is still named — and the report distinguishes
     // "could not" from "chose not to".
@@ -735,7 +755,6 @@ fn entry_ids_are_stable_across_peers() {
     assert_eq!(here, there, "content addresses, so both peers agree");
 }
 
-
 // ---------------------------------------------------------------------------
 // Undoing from an identity alone — what an author chip beside the text has.
 // ---------------------------------------------------------------------------
@@ -760,10 +779,14 @@ fn an_author_chip_has_everything_it_needs_to_undo_that_author() {
 
     let run = latest_run_by(&mut report.doc, &actor_hex(AGENT)).expect("the chip's author");
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
-    let out = revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+    let out =
+        revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
     qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
-    assert_eq!(out.covered, 2, "the band stopped at the agent's own changes");
+    assert_eq!(
+        out.covered, 2,
+        "the band stopped at the agent's own changes"
+    );
     assert!(out.is_complete(), "{:?}", out.kept);
     let body = report.body();
     assert!(
@@ -798,7 +821,8 @@ fn a_run_found_by_author_stops_at_somebody_elses_change() {
 
     let run = latest_run_by(&mut report.doc, &actor_hex(AGENT)).expect("agent");
     report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
-    let out = revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+    let out =
+        revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
     qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
 
     assert_eq!(

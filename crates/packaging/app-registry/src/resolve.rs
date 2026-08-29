@@ -61,7 +61,10 @@ pub async fn fetch_index_bytes(registry: &RegistryRef) -> Result<Vec<u8>> {
             .with_context(|| format!("GET {url}"))?;
         return Ok(resp.bytes().await.context("read index body")?.to_vec());
     }
-    bail!("unsupported registry base-url scheme: {}", registry.base_url);
+    bail!(
+        "unsupported registry base-url scheme: {}",
+        registry.base_url
+    );
 }
 
 /// Resolve `app_id` (optionally constrained by `req`) to verified

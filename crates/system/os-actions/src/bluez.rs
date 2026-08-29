@@ -61,7 +61,9 @@ fn block<F, T>(f: F) -> Result<T, String>
 where
     F: std::future::Future<Output = Result<T, zbus::Error>>,
 {
-    runtime()?.block_on(f).map_err(|e| qos_bluez::error_text(&e))
+    runtime()?
+        .block_on(f)
+        .map_err(|e| qos_bluez::error_text(&e))
 }
 
 /// The adapter every operation here targets.

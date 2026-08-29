@@ -42,7 +42,9 @@ fn write_markdown(path: &Path, body: &str) {
 fn sync_full_state(into: &mut ui::State, from: &mut ui::State) {
     let bytes = from.doc.save();
     let mut incoming = ui::State::load(&bytes).expect("a peer's state loads");
-    into.doc.merge(&mut incoming.doc).expect("peer states merge");
+    into.doc
+        .merge(&mut incoming.doc)
+        .expect("peer states merge");
 }
 
 fn texts(state: &mut ui::State, wp: &mut WordProcessorWidget) -> Vec<String> {

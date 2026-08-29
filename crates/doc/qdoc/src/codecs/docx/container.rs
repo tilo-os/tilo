@@ -4,7 +4,7 @@
 //! This reads every part preserving entry order and re-writes byte-faithfully — the
 //! lossless backbone for parts the codec doesn't model, carried verbatim as preservation.
 
-use crate::codecs::safety::{read_zip_parts, ZipLimits};
+use crate::codecs::safety::{ZipLimits, read_zip_parts};
 use crate::format::CodecError;
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
@@ -24,7 +24,10 @@ impl DocxContainer {
     }
 
     pub fn get(&self, name: &str) -> Option<&[u8]> {
-        self.parts.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice())
+        self.parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.as_slice())
     }
 
     /// Replace an existing part (preserving its position) or append a new one.
@@ -75,7 +78,11 @@ pub(crate) fn minimal_docx_styled(styles_inner: &str, body_inner: &str) -> Vec<u
 
 /// As [`minimal_docx_styled`], plus `word/numbering.xml` inner content.
 #[cfg(test)]
-pub(crate) fn minimal_docx_numbered(styles_inner: &str, numbering_inner: &str, body_inner: &str) -> Vec<u8> {
+pub(crate) fn minimal_docx_numbered(
+    styles_inner: &str,
+    numbering_inner: &str,
+    body_inner: &str,
+) -> Vec<u8> {
     build_docx(styles_inner, numbering_inner, body_inner)
 }
 
@@ -135,7 +142,10 @@ mod tests {
     fn container_roundtrips_parts() {
         let docx = minimal_docx("<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
         let c = DocxContainer::read(&docx).unwrap();
-        assert_eq!(c.parts[0].0, "[Content_Types].xml", "content-types is the first entry");
+        assert_eq!(
+            c.parts[0].0, "[Content_Types].xml",
+            "content-types is the first entry"
+        );
         assert!(c.get("word/document.xml").is_some());
         assert!(c.get("_rels/.rels").is_some());
 
@@ -145,7 +155,11 @@ mod tests {
         let names1: Vec<_> = c.parts.iter().map(|(n, _)| n.clone()).collect();
         let names2: Vec<_> = c2.parts.iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(names1, names2, "part set + order preserved");
-        assert_eq!(c2.get("word/document.xml"), c.get("word/document.xml"), "body preserved verbatim");
+        assert_eq!(
+            c2.get("word/document.xml"),
+            c.get("word/document.xml"),
+            "body preserved verbatim"
+        );
     }
 
     #[test]

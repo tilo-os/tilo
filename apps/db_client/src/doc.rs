@@ -24,7 +24,7 @@
 //! in the widget/session, not the document.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::model::{ConnectionProfile, Engine};
 use uuid::Uuid;

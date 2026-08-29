@@ -94,5 +94,8 @@ async fn cross_user_peer_relay_is_rejected() {
         .join("42")
         .join("pending")
         .join(hex::encode(a_client_dev.device_pubkey()));
-    assert!(!leak.exists(), "cross-user peer relay must not queue: {leak:?}");
+    assert!(
+        !leak.exists(),
+        "cross-user peer relay must not queue: {leak:?}"
+    );
 }

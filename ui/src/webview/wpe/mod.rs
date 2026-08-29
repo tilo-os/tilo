@@ -18,8 +18,8 @@
 //! exactly one engine. Dropping `WpeEngine` leaks the thread by design
 //! (WebKit teardown is not worth the shutdown races for a per-window process).
 
-mod ffi;
 pub mod egl;
+mod ffi;
 pub mod import;
 
 use std::ffi::{CStr, CString};
@@ -263,8 +263,7 @@ fn engine_thread(
         } else {
             ffi::wpe_view_backend_exportable_fdo_create(&SHM_CLIENT, state_ptr, 1024, 768)
         };
-        state.backend =
-            ffi::wpe_view_backend_exportable_fdo_get_view_backend(state.exportable);
+        state.backend = ffi::wpe_view_backend_exportable_fdo_get_view_backend(state.exportable);
 
         let view_backend =
             ffi::webkit_web_view_backend_new(state.backend, std::ptr::null(), std::ptr::null_mut());
@@ -300,16 +299,36 @@ fn engine_thread(
         let store_path = CString::new(store_dir.to_string_lossy().as_bytes()).unwrap();
         state.filter_store = ffi::webkit_user_content_filter_store_new(store_path.as_ptr());
 
-        connect(state.view, "notify::uri", on_notify_uri as *const c_void, state_ptr);
-        connect(state.view, "notify::title", on_notify_title as *const c_void, state_ptr);
+        connect(
+            state.view,
+            "notify::uri",
+            on_notify_uri as *const c_void,
+            state_ptr,
+        );
+        connect(
+            state.view,
+            "notify::title",
+            on_notify_title as *const c_void,
+            state_ptr,
+        );
         connect(
             state.view,
             "notify::estimated-load-progress",
             on_notify_progress as *const c_void,
             state_ptr,
         );
-        connect(state.view, "load-changed", on_load_changed as *const c_void, state_ptr);
-        connect(state.view, "load-failed", on_load_failed as *const c_void, state_ptr);
+        connect(
+            state.view,
+            "load-changed",
+            on_load_changed as *const c_void,
+            state_ptr,
+        );
+        connect(
+            state.view,
+            "load-failed",
+            on_load_failed as *const c_void,
+            state_ptr,
+        );
 
         // Command drain source.
         let source = ffi::g_timeout_source_new(DRAIN_INTERVAL_MS);
@@ -385,7 +404,11 @@ fn cstr_to_string(ptr: *const c_char) -> Option<String> {
     if ptr.is_null() {
         return None;
     }
-    Some(unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+    Some(
+        unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 // ─────────────────────────── frame export ─────────────────────────────────
@@ -505,11 +528,7 @@ fn push_history_state(state: &mut EngineState) {
     });
 }
 
-extern "C" fn on_notify_uri(
-    _obj: *mut c_void,
-    _pspec: *mut ffi::GParamSpec,
-    data: *mut c_void,
-) {
+extern "C" fn on_notify_uri(_obj: *mut c_void, _pspec: *mut ffi::GParamSpec, data: *mut c_void) {
     let state = unsafe { state_from(data) };
     if let Some(uri) = cstr_to_string(unsafe { ffi::webkit_web_view_get_uri(state.view) }) {
         state.shared.push(WebViewEvent::UriChanged(uri));
@@ -517,11 +536,7 @@ extern "C" fn on_notify_uri(
     push_history_state(state);
 }
 
-extern "C" fn on_notify_title(
-    _obj: *mut c_void,
-    _pspec: *mut ffi::GParamSpec,
-    data: *mut c_void,
-) {
+extern "C" fn on_notify_title(_obj: *mut c_void, _pspec: *mut ffi::GParamSpec, data: *mut c_void) {
     let state = unsafe { state_from(data) };
     if let Some(title) = cstr_to_string(unsafe { ffi::webkit_web_view_get_title(state.view) }) {
         state.shared.push(WebViewEvent::TitleChanged(title));
@@ -564,7 +579,10 @@ extern "C" fn on_load_failed(
         cstr_to_string(unsafe { (*(error as *mut ffi::GErrorRepr)).message })
             .unwrap_or_else(|| "unknown error".to_string())
     };
-    state.shared.push(WebViewEvent::LoadFailed { uri, error: message });
+    state.shared.push(WebViewEvent::LoadFailed {
+        uri,
+        error: message,
+    });
     ffi::GFALSE // let WebKit show its error page
 }
 
@@ -577,8 +595,7 @@ extern "C" fn on_filter_saved(
         let state = state_from(data);
         let store = source as *mut ffi::WebKitUserContentFilterStore;
         let mut error: *mut ffi::GError = std::ptr::null_mut();
-        let filter =
-            ffi::webkit_user_content_filter_store_save_finish(store, result, &mut error);
+        let filter = ffi::webkit_user_content_filter_store_save_finish(store, result, &mut error);
         if filter.is_null() {
             let msg = if error.is_null() {
                 "unknown".to_string()
@@ -674,7 +691,11 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                     state.mobile_mode = want_mobile;
                     set_user_agent(
                         state.view,
-                        if want_mobile { USER_AGENT_MOBILE } else { USER_AGENT_DESKTOP },
+                        if want_mobile {
+                            USER_AGENT_MOBILE
+                        } else {
+                            USER_AGENT_DESKTOP
+                        },
                     );
                     // Only an already-loaded page needs a reload to pick up
                     // the new UA; a deferred first navigation will simply
@@ -746,7 +767,11 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 };
                 ffi::wpe_view_backend_dispatch_axis_event(state.backend, &mut event.base);
             }
-            WebViewCommand::Key { key, down, modifiers } => {
+            WebViewCommand::Key {
+                key,
+                down,
+                modifiers,
+            } => {
                 // Translate held modifiers into WPE's bitmask so editing
                 // shortcuts (Ctrl+Backspace, Ctrl+A, Shift+Arrow, …) reach
                 // the page. OR in any held mouse-button modifiers so a
@@ -917,7 +942,10 @@ mod tests {
     fn mobile_ua_engages_only_below_the_breakpoint() {
         assert!(wants_mobile(390), "phone width → mobile UA");
         assert!(wants_mobile(MOBILE_BREAKPOINT_PX - 1));
-        assert!(!wants_mobile(MOBILE_BREAKPOINT_PX), "at the breakpoint → desktop");
+        assert!(
+            !wants_mobile(MOBILE_BREAKPOINT_PX),
+            "at the breakpoint → desktop"
+        );
         assert!(!wants_mobile(1280), "desktop width → desktop UA");
     }
 

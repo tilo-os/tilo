@@ -658,10 +658,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_session_scope_binds_for_the_session() {
         use crate::shell::state::{Capability, Expiry, FsMode};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         // Session-scoped (the dropped-file grant) must bind — otherwise
         // the grant is recorded but the app can never read the file.
         let granted = std::path::Path::new("/home/u/dropped");
@@ -672,7 +670,9 @@ mod tests {
         }];
         p.apply_grants(&grants);
         assert!(
-            p.binds_rw.iter().any(|(src, dst)| src == granted && dst == granted),
+            p.binds_rw
+                .iter()
+                .any(|(src, dst)| src == granted && dst == granted),
             "Session-scoped ReadWrite grant must bind the path into the \
              sandbox for the session; binds_rw = {:?}",
             p.binds_rw
@@ -683,10 +683,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_session_scope_read_binds_read_only() {
         use crate::shell::state::{Capability, Expiry, FsMode};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         // A dropped file records a `Read` + `Session` grant. It must land
         // in the *read-only* bind set — least privilege — not read-write.
         let granted = std::path::Path::new("/home/u/notes.ts");
@@ -714,10 +712,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_once_scope_does_not_bind() {
         use crate::shell::state::{Capability, Expiry, FsMode};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         // `Once` is one-shot: it must NOT bind into the sandbox (which
         // outlives the single request). It's delivered as a portal fd
         // instead. Binding it would over-persist the access.

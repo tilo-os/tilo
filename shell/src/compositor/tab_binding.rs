@@ -85,12 +85,7 @@ pub fn adopt_toplevel_at(
 /// Point the existing tab `target` at `surface_id`, and bring it to the front of its group.
 /// Returns whether the tab was found; `false` means it's gone since the launch started, and the
 /// caller places the window the ordinary way. Searches the whole tree, not the active workspace — the tab arrived from a peer, whose target workspace the launch didn't know.
-fn bind_into_tab(
-    tree: &mut WorkspaceTree,
-    target: TabId,
-    app_id: &str,
-    surface_id: u64,
-) -> bool {
+fn bind_into_tab(tree: &mut WorkspaceTree, target: TabId, app_id: &str, surface_id: u64) -> bool {
     for ws in &mut tree.workspaces {
         for strip in &mut ws.strips {
             let strip_id = strip.id;
@@ -214,9 +209,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     let group_id = group.id;
     // Right of the group the placement named, falling back to the focused one when that group is gone, and to the end of the strip when nothing is focused either.
     let anchor = match placement {
-        Placement::RightOf(g) => Some(g).filter(|g| {
-            strip.window_groups.iter().any(|w| w.id == *g)
-        }),
+        Placement::RightOf(g) => Some(g).filter(|g| strip.window_groups.iter().any(|w| w.id == *g)),
         _ => None,
     }
     .or(active_group);
@@ -433,7 +426,10 @@ mod tests {
         );
         let landed = adopt_toplevel(&mut tree, 7777, Some("dev.qos.word-processor".into()));
 
-        assert_eq!(landed, target, "the window belongs to the tab it was started for");
+        assert_eq!(
+            landed, target,
+            "the window belongs to the tab it was started for"
+        );
         let tabs_after: usize = tree.workspaces[0].strips[0]
             .window_groups
             .iter()
@@ -850,7 +846,10 @@ mod tests {
             "fixture sanity: the newly adopted tab is the one in front",
         );
 
-        assert!(remove_tab(&mut tree, tab_id), "the tab exists and is removed");
+        assert!(
+            remove_tab(&mut tree, tab_id),
+            "the tab exists and is removed"
+        );
 
         let group = tree
             .workspaces
@@ -859,7 +858,11 @@ mod tests {
             .flat_map(|s| s.window_groups.iter())
             .find(|g| g.id == owner)
             .expect("the owning group still exists");
-        assert_eq!(group.tabs.len(), before - 1, "tab count must drop by exactly one");
+        assert_eq!(
+            group.tabs.len(),
+            before - 1,
+            "tab count must drop by exactly one"
+        );
         assert!(
             group.tabs.iter().all(|t| t.id != tab_id),
             "the removed tab must be gone",
@@ -911,8 +914,14 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_launched_for_test();
 
-        assert_eq!(tab_label_for_foreign("dev.qos.word-processor"), "Word Processor");
-        assert_eq!(tab_label_for_foreign("dev.qos.file-explorer"), "File Explorer");
+        assert_eq!(
+            tab_label_for_foreign("dev.qos.word-processor"),
+            "Word Processor"
+        );
+        assert_eq!(
+            tab_label_for_foreign("dev.qos.file-explorer"),
+            "File Explorer"
+        );
         // The documented behaviour for an already-camel-cased id is unchanged.
         assert_eq!(tab_label_for_foreign("org.example.MyApp"), "MyApp");
 

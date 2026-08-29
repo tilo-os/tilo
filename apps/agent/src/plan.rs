@@ -206,7 +206,10 @@ pub fn unmatched(rest: &str, why: &NoMatch) -> String {
                 .join(" or ")
         ),
         NoMatch::NeedsText(label) => {
-            format!("{rest} — {} needs the words to use, in quotes", label.to_lowercase())
+            format!(
+                "{rest} — {} needs the words to use, in quotes",
+                label.to_lowercase()
+            )
         }
     }
 }
@@ -264,9 +267,10 @@ impl Step {
     /// operation that clause is asking for.
     pub fn opens_an_application(&self) -> bool {
         match &self.instruction {
-            Instruction::Perform { id, .. } => {
-                surface::decode_address(id).as_ref().and_then(surface::opens).is_some()
-            }
+            Instruction::Perform { id, .. } => surface::decode_address(id)
+                .as_ref()
+                .and_then(surface::opens)
+                .is_some(),
             _ => false,
         }
     }
@@ -353,7 +357,9 @@ impl Plan {
     /// its own and is handed to [`Instruction::from_floor`] whole, exactly
     /// as before.
     pub fn from_floor(rest: &str, offers: &[Offer]) -> Plan {
-        Plan::assembled(rest, |clause| Step::bound(Instruction::from_floor(clause, offers), offers))
+        Plan::assembled(rest, |clause| {
+            Step::bound(Instruction::from_floor(clause, offers), offers)
+        })
     }
 
     /// Split a request into its parts and resolve each with `step`, or read
@@ -361,19 +367,26 @@ impl Plan {
     fn assembled(rest: &str, step: impl Fn(&str) -> Step) -> Plan {
         let parts = clauses(rest);
         if parts.len() < 2 {
-            return Plan { steps: vec![step(rest)] };
+            return Plan {
+                steps: vec![step(rest)],
+            };
         }
         let steps: Vec<Step> = parts.iter().map(|c| step(c)).collect();
         // Nothing in it was a request the room could answer, so the
         // ordering word was a word in one sentence rather than a join
         // between two.
         if steps.iter().all(Step::is_unanswered) {
-            return Plan { steps: vec![step(rest)] };
+            return Plan {
+                steps: vec![step(rest)],
+            };
         }
         // Every part named the same operation, which is one request said
         // twice rather than two to carry out — performing it twice is
         // harmless here.
-        if steps.windows(2).all(|w| w[0].instruction == w[1].instruction) {
+        if steps
+            .windows(2)
+            .all(|w| w[0].instruction == w[1].instruction)
+        {
             return Plan {
                 steps: vec![steps.into_iter().next().expect("at least two")],
             };
@@ -423,7 +436,8 @@ pub fn clauses(rest: &str) -> Vec<String> {
             // typographic quotation mark, in the very case this has to get
             // right — which slicing by a byte length would split.
             if let Some(sep) = CONJUNCTIONS.iter().find(|s| {
-                tail.len() >= s.len() && tail.as_bytes()[..s.len()].eq_ignore_ascii_case(s.as_bytes())
+                tail.len() >= s.len()
+                    && tail.as_bytes()[..s.len()].eq_ignore_ascii_case(s.as_bytes())
             }) {
                 out.push(rest[start..i].trim().to_string());
                 i += sep.len();
@@ -744,9 +758,15 @@ mod tests {
         let blocks = vec![
             para("t", "Quarterly review"),
             para("s1", "Revenue"),
-            para("p1", "We closed the quarter ahead of plan, with most of the gain late."),
+            para(
+                "p1",
+                "We closed the quarter ahead of plan, with most of the gain late.",
+            ),
             para("s2", "Risks"),
-            para("p2", "Two suppliers remain single-sourced and that has not moved."),
+            para(
+                "p2",
+                "Two suppliers remain single-sourced and that has not moved.",
+            ),
             para("ins", "Claude: make this a proper document"),
         ];
         let found = structure(&blocks, 5);
@@ -802,8 +822,7 @@ mod tests {
                 "{} dispatches nothing the app can encode",
                 cap.id
             );
-            let advertised: BTreeSet<String> =
-                cap.actions.iter().map(|a| a.to_string()).collect();
+            let advertised: BTreeSet<String> = cap.actions.iter().map(|a| a.to_string()).collect();
             assert_eq!(
                 advertised, built,
                 "{} advertises {:?} but dispatches {:?}",
@@ -854,9 +873,18 @@ mod tests {
 
     #[test]
     fn instructions_are_addressed_by_name_case_insensitively() {
-        assert_eq!(Instruction::parse("scribe: turn the bullets into a table", "Scribe"), Some(Instruction::Table));
-        assert_eq!(Instruction::parse("Scribe: caption the image please", "Scribe"), Some(Instruction::Caption));
-        assert_eq!(Instruction::parse("SCRIBE: give this a title", "Scribe"), Some(Instruction::Heading));
+        assert_eq!(
+            Instruction::parse("scribe: turn the bullets into a table", "Scribe"),
+            Some(Instruction::Table)
+        );
+        assert_eq!(
+            Instruction::parse("Scribe: caption the image please", "Scribe"),
+            Some(Instruction::Caption)
+        );
+        assert_eq!(
+            Instruction::parse("SCRIBE: give this a title", "Scribe"),
+            Some(Instruction::Heading)
+        );
         assert_eq!(
             Instruction::parse("Scribe: juggle", "Scribe"),
             Some(Instruction::Unknown("juggle".into()))
@@ -884,7 +912,10 @@ mod tests {
     #[test]
     fn cells_split_on_the_first_separator_the_line_uses() {
         assert_eq!(split_cells("Apples - 3"), vec!["Apples", "3"]);
-        assert_eq!(split_cells("Venue: The Hall, room 2"), vec!["Venue", "The Hall, room 2"]);
+        assert_eq!(
+            split_cells("Venue: The Hall, room 2"),
+            vec!["Venue", "The Hall, room 2"]
+        );
         assert_eq!(split_cells("Just one"), vec!["Just one"]);
         assert_eq!(
             table_cells(&["a - 1 - x", "b - 2"]),
@@ -901,12 +932,25 @@ mod tests {
         let mut c0 = c1.clone();
         c0.insert("row".into(), AttrVal::Int(0));
         let blocks = vec![
-            Block { id: "x".into(), kind: "cell".into(), text: "".into(), attrs: c1 },
-            Block { id: "y".into(), kind: "cell".into(), text: "".into(), attrs: c0 },
+            Block {
+                id: "x".into(),
+                kind: "cell".into(),
+                text: "".into(),
+                attrs: c1,
+            },
+            Block {
+                id: "y".into(),
+                kind: "cell".into(),
+                text: "".into(),
+                attrs: c0,
+            },
         ];
         assert_eq!(table_ids(&blocks), vec!["t1".to_string()]);
         let cells = cells_of(&blocks, "t1");
-        assert_eq!(cells.iter().map(|c| c.2.as_str()).collect::<Vec<_>>(), vec!["y", "x"]);
+        assert_eq!(
+            cells.iter().map(|c| c.2.as_str()).collect::<Vec<_>>(),
+            vec!["y", "x"]
+        );
     }
 
     // -- Instruction::Perform, and the floor that reaches it -------------
@@ -949,7 +993,11 @@ mod tests {
         let c = qdoc::model::init(&mut doc, &automerge::ROOT);
         let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
         {
-            let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = qdoc::DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             let h = dm.insert_block(None, "heading");
             dm.set_attr(&h, "level", 1i64);
             dm.splice_text(&h, 0, 0, "Notes");
@@ -968,8 +1016,14 @@ mod tests {
         use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
         PermissionContext::from_capabilities(
             Actor::agent("Scribe"),
-            vec![CapOverride::grant(Subject::agent("Scribe"), Scope::App(app.to_string()), Verb::Write)
-                .with_id("test")],
+            vec![
+                CapOverride::grant(
+                    Subject::agent("Scribe"),
+                    Scope::App(app.to_string()),
+                    Verb::Write,
+                )
+                .with_id("test"),
+            ],
         )
     }
 
@@ -1014,8 +1068,11 @@ mod tests {
         };
         assert_eq!(*argument, None);
         assert!(
-            surface::find(&offers, id)
-                .is_some_and(|o| o.descriptor.action_label.to_lowercase().contains("centre")),
+            surface::find(&offers, id).is_some_and(|o| o
+                .descriptor
+                .action_label
+                .to_lowercase()
+                .contains("centre")),
             "the floor chose {id}"
         );
 
@@ -1024,12 +1081,18 @@ mod tests {
         let Instruction::Unknown(why) = &many else {
             panic!("an ambiguous instruction must not resolve, got {many:?}");
         };
-        assert!(why.contains("Which one?"), "ambiguity must be reported as ambiguity: {why}");
+        assert!(
+            why.contains("Which one?"),
+            "ambiguity must be reported as ambiguity: {why}"
+        );
         assert!(
             why.contains("align"),
             "and it must name the alternatives, in the app's own words: {why}"
         );
-        assert!(!why.contains(surface::ADDRESS_SEP), "in words, never as addresses: {why}");
+        assert!(
+            !why.contains(surface::ADDRESS_SEP),
+            "in words, never as addresses: {why}"
+        );
 
         assert!(matches!(
             Instruction::from_floor("juggle three plates", &offers),
@@ -1050,7 +1113,10 @@ mod tests {
     #[test]
     fn an_answer_is_checked_against_the_survey_and_not_against_a_list() {
         let offers = surveyed();
-        assert!(!offers.is_empty(), "the survey found nothing to check against");
+        assert!(
+            !offers.is_empty(),
+            "the survey found nothing to check against"
+        );
 
         for offer in &offers {
             let answered = Instruction::from_answer(&offer.id(), "asked", None, &offers);
@@ -1093,8 +1159,12 @@ mod tests {
             "Place image below",
             Some(qos_actions::Collects::Content),
         )];
-        let answered =
-            Instruction::from_answer("word-processor.section:b7#place-image", "place image below b7", None, &offers);
+        let answered = Instruction::from_answer(
+            "word-processor.section:b7#place-image",
+            "place image below b7",
+            None,
+            &offers,
+        );
         assert_eq!(
             answered,
             Ok(Instruction::Perform {
@@ -1124,7 +1194,12 @@ mod tests {
             "no literal anywhere must be refused, not performed with a blank"
         );
         assert_eq!(
-            Instruction::from_answer("files.entry:/a#rename", r#"rename it to "b.md""#, None, &offers),
+            Instruction::from_answer(
+                "files.entry:/a#rename",
+                r#"rename it to "b.md""#,
+                None,
+                &offers
+            ),
             Ok(Instruction::Perform {
                 id: "files.entry:/a#rename".into(),
                 argument: Some("b.md".into()),
@@ -1147,17 +1222,26 @@ mod tests {
     fn clauses_split_on_ordering_words_outside_quotes() {
         assert_eq!(
             clauses("give this a title and caption the image"),
-            vec!["give this a title".to_string(), "caption the image".to_string()]
+            vec![
+                "give this a title".to_string(),
+                "caption the image".to_string()
+            ]
         );
         assert_eq!(
             clauses("give this a title, then caption the image"),
-            vec!["give this a title".to_string(), "caption the image".to_string()]
+            vec![
+                "give this a title".to_string(),
+                "caption the image".to_string()
+            ]
         );
         // "and then" is one join, not "and" followed by a clause starting
         // "then" — the longest match has to win.
         assert_eq!(
             clauses("caption the image and then give this a title"),
-            vec!["caption the image".to_string(), "give this a title".to_string()]
+            vec![
+                "caption the image".to_string(),
+                "give this a title".to_string()
+            ]
         );
         // A quoted literal that itself contains a join is never split.
         assert_eq!(
@@ -1165,7 +1249,10 @@ mod tests {
             vec![r#"rename it to "sound and vision.md""#.to_string()]
         );
         // A single request with no ordering word is one clause.
-        assert_eq!(clauses("caption the image"), vec!["caption the image".to_string()]);
+        assert_eq!(
+            clauses("caption the image"),
+            vec!["caption the image".to_string()]
+        );
     }
 
     #[test]
@@ -1202,7 +1289,10 @@ mod tests {
         let whole = "juggle three plates and then take a bow";
         let plan = Plan::from_floor(whole, &[]);
         assert_eq!(plan.len(), 1, "{plan:?}");
-        assert_eq!(plan.steps[0].instruction, Instruction::Unknown(whole.to_string()));
+        assert_eq!(
+            plan.steps[0].instruction,
+            Instruction::Unknown(whole.to_string())
+        );
     }
 
     #[test]
@@ -1221,10 +1311,19 @@ mod tests {
             "Rename",
             Some(qos_actions::Collects::Words),
         );
-        let none = offer("word-processor", "word-processor.section:b", "align-left", "Align left", None);
+        let none = offer(
+            "word-processor",
+            "word-processor.section:b",
+            "align-left",
+            "Align left",
+            None,
+        );
         let offers = vec![content.clone(), words.clone(), none.clone()];
 
-        let perform = |o: &Offer| Instruction::Perform { id: o.id(), argument: None };
+        let perform = |o: &Offer| Instruction::Perform {
+            id: o.id(),
+            argument: None,
+        };
         assert!(
             Step::bound(perform(&content), &offers).carries,
             "an operation that collects content must be carried into"
@@ -1241,10 +1340,28 @@ mod tests {
 
     #[test]
     fn opens_an_application_is_true_only_for_the_open_address() {
-        let open = offer("photos", "photos.app", "open", "Open the photo editor", None);
+        let open = offer(
+            "photos",
+            "photos.app",
+            "open",
+            "Open the photo editor",
+            None,
+        );
         let ordinary = offer("photos", "photos.picture:1", "crop", "Crop", None);
-        assert!(Step::own(Instruction::Perform { id: open.id(), argument: None }).opens_an_application());
-        assert!(!Step::own(Instruction::Perform { id: ordinary.id(), argument: None }).opens_an_application());
+        assert!(
+            Step::own(Instruction::Perform {
+                id: open.id(),
+                argument: None
+            })
+            .opens_an_application()
+        );
+        assert!(
+            !Step::own(Instruction::Perform {
+                id: ordinary.id(),
+                argument: None
+            })
+            .opens_an_application()
+        );
         assert!(!Step::own(Instruction::Table).opens_an_application());
     }
 
@@ -1263,10 +1380,19 @@ mod tests {
     /// but only once that open has actually run first.
     #[test]
     fn an_open_excuses_a_clause_it_makes_answerable_but_only_once_it_comes_first() {
-        let open = offer("photos", "photos.app", "open", "Open the photo editor", None);
+        let open = offer(
+            "photos",
+            "photos.app",
+            "open",
+            "Open the photo editor",
+            None,
+        );
         let excused = Plan {
             steps: vec![
-                Step::own(Instruction::Perform { id: open.id(), argument: None }),
+                Step::own(Instruction::Perform {
+                    id: open.id(),
+                    argument: None,
+                }),
                 Step::own(Instruction::Unknown("crop it square".into())),
             ],
         };
@@ -1279,7 +1405,10 @@ mod tests {
         let too_early = Plan {
             steps: vec![
                 Step::own(Instruction::Unknown("crop it square".into())),
-                Step::own(Instruction::Perform { id: open.id(), argument: None }),
+                Step::own(Instruction::Perform {
+                    id: open.id(),
+                    argument: None,
+                }),
             ],
         };
         assert_eq!(

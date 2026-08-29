@@ -20,8 +20,8 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{
-    Blob, Brush, Color, ColorStop, Extend, Fill, Gradient,
-    ImageAlphaType, ImageBrush as Image, ImageData, ImageFormat as Format,
+    Blob, Brush, Color, ColorStop, Extend, Fill, Gradient, ImageAlphaType, ImageBrush as Image,
+    ImageData, ImageFormat as Format,
 };
 use winit::event::{Modifiers, WindowEvent};
 

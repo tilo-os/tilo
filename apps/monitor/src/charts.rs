@@ -5,9 +5,9 @@
 
 use std::f64::consts::FRAC_PI_2;
 
+use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::ColorCompat;
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -23,7 +23,13 @@ pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: 
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    scene.fill(Fill::NonZero, t, color, None, &RoundedRect::from_rect(rect, radius));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
 }
 
 pub fn stroke_rrect(
@@ -50,7 +56,14 @@ pub fn stroke_rrect(
 pub fn panel(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, pad: f64) -> Rect {
     let radius = theme.tokens.radii.md as f64 + 2.0;
     fill_rrect(scene, t, rect, radius, theme.tokens.colors.surfaces.raised);
-    stroke_rrect(scene, t, rect, radius, theme.tokens.colors.border_standard, 1.0);
+    stroke_rrect(
+        scene,
+        t,
+        rect,
+        radius,
+        theme.tokens.colors.border_standard,
+        1.0,
+    );
     Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x1 - pad, rect.y1 - pad)
 }
 
@@ -278,23 +291,27 @@ pub fn bar_gauge(
     );
     let bar_h = 8.0;
     let track = Rect::new(rect.x0, rect.y1 - bar_h, rect.x1, rect.y1);
-    fill_rrect(scene, t, track, bar_h / 2.0, with_alpha(colors.border_standard, 150));
+    fill_rrect(
+        scene,
+        t,
+        track,
+        bar_h / 2.0,
+        with_alpha(colors.border_standard, 150),
+    );
     let frac = frac.clamp(0.0, 1.0) as f64;
     if frac > 0.0 {
-        let fill = Rect::new(track.x0, track.y0, track.x0 + track.width() * frac, track.y1);
+        let fill = Rect::new(
+            track.x0,
+            track.y0,
+            track.x0 + track.width() * frac,
+            track.y1,
+        );
         fill_rrect(scene, t, fill, bar_h / 2.0, color);
     }
 }
 
 /// A tiny filled sparkline with no chrome — for the side rail.
-pub fn sparkline(
-    scene: &mut Scene,
-    t: Affine,
-    rect: Rect,
-    data: &[f32],
-    max: f32,
-    color: Color,
-) {
+pub fn sparkline(scene: &mut Scene, t: Affine, rect: Rect, data: &[f32], max: f32, color: Color) {
     if data.len() < 2 || rect.width() <= 0.0 {
         return;
     }

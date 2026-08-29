@@ -61,12 +61,16 @@ impl BlobNode {
     pub async fn persistent(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir).with_context(|| format!("create blob store {dir:?}"))?;
-        let store = FsStore::load(dir).await.context("load iroh-blobs FsStore")?;
+        let store = FsStore::load(dir)
+            .await
+            .context("load iroh-blobs FsStore")?;
         Self::spawn(Backend::Fs(store)).await
     }
 
     async fn spawn(backend: Backend) -> Result<Self> {
-        let endpoint = Endpoint::bind(presets::N0).await.map_err(|e| anyhow!("bind endpoint: {e}"))?;
+        let endpoint = Endpoint::bind(presets::N0)
+            .await
+            .map_err(|e| anyhow!("bind endpoint: {e}"))?;
         let protocol = BlobsProtocol::new(backend.store(), None);
         let router = Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, protocol)
@@ -102,7 +106,12 @@ impl BlobNode {
 
     /// Whether `hash` is present in the served store.
     pub async fn has(&self, hash: Hash) -> bool {
-        self.backend.store().blobs().has(hash).await.unwrap_or(false)
+        self.backend
+            .store()
+            .blobs()
+            .has(hash)
+            .await
+            .unwrap_or(false)
     }
 
     /// A ticket that lets a peer fetch `hash` from this node.
@@ -119,7 +128,9 @@ impl BlobNode {
 
 /// Bind a fresh client endpoint for fetching (no serving).
 pub async fn client_endpoint() -> Result<Endpoint> {
-    Endpoint::bind(presets::N0).await.map_err(|e| anyhow!("bind client endpoint: {e}"))
+    Endpoint::bind(presets::N0)
+        .await
+        .map_err(|e| anyhow!("bind client endpoint: {e}"))
 }
 
 /// Fetch the blob named by `ticket` from its node, requiring the
@@ -188,7 +199,10 @@ mod tests {
     #[tokio::test]
     async fn fetch_rejects_hash_mismatch() {
         let node = BlobNode::memory().await.unwrap();
-        let (_hash, ticket) = node.add_and_ticket(Bytes::from_static(b"real")).await.unwrap();
+        let (_hash, ticket) = node
+            .add_and_ticket(Bytes::from_static(b"real"))
+            .await
+            .unwrap();
         let client = client_endpoint().await.unwrap();
         // Ask for a different hash than the ticket carries.
         let bogus = [0xabu8; 32];

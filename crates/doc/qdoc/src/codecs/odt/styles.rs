@@ -5,8 +5,8 @@
 
 use crate::document::MarkValue;
 use crate::schema::{
-    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME, STYLE_SIZE, STYLE_SPACE_AFTER,
-    STYLE_SPACE_BEFORE,
+    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
+    STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
 };
 use crate::snapshot::AttrVal;
 use quick_xml::events::{BytesStart, Event};
@@ -32,7 +32,11 @@ pub(super) fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
 }
 
 pub(super) fn parse_pt(v: &str) -> Option<i64> {
-    v.trim_end_matches("pt").trim().parse::<f64>().ok().map(|f| f.round() as i64)
+    v.trim_end_matches("pt")
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .map(|f| f.round() as i64)
 }
 
 pub(super) fn generic_font(name: &str) -> String {
@@ -41,7 +45,11 @@ pub(super) fn generic_font(name: &str) -> String {
         "mono".into()
     } else if n.contains("serif") && !n.contains("sans") {
         "serif".into()
-    } else if n.contains("times") || n.contains("georgia") || n.contains("garamond") || n.contains("roman") {
+    } else if n.contains("times")
+        || n.contains("georgia")
+        || n.contains("garamond")
+        || n.contains("roman")
+    {
         "serif".into()
     } else {
         "sans".into()
@@ -175,8 +183,13 @@ pub(super) fn text_fields(e: &BytesStart) -> TextFields {
 /// Reassemble a BCP-47 tag from `fo:language` + optional `fo:country` (`de`+`DE` → `de-DE`).
 /// `None` when no language part is present (ODF's `none` sentinel also yields `None`).
 pub(super) fn reassemble_bcp47(language: Option<&str>, country: Option<&str>) -> Option<String> {
-    let lang = language.map(str::trim).filter(|s| !s.is_empty() && *s != "none")?;
-    match country.map(str::trim).filter(|s| !s.is_empty() && *s != "none") {
+    let lang = language
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "none")?;
+    match country
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "none")
+    {
         Some(c) => Some(format!("{lang}-{c}")),
         None => Some(lang.to_string()),
     }
@@ -192,14 +205,20 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
         match a.key.as_ref() {
             b"fo:font-weight" if val == "bold" => m.push(("strong".into(), MarkValue::Bool(true))),
             b"fo:font-style" if val == "italic" => m.push(("em".into(), MarkValue::Bool(true))),
-            b"style:text-underline-style" if val != "none" => m.push(("underline".into(), MarkValue::Bool(true))),
-            b"style:text-line-through-style" if val != "none" => m.push(("strike".into(), MarkValue::Bool(true))),
+            b"style:text-underline-style" if val != "none" => {
+                m.push(("underline".into(), MarkValue::Bool(true)))
+            }
+            b"style:text-line-through-style" if val != "none" => {
+                m.push(("strike".into(), MarkValue::Bool(true)))
+            }
             b"fo:font-size" => {
                 if let Some(n) = parse_pt(&val) {
                     m.push(("fontSize".into(), MarkValue::Int(n)));
                 }
             }
-            b"style:font-name" | b"fo:font-family" => m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val)))),
+            b"style:font-name" | b"fo:font-family" => {
+                m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val))))
+            }
             b"fo:color" => m.push(("color".into(), MarkValue::Str(normalize_color(&val)))),
             // Text background (highlight): fo:background-color, skipping the `transparent` sentinel ("no highlight").
             b"fo:background-color" if val != "transparent" => {
@@ -378,9 +397,18 @@ impl StyleRegistry {
         let size = chain.iter().find_map(|p| p.size).unwrap_or(16.0);
         let bold = chain.iter().find_map(|p| p.bold).unwrap_or(false);
         let italic = chain.iter().find_map(|p| p.italic).unwrap_or(false);
-        let color = chain.iter().find_map(|p| p.color.clone()).unwrap_or_else(|| "#000000".to_string());
-        let font = chain.iter().find_map(|p| p.font.clone()).unwrap_or_else(|| "sans".to_string());
-        let align = chain.iter().find_map(|p| p.align.clone()).unwrap_or_else(|| "left".to_string());
+        let color = chain
+            .iter()
+            .find_map(|p| p.color.clone())
+            .unwrap_or_else(|| "#000000".to_string());
+        let font = chain
+            .iter()
+            .find_map(|p| p.font.clone())
+            .unwrap_or_else(|| "sans".to_string());
+        let align = chain
+            .iter()
+            .find_map(|p| p.align.clone())
+            .unwrap_or_else(|| "left".to_string());
         let space_before = chain.iter().find_map(|p| p.space_before).unwrap_or(0.0);
         let space_after = chain.iter().find_map(|p| p.space_after).unwrap_or(0.0);
         let indent = chain.iter().find_map(|p| p.indent).unwrap_or(0.0);
@@ -406,7 +434,9 @@ fn heading_from_name(name: &str, display: Option<&str>) -> (bool, Option<i64>) {
     for c in [name, display.unwrap_or("")] {
         let c = c.replace("_20_", " ");
         if c.to_ascii_lowercase().trim_start().starts_with("heading") {
-            let lvl = c.split(|ch: char| !ch.is_ascii_digit()).find_map(|t| t.parse::<i64>().ok());
+            let lvl = c
+                .split(|ch: char| !ch.is_ascii_digit())
+                .find_map(|t| t.parse::<i64>().ok());
             return (true, lvl);
         }
     }
@@ -417,7 +447,9 @@ fn heading_from_name(name: &str, display: Option<&str>) -> (bool, Option<i64>) {
 /// repeatedly (styles.xml then content.xml) — later styles win. `from_named_section` flags
 /// styles as user-facing named even without a display-name (true for `styles.xml`).
 pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_section: bool) {
-    let Ok(s) = std::str::from_utf8(xml) else { return };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return;
+    };
     let mut reader = Reader::from_str(s);
 
     let mut name: Option<String> = None;
@@ -449,7 +481,9 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
         match ev {
             // A self-closing <style:style/> (no properties) has no End event, so register it straight from its attributes (parent/outline/heading).
             Event::Empty(e) if e.name().as_ref() == b"style:style" => {
-                if let (Some(nm), Some(fam)) = (attr_val(&e, b"style:name"), attr_val(&e, b"style:family")) {
+                if let (Some(nm), Some(fam)) =
+                    (attr_val(&e, b"style:name"), attr_val(&e, b"style:family"))
+                {
                     if fam == "paragraph" {
                         let disp = attr_val(&e, b"style:display-name");
                         let (h, l) = heading_from_name(&nm, disp.as_deref());
@@ -457,7 +491,8 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                             nm,
                             ParaStyle {
                                 parent: attr_val(&e, b"style:parent-style-name"),
-                                outline_level: attr_val(&e, b"style:default-outline-level").and_then(|v| v.parse().ok()),
+                                outline_level: attr_val(&e, b"style:default-outline-level")
+                                    .and_then(|v| v.parse().ok()),
                                 heading_name: h,
                                 name_level: l,
                                 named: from_named_section || disp.is_some(),
@@ -473,9 +508,11 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     name = attr_val(&e, b"style:name");
                     family = attr_val(&e, b"style:family");
                     parent = attr_val(&e, b"style:parent-style-name");
-                    outline = attr_val(&e, b"style:default-outline-level").and_then(|v| v.parse().ok());
+                    outline =
+                        attr_val(&e, b"style:default-outline-level").and_then(|v| v.parse().ok());
                     display = attr_val(&e, b"style:display-name");
-                    let (h, l) = heading_from_name(name.as_deref().unwrap_or(""), display.as_deref());
+                    let (h, l) =
+                        heading_from_name(name.as_deref().unwrap_or(""), display.as_deref());
                     heading_name = h;
                     name_level = l;
                     align = None;
@@ -521,7 +558,9 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     if let Some(v) = attr_val(&e, b"fo:margin-bottom") {
                         space_after = parse_margin_px(&v);
                     }
-                    if let Some(v) = attr_val(&e, b"fo:margin-left").or_else(|| attr_val(&e, b"fo:text-indent")) {
+                    if let Some(v) =
+                        attr_val(&e, b"fo:margin-left").or_else(|| attr_val(&e, b"fo:text-indent"))
+                    {
                         indent = parse_margin_px(&v);
                     }
                     if let Some(v) = attr_val(&e, b"fo:line-height") {
@@ -537,12 +576,16 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                 b"text:list-level-style-number" => {
                     list_numbered = true;
                     // Capture level-1 (0-based level 0) format + start; ODF numbers levels from 1, `text:level="1"` is the model's level 0.
-                    let is_lvl0 = attr_val(&e, b"text:level").map(|l| l == "1").unwrap_or(true);
+                    let is_lvl0 = attr_val(&e, b"text:level")
+                        .map(|l| l == "1")
+                        .unwrap_or(true);
                     if is_lvl0 {
                         if let Some(f) = attr_val(&e, b"style:num-format") {
                             list_num_format = Some(map_num_format(&f));
                         }
-                        if let Some(s) = attr_val(&e, b"text:start-value").and_then(|v| v.parse::<i64>().ok()) {
+                        if let Some(s) =
+                            attr_val(&e, b"text:start-value").and_then(|v| v.parse::<i64>().ok())
+                        {
                             list_num_start = Some(s);
                         }
                     }
@@ -607,7 +650,10 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                         reg.list_ordered.insert(n.clone(), list_numbered);
                         reg.list_numbering.insert(
                             n,
-                            ListNumbering { num_format: list_num_format.take(), num_start: list_num_start.take() },
+                            ListNumbering {
+                                num_format: list_num_format.take(),
+                                num_start: list_num_start.take(),
+                            },
                         );
                     }
                     list_num_format = None;
@@ -637,10 +683,18 @@ mod tests {
         let mut reg = StyleRegistry::default();
         parse_styles(xml, &mut reg, true);
         assert_eq!(reg.heading_level("Heading_20_1"), Some(1));
-        assert_eq!(reg.heading_level("MySub"), Some(1), "inherits heading via parent");
+        assert_eq!(
+            reg.heading_level("MySub"),
+            Some(1),
+            "inherits heading via parent"
+        );
         assert_eq!(reg.para_align("Heading_20_1").as_deref(), Some("center"));
         assert!(reg.text_marks("Strong").iter().any(|(n, _)| n == "strong"));
-        assert!(reg.para_text_marks("Heading_20_1").iter().any(|(n, _)| n == "strong"));
+        assert!(
+            reg.para_text_marks("Heading_20_1")
+                .iter()
+                .any(|(n, _)| n == "strong")
+        );
     }
 
     #[test]

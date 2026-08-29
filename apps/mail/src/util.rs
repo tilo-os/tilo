@@ -98,7 +98,11 @@ pub fn downloads_dir() -> std::path::PathBuf {
 /// attachment" action, not a stub.
 pub fn save_download(filename: &str, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
     let safe = filename.rsplit(['/', '\\']).next().unwrap_or("attachment");
-    let safe = if safe.trim().is_empty() { "attachment" } else { safe };
+    let safe = if safe.trim().is_empty() {
+        "attachment"
+    } else {
+        safe
+    };
     let dir = downloads_dir();
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(safe);
@@ -144,9 +148,18 @@ mod tests {
     #[test]
     fn relative_labels() {
         let now = minutes_of(2026, 6, 30, 14, 0);
-        assert_eq!(format_relative(minutes_of(2026, 6, 30, 9, 30), now), "09:30");
-        assert_eq!(format_relative(minutes_of(2026, 6, 29, 9, 30), now), "Yesterday");
-        assert_eq!(format_relative(minutes_of(2026, 6, 20, 9, 30), now), "Jun 20");
+        assert_eq!(
+            format_relative(minutes_of(2026, 6, 30, 9, 30), now),
+            "09:30"
+        );
+        assert_eq!(
+            format_relative(minutes_of(2026, 6, 29, 9, 30), now),
+            "Yesterday"
+        );
+        assert_eq!(
+            format_relative(minutes_of(2026, 6, 20, 9, 30), now),
+            "Jun 20"
+        );
     }
 
     #[test]

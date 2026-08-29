@@ -524,12 +524,7 @@ static SANDBOX_DATA_SUBDIR: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::
     launcher::appdir::sandbox_env()
         .into_iter()
         .find(|(k, _)| k == "XDG_DATA_HOME")
-        .and_then(|(_, v)| {
-            Path::new(&v)
-                .strip_prefix(root)
-                .ok()
-                .map(Path::to_path_buf)
-        })
+        .and_then(|(_, v)| Path::new(&v).strip_prefix(root).ok().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from(".local/share"))
 });
 
@@ -610,7 +605,10 @@ mod tests {
         let kind = RecordKind::new("book");
 
         assert!(rr.reference(a, &id, &kind), "first reference adds");
-        assert!(!rr.reference(a, &id, &kind), "referencing twice adds nothing");
+        assert!(
+            !rr.reference(a, &id, &kind),
+            "referencing twice adds nothing"
+        );
         assert!(rr.holds(a, &id));
         assert!(!rr.holds(b, &id));
 
@@ -658,7 +656,10 @@ mod tests {
             "annotations of dune.epub"
         );
         let minted = RecordId::minted();
-        assert_eq!(record_title(&minted, &RecordKind::new("playlist")), "playlist");
+        assert_eq!(
+            record_title(&minted, &RecordKind::new("playlist")),
+            "playlist"
+        );
     }
 
     #[test]
@@ -702,7 +703,11 @@ mod tests {
             home: Some(a),
             package_id: "dev.qos.word-processor".into(),
         }]);
-        assert_eq!(rr.known().len(), 2, "a seeded record is visible immediately");
+        assert_eq!(
+            rr.known().len(),
+            2,
+            "a seeded record is visible immediately"
+        );
     }
 
     #[test]

@@ -111,7 +111,6 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     rt.block_on(fut)
 }
 
-
 /// The Open / Save file dialog portal.
 pub struct FileChooser;
 
@@ -174,7 +173,6 @@ impl FileChooser {
     }
 }
 
-
 /// The screen-capture portal.
 pub struct ScreenCast;
 
@@ -235,7 +233,6 @@ impl ScreenCast {
     }
 }
 
-
 /// The desktop-notification portal.
 pub struct Notification;
 
@@ -246,11 +243,7 @@ impl Notification {
     }
 
     /// Full form: choose id + body; an empty `id` gets a per-process sequence id.
-    pub fn send_full(
-        id: &str,
-        title: &str,
-        body: Option<&str>,
-    ) -> Result<(), PortalError> {
+    pub fn send_full(id: &str, title: &str, body: Option<&str>) -> Result<(), PortalError> {
         block_on(Self::send_full_async(id, title, body))
     }
 
@@ -292,7 +285,6 @@ fn monotonic_id() -> String {
     format!("{epoch:x}-{n:x}")
 }
 
-
 /// The per-application secret portal — the portal keyring hands the
 /// app a stable random secret it can use to derive per-user keys.
 pub struct Secret;
@@ -309,7 +301,6 @@ impl Secret {
             .map_err(PortalError::from)
     }
 }
-
 
 /// The `org.freedesktop.portal.OpenURI` portal — hands a URL back
 /// to the host to open in the appropriate default application.
@@ -332,7 +323,6 @@ impl OpenUri {
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -431,9 +421,6 @@ mod tests {
             OpenUri::open("https://example.org/"),
             Err(PortalError::NotAvailable)
         ));
-        assert!(matches!(
-            Secret::retrieve(),
-            Err(PortalError::NotAvailable)
-        ));
+        assert!(matches!(Secret::retrieve(), Err(PortalError::NotAvailable)));
     }
 }

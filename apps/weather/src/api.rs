@@ -138,7 +138,12 @@ pub fn parse_forecast(
     let raw: ForecastResponse =
         serde_json::from_str(body).map_err(|e| format!("forecast decode: {e}"))?;
 
-    let uv_today = raw.daily.uv_index_max.first().and_then(|o| *o).unwrap_or(0.0);
+    let uv_today = raw
+        .daily
+        .uv_index_max
+        .first()
+        .and_then(|o| *o)
+        .unwrap_or(0.0);
 
     let current = CurrentConditions {
         temperature: raw.current.temperature_2m,
@@ -191,7 +196,12 @@ pub fn parse_forecast(
                 .unwrap_or(0.0),
             weather_code: *raw.daily.weather_code.get(i).unwrap_or(&0),
             wind_max: raw.daily.wind_speed_10m_max.get(i).copied().unwrap_or(0.0),
-            uv_index_max: raw.daily.uv_index_max.get(i).and_then(|o| *o).unwrap_or(0.0),
+            uv_index_max: raw
+                .daily
+                .uv_index_max
+                .get(i)
+                .and_then(|o| *o)
+                .unwrap_or(0.0),
             sunrise: raw.daily.sunrise.get(i).cloned().unwrap_or_default(),
             sunset: raw.daily.sunset.get(i).cloned().unwrap_or_default(),
         });
@@ -308,7 +318,11 @@ pub fn parse_geocode(body: &str) -> Result<Vec<SavedLocation>, String> {
                 r.country_code,
                 r.latitude,
                 r.longitude,
-                if r.timezone.is_empty() { "auto".to_string() } else { r.timezone },
+                if r.timezone.is_empty() {
+                    "auto".to_string()
+                } else {
+                    r.timezone
+                },
             )
         })
         .collect())
@@ -382,7 +396,10 @@ mod tests {
         let snap = parse_forecast(&body, Uuid::new_v4(), Units::METRIC, 0).unwrap();
         assert_eq!(snap.hourly.len(), 24);
         assert_eq!(snap.hourly[0].time, "2026-06-30T02:00");
-        assert_eq!(snap.current.uv_index, 5.0, "current uv comes from today's max");
+        assert_eq!(
+            snap.current.uv_index, 5.0,
+            "current uv comes from today's max"
+        );
         assert_eq!(snap.daily.len(), 1);
     }
 

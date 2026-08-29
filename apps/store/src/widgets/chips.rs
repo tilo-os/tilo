@@ -4,8 +4,8 @@
 //! mutually-exclusive and the widget already draws focus, active-state
 //! and disabled treatments in a way the OS theme owns.
 
-use ui::widget::toggle_group::Segment;
 use ui::widget::ToggleGroup;
+use ui::widget::toggle_group::Segment;
 
 use crate::model::SourceFilter;
 

@@ -215,10 +215,7 @@ impl DkgSession {
     /// the protocol. Requires exactly one [`EnrolmentRound2`] per other
     /// participant addressed to `self.share_index`; extra or missing
     /// entries return `DkgStateMisuse`.
-    pub fn receive_round2(
-        &mut self,
-        others: &[EnrolmentRound2],
-    ) -> Result<(), ThresholdError> {
+    pub fn receive_round2(&mut self, others: &[EnrolmentRound2]) -> Result<(), ThresholdError> {
         let prev = std::mem::replace(
             &mut self.phase,
             DkgPhase::Complete {

@@ -17,8 +17,8 @@ use ui::{ActionHost, ImageStore};
 
 use crate::account::AccountStore;
 use crate::actions::{
-    move_action, save_draft_action, set_read_action, set_starred_action, MailAction,
-    MAIL_ACTION_TYPE,
+    MAIL_ACTION_TYPE, MailAction, move_action, save_draft_action, set_read_action,
+    set_starred_action,
 };
 use crate::doc::MailDoc;
 use crate::engine::EngineRequest;
@@ -48,8 +48,20 @@ impl CtxAction {
             CtxAction::Reply => "Reply".into(),
             CtxAction::ReplyAll => "Reply all".into(),
             CtxAction::Forward => "Forward".into(),
-            CtxAction::ToggleRead => if read { "Mark unread".into() } else { "Mark read".into() },
-            CtxAction::ToggleStar => if starred { "Remove star".into() } else { "Star".into() },
+            CtxAction::ToggleRead => {
+                if read {
+                    "Mark unread".into()
+                } else {
+                    "Mark read".into()
+                }
+            }
+            CtxAction::ToggleStar => {
+                if starred {
+                    "Remove star".into()
+                } else {
+                    "Star".into()
+                }
+            }
             CtxAction::Archive => "Archive".into(),
             CtxAction::Delete => "Delete".into(),
             CtxAction::MoveToInbox => "Move to Inbox".into(),
@@ -234,7 +246,12 @@ impl MailState {
         } else {
             self.current_threads()
                 .into_iter()
-                .filter_map(|t| t.message_ids.last().copied().map(|id| (id, t.message_ids.len())))
+                .filter_map(|t| {
+                    t.message_ids
+                        .last()
+                        .copied()
+                        .map(|id| (id, t.message_ids.len()))
+                })
                 .collect()
         }
     }
@@ -281,7 +298,9 @@ impl MailState {
     /// after the local flag mutation so the pushed message carries the new
     /// state (and its current, source folder for the `SELECT`).
     fn sync_flag_to_server(&mut self, id: MessageId) {
-        let Some(msg) = self.mailbox.get(id).cloned() else { return };
+        let Some(msg) = self.mailbox.get(id).cloned() else {
+            return;
+        };
         let account = self.accounts.active_config();
         if account.email.is_empty() {
             return;
@@ -351,7 +370,11 @@ impl MailState {
     }
 
     pub fn context_items_for(&self, id: MessageId) -> Vec<CtxAction> {
-        let in_inbox = self.mailbox.get(id).map(|m| m.folder == Folder::Inbox).unwrap_or(true);
+        let in_inbox = self
+            .mailbox
+            .get(id)
+            .map(|m| m.folder == Folder::Inbox)
+            .unwrap_or(true);
         let mut items = vec![
             CtxAction::Reply,
             CtxAction::ReplyAll,
@@ -527,7 +550,9 @@ mod tests {
         st.apply_message_action(&mut doc, id, CtxAction::ToggleStar);
         let intents = st.take_intents();
         assert!(
-            intents.iter().any(|i| matches!(i, Intent::Engine(EngineRequest::StoreFlag { .. }))),
+            intents
+                .iter()
+                .any(|i| matches!(i, Intent::Engine(EngineRequest::StoreFlag { .. }))),
             "starring must post a StoreFlag to the engine (UID STORE in the live build)"
         );
     }
@@ -542,7 +567,10 @@ mod tests {
         assert!(
             intents.iter().any(|i| matches!(
                 i,
-                Intent::Engine(EngineRequest::Move { to: Folder::Archive, .. })
+                Intent::Engine(EngineRequest::Move {
+                    to: Folder::Archive,
+                    ..
+                })
             )),
             "archiving must post a Move to Archive to the engine (UID MOVE in live)"
         );
@@ -557,7 +585,10 @@ mod tests {
         let intents = st.take_intents();
         assert!(intents.iter().any(|i| matches!(
             i,
-            Intent::Engine(EngineRequest::Move { to: Folder::Junk, .. })
+            Intent::Engine(EngineRequest::Move {
+                to: Folder::Junk,
+                ..
+            })
         )));
     }
 
@@ -569,7 +600,9 @@ mod tests {
         st.apply_message_action(&mut doc, id, CtxAction::ReplyAll);
         let intents = st.take_intents();
         assert!(
-            intents.iter().any(|i| matches!(i, Intent::ReplyAll(mid) if *mid == id)),
+            intents
+                .iter()
+                .any(|i| matches!(i, Intent::ReplyAll(mid) if *mid == id)),
             "Reply-all must raise ReplyAll, not the plain Reply intent"
         );
         assert!(!intents.iter().any(|i| matches!(i, Intent::Reply(_))));

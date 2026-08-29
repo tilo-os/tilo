@@ -93,7 +93,10 @@ mod tests {
     #[test]
     fn null_provider_mints_nothing_and_cannot_stream() {
         let p = NullPoToken;
-        let ctx = PoTokenContext { video_id: "abc".into(), visitor_data: None };
+        let ctx = PoTokenContext {
+            video_id: "abc".into(),
+            visitor_data: None,
+        };
         assert!(p.mint(PoTokenKind::Streaming, &ctx).is_none());
         assert!(!p.can_stream());
     }

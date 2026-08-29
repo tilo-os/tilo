@@ -31,7 +31,9 @@ pub struct SheetSearchProvider {
 impl SheetSearchProvider {
     /// Snapshot the current sheet names into a provider.
     pub fn new(names: &[String]) -> Self {
-        Self { names: names.to_vec() }
+        Self {
+            names: names.to_vec(),
+        }
     }
 
     /// The `action_id` for a sheet index — what a chosen row hands back.
@@ -42,7 +44,9 @@ impl SheetSearchProvider {
     /// Resolve an `action_id` produced by this provider back into a sheet
     /// index.
     pub fn parse_action_id(action_id: &str) -> Option<usize> {
-        action_id.strip_prefix(ACTION_PREFIX).and_then(|rest| rest.parse::<usize>().ok())
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .and_then(|rest| rest.parse::<usize>().ok())
     }
 }
 
@@ -58,7 +62,8 @@ impl SearchProvider for SheetSearchProvider {
             .enumerate()
             .filter(|(_, name)| name.to_lowercase().contains(&q))
             .map(|(i, name)| {
-                SearchResult::new(SHEET_KIND, name.clone(), Self::action_id(i)).with_icon(Icon::LayoutGrid)
+                SearchResult::new(SHEET_KIND, name.clone(), Self::action_id(i))
+                    .with_icon(Icon::LayoutGrid)
             })
             .collect()
     }
@@ -77,7 +82,10 @@ mod tests {
     fn provider_finds_a_sheet_by_name() {
         let provider = SheetSearchProvider::new(&names());
         let hits = provider.search("forecast");
-        assert!(hits.iter().any(|r| r.title == "Q1 Forecast"), "the provider surfaces the sheet");
+        assert!(
+            hits.iter().any(|r| r.title == "Q1 Forecast"),
+            "the provider surfaces the sheet"
+        );
         assert!(hits.iter().all(|r| r.kind == SHEET_KIND));
     }
 
@@ -96,7 +104,10 @@ mod tests {
             .into_iter()
             .find(|r| r.title == "Sales")
             .expect("Sales is findable");
-        assert_eq!(SheetSearchProvider::parse_action_id(&hit.action_id), Some(1));
+        assert_eq!(
+            SheetSearchProvider::parse_action_id(&hit.action_id),
+            Some(1)
+        );
     }
 
     #[test]
@@ -122,9 +133,17 @@ mod tests {
         let rows = providers[0].search("");
         assert!(rows.len() >= 2, "the seeded workbook has multiple sheets");
         let target = SheetSearchProvider::parse_action_id(&rows[1].action_id).unwrap();
-        assert_ne!(app.active_sheet_index(), target, "not already on the target sheet");
+        assert_ne!(
+            app.active_sheet_index(),
+            target,
+            "not already on the target sheet"
+        );
 
         app.activate_search_result(&rows[1].action_id, &mut doc, &ROOT);
-        assert_eq!(app.active_sheet_index(), target, "activation switched to the chosen sheet");
+        assert_eq!(
+            app.active_sheet_index(),
+            target,
+            "activation switched to the chosen sheet"
+        );
     }
 }

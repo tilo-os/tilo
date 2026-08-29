@@ -2,11 +2,15 @@ use ui::widget::{TabBar, TabDescriptor};
 
 #[test]
 fn tabbar_activates_by_index() {
-    let mut bar = TabBar::new("g1", vec![
-        TabDescriptor::new(1, "A"),
-        TabDescriptor::new(2, "B"),
-        TabDescriptor::new(3, "C"),
-    ], 2);
+    let mut bar = TabBar::new(
+        "g1",
+        vec![
+            TabDescriptor::new(1, "A"),
+            TabDescriptor::new(2, "B"),
+            TabDescriptor::new(3, "C"),
+        ],
+        2,
+    );
     assert_eq!(bar.active_id(), 2);
     bar.set_active(3);
     assert_eq!(bar.active_id(), 3);
@@ -14,20 +18,27 @@ fn tabbar_activates_by_index() {
 
 #[test]
 fn tabbar_reorder_swaps_positions() {
-    let mut bar = TabBar::new("g1", vec![
-        TabDescriptor::new(1, "A"),
-        TabDescriptor::new(2, "B"),
-        TabDescriptor::new(3, "C"),
-    ], 1);
+    let mut bar = TabBar::new(
+        "g1",
+        vec![
+            TabDescriptor::new(1, "A"),
+            TabDescriptor::new(2, "B"),
+            TabDescriptor::new(3, "C"),
+        ],
+        1,
+    );
     bar.reorder(0, 2);
     let ids: Vec<u64> = bar.tabs().iter().map(|t| t.id).collect();
     assert_eq!(ids, vec![2, 3, 1]);
 }
 
-use ui::widget::{TileContent, TileHost, AppKind};
+use ui::widget::{AppKind, TileContent, TileHost};
 
 #[test]
 fn tile_content_stub_renders_label() {
-    let tc = TileContent::Stub { kind: AppKind::Browser, label: "Browser".into() };
+    let tc = TileContent::Stub {
+        kind: AppKind::Browser,
+        label: "Browser".into(),
+    };
     assert_eq!(TileHost::new(tc).kind_string(), "Browser");
 }

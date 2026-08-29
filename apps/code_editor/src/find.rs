@@ -28,7 +28,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::search::{line_matches, Query};
+use crate::search::{Query, line_matches};
 
 /// Height of the bar. Two 38 px fields plus breathing room, matching the tab
 /// bar's visual weight so the editor column reads as one stack.
@@ -262,7 +262,14 @@ impl FindBar {
 
     /// The controls showing right now, right-to-left from the bar's edge.
     fn buttons(&self) -> Vec<Btn> {
-        vec![Btn::Case, Btn::Word, Btn::Prev, Btn::Next, Btn::ToggleReplace, Btn::Close]
+        vec![
+            Btn::Case,
+            Btn::Word,
+            Btn::Prev,
+            Btn::Next,
+            Btn::ToggleReplace,
+            Btn::Close,
+        ]
     }
 
     fn label_of(b: Btn) -> &'static str {
@@ -406,8 +413,7 @@ impl Widget for FindBar {
         // The find row leaves room on the right for the status readout and the
         // control cluster; the fields themselves are shared widgets sized by
         // their own layout.
-        let controls_w =
-            STATUS_W + self.buttons().len() as f64 * (BTN_W + GAP) + PAD * 2.0;
+        let controls_w = STATUS_W + self.buttons().len() as f64 * (BTN_W + GAP) + PAD * 2.0;
 
         let find_node = self.find.build_layout(taffy, theme, node_map);
         let find_row = taffy
@@ -496,14 +502,14 @@ impl Widget for FindBar {
         if !self.visible {
             return;
         }
-        let Ok(rows) = taffy.children(node) else { return };
+        let Ok(rows) = taffy.children(node) else {
+            return;
+        };
         let base = Point::new(self.rect.x0, self.rect.y0);
         if let Some(&find_row) = rows.first() {
             let rl = taffy.layout(find_row).unwrap();
-            let row_origin = Point::new(
-                base.x + rl.location.x as f64,
-                base.y + rl.location.y as f64,
-            );
+            let row_origin =
+                Point::new(base.x + rl.location.x as f64, base.y + rl.location.y as f64);
             if let (Ok(kids), Some(_)) = (taffy.children(find_row), self.find_node) {
                 if let Some(&k) = kids.first() {
                     self.find.apply_layout(taffy, k, row_origin);
@@ -513,10 +519,8 @@ impl Widget for FindBar {
         if self.replace_open {
             if let Some(&replace_row) = rows.get(1) {
                 let rl = taffy.layout(replace_row).unwrap();
-                let row_origin = Point::new(
-                    base.x + rl.location.x as f64,
-                    base.y + rl.location.y as f64,
-                );
+                let row_origin =
+                    Point::new(base.x + rl.location.x as f64, base.y + rl.location.y as f64);
                 if let Ok(kids) = taffy.children(replace_row) {
                     if let Some(&k) = kids.first() {
                         self.replace.apply_layout(taffy, k, row_origin);
@@ -555,9 +559,11 @@ impl Widget for FindBar {
             &Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1),
         );
 
-        self.find.draw(scene, transform, text_renderer, theme, presence);
+        self.find
+            .draw(scene, transform, text_renderer, theme, presence);
         if self.replace_open {
-            self.replace.draw(scene, transform, text_renderer, theme, presence);
+            self.replace
+                .draw(scene, transform, text_renderer, theme, presence);
         }
 
         self.button_rects.clear();
@@ -580,8 +586,7 @@ impl Widget for FindBar {
                 &status,
                 12.0,
                 color,
-                transform
-                    * Affine::translate((cluster_x0 - GAP - w as f64, find_row_mid - 7.0)),
+                transform * Affine::translate((cluster_x0 - GAP - w as f64, find_row_mid - 7.0)),
                 None,
             );
         }
@@ -590,7 +595,12 @@ impl Widget for FindBar {
         // hover/press/disabled palette is the OS's, not this app's.
         let mut x = cluster_x0;
         for b in buttons {
-            let rect = Rect::new(x, find_row_mid - BTN_H / 2.0, x + BTN_W, find_row_mid + BTN_H / 2.0);
+            let rect = Rect::new(
+                x,
+                find_row_mid - BTN_H / 2.0,
+                x + BTN_W,
+                find_row_mid + BTN_H / 2.0,
+            );
             let enabled = match b {
                 Btn::Prev | Btn::Next => self.total > 0,
                 _ => true,
@@ -713,8 +723,9 @@ impl Widget for FindBar {
                 .find(|(_, r)| r.contains(self.hover))
                 .copied()
             {
-                let enabled = !matches!(b, Btn::Prev | Btn::Next | Btn::ReplaceOne | Btn::ReplaceAll)
-                    || self.total > 0;
+                let enabled =
+                    !matches!(b, Btn::Prev | Btn::Next | Btn::ReplaceOne | Btn::ReplaceAll)
+                        || self.total > 0;
                 if enabled {
                     self.press(b);
                 }
@@ -724,12 +735,21 @@ impl Widget for FindBar {
         }
 
         // Otherwise the fields own it.
-        let Ok(rows) = taffy.children(node_id) else { return };
+        let Ok(rows) = taffy.children(node_id) else {
+            return;
+        };
         if let Some(&find_row) = rows.first() {
             if let Ok(kids) = taffy.children(find_row) {
                 if let Some(&k) = kids.first() {
                     self.find.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, k,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        k,
                         taffy,
                     );
                 }
@@ -740,8 +760,15 @@ impl Widget for FindBar {
                 if let Ok(kids) = taffy.children(replace_row) {
                     if let Some(&k) = kids.first() {
                         self.replace.handle_event(
-                            event, scale_factor, modifiers, state, path, handled, focus_target,
-                            k, taffy,
+                            event,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            handled,
+                            focus_target,
+                            k,
+                            taffy,
                         );
                     }
                 }
@@ -762,7 +789,8 @@ impl Widget for FindBar {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.needs_redraw || (self.visible && (self.find.needs_redraw() || self.replace.needs_redraw()))
+        self.needs_redraw
+            || (self.visible && (self.find.needs_redraw() || self.replace.needs_redraw()))
     }
 
     fn mark_drawn(&mut self) {
@@ -785,9 +813,30 @@ mod tests {
         let text = "let foo = 1;\nfn bar() {}\n// foo again foo\n";
         let m = matches_in(text, &q("foo"));
         assert_eq!(m.len(), 3);
-        assert_eq!(m[0], Match { line: 0, col: 4, len: 3 });
-        assert_eq!(m[1], Match { line: 2, col: 3, len: 3 });
-        assert_eq!(m[2], Match { line: 2, col: 13, len: 3 });
+        assert_eq!(
+            m[0],
+            Match {
+                line: 0,
+                col: 4,
+                len: 3
+            }
+        );
+        assert_eq!(
+            m[1],
+            Match {
+                line: 2,
+                col: 3,
+                len: 3
+            }
+        );
+        assert_eq!(
+            m[2],
+            Match {
+                line: 2,
+                col: 13,
+                len: 3
+            }
+        );
     }
 
     #[test]
@@ -893,7 +942,11 @@ mod tests {
         bar.open(false, None);
         assert_eq!(bar.height(), BAR_HEIGHT);
         bar.press_named("replace-toggle");
-        assert_eq!(bar.height(), BAR_HEIGHT_REPLACE, "the replace row adds height");
+        assert_eq!(
+            bar.height(),
+            BAR_HEIGHT_REPLACE,
+            "the replace row adds height"
+        );
         bar.press_named("close");
         assert!(!bar.is_visible());
         assert_eq!(bar.height(), 0.0);

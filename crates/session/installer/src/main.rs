@@ -18,8 +18,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use installer::installer_app::{ProxySlot, Step};
 use installer::InstallerApp;
+use installer::installer_app::{ProxySlot, Step};
 use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
@@ -27,9 +27,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 
 /// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
@@ -156,7 +156,7 @@ fn render_shot_to_png(
     out: &std::path::Path,
     seed_creds: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use automerge::{transaction::Transactable, ObjType};
+    use automerge::{ObjType, transaction::Transactable};
 
     let (w, h) = viewport;
     let theme = Theme::dark();

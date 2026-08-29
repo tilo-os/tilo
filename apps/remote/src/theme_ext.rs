@@ -36,7 +36,12 @@ impl ColorExt for Color {
     }
 
     fn at_alpha(self, a: f32) -> Color {
-        Color::from_rgba8(self.r(), self.g(), self.b(), (a.clamp(0.0, 1.0) * 255.0) as u8)
+        Color::from_rgba8(
+            self.r(),
+            self.g(),
+            self.b(),
+            (a.clamp(0.0, 1.0) * 255.0) as u8,
+        )
     }
 }
 

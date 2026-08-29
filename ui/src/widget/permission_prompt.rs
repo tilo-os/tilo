@@ -130,11 +130,19 @@ impl PermissionPrompt {
         self.deny_rect = Rect::new(deny_x0, by, deny_x1, by1);
     }
 
-    pub fn allow_rect(&self) -> Rect { self.allow_rect }
-    pub fn session_rect(&self) -> Rect { self.session_rect }
+    pub fn allow_rect(&self) -> Rect {
+        self.allow_rect
+    }
+    pub fn session_rect(&self) -> Rect {
+        self.session_rect
+    }
     /// Non-zero even when disabled — hosts hit-test it for "owner-only" affordances.
-    pub fn always_rect(&self) -> Rect { self.always_rect }
-    pub fn deny_rect(&self) -> Rect { self.deny_rect }
+    pub fn always_rect(&self) -> Rect {
+        self.always_rect
+    }
+    pub fn deny_rect(&self) -> Rect {
+        self.deny_rect
+    }
 }
 
 fn button_label(choice: PromptChoice) -> &'static str {
@@ -293,8 +301,8 @@ impl Widget for PermissionPrompt {
         let label_x = icon_x + ICON_SIZE + theme.tokens.spacing.s2 as f64;
         let app_id_size = theme.tokens.typography.scale.sm;
         let cap_size = theme.tokens.typography.scale.base;
-        let label_y = self.rect.y0
-            + (PROMPT_HEIGHT - (app_id_size as f64 + cap_size as f64 + 4.0)) / 2.0;
+        let label_y =
+            self.rect.y0 + (PROMPT_HEIGHT - (app_id_size as f64 + cap_size as f64 + 4.0)) / 2.0;
         text_renderer.draw_text(
             scene,
             &self.app_id,
@@ -308,8 +316,7 @@ impl Widget for PermissionPrompt {
             &self.capability_label,
             cap_size,
             theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((label_x, label_y + app_id_size as f64 + 4.0)),
+            transform * Affine::translate((label_x, label_y + app_id_size as f64 + 4.0)),
             None,
         );
 
@@ -399,7 +406,9 @@ impl Widget for PermissionPrompt {
         }
     }
 
-    fn name(&self) -> &str { "PermissionPrompt" }
+    fn name(&self) -> &str {
+        "PermissionPrompt"
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -416,7 +425,9 @@ impl Widget for PermissionPrompt {
         )
     }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 #[cfg(test)]
@@ -436,11 +447,7 @@ mod tests {
     #[test]
     fn accessibility_reports_modal_dialog_with_request_name() {
         use crate::a11y::Role;
-        let p = PermissionPrompt::new(
-            "org.gnome.gedit".into(),
-            "Camera access".into(),
-            true,
-        );
+        let p = PermissionPrompt::new("org.gnome.gedit".into(), "Camera access".into(), true);
         let node = Widget::accessibility(&p).expect("prompt is not presentational");
         assert_eq!(node.role, Role::Dialog);
         assert!(node.state.modal, "a permission prompt traps focus");
@@ -488,11 +495,8 @@ mod tests {
     /// 600x80 with computed button rects; `is_owner` is the only
     /// knob, every other field is fixed.
     fn prompt_at(is_owner: bool) -> PermissionPrompt {
-        let mut p = PermissionPrompt::new(
-            "org.example.app".into(),
-            "Camera access".into(),
-            is_owner,
-        );
+        let mut p =
+            PermissionPrompt::new("org.example.app".into(), "Camera access".into(), is_owner);
         p.rect = Rect::new(0.0, 0.0, 600.0, 80.0);
         p.apply_layout_helper();
         p

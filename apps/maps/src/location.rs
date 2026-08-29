@@ -119,13 +119,9 @@ async fn location_future() -> LocationOutcome {
             lon: location.longitude(),
             accuracy_m: location.accuracy(),
         },
-        Ok((Ok(_), None)) => {
-            LocationOutcome::Unavailable("no location fix available".to_string())
-        }
+        Ok((Ok(_), None)) => LocationOutcome::Unavailable("no location fix available".to_string()),
         Ok((Err(e), _)) => LocationOutcome::Unavailable(portal_reason(e)),
-        Err(_) => {
-            LocationOutcome::Unavailable("timed out waiting for a location fix".to_string())
-        }
+        Err(_) => LocationOutcome::Unavailable("timed out waiting for a location fix".to_string()),
     };
     let _ = session.close().await;
     outcome
@@ -173,9 +169,6 @@ mod tests {
     #[test]
     fn inject_delivers_unavailable() {
         let rx = inject_for_test(LocationOutcome::Unavailable("permission denied".into()));
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(LocationOutcome::Unavailable(_))
-        ));
+        assert!(matches!(rx.try_recv(), Ok(LocationOutcome::Unavailable(_))));
     }
 }

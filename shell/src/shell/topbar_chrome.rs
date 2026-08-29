@@ -200,7 +200,10 @@ pub struct TopBarChrome {
 /// `surfaces.raised` is `#ffffff` on light, same as the bar's own
 /// surface — invisible if used directly — so selection lift derives
 /// from luminance instead.
-fn bar_selector_body(theme: &Theme, state: ui::chrome::SelectionState) -> ui::chrome::SelectionTier {
+fn bar_selector_body(
+    theme: &Theme,
+    state: ui::chrome::SelectionState,
+) -> ui::chrome::SelectionTier {
     ui::chrome::selection_tier(theme, state)
 }
 
@@ -803,7 +806,13 @@ impl Widget for TopBarChrome {
         let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
         scene.fill(Fill::NonZero, transform, body.fill, None, &pill);
         if let Some(edge) = body.border {
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, edge, None, &pill);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                edge,
+                None,
+                &pill,
+            );
         }
         text_renderer.draw_text_weighted(
             scene,
@@ -844,7 +853,13 @@ impl Widget for TopBarChrome {
         let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
         scene.fill(Fill::NonZero, transform, body.fill, None, &band_rr);
         if let Some(edge) = body.border {
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, edge, None, &band_rr);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                edge,
+                None,
+                &band_rr,
+            );
         }
 
         let dot_x = band.x0 + 12.0;
@@ -1075,9 +1090,7 @@ impl Widget for TopBarChrome {
             // the settings glyph.
             tray_pad * 2.0 + tray_slot
         } else {
-            tray_pad * 2.0
-                + slots as f64 * tray_slot
-                + (slots.saturating_sub(1)) as f64 * tray_gap
+            tray_pad * 2.0 + slots as f64 * tray_slot + (slots.saturating_sub(1)) as f64 * tray_gap
         };
         if pct_w > 0.0 {
             tray_w += 3.0 + pct_w;
@@ -1094,13 +1107,7 @@ impl Widget for TopBarChrome {
             ui::chrome::ChromeRole::Selector.radius(theme, tray_h),
         );
         let tray_body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tray_body.fill,
-            None,
-            &tray,
-        );
+        scene.fill(Fill::NonZero, transform, tray_body.fill, None, &tray);
         // At 3% the user needs to notice the whole pill, not just read
         // the glyph.
         if self.status.battery_is_critical() {
@@ -1501,11 +1508,19 @@ impl Widget for TopBarChrome {
             // actually move (`walk_widget` drops zero-area entries).
             (
                 "topbar_workspace_up_enabled".to_string(),
-                if self.can_switch_up() { self.up_btn_rect } else { Rect::ZERO },
+                if self.can_switch_up() {
+                    self.up_btn_rect
+                } else {
+                    Rect::ZERO
+                },
             ),
             (
                 "topbar_workspace_down_enabled".to_string(),
-                if self.can_switch_down() { self.down_btn_rect } else { Rect::ZERO },
+                if self.can_switch_down() {
+                    self.down_btn_rect
+                } else {
+                    Rect::ZERO
+                },
             ),
             ("topbar_workspace_pill".to_string(), self.ws_pill_rect),
             ("topbar_tray_pill".to_string(), self.tray_pill_rect),
@@ -1525,8 +1540,7 @@ impl Widget for TopBarChrome {
         status_key_of(&self.live_status()) != self.cache_fp.status_key
     }
 
-    fn mark_drawn(&mut self) {
-    }
+    fn mark_drawn(&mut self) {}
 
     /// Fixed intrinsic size, so the taffy node never needs recomputing
     /// after the first pass.
@@ -1611,7 +1625,10 @@ mod tests {
             ("light", Theme::light()),
             ("high_contrast", Theme::high_contrast()),
         ] {
-            let c: Vec<Color> = kinds.iter().map(|k| chrome.metric_label_color(&theme, *k)).collect();
+            let c: Vec<Color> = kinds
+                .iter()
+                .map(|k| chrome.metric_label_color(&theme, *k))
+                .collect();
             for i in 0..c.len() {
                 for j in (i + 1)..c.len() {
                     assert_ne!(
@@ -1633,9 +1650,21 @@ mod tests {
                 );
             }
             let sem = &theme.tokens.colors.semantic;
-            assert_eq!(c[0].to_rgba8().to_u32(), sem.success.to_rgba8().to_u32(), "{name}: CPU");
-            assert_eq!(c[1].to_rgba8().to_u32(), sem.info.to_rgba8().to_u32(), "{name}: RAM");
-            assert_eq!(c[2].to_rgba8().to_u32(), sem.warning.to_rgba8().to_u32(), "{name}: TMP");
+            assert_eq!(
+                c[0].to_rgba8().to_u32(),
+                sem.success.to_rgba8().to_u32(),
+                "{name}: CPU"
+            );
+            assert_eq!(
+                c[1].to_rgba8().to_u32(),
+                sem.info.to_rgba8().to_u32(),
+                "{name}: RAM"
+            );
+            assert_eq!(
+                c[2].to_rgba8().to_u32(),
+                sem.warning.to_rgba8().to_u32(),
+                "{name}: TMP"
+            );
         }
 
         // A hard-coded palette passes every assertion above and fails this one.
@@ -1658,8 +1687,15 @@ mod tests {
         ] {
             let cpu = chrome.metric_label_color(&theme, MetricKind::Cpu);
             let fill = chrome.sparkline_fill(&theme, MetricKind::Cpu);
-            let rgb = |c: Color| { let p = c.to_rgba8(); (p.r, p.g, p.b) };
-            assert_eq!(rgb(fill), rgb(cpu), "{name}: sparkline hue drifted off the CPU label");
+            let rgb = |c: Color| {
+                let p = c.to_rgba8();
+                (p.r, p.g, p.b)
+            };
+            assert_eq!(
+                rgb(fill),
+                rgb(cpu),
+                "{name}: sparkline hue drifted off the CPU label"
+            );
             assert!(
                 fill.components[3] < cpu.components[3],
                 "{name}: the sparkline must sit behind the numbers, not compete with them"
@@ -1810,10 +1846,7 @@ mod tests {
         for event in [
             WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(
-                    stack.center().x,
-                    stack.center().y,
-                ),
+                position: winit::dpi::PhysicalPosition::new(stack.center().x, stack.center().y),
             },
             WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },

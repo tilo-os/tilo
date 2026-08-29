@@ -16,14 +16,20 @@ fn local_textinput_accepts_typed_characters_and_reports_via_take_dirty() {
     let mut input = TextInput::local().with_initial_value("hi");
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let root_node = (&mut input as &mut dyn Widget).build_layout(&mut taffy, &ui::theme::Theme::dark(), &mut node_map);
-    taffy.compute_layout(
-        root_node,
-        Size {
-            width: AvailableSpace::Definite(200.0),
-            height: AvailableSpace::Definite(40.0),
-        },
-    ).unwrap();
+    let root_node = (&mut input as &mut dyn Widget).build_layout(
+        &mut taffy,
+        &ui::theme::Theme::dark(),
+        &mut node_map,
+    );
+    taffy
+        .compute_layout(
+            root_node,
+            Size {
+                width: AvailableSpace::Definite(200.0),
+                height: AvailableSpace::Definite(40.0),
+            },
+        )
+        .unwrap();
     (&mut input as &mut dyn Widget).apply_layout(&taffy, root_node, vello::kurbo::Point::ZERO);
 
     let mut doc = AutoCommit::new();
@@ -38,8 +44,15 @@ fn local_textinput_accepts_typed_characters_and_reports_via_take_dirty() {
 
     let typing = WindowEvent::Ime(Ime::Commit("!".to_string()));
     (&mut input as &mut dyn Widget).handle_event(
-        &typing, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &typing,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
 
     let dirty = input.take_dirty();
@@ -52,8 +65,14 @@ fn local_textinput_accepts_typed_characters_and_reports_via_take_dirty() {
 fn local_textinput_set_text_overrides_without_marking_dirty() {
     let mut input = TextInput::local().with_initial_value("#ff0000");
     assert_eq!(input.value(), "#ff0000");
-    assert!(input.take_dirty().is_none(), "seeded value should not be dirty");
+    assert!(
+        input.take_dirty().is_none(),
+        "seeded value should not be dirty"
+    );
     input.set_text("#00ff00");
     assert_eq!(input.value(), "#00ff00");
-    assert!(input.take_dirty().is_none(), "set_text is a programmatic write, not user edit");
+    assert!(
+        input.take_dirty().is_none(),
+        "set_text is a programmatic write, not user edit"
+    );
 }

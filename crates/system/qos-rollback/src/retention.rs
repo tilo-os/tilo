@@ -62,7 +62,9 @@ pub fn plan_floor(
         );
     }
     let window_floor = confirmed.saturating_sub(u64::from(retained_generations - 1));
-    let target_floor = window_floor.max(current_floor).max(declared_floor.unwrap_or(0));
+    let target_floor = window_floor
+        .max(current_floor)
+        .max(declared_floor.unwrap_or(0));
     Ok(FloorPlan {
         window_floor,
         declared_floor,
@@ -144,7 +146,9 @@ pub fn prune_is_safe(
         );
     }
     if let Some(bad) = drop.iter().find(|g| verified_survivors.contains(g)) {
-        bail!("internal error: generation {bad} is in both the drop set and the verified survivors");
+        bail!(
+            "internal error: generation {bad} is in both the drop set and the verified survivors"
+        );
     }
     Ok(())
 }
@@ -250,10 +254,22 @@ mod tests {
 
     #[test]
     fn pruning_needs_a_verified_survivor_and_a_verified_recovery_key() {
-        assert!(prune_is_safe(&[], &[], false).is_ok(), "nothing to prune is always safe");
-        assert!(prune_is_safe(&[7], &[10], false).is_err(), "recovery key unverified");
-        assert!(prune_is_safe(&[7], &[], true).is_err(), "no verified survivor");
+        assert!(
+            prune_is_safe(&[], &[], false).is_ok(),
+            "nothing to prune is always safe"
+        );
+        assert!(
+            prune_is_safe(&[7], &[10], false).is_err(),
+            "recovery key unverified"
+        );
+        assert!(
+            prune_is_safe(&[7], &[], true).is_err(),
+            "no verified survivor"
+        );
         assert!(prune_is_safe(&[7], &[10], true).is_ok());
-        assert!(prune_is_safe(&[7], &[7, 10], true).is_err(), "contradictory sets");
+        assert!(
+            prune_is_safe(&[7], &[7, 10], true).is_err(),
+            "contradictory sets"
+        );
     }
 }

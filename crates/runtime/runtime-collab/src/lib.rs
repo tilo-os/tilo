@@ -73,7 +73,9 @@ impl CollabClient {
     /// Wrap an existing generated client (mainly useful for tests
     /// that own their own RPC system).
     pub fn from_raw(client: CollabServiceClient) -> Self {
-        Self { inner: Rc::new(client) }
+        Self {
+            inner: Rc::new(client),
+        }
     }
 
     /// Join (or implicitly create) a channel by id, presenting the
@@ -93,7 +95,9 @@ impl CollabClient {
         }
         let reply = req.send().promise.await?;
         let handle = reply.get()?.get_handle()?;
-        Ok(ChannelHandle { inner: Rc::new(handle) })
+        Ok(ChannelHandle {
+            inner: Rc::new(handle),
+        })
     }
 }
 
@@ -143,7 +147,9 @@ impl ChannelHandle {
         let req = self.inner.subscribe_request();
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
-        Ok(OpStream { inner: Rc::new(stream) })
+        Ok(OpStream {
+            inner: Rc::new(stream),
+        })
     }
 
     /// Open the channel's presence sub-handle.
@@ -151,7 +157,9 @@ impl ChannelHandle {
         let req = self.inner.presence_request();
         let reply = req.send().promise.await?;
         let handle = reply.get()?.get_handle()?;
-        Ok(PresenceHandle { inner: Rc::new(handle) })
+        Ok(PresenceHandle {
+            inner: Rc::new(handle),
+        })
     }
 
     /// Subscribe to roster + permission updates. The broker emits a
@@ -162,7 +170,9 @@ impl ChannelHandle {
         let req = self.inner.subscribe_context_request();
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
-        Ok(ContextStream { inner: Rc::new(stream) })
+        Ok(ContextStream {
+            inner: Rc::new(stream),
+        })
     }
 
     /// Hand the broker content this app has just stored.
@@ -199,7 +209,9 @@ impl ChannelHandle {
         let req = self.inner.subscribe_blobs_request();
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
-        Ok(BlobStream { inner: Rc::new(stream) })
+        Ok(BlobStream {
+            inner: Rc::new(stream),
+        })
     }
 
     /// Publish a typed action into the room, for whichever app owns the
@@ -228,7 +240,9 @@ impl ChannelHandle {
         let req = self.inner.subscribe_actions_request();
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
-        Ok(ActionStream { inner: Rc::new(stream) })
+        Ok(ActionStream {
+            inner: Rc::new(stream),
+        })
     }
 
     /// Tell this session what this application currently has open and what
@@ -287,7 +301,9 @@ impl ChannelHandle {
         let req = self.inner.subscribe_invocations_request();
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
-        Ok(InvocationStream { inner: Rc::new(stream) })
+        Ok(InvocationStream {
+            inner: Rc::new(stream),
+        })
     }
 
     /// Report what became of an invocation. An empty `code` means it ran;
@@ -730,7 +746,9 @@ impl PresenceHandle {
         let req = self.inner.subscribe_remote_cursors_request();
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
-        Ok(CursorStream { inner: Rc::new(stream) })
+        Ok(CursorStream {
+            inner: Rc::new(stream),
+        })
     }
 
     /// Subscribe to every kind of remote presence update in one
@@ -740,7 +758,9 @@ impl PresenceHandle {
         let req = self.inner.subscribe_all_request();
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
-        Ok(PresenceStream { inner: Rc::new(stream) })
+        Ok(PresenceStream {
+            inner: Rc::new(stream),
+        })
     }
 }
 
@@ -784,14 +804,25 @@ pub enum PresencePayload {
     /// A pointer published without a coordinate space — the legacy
     /// `publish_cursor` shape. `key_bytes` says nothing about where this
     /// position was measured; a reader must not invent a space for it.
-    Cursor { x: f32, y: f32 },
+    Cursor {
+        x: f32,
+        y: f32,
+    },
     /// A pointer published *with* its space, by
     /// [`PresenceHandle::publish_pointer`]. The event's `key_bytes`
     /// decode to the `ui::PresenceKey` the publisher chose and are
     /// authoritative.
-    Pointer { x: f32, y: f32 },
-    Caret { pos: u64 },
-    Selection { start: u64, end: u64 },
+    Pointer {
+        x: f32,
+        y: f32,
+    },
+    Caret {
+        pos: u64,
+    },
+    Selection {
+        start: u64,
+        end: u64,
+    },
     Arrived,
     Left,
 }

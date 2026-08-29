@@ -43,16 +43,34 @@ pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
 }
 
 pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &RoundedRect::from_rect(rect, r));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, r),
+    );
 }
 
 pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, w: f64, color: Color) {
-    scene.stroke(&Stroke::new(w), t, color, None, &RoundedRect::from_rect(rect, r));
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, r),
+    );
 }
 
 /// Truncate `text` with a trailing ellipsis so it fits within `max_w` pixels
 /// at the given size/weight.
-pub fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w: f64) -> String {
+pub fn elide(
+    tr: &mut TextRenderer,
+    text: &str,
+    size: f32,
+    weight: TextWeight,
+    max_w: f64,
+) -> String {
     if max_w <= 1.0 {
         return String::new();
     }
@@ -85,9 +103,9 @@ pub fn avatar_color(theme: &Theme, email: &str, tint: u8) -> Color {
         Color::from_rgb8(217, 70, 239),
         Color::from_rgb8(20, 184, 166),
     ];
-    let h = email
-        .bytes()
-        .fold(tint as u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+    let h = email.bytes().fold(tint as u32, |a, b| {
+        a.wrapping_mul(31).wrapping_add(b as u32)
+    });
     palette[(h as usize) % palette.len()]
 }
 
@@ -117,7 +135,12 @@ pub fn draw_avatar(
         let iw = img.width as f64;
         let ih = img.height as f64;
         if iw > 0.0 && ih > 0.0 {
-            let rect = Rect::new(center.x - radius, center.y - radius, center.x + radius, center.y + radius);
+            let rect = Rect::new(
+                center.x - radius,
+                center.y - radius,
+                center.x + radius,
+                center.y + radius,
+            );
             let scale = (rect.width() / iw).max(rect.height() / ih);
             let dw = iw * scale;
             let dh = ih * scale;
@@ -126,7 +149,13 @@ pub fn draw_avatar(
             let brush_transform = Affine::translate((dx, dy)) * Affine::scale(scale);
             let clip = Circle::new(center, radius);
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-            scene.fill(Fill::NonZero, t, &ImageBrush::new(img), Some(brush_transform), &rect);
+            scene.fill(
+                Fill::NonZero,
+                t,
+                &ImageBrush::new(img),
+                Some(brush_transform),
+                &rect,
+            );
             scene.pop_layer();
             return;
         }
@@ -134,7 +163,12 @@ pub fn draw_avatar(
     // No photo: fall back to a coloured initials disc. The per-address hue
     // (a stable hash of the email) is preserved; the disc + centred monogram
     // come from the shared toolkit avatar so shape/placement match every app.
-    let rect = Rect::new(center.x - radius, center.y - radius, center.x + radius, center.y + radius);
+    let rect = Rect::new(
+        center.x - radius,
+        center.y - radius,
+        center.x + radius,
+        center.y + radius,
+    );
     let col = avatar_color(theme, &addr.email, tint);
     Avatar::draw_at(scene, t, rect, &addr.initials(), col, theme, tr);
 }
@@ -203,10 +237,7 @@ fn md5(input: &[u8]) -> [u8; 16] {
                 32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
                 _ => (c ^ (b | !d), (7 * i) % 16),
             };
-            let f = f
-                .wrapping_add(a)
-                .wrapping_add(K[i])
-                .wrapping_add(m[g]);
+            let f = f.wrapping_add(a).wrapping_add(K[i]).wrapping_add(m[g]);
             a = d;
             d = c;
             c = b;

@@ -88,17 +88,26 @@ impl Gallery {
     }
 
     /// Push the catalog + selection + applied-theme id from the app.
-    pub fn set_view(&mut self, specs: &[ThemeSpec], selected: &str, active_id: &str, selected_custom: bool) {
+    pub fn set_view(
+        &mut self,
+        specs: &[ThemeSpec],
+        selected: &str,
+        active_id: &str,
+        selected_custom: bool,
+    ) {
         let editor_before = self.editor_present();
         self.count = specs.len();
         self.selected = selected.to_string();
         self.active_id = active_id.to_string();
         self.selected_custom = selected_custom;
 
-        let ids_match =
-            self.rows.len() == specs.len() && self.rows.iter().zip(specs).all(|(r, s)| r.id() == s.id);
+        let ids_match = self.rows.len() == specs.len()
+            && self.rows.iter().zip(specs).all(|(r, s)| r.id() == s.id);
         if !ids_match {
-            self.rows = specs.iter().map(|s| ThemeRow::from_spec(s, s.id == selected)).collect();
+            self.rows = specs
+                .iter()
+                .map(|s| ThemeRow::from_spec(s, s.id == selected))
+                .collect();
             self.structure_dirty = true;
         }
         for (r, s) in self.rows.iter_mut().zip(specs) {
@@ -111,7 +120,11 @@ impl Gallery {
         // when the selection changes, so live typing isn't overwritten.
         if selected_custom {
             if self.seeded_id.as_deref() != Some(selected) {
-                let name = specs.iter().find(|s| s.id == selected).map(|s| s.name.clone()).unwrap_or_default();
+                let name = specs
+                    .iter()
+                    .find(|s| s.id == selected)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
                 self.name_input.set_text(&name);
                 self.seeded_id = Some(selected.to_string());
             }
@@ -133,7 +146,11 @@ impl Gallery {
     /// renderer to capture the menu without a live right-click.
     pub fn open_menu_for_shot(&mut self) {
         let sel = self.selected.clone();
-        let target = self.rows.iter().find(|r| r.id() == sel).map(|r| (r.get_rect(), r.is_custom()));
+        let target = self
+            .rows
+            .iter()
+            .find(|r| r.id() == sel)
+            .map(|r| (r.get_rect(), r.is_custom()));
         if let Some((rr, custom)) = target {
             self.open_menu(rr.x0 + 90.0, rr.center().y, &sel, custom);
         }
@@ -159,7 +176,10 @@ impl Gallery {
         if !self.selected_custom {
             return None;
         }
-        self.rows.iter().find(|r| r.id() == self.selected).map(|r| r.name_rect())
+        self.rows
+            .iter()
+            .find(|r| r.id() == self.selected)
+            .map(|r| r.name_rect())
     }
 }
 
@@ -168,9 +188,17 @@ impl Widget for Gallery {
         self.name_input.sync(state, path);
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let mut child_nodes: Vec<NodeId> =
-            self.rows.iter_mut().map(|r| r.build_layout(taffy, theme, node_map)).collect();
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let mut child_nodes: Vec<NodeId> = self
+            .rows
+            .iter_mut()
+            .map(|r| r.build_layout(taffy, theme, node_map))
+            .collect();
 
         // The inline name editor rides as an out-of-flow child (so it doesn't
         // claim a row slot) whose real rect is assigned in `apply_layout`. It
@@ -181,7 +209,10 @@ impl Widget for Gallery {
                 n,
                 Style {
                     position: taffy::Position::Absolute,
-                    size: Size { width: Dimension::length(1.0), height: Dimension::length(1.0) },
+                    size: Size {
+                        width: Dimension::length(1.0),
+                        height: Dimension::length(1.0),
+                    },
                     ..taffy.style(n).cloned().unwrap_or_default()
                 },
             );
@@ -196,14 +227,20 @@ impl Widget for Gallery {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
-                    gap: Size { width: length(0.0), height: length(GAP) },
+                    gap: Size {
+                        width: length(0.0),
+                        height: length(GAP),
+                    },
                     padding: taffy::Rect {
                         left: length(PAD),
                         right: length(PAD),
                         top: length(HEADER_H as f32),
                         bottom: length(PAD),
                     },
-                    size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
                     ..Default::default()
                 },
                 &child_nodes,
@@ -234,13 +271,37 @@ impl Widget for Gallery {
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, p: &PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        p: &PresenceCtx,
+    ) {
         draw::fill_rect(scene, t, self.rect, theme.bg_app);
-        draw::line(scene, t, Point::new(self.rect.x1, self.rect.y0), Point::new(self.rect.x1, self.rect.y1), theme.border_standard, 1.0);
+        draw::line(
+            scene,
+            t,
+            Point::new(self.rect.x1, self.rect.y0),
+            Point::new(self.rect.x1, self.rect.y1),
+            theme.border_standard,
+            1.0,
+        );
         // No app-name wordmark: the OS titlebar shows "Themes". The gallery
         // header is just the functional theme count, and the list flows up into
         // the reclaimed space.
-        draw::text_w(tr, scene, t, &format!("{} themes", self.count), 12.0, theme.text_dim, self.rect.x0 + PAD as f64, self.rect.y0 + 12.0, TextWeight::Semibold);
+        draw::text_w(
+            tr,
+            scene,
+            t,
+            &format!("{} themes", self.count),
+            12.0,
+            theme.text_dim,
+            self.rect.x0 + PAD as f64,
+            self.rect.y0 + 12.0,
+            TextWeight::Semibold,
+        );
         for r in &mut self.rows {
             r.draw(scene, t, tr, theme, p);
         }
@@ -250,13 +311,31 @@ impl Widget for Gallery {
         }
     }
 
-    fn draw_overlay(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, p: &PresenceCtx) {
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        p: &PresenceCtx,
+    ) {
         // The actions menu floats above every row.
         self.menu.draw(scene, t, tr, theme, p);
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn handle_event(&mut self, event: &WindowEvent, scale: f64, m: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node: NodeId, taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        m: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale, position.y / scale);
         }
@@ -271,7 +350,17 @@ impl Widget for Gallery {
 
         // An open menu owns input first; a chosen row becomes a command.
         if self.menu.is_open() {
-            self.menu.handle_event(event, scale, m, state, path, handled, focus_target, node, taffy);
+            self.menu.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                node,
+                taffy,
+            );
             if let Some(idx) = self.menu.take_selection() {
                 if let Some(cmd) = self.menu_cmds.get(idx) {
                     doc::put_str(state, path, doc::KEY_COMMAND, cmd);
@@ -284,7 +373,12 @@ impl Widget for Gallery {
         }
 
         // Right-click a row → open its actions menu.
-        if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } = event {
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+            ..
+        } = event
+        {
             let hit = self
                 .rows
                 .iter()
@@ -301,7 +395,17 @@ impl Widget for Gallery {
         // name focuses it (rather than re-selecting the already-selected row).
         if self.editor_present() {
             if let Some(n) = self.name_input_node {
-                self.name_input.handle_event(event, scale, m, state, path, handled, focus_target, n, taffy);
+                self.name_input.handle_event(
+                    event,
+                    scale,
+                    m,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
                 // Mirror any edit into the scratch key the app reconciles.
                 if let Some(name) = self.name_input.take_dirty() {
                     doc::put_str(state, path, doc::KEY_ED_NAME, &name);
@@ -315,7 +419,17 @@ impl Widget for Gallery {
         // Rows (selection + hover) last.
         if let Ok(children) = taffy.children(node) {
             for (row, child) in self.rows.iter_mut().zip(children.iter()) {
-                row.handle_event(event, scale, m, state, path, handled, focus_target, *child, taffy);
+                row.handle_event(
+                    event,
+                    scale,
+                    m,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    *child,
+                    taffy,
+                );
                 if *handled {
                     break;
                 }
@@ -323,8 +437,12 @@ impl Widget for Gallery {
         }
     }
 
-    fn name(&self) -> &str { "Gallery" }
-    fn get_rect(&self) -> Rect { self.rect }
+    fn name(&self) -> &str {
+        "Gallery"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = self.rows.iter().map(|r| r as &dyn Widget).collect();
@@ -334,7 +452,11 @@ impl Widget for Gallery {
         v
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut v: Vec<&mut (dyn Widget + '_)> = self.rows.iter_mut().map(|r| r as &mut (dyn Widget + '_)).collect();
+        let mut v: Vec<&mut (dyn Widget + '_)> = self
+            .rows
+            .iter_mut()
+            .map(|r| r as &mut (dyn Widget + '_))
+            .collect();
         if self.selected_custom {
             v.push(&mut self.name_input as &mut (dyn Widget + '_));
         }

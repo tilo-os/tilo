@@ -24,7 +24,11 @@ fn a_page_somebody_wrote() -> (Vec<u8>, String) {
     let c = qdoc::model::init(&mut doc, &automerge::ROOT);
     let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
     let block = {
-        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let p = dm.insert_block(None, "paragraph");
         dm.splice_text(&p, 0, 0, "Doors at seven.");
         p

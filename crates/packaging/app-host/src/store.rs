@@ -271,7 +271,11 @@ impl Inner {
     /// Remove the payload tree, then (for v0) leave blob-layer sweeping
     /// to a later full sweep rather than re-deriving the live blob set
     /// from remaining entries. Returns the bytes freed from the payload tree.
-    fn gc_after_remove(&mut self, id: &PackageId, _entry: &RegistryEntry) -> Result<u64, StoreError> {
+    fn gc_after_remove(
+        &mut self,
+        id: &PackageId,
+        _entry: &RegistryEntry,
+    ) -> Result<u64, StoreError> {
         let payload_dir = self.root.join("payloads").join(id.to_hex());
         let freed = dir_size(&payload_dir).unwrap_or(0);
         if payload_dir.exists() {

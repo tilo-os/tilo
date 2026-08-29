@@ -48,7 +48,8 @@ impl FutoSwipeModel {
             lm_vocab: with_lm.then(|| lm_vocab.clone()),
             dict_combined: Some(d.join(DICT)),
         };
-        FutoSwipe::new(&paths, 100, crate::widget::MAX_SUGGESTIONS as i32).map(|engine| Self { engine })
+        FutoSwipe::new(&paths, 100, crate::widget::MAX_SUGGESTIONS as i32)
+            .map(|engine| Self { engine })
     }
 
     /// Resolve the model directory from the environment / known install
@@ -69,7 +70,10 @@ impl FutoSwipeModel {
         self.engine
             .predict_next(context, k as i32)
             .into_iter()
-            .map(|c| Candidate { word: c.word, score: c.score })
+            .map(|c| Candidate {
+                word: c.word,
+                score: c.score,
+            })
             .collect()
     }
 }
@@ -99,8 +103,7 @@ impl SwipeModel for FutoSwipeModel {
         }
         // Bounding box of the on-screen letter keys → normalize the gesture
         // into the model's [0,1] layout space.
-        let (mut minx, mut miny, mut maxx, mut maxy) =
-            (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for (id, rect) in key_geom {
             if layout.key(*id).map(|k| k.is_letter()).unwrap_or(false) {
                 minx = minx.min(rect.x0);
@@ -194,7 +197,10 @@ mod tests {
             let path = path_through(word, &geom, &layout);
             let cands = model.decode(&path, &geom, &layout, 8);
             let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-            assert!(words.contains(&word), "{word}: expected in top-8, got {words:?}");
+            assert!(
+                words.contains(&word),
+                "{word}: expected in top-8, got {words:?}"
+            );
             eprintln!("osk-adapter {word} -> {words:?}");
         }
     }

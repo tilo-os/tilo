@@ -13,9 +13,7 @@ use std::path::{Path, PathBuf};
 use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::{PermissionContext, UserId};
-use ui::presence::{
-    PathSegment, PresenceCtx, PresenceKey, SelectionRange, draw_remote_presence,
-};
+use ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange, draw_remote_presence};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -35,9 +33,7 @@ pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 720);
 
 /// Parse a `WxH` string like `800x600` into a `(u32, u32)` viewport.
 pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
-    let (w, h) = s
-        .split_once('x')
-        .or_else(|| s.split_once('X'))?;
+    let (w, h) = s.split_once('x').or_else(|| s.split_once('X'))?;
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
@@ -223,8 +219,7 @@ pub fn render_to_path(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Hermetic workspace root — unique per process so parallel shots
     // don't collide, cleaned up on exit.
-    let root: PathBuf = std::env::temp_dir()
-        .join(format!("notes-shots-{}", uuid::Uuid::new_v4()));
+    let root: PathBuf = std::env::temp_dir().join(format!("notes-shots-{}", uuid::Uuid::new_v4()));
     storage::ensure_layout(&root)?;
     seed_sample_workspace(&root);
 
@@ -320,7 +315,10 @@ fn seed_two_peers(app: &NotesApp) -> PresenceCtx {
     // `block_editor::block_presence_key(4)` — a checklist row on the
     // seeded "Launch checklist" page.
     let block = |i: u32| PresenceKey::Widget {
-        path: vec![PathSegment::Field("notes_block".to_string()), PathSegment::Index(i)],
+        path: vec![
+            PathSegment::Field("notes_block".to_string()),
+            PathSegment::Index(i),
+        ],
     };
     p.set_caret(&block(4), alice.clone(), 18);
     p.record_peer_typing(
@@ -339,7 +337,12 @@ fn seed_two_peers(app: &NotesApp) -> PresenceCtx {
         .into_iter()
         .find(|pg| Some(pg.id) != selected)
     {
-        p.register_peer_at("bob".to_string(), PresenceKey::Tab { id: other.id.to_string() });
+        p.register_peer_at(
+            "bob".to_string(),
+            PresenceKey::Tab {
+                id: other.id.to_string(),
+            },
+        );
     }
     // Bob's mouse pointer has drifted off the right edge → edge mist.
     p.upsert_remote_cursor("bob".to_string(), [1500.0, 380.0], Some("Bob"));
@@ -363,7 +366,15 @@ fn drive_scenario(
         let mut handled = false;
         let mut ft = None;
         app.handle_event(
-            ev, 1.0, &no_mods, &mut state.doc, &state.root, &mut handled, &mut ft, child, taffy,
+            ev,
+            1.0,
+            &no_mods,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut ft,
+            child,
+            taffy,
         );
     };
     let cursor = |x: f64, y: f64| WindowEvent::CursorMoved {

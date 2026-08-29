@@ -17,7 +17,7 @@ use std::path::Path;
 use anyhow::{Result, anyhow, bail};
 
 use pkg::PackageId;
-use pkg::manifest::{Arch, IsaLevel, AArch64Level, X86_64Level};
+use pkg::manifest::{AArch64Level, Arch, IsaLevel, X86_64Level};
 use pkg::pack::SigningIdentity;
 
 use crate::index::{IndexEntry, RegistryIndex};
@@ -141,8 +141,7 @@ pub async fn publish_to_dir(
     // Upload the blob; the returned hash is the iroh content hash.
     let (hash, ticket) = node.add_and_ticket(qpkg_bytes.to_vec()).await?;
 
-    let (entry, package_id) =
-        build_entry(qpkg_bytes, publisher, arch, Some(&ticket.to_string()))?;
+    let (entry, package_id) = build_entry(qpkg_bytes, publisher, arch, Some(&ticket.to_string()))?;
 
     // The uploaded blob's hash must match the entry's advertised hash.
     if entry.qpkg_hash_bytes()? != *hash.as_bytes() {
@@ -201,5 +200,7 @@ pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> 
 /// Convenience for a signed index built off a fresh (non-directory)
 /// context — used by CI / tooling that assembles an index in memory.
 pub fn sign_index(index: &mut RegistryIndex, registry_key: &SigningIdentity) -> Result<()> {
-    index.sign(registry_key).map_err(|e| anyhow!("sign index: {e}"))
+    index
+        .sign(registry_key)
+        .map_err(|e| anyhow!("sign index: {e}"))
 }

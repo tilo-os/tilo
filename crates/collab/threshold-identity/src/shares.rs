@@ -100,7 +100,10 @@ impl RecoveryShare {
     /// Build a recovery share from a `KeyPackage`: the 32-byte signing-share
     /// scalar is serialised then BIP39-encoded into 24 words; remaining
     /// (public) fields are read straight off the `KeyPackage`.
-    pub(crate) fn from_key_package(kp: &KeyPackage, total_shares: u16) -> Result<Self, ThresholdError> {
+    pub(crate) fn from_key_package(
+        kp: &KeyPackage,
+        total_shares: u16,
+    ) -> Result<Self, ThresholdError> {
         // Serialize the signing share. frost-ed25519's SigningShare::serialize()
         // returns the 32-byte canonical scalar form.
         let scalar_bytes: [u8; 32] = kp
@@ -187,8 +190,7 @@ pub(crate) fn u16_to_identifier(n: u16) -> Result<Identifier, ThresholdError> {
     if n == 0 {
         return Err(ThresholdError::InvalidShareIndex(0));
     }
-    Identifier::try_from(n)
-        .map_err(|_| ThresholdError::InvalidShareIndex(n))
+    Identifier::try_from(n).map_err(|_| ThresholdError::InvalidShareIndex(n))
 }
 
 #[cfg(test)]
@@ -216,8 +218,7 @@ mod tests {
         // even though only one share needs inspecting.
         use frost_ed25519::keys::{IdentifierList, generate_with_dealer};
         let rng = rand::rngs::OsRng;
-        let (shares, _pubkeys) =
-            generate_with_dealer(2, 2, IdentifierList::Default, rng).unwrap();
+        let (shares, _pubkeys) = generate_with_dealer(2, 2, IdentifierList::Default, rng).unwrap();
         let (_id, share) = shares.into_iter().next().unwrap();
         let kp: KeyPackage = share.try_into().unwrap();
         let wrapped = SecretShare::from_key_package(kp);
@@ -226,6 +227,9 @@ mod tests {
             dbg.contains("<redacted>"),
             "Debug must redact secret: {dbg}"
         );
-        assert!(!dbg.contains("SigningShare"), "Debug leaked field name: {dbg}");
+        assert!(
+            !dbg.contains("SigningShare"),
+            "Debug leaked field name: {dbg}"
+        );
     }
 }

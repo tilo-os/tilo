@@ -216,7 +216,9 @@ pub fn bundle_root() -> Result<PathBuf, BundleError> {
             return Ok(PathBuf::from(dir));
         }
     }
-    Ok(dirs::data_dir().ok_or(BundleError::NoDataDir)?.join("qos-runtime"))
+    Ok(dirs::data_dir()
+        .ok_or(BundleError::NoDataDir)?
+        .join("qos-runtime"))
 }
 
 /// Default per-user bundle directory: `$XDG_DATA_HOME/qos-runtime/<v>/`,
@@ -285,8 +287,8 @@ impl Identity {
         struct File {
             secret_key_hex: String,
         }
-        let f: File = serde_json::from_slice(bytes)
-            .map_err(|e| BundleError::IdentityParse(e.to_string()))?;
+        let f: File =
+            serde_json::from_slice(bytes).map_err(|e| BundleError::IdentityParse(e.to_string()))?;
         let raw = hex::decode(&f.secret_key_hex)
             .map_err(|e| BundleError::IdentityParse(format!("secret_key_hex: {e}")))?;
         if raw.len() != 32 {
@@ -398,11 +400,15 @@ pub fn build_bundle_with(
     // resolved against host_root.
     for extra in opts.extra_libs {
         if !extra.exists() {
-            return Err(BundleError::IncludeMissing { path: extra.clone() });
+            return Err(BundleError::IncludeMissing {
+                path: extra.clone(),
+            });
         }
         let name = extra
             .file_name()
-            .ok_or_else(|| BundleError::IncludeUnnamed { path: extra.clone() })?
+            .ok_or_else(|| BundleError::IncludeUnnamed {
+                path: extra.clone(),
+            })?
             .to_string_lossy()
             .to_string();
         let rel_in_bundle = format!("lib/{name}");
@@ -428,10 +434,7 @@ pub fn build_bundle_with(
 
     if written.is_empty() {
         return Err(BundleError::NoSources {
-            checked: paths
-                .iter()
-                .map(|p| resolve_from(host_root, p))
-                .collect(),
+            checked: paths.iter().map(|p| resolve_from(host_root, p)).collect(),
         });
     }
 
@@ -474,8 +477,8 @@ pub fn build_bundle_with(
     };
 
     // Persist bundle.toml.
-    let toml = toml::to_string_pretty(&manifest)
-        .map_err(|e| BundleError::ManifestParse(e.to_string()))?;
+    let toml =
+        toml::to_string_pretty(&manifest).map_err(|e| BundleError::ManifestParse(e.to_string()))?;
     fs::write(out.join(BUNDLE_MANIFEST_FILENAME), toml)?;
 
     Ok(manifest)
@@ -518,8 +521,8 @@ pub fn verify_bundle_with(
         });
     }
     let text = fs::read_to_string(&manifest_path)?;
-    let manifest: BundleManifest = toml::from_str(&text)
-        .map_err(|e| BundleError::ManifestParse(e.to_string()))?;
+    let manifest: BundleManifest =
+        toml::from_str(&text).map_err(|e| BundleError::ManifestParse(e.to_string()))?;
 
     // Optional arch policy.
     if let Some(required) = opts.require_arch.as_deref() {
@@ -612,10 +615,7 @@ pub fn verify_bundle_with(
     Ok(manifest)
 }
 
-fn decode_fixed_hex<const N: usize>(
-    s: &str,
-    field: &'static str,
-) -> Result<[u8; N], BundleError> {
+fn decode_fixed_hex<const N: usize>(s: &str, field: &'static str) -> Result<[u8; N], BundleError> {
     let raw = hex::decode(s).map_err(|e| BundleError::SignatureFieldMalformed {
         field,
         reason: e.to_string(),
@@ -721,7 +721,11 @@ mod tests {
     use super::*;
 
     fn fake_x86_64_host(root: &Path) {
-        for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6", "lib64/libm.so.6"] {
+        for rel in [
+            "lib64/ld-linux-x86-64.so.2",
+            "lib64/libc.so.6",
+            "lib64/libm.so.6",
+        ] {
             let p = root.join(rel);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(&p, format!("fake contents of {rel}")).unwrap();
@@ -801,7 +805,11 @@ mod tests {
         assert_eq!(m.arch, "aarch64");
         // Fedora layout: loader at /lib/, libc at /lib64/.
         let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(paths.iter().any(|p| p.ends_with("lib/ld-linux-aarch64.so.1")));
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.ends_with("lib/ld-linux-aarch64.so.1"))
+        );
         assert!(paths.iter().any(|p| p.ends_with("lib64/libc.so.6")));
         verify_bundle(out.path()).expect("verify");
     }
@@ -823,9 +831,11 @@ mod tests {
         )
         .expect("build");
         let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(paths
-            .iter()
-            .any(|p| p.ends_with("aarch64-linux-gnu/libc.so.6")));
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.ends_with("aarch64-linux-gnu/libc.so.6"))
+        );
         verify_bundle(out.path()).expect("verify");
     }
 
@@ -948,7 +958,10 @@ mod tests {
             },
         )
         .expect("build signed");
-        assert_eq!(manifest.publisher_hex.as_deref(), Some(identity.public_key_hex()).as_deref());
+        assert_eq!(
+            manifest.publisher_hex.as_deref(),
+            Some(identity.public_key_hex()).as_deref()
+        );
         assert!(manifest.signature_hex.is_some());
 
         // Default verify accepts a valid signed bundle.

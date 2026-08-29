@@ -1,13 +1,13 @@
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style};
-use crate::widget::Widget;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
 
 pub struct Spacer {
     rect: Rect,
@@ -46,12 +46,19 @@ impl Spacer {
 impl Widget for Spacer {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
-            flex_grow: 1.0,
-            flex_shrink: 1.0,
-            ..Default::default()
-        }).unwrap();
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -66,19 +73,45 @@ impl Widget for Spacer {
         );
     }
 
-    fn draw(&mut self, _scene: &mut Scene, _transform: Affine, _text_renderer: &mut TextRenderer, _theme: &Theme, _presence: &crate::presence::PresenceCtx) {}
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+    }
 
-    fn handle_event(&mut self, _event: &WindowEvent, _scale_factor: f64, _modifiers: &winit::event::Modifiers, _state: &mut AutoCommit, _path: &ObjId, _handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {}
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+    }
 
-    fn name(&self) -> &str { "Spacer" }
+    fn name(&self) -> &str {
+        "Spacer"
+    }
 
     /// `draw` is a no-op, so this is never dirty. With many Spacers in a
     /// tree (toolbars, padding rows), the default-true `needs_redraw`
     /// was pinning the whole tree to "always-dirty".
-    fn needs_redraw(&self) -> bool { false }
+    fn needs_redraw(&self) -> bool {
+        false
+    }
     /// `Rect::ZERO` sentinel for the first `apply_layout`; a parent
     /// reflow after that is caught by the parent's own recursion.
-    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
 
     fn get_rect(&self) -> Rect {
         self.rect
@@ -88,7 +121,9 @@ impl Widget for Spacer {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -105,14 +140,22 @@ impl Widget for Spacer {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(scope) = self.permission_scope()
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
         if let Some(key) = self.presence_key()

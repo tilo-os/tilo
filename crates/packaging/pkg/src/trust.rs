@@ -145,7 +145,11 @@ impl<'de> Deserialize<'de> for TrustedAttestor {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = TrustedAttestorToml::deserialize(d)?;
         let scope = AttestorScope::parse(&raw.scope).map_err(serde::de::Error::custom)?;
-        Ok(TrustedAttestor { id: raw.id, pubkey_hex: raw.pubkey_hex, scope })
+        Ok(TrustedAttestor {
+            id: raw.id,
+            pubkey_hex: raw.pubkey_hex,
+            scope,
+        })
     }
 }
 

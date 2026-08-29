@@ -72,8 +72,10 @@ pub fn prefix_heads(doc: &mut AutoCommit, upto: usize) -> Vec<ChangeHash> {
     let changes = doc.get_changes(&[]);
     let take = (upto + 1).min(changes.len());
     let prefix = &changes[..take];
-    let depended_on: std::collections::HashSet<ChangeHash> =
-        prefix.iter().flat_map(|c| c.deps().iter().copied()).collect();
+    let depended_on: std::collections::HashSet<ChangeHash> = prefix
+        .iter()
+        .flat_map(|c| c.deps().iter().copied())
+        .collect();
     prefix
         .iter()
         .map(|c| c.hash())
@@ -108,8 +110,15 @@ mod tests {
 
         let vers = d.versions();
         // schema-init + 5 edits → several authored changes.
-        assert!(vers.len() >= 4, "expected a multi-entry timeline, got {}", vers.len());
-        assert!(vers.iter().all(|v| !v.actor_hex.is_empty()), "every change has an author");
+        assert!(
+            vers.len() >= 4,
+            "expected a multi-entry timeline, got {}",
+            vers.len()
+        );
+        assert!(
+            vers.iter().all(|v| !v.actor_hex.is_empty()),
+            "every change has an author"
+        );
 
         let latest = d.materialize_at(vers.len() - 1).unwrap();
         assert_eq!(latest.blocks.len(), 2, "latest has both paragraphs");
@@ -118,7 +127,10 @@ mod tests {
 
         // Some intermediate version has exactly one block (after the first insert, before the second).
         let saw_one = (0..vers.len()).any(|i| d.materialize_at(i).unwrap().blocks.len() == 1);
-        assert!(saw_one, "an intermediate version should have a single block");
+        assert!(
+            saw_one,
+            "an intermediate version should have a single block"
+        );
     }
 
     #[test]

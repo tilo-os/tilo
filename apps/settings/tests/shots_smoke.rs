@@ -12,10 +12,7 @@ const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 #[test]
 fn settings_shots_flag_writes_png() {
     let bin = env!("CARGO_BIN_EXE_settings");
-    let out = std::env::temp_dir().join(format!(
-        "settings-shots-smoke-{}.png",
-        std::process::id()
-    ));
+    let out = std::env::temp_dir().join(format!("settings-shots-smoke-{}.png", std::process::id()));
     let _ = fs::remove_file(&out);
 
     let status = Command::new(bin)
@@ -23,10 +20,7 @@ fn settings_shots_flag_writes_png() {
         .arg(&out)
         .status()
         .expect("spawn settings --shots");
-    assert!(
-        status.success(),
-        "settings --shots exited with {status:?}"
-    );
+    assert!(status.success(), "settings --shots exited with {status:?}");
 
     let bytes = fs::read(&out).expect("read shots PNG");
     assert!(bytes.len() >= 8, "PNG must have at least an 8-byte header");

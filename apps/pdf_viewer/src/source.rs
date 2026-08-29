@@ -30,18 +30,23 @@ use std::time::Instant;
 #[inline]
 fn prof(stage: &str, since: Instant) {
     if std::env::var_os("QOS_PDF_PROFILE").is_some() {
-        eprintln!("[pdf-profile] {stage}: {:.1}ms", since.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[pdf-profile] {stage}: {:.1}ms",
+            since.elapsed().as_secs_f64() * 1000.0
+        );
     }
 }
 fn profiling() -> bool {
     std::env::var_os("QOS_PDF_PROFILE").is_some()
 }
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use pdfium_render::prelude::*;
 use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
 
-use crate::model::{AnnoKind, Annotation, Comment, Document, OutlineItem, PtRect, Signature, SignatureInk};
+use crate::model::{
+    AnnoKind, Annotation, Comment, Document, OutlineItem, PtRect, Signature, SignatureInk,
+};
 use crate::text_layer::PageText;
 
 /// A document loaded from disk plus its optional raster backend.
@@ -94,7 +99,11 @@ pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
         let t = Instant::now();
         doc.outline = r.outline();
         prof("outline (bookmarks)", t);
-        return Ok(LoadedDoc { doc, raster: Some(r), name });
+        return Ok(LoadedDoc {
+            doc,
+            raster: Some(r),
+            name,
+        });
     }
 
     // No native library (or an unreadable-by-pdfium file) — extract the text so
@@ -104,7 +113,11 @@ pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
     let pages = pdf_extract::extract_text_from_mem_by_pages(&bytes)
         .map_err(|e| anyhow!("pdf text extraction failed: {e:?}"))?;
     let doc = Document::from_text_pages(&stem, "", &pages);
-    Ok(LoadedDoc { doc, raster: None, name })
+    Ok(LoadedDoc {
+        doc,
+        raster: None,
+        name,
+    })
 }
 
 /// A retained pdfium document that rasterises pages on demand, extracts their
@@ -194,7 +207,11 @@ impl Rasterizer {
             }
         }
         if profiling() {
-            eprintln!("[pdf-profile]   page_size loop ({} pages): {:.1}ms", page_sizes.len(), t.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "[pdf-profile]   page_size loop ({} pages): {:.1}ms",
+                page_sizes.len(),
+                t.elapsed().as_secs_f64() * 1000.0
+            );
         }
         if page_sizes.is_empty() {
             return None;
@@ -206,7 +223,9 @@ impl Rasterizer {
     fn open(bytes: Vec<u8>) -> Option<Self> {
         let pdfium = shared_pdfium()?;
         let source = Self::load_source(pdfium, bytes)?;
-        let plan = (0..source.page_sizes.len()).map(|page| PageSlot { source: 0, page }).collect();
+        let plan = (0..source.page_sizes.len())
+            .map(|page| PageSlot { source: 0, page })
+            .collect();
         Some(Rasterizer {
             pdfium,
             sources: vec![source],
@@ -285,7 +304,13 @@ impl Rasterizer {
         self.sources.push(source);
         let at = at.min(self.plan.len());
         for page in 0..n {
-            self.plan.insert(at + page, PageSlot { source: src_idx, page });
+            self.plan.insert(
+                at + page,
+                PageSlot {
+                    source: src_idx,
+                    page,
+                },
+            );
         }
         Ok(n)
     }
@@ -294,8 +319,7 @@ impl Rasterizer {
     /// inserted at displayed index `at`. The image is placed to fill a page
     /// sized to its own aspect ratio.
     pub fn import_image(&mut self, bytes: &[u8], at: usize) -> anyhow::Result<()> {
-        let img = image::load_from_memory(bytes)
-            .map_err(|e| anyhow!("decoding the image: {e}"))?;
+        let img = image::load_from_memory(bytes).map_err(|e| anyhow!("decoding the image: {e}"))?;
         let (iw, ih) = (img.width().max(1) as f64, img.height().max(1) as f64);
         // A page 612pt wide (US-Letter width) with the image's aspect ratio.
         let pw = 612.0f64;
@@ -324,15 +348,28 @@ impl Rasterizer {
             let _ = page.regenerate_content();
         }
         let src_idx = self.sources.len();
-        self.sources.push(Source { doc, page_sizes: vec![(pw, ph)] });
+        self.sources.push(Source {
+            doc,
+            page_sizes: vec![(pw, ph)],
+        });
         let at = at.min(self.plan.len());
-        self.plan.insert(at, PageSlot { source: src_idx, page: 0 });
+        self.plan.insert(
+            at,
+            PageSlot {
+                source: src_idx,
+                page: 0,
+            },
+        );
         Ok(())
     }
 
     fn metadata(&self) -> (String, String, String) {
         let meta = self.sources[0].doc.metadata();
-        let get = |tag| meta.get(tag).map(|t| t.value().to_string()).unwrap_or_default();
+        let get = |tag| {
+            meta.get(tag)
+                .map(|t| t.value().to_string())
+                .unwrap_or_default()
+        };
         (
             get(PdfDocumentMetadataTagType::Title),
             get(PdfDocumentMetadataTagType::Author),
@@ -352,7 +389,11 @@ impl Rasterizer {
                 .map(|i| i as usize + 1)
                 .unwrap_or(1);
             if !title.trim().is_empty() {
-                out.push(OutlineItem { title, page, level: 0 });
+                out.push(OutlineItem {
+                    title,
+                    page,
+                    level: 0,
+                });
             }
             if out.len() >= 200 {
                 break;
@@ -433,9 +474,10 @@ impl Rasterizer {
     /// frame is a free cache hit rather than a fresh (expensive) rasterisation.
     pub fn is_page_cached(&self, display_idx: usize, target_w: u32) -> bool {
         match self.slot(display_idx) {
-            Some(slot) => self
-                .cache
-                .contains_key(&(slot.source, slot.page, Self::bucket_for(target_w))),
+            Some(slot) => {
+                self.cache
+                    .contains_key(&(slot.source, slot.page, Self::bucket_for(target_w)))
+            }
             None => false,
         }
     }
@@ -457,11 +499,22 @@ impl Rasterizer {
             return Some(img.clone());
         }
         let t = Instant::now();
-        let page = self.sources.get(slot.source)?.doc.pages().get(slot.page as u16).ok()?;
+        let page = self
+            .sources
+            .get(slot.source)?
+            .doc
+            .pages()
+            .get(slot.page as u16)
+            .ok()?;
         let config = PdfRenderConfig::new().set_target_width(bucket as Pixels);
         let bitmap = page.render_with_config(&config).ok()?;
         if profiling() {
-            eprintln!("[pdf-profile]   render page {} @ {}px: {:.1}ms", display_idx + 1, bucket, t.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "[pdf-profile]   render page {} @ {}px: {:.1}ms",
+                display_idx + 1,
+                bucket,
+                t.elapsed().as_secs_f64() * 1000.0
+            );
         }
         let w = bitmap.width().max(0) as u32;
         let h = bitmap.height().max(0) as u32;
@@ -504,7 +557,13 @@ impl Rasterizer {
     /// flattened markup lands as real page content.
     pub fn page_object_count(&self, display_idx: usize) -> Option<usize> {
         let slot = self.slot(display_idx)?;
-        let page = self.sources.get(slot.source)?.doc.pages().get(slot.page as u16).ok()?;
+        let page = self
+            .sources
+            .get(slot.source)?
+            .doc
+            .pages()
+            .get(slot.page as u16)
+            .ok()?;
         Some(page.objects().len())
     }
 
@@ -583,7 +642,8 @@ impl Rasterizer {
                         .map_err(|e| anyhow!("starting ink path: {e:?}"))?;
                         for p in &points[1..] {
                             let (x, y) = pt_tl_to_pdf(p.0, p.1, page_h);
-                            path.line_to(x, y).map_err(|e| anyhow!("ink line_to: {e:?}"))?;
+                            path.line_to(x, y)
+                                .map_err(|e| anyhow!("ink line_to: {e:?}"))?;
                         }
                         page.objects_mut()
                             .add_path_object(path)
@@ -642,12 +702,7 @@ impl Rasterizer {
         font_italic: PdfFontToken,
     ) -> anyhow::Result<()> {
         let r = &s.rect;
-        let stroke_area = PtRect::new(
-            r.x + r.w * 0.06,
-            r.y + r.h * 0.10,
-            r.w * 0.88,
-            r.h * 0.46,
-        );
+        let stroke_area = PtRect::new(r.x + r.w * 0.06, r.y + r.h * 0.10, r.w * 0.88, r.h * 0.46);
         // Flatten the signature's *real* ink onto the page: the freehand strokes
         // the user drew (scaled from normalised field space), or their typed name
         // as a large italic script. Both land as ordinary, extractable page
@@ -676,7 +731,8 @@ impl Rasterizer {
                     .map_err(|e| anyhow!("starting signature stroke: {e:?}"))?;
                     for p in &stroke[1..] {
                         let (x, y) = map(p.0, p.1);
-                        path.line_to(x, y).map_err(|e| anyhow!("signature line_to: {e:?}"))?;
+                        path.line_to(x, y)
+                            .map_err(|e| anyhow!("signature line_to: {e:?}"))?;
                     }
                     page.objects_mut()
                         .add_path_object(path)
@@ -687,7 +743,8 @@ impl Rasterizer {
                 let name = s.signer.trim();
                 if !name.is_empty() {
                     let size = (stroke_area.h * 0.72).clamp(10.0, 22.0);
-                    let (tx, ty) = pt_tl_to_pdf(stroke_area.x, stroke_area.y + stroke_area.h * 0.85, page_h);
+                    let (tx, ty) =
+                        pt_tl_to_pdf(stroke_area.x, stroke_area.y + stroke_area.h * 0.85, page_h);
                     page.objects_mut()
                         .create_text_object(tx, ty, name, font_italic, PdfPoints::new(size as f32))
                         .map_err(|e| anyhow!("signature script: {e:?}"))?;
@@ -744,7 +801,10 @@ fn rect_tl_to_pdf(r: &PtRect, page_h: f64) -> PdfRect {
 /// Convert a page-point coordinate (origin top-left, y-down) into pdfium's
 /// bottom-left, y-up point pair.
 fn pt_tl_to_pdf(x: f64, y: f64, page_h: f64) -> (PdfPoints, PdfPoints) {
-    (PdfPoints::new(x as f32), PdfPoints::new((page_h - y) as f32))
+    (
+        PdfPoints::new(x as f32),
+        PdfPoints::new((page_h - y) as f32),
+    )
 }
 
 /// Locate a usable pdfium library without ever bundling one.

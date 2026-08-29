@@ -49,7 +49,8 @@ pub struct Demuxed {
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
 
 fn be_u32(d: &[u8], off: usize) -> Option<u32> {
-    d.get(off..off + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    d.get(off..off + 4)
+        .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 fn be_u64(d: &[u8], off: usize) -> Option<u64> {
@@ -95,10 +96,16 @@ fn boxes(data: &[u8], start: usize, end: usize) -> Vec<Box4> {
         if box_end > end {
             // Truncated (partial download) — still record what we can see so a
             // caller looking for a specific header can find it.
-            out.push(Box4 { typ, payload: (pos + header_len, end) });
+            out.push(Box4 {
+                typ,
+                payload: (pos + header_len, end),
+            });
             break;
         }
-        out.push(Box4 { typ, payload: (pos + header_len, box_end) });
+        out.push(Box4 {
+            typ,
+            payload: (pos + header_len, box_end),
+        });
         pos = box_end;
     }
     out
@@ -138,17 +145,32 @@ fn parse_avcc(b: &[u8]) -> Option<H264Config> {
         pps.push(b.get(off..off + len)?.to_vec());
         off += len;
     }
-    Some(H264Config { length_size, sps, pps })
+    Some(H264Config {
+        length_size,
+        sps,
+        pps,
+    })
 }
 
 /// Navigate `moov → trak → mdia → minf → stbl → stsd → avc[13] → avcC` for the
 /// first video track and return its H.264 config.
 fn avc_config_from_moov(data: &[u8], moov: (usize, usize)) -> Option<H264Config> {
-    for trak in boxes(data, moov.0, moov.1).into_iter().filter(|b| &b.typ == b"trak") {
-        let Some(mdia) = child(data, trak.payload, b"mdia") else { continue };
-        let Some(minf) = child(data, mdia, b"minf") else { continue };
-        let Some(stbl) = child(data, minf, b"stbl") else { continue };
-        let Some(stsd) = child(data, stbl, b"stsd") else { continue };
+    for trak in boxes(data, moov.0, moov.1)
+        .into_iter()
+        .filter(|b| &b.typ == b"trak")
+    {
+        let Some(mdia) = child(data, trak.payload, b"mdia") else {
+            continue;
+        };
+        let Some(minf) = child(data, mdia, b"minf") else {
+            continue;
+        };
+        let Some(stbl) = child(data, minf, b"stbl") else {
+            continue;
+        };
+        let Some(stsd) = child(data, stbl, b"stsd") else {
+            continue;
+        };
         // stsd payload: version(1)+flags(3)+entry_count(4) then sample entries.
         let entries = (stsd.0 + 8, stsd.1);
         for entry in boxes(data, entries.0, entries.1) {
@@ -200,8 +222,10 @@ pub fn extract_annexb(data: &[u8]) -> Result<Demuxed, String> {
         .and_then(|b| avc_config_from_moov(data, b.payload));
 
     let length_size = cfg.as_ref().map(|c| c.length_size).unwrap_or(4);
-    let (sps_count, pps_count) =
-        cfg.as_ref().map(|c| (c.sps.len(), c.pps.len())).unwrap_or((0, 0));
+    let (sps_count, pps_count) = cfg
+        .as_ref()
+        .map(|c| (c.sps.len(), c.pps.len()))
+        .unwrap_or((0, 0));
 
     let mut annexb = Vec::new();
     if let Some(cfg) = &cfg {
@@ -329,7 +353,12 @@ pub fn parse_sidx(data: &[u8]) -> Option<SegmentIndex> {
         sizes.push(w0 & 0x7fff_ffff);
         durations.push(dur);
     }
-    Some(SegmentIndex { first_offset, sizes, durations, timescale })
+    Some(SegmentIndex {
+        first_offset,
+        sizes,
+        durations,
+        timescale,
+    })
 }
 
 /// Per-sample byte sizes for one movie fragment, read from `moof→traf→trun`

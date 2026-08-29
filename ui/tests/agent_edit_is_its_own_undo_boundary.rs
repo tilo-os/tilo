@@ -15,7 +15,7 @@ use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ReadDoc, ROOT};
+use automerge::{AutoCommit, ObjId, ROOT, ReadDoc};
 
 use ui::app::App;
 use ui::collaboration::CollabEvent;
@@ -125,10 +125,8 @@ fn write_frame(s: &mut UnixStream, bytes: &[u8]) {
 /// Stand up an `App` wired to a socket we hold the other end of, so we can
 /// hand it any `CollabEvent` the broker could.
 fn app_on_a_socket(tag: &str) -> (App, UnixStream) {
-    let socket_path = std::env::temp_dir().join(format!(
-        "quick-undo-seam-{tag}-{}.sock",
-        std::process::id()
-    ));
+    let socket_path =
+        std::env::temp_dir().join(format!("quick-undo-seam-{tag}-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path).expect("bind broker socket");
 

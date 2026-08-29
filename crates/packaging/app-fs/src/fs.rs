@@ -101,7 +101,10 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
                 return Err(BuildError::BadPath(path.clone()));
             }
             let segments: Vec<&str> = path.split('/').collect();
-            if segments.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+            if segments
+                .iter()
+                .any(|s| s.is_empty() || *s == "." || *s == "..")
+            {
                 return Err(BuildError::BadPath(path.clone()));
             }
 
@@ -216,7 +219,10 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
                 let sub_dirs = children
                     .values()
                     .filter(|c| {
-                        matches!(self.entries.get((**c - 1) as usize), Some(Entry::Dir { .. }))
+                        matches!(
+                            self.entries.get((**c - 1) as usize),
+                            Some(Entry::Dir { .. })
+                        )
                     })
                     .count() as u32;
                 (FileType::Directory, 0u64, 0o555u16, 2 + sub_dirs)

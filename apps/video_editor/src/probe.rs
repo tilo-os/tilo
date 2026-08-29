@@ -126,8 +126,19 @@ fn fallback_from_extension(path: &Path) -> ProbedMedia {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" => MediaKind::Image,
         _ => MediaKind::Video,
     };
-    let duration = if kind == MediaKind::Image { DEFAULT_IMAGE_DURATION } else { 0.0 };
-    ProbedMedia { kind, duration, width: 0, height: 0, fps: 0.0, codec: "unknown".into() }
+    let duration = if kind == MediaKind::Image {
+        DEFAULT_IMAGE_DURATION
+    } else {
+        0.0
+    };
+    ProbedMedia {
+        kind,
+        duration,
+        width: 0,
+        height: 0,
+        fps: 0.0,
+        codec: "unknown".into(),
+    }
 }
 
 // ---- magic-byte sniffers --------------------------------------------------
@@ -172,9 +183,11 @@ fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
         .eq_ignore_ascii_case("mp3");
     // For a .mp3 without a leading tag/sync, only accept if a sync appears
     // within the first few KB (some files have leading junk).
-    ext && d.iter().take(8192).enumerate().any(|(i, &b)| {
-        b == 0xFF && d.get(i + 1).is_some_and(|n| (n & 0xE0) == 0xE0)
-    })
+    ext && d
+        .iter()
+        .take(8192)
+        .enumerate()
+        .any(|(i, &b)| b == 0xFF && d.get(i + 1).is_some_and(|n| (n & 0xE0) == 0xE0))
 }
 
 // ---- PNG / JPEG dimensions ------------------------------------------------
@@ -211,10 +224,8 @@ fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
             continue;
         }
         let seg_len = be_u16(&d[i + 2..i + 4]) as usize;
-        let is_sof = (0xC0..=0xCF).contains(&marker)
-            && marker != 0xC4
-            && marker != 0xC8
-            && marker != 0xCC;
+        let is_sof =
+            (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
         if is_sof {
             // SOF payload: precision(1) height(2) width(2) ...
             let h = be_u16(&d[i + 5..i + 7]) as u32;
@@ -297,8 +308,14 @@ fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
                 break;
             }
             let large = u64::from_be_bytes([
-                data[i + 8], data[i + 9], data[i + 10], data[i + 11],
-                data[i + 12], data[i + 13], data[i + 14], data[i + 15],
+                data[i + 8],
+                data[i + 9],
+                data[i + 10],
+                data[i + 11],
+                data[i + 12],
+                data[i + 13],
+                data[i + 14],
+                data[i + 15],
             ]);
             (16usize, large)
         } else if size32 == 0 {
@@ -310,10 +327,16 @@ fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
         if total < header || i + total > data.len() {
             // Truncated / bad size — take the rest as this box's body and stop.
             let body_start = (i + header).min(data.len());
-            out.push(BoxRef { typ, body: &data[body_start..] });
+            out.push(BoxRef {
+                typ,
+                body: &data[body_start..],
+            });
             break;
         }
-        out.push(BoxRef { typ, body: &data[i + header..i + total] });
+        out.push(BoxRef {
+            typ,
+            body: &data[i + header..i + total],
+        });
         i += total;
     }
     out
@@ -321,7 +344,10 @@ fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
 
 /// First child box of `typ` within `data`.
 fn child<'a>(data: &'a [u8], typ: &[u8; 4]) -> Option<&'a [u8]> {
-    iter_boxes(data).into_iter().find(|b| &b.typ == typ).map(|b| b.body)
+    iter_boxes(data)
+        .into_iter()
+        .find(|b| &b.typ == typ)
+        .map(|b| b.body)
 }
 
 /// Follow a nested path of four-CCs to a box body.
@@ -395,7 +421,14 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
         kind
     };
 
-    Some(ProbedMedia { kind, duration, width, height, fps, codec })
+    Some(ProbedMedia {
+        kind,
+        duration,
+        width,
+        height,
+        fps,
+        codec,
+    })
 }
 
 fn saw_video_recorded(w: u32, h: u32, codec: &str) -> bool {
@@ -510,8 +543,12 @@ fn ebml_children(d: &[u8]) -> Vec<(u64, &[u8])> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < d.len() {
-        let Some((id, id_len)) = read_vint(d, i, true) else { break };
-        let Some((size, sz_len)) = read_vint(d, i + id_len, false) else { break };
+        let Some((id, id_len)) = read_vint(d, i, true) else {
+            break;
+        };
+        let Some((size, sz_len)) = read_vint(d, i + id_len, false) else {
+            break;
+        };
         let data_start = i + id_len + sz_len;
         if data_start > d.len() {
             break;
@@ -530,7 +567,10 @@ fn ebml_children(d: &[u8]) -> Vec<(u64, &[u8])> {
 }
 
 fn ebml_find(d: &[u8], id: u64) -> Option<&[u8]> {
-    ebml_children(d).into_iter().find(|(i, _)| *i == id).map(|(_, x)| x)
+    ebml_children(d)
+        .into_iter()
+        .find(|(i, _)| *i == id)
+        .map(|(_, x)| x)
 }
 
 /// Big-endian unsigned integer from an EBML element payload (1..8 bytes).
@@ -581,8 +621,12 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
                     saw_video = true;
                     if width == 0 {
                         if let Some(video) = ebml_find(entry, EBML_VIDEO) {
-                            width = ebml_find(video, EBML_PIXEL_WIDTH).map(ebml_uint).unwrap_or(0) as u32;
-                            height = ebml_find(video, EBML_PIXEL_HEIGHT).map(ebml_uint).unwrap_or(0) as u32;
+                            width = ebml_find(video, EBML_PIXEL_WIDTH)
+                                .map(ebml_uint)
+                                .unwrap_or(0) as u32;
+                            height = ebml_find(video, EBML_PIXEL_HEIGHT)
+                                .map(ebml_uint)
+                                .unwrap_or(0) as u32;
                         }
                     }
                 }
@@ -647,8 +691,12 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
         return None; // free-format / reserved
     }
     // Layer III bitrate tables (kbps), indexed by bitrate_index.
-    const BR_V1: [u32; 16] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
-    const BR_V2: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    const BR_V1: [u32; 16] = [
+        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+    ];
+    const BR_V2: [u32; 16] = [
+        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+    ];
     let bitrate_kbps = if mpeg1 { BR_V1 } else { BR_V2 }[bitrate_index as usize];
     // Sample-rate tables by MPEG version, indexed by samplerate_index.
     const SR_V1: [u32; 3] = [44100, 48000, 32000];
@@ -778,7 +826,10 @@ mod tests {
         let mut stsz = vec![0u8; 12];
         stsz[8..12].copy_from_slice(&150u32.to_be_bytes());
 
-        let stbl = boxed(b"stbl", &[boxed(b"stsd", &stsd), boxed(b"stsz", &stsz)].concat());
+        let stbl = boxed(
+            b"stbl",
+            &[boxed(b"stsd", &stsd), boxed(b"stsz", &stsz)].concat(),
+        );
         let minf = boxed(b"minf", &stbl);
         let mdia = boxed(b"mdia", &[boxed(b"hdlr", &hdlr), minf].concat());
         let trak = boxed(b"trak", &[boxed(b"tkhd", &tkhd), mdia].concat());
@@ -945,7 +996,11 @@ mod tests {
         assert_eq!(p.kind, MediaKind::Audio);
         assert_eq!(p.codec, "mp3");
         // 1000 frames × 1152 samples / 44100 Hz ≈ 26.12 s.
-        assert!((p.duration - 26.122).abs() < 0.01, "duration {}", p.duration);
+        assert!(
+            (p.duration - 26.122).abs() < 0.01,
+            "duration {}",
+            p.duration
+        );
     }
 
     #[test]
@@ -963,6 +1018,11 @@ mod tests {
         let p = probe_bytes(&mp3, Path::new("cbr.mp3"));
         assert_eq!(p.kind, MediaKind::Audio);
         let expected = audio_bytes as f64 * 8.0 / 128_000.0;
-        assert!((p.duration - expected).abs() < 0.05, "duration {} vs {}", p.duration, expected);
+        assert!(
+            (p.duration - expected).abs() < 0.05,
+            "duration {} vs {}",
+            p.duration,
+            expected
+        );
     }
 }

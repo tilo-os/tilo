@@ -32,10 +32,14 @@ use crate::widget::{TextInput, Widget};
 pub enum LineSignal {
     /// Parent splits the line at `split_at`, drops the suffix into a new
     /// block, and re-focuses.
-    Enter { split_at: usize },
+    Enter {
+        split_at: usize,
+    },
     /// Same as `Enter`, but the new block is flagged a soft-break
     /// continuation (no top spacing, reads as one paragraph).
-    SoftNewline { split_at: usize },
+    SoftNewline {
+        split_at: usize,
+    },
     /// Caret was at byte 0 with no selection; parent decides whether to
     /// merge with the previous block, delete an empty block, or no-op.
     BackspaceAtStart,
@@ -43,13 +47,19 @@ pub enum LineSignal {
     ArrowDown,
     /// Ctrl+Shift+Up: parent extends the selection up across the block
     /// boundary from `caret`, instead of moving focus.
-    SelectBlockUp { caret: usize },
+    SelectBlockUp {
+        caret: usize,
+    },
     /// Mirror of [`SelectBlockUp`] extending down.
-    SelectBlockDown { caret: usize },
+    SelectBlockDown {
+        caret: usize,
+    },
     /// User typed `[[`; parent opens a [`LinkPopover`] anchored at
     /// `open_at`. Brackets fall through to the inner input — the popover's
     /// commit-link logic strips them.
-    LinkOpen { open_at: usize },
+    LinkOpen {
+        open_at: usize,
+    },
 }
 
 /// Matches the body baseline the rest of the UI uses for `TextInput`.
@@ -408,10 +418,7 @@ impl Widget for RichTextLine {
         }
 
         // Clips overpaint so a scrolled long line doesn't bleed glyphs past the column.
-        let clip_shape = vello::kurbo::RoundedRect::from_rect(
-            rect,
-            theme.tokens.radii.md as f64,
-        );
+        let clip_shape = vello::kurbo::RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
@@ -436,10 +443,7 @@ impl Widget for RichTextLine {
                 || seg.strikethrough
                 || seg.link.is_some();
 
-            let x_offset = xs
-                .get(seg.range.start)
-                .copied()
-                .unwrap_or(0.0);
+            let x_offset = xs.get(seg.range.start).copied().unwrap_or(0.0);
             let x = rect.x0 + pad + x_offset - scroll_x;
             let sans_end_x_offset = xs
                 .get(seg.range.end.min(xs.len().saturating_sub(1)))
@@ -523,7 +527,11 @@ impl Widget for RichTextLine {
                 tokens.colors.text_primary
             };
 
-            let weight = if seg.bold { TextWeight::Bold } else { TextWeight::Regular };
+            let weight = if seg.bold {
+                TextWeight::Bold
+            } else {
+                TextWeight::Regular
+            };
             let italic = seg.italic;
             let mono = false;
 
@@ -678,7 +686,8 @@ impl Widget for RichTextLine {
             // stripped later by the popover commit path, not here.
             if inserted > 0 {
                 let caret = self.inner.cursor_pos();
-                if caret >= 2 && new_text.as_bytes()[caret - 1] == b'['
+                if caret >= 2
+                    && new_text.as_bytes()[caret - 1] == b'['
                     && new_text.as_bytes()[caret - 2] == b'['
                 {
                     self.signal = Some(LineSignal::LinkOpen { open_at: caret - 2 });
@@ -772,19 +781,8 @@ pub fn segments_of(text_len: usize, marks: &[MarkSpan]) -> Vec<MarkSegment> {
 
 /// Pulled out as a free function so the chip-sizing math is
 /// unit-testable independent of the full draw path.
-pub fn chip_mono_width(
-    text_renderer: &mut TextRenderer,
-    slice: &str,
-    size: f32,
-) -> f64 {
-    let (w, _) = text_renderer.measure_styled(
-        slice,
-        size,
-        None,
-        TextWeight::Regular,
-        false,
-        true,
-    );
+pub fn chip_mono_width(text_renderer: &mut TextRenderer, slice: &str, size: f32) -> f64 {
+    let (w, _) = text_renderer.measure_styled(slice, size, None, TextWeight::Regular, false, true);
     w as f64
 }
 
@@ -793,7 +791,8 @@ pub fn chip_mono_width(
 pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
     for s in marks_list {
         if let Mark::Link(id) = &s.mark
-            && s.range.start <= byte && byte < s.range.end
+            && s.range.start <= byte
+            && byte < s.range.end
         {
             return Some(*id);
         }
@@ -805,16 +804,16 @@ pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
 mod tests {
     use super::*;
     use winit::event::KeyEvent;
-    use winit::keyboard::{Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+    use winit::keyboard::{
+        Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey, PhysicalKey, SmolStr,
+    };
 
     /// `KeyEventExtra` is `pub(crate)` in winit 0.30, so this zero-constructs
     /// rather than using a struct literal.
     fn key_press(named: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(named);
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -829,9 +828,7 @@ mod tests {
     fn char_press(c: &str) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(SmolStr::new(c));
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -842,7 +839,6 @@ mod tests {
             is_synthetic: false,
         }
     }
-
 
     fn dispatch(line: &mut RichTextLine, event: &WindowEvent) {
         dispatch_with_mods(line, event, &Modifiers::default());
@@ -912,7 +908,11 @@ mod tests {
         }
 
         assert_eq!(line.value(), "hi");
-        assert_eq!(doc.text(&tid).unwrap(), "hi", "edits must splice into the bound Text");
+        assert_eq!(
+            doc.text(&tid).unwrap(),
+            "hi",
+            "edits must splice into the bound Text"
+        );
     }
 
     #[test]
@@ -1009,7 +1009,10 @@ mod tests {
     fn set_text_does_not_mark_dirty() {
         let mut l = RichTextLine::new();
         l.set_text("seeded");
-        assert!(l.take_dirty().is_none(), "programmatic set_text is not dirty");
+        assert!(
+            l.take_dirty().is_none(),
+            "programmatic set_text is not dirty"
+        );
         assert_eq!(l.value(), "seeded");
         assert!(l.cursor_at_end());
     }
@@ -1188,15 +1191,12 @@ mod tests {
         // face mismatch couldn't be detected at all.
         let mut tr = crate::text_render::TextRenderer::new();
         let mono = super::chip_mono_width(&mut tr, "inline code", 16.0);
-        let (sans_w, _) = tr.measure_styled(
-            "inline code",
-            16.0,
-            None,
-            TextWeight::Regular,
-            false,
-            false,
+        let (sans_w, _) =
+            tr.measure_styled("inline code", 16.0, None, TextWeight::Regular, false, false);
+        assert!(
+            mono > 0.0,
+            "mono width must be non-zero for non-empty input"
         );
-        assert!(mono > 0.0, "mono width must be non-zero for non-empty input");
         assert!(
             (mono - sans_w as f64).abs() > 0.5,
             "mono and sans widths must differ for this string (got mono={mono}, sans={sans_w}) — \

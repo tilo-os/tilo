@@ -121,7 +121,11 @@ impl Session {
     /// Resolve `address` against **this** session's resource tree and perform
     /// it on this session's document — the whole route an out-of-process
     /// caller takes, with no shortcut past the id.
-    fn perform(&mut self, address: &ActionAddress, argument: Option<&str>) -> Result<(), door::DoorError> {
+    fn perform(
+        &mut self,
+        address: &ActionAddress,
+        argument: Option<&str>,
+    ) -> Result<(), door::DoorError> {
         let resources = PhotosResources.resources(&self.doc);
         let encoded = door::encode(&resources, address, argument)?;
         let mut registry = ActionRegistry::new();
@@ -301,8 +305,8 @@ fn an_address_names_content_this_machine_can_open() {
 
     let content = photos::actions::content_of(&id)
         .expect("an address for an open photograph names its content");
-    let fetched =
-        qdoc::blobstore::get(content).expect("the content the address names is in this machine's store");
+    let fetched = qdoc::blobstore::get(content)
+        .expect("the content the address names is in this machine's store");
     let decoded = photos::pixels::decode(&fetched).expect("and it decodes to a picture");
     assert_eq!(
         (decoded.w, decoded.h),
@@ -324,7 +328,10 @@ fn a_photograph_that_names_no_content_keeps_the_address_it_had() {
     let mut doc = AutoCommit::new();
     PhotosDoc::seed(&mut doc);
     let old = photos::OpenImage::from_path("/var/workspace/photos/harbour.png", 800, 600);
-    assert!(old.content.is_none(), "the fixture is not an older document");
+    assert!(
+        old.content.is_none(),
+        "the fixture is not an older document"
+    );
     PhotosDoc::set_image(&mut doc, Some(&old));
 
     let published = PhotosResources.resources(&doc);

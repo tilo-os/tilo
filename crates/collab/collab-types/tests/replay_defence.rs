@@ -13,12 +13,12 @@
 
 use std::time::{Duration, SystemTime};
 
-use ed25519_dalek::SigningKey;
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
     Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
     generate_keypair, sign_event, sign_op, validate_inbound_op,
 };
+use ed25519_dalek::SigningKey;
 
 fn t(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)

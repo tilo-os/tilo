@@ -197,10 +197,7 @@ pub fn resolve_runtime_test_helper(
 
 /// Resolve/create/migrate the one directory this launch may write to,
 /// keyed by `opts.workspace_id` — no list to walk.
-fn resolve_app_dir(
-    manifest: &MinimalManifest,
-    opts: &RunOptions,
-) -> Result<PathBuf, RunError> {
+fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<PathBuf, RunError> {
     let data_home = crate::appdir::host_data_home()
         .ok_or_else(|| RunError::NoDataHome(manifest.package_id.clone()))?;
     crate::appdir::prepare_host_app_dir(
@@ -363,9 +360,9 @@ fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError>
             }
             Ok(())
         }
-        Err(runtime_bundle::BundleError::NotSigned) => {
-            Err(RunError::RuntimeBundleUnsigned { path: path.to_path_buf() })
-        }
+        Err(runtime_bundle::BundleError::NotSigned) => Err(RunError::RuntimeBundleUnsigned {
+            path: path.to_path_buf(),
+        }),
         Err(e) => Err(RunError::RuntimeBundleSignature {
             path: path.to_path_buf(),
             reason: e.to_string(),
@@ -473,7 +470,13 @@ pub const NET_GATE_ENV: &str = "QOS_LAUNCHER_NET_GATE";
 /// namespace + gate still hold.
 fn start_egress_gate(
     egress: &crate::netgate::EgressDecision,
-) -> Result<(Option<crate::sandbox::NetGateBind>, Option<crate::netgate::NetGate>), RunError> {
+) -> Result<
+    (
+        Option<crate::sandbox::NetGateBind>,
+        Option<crate::netgate::NetGate>,
+    ),
+    RunError,
+> {
     // `Filtered` is the only decision needing a gate; `QOS_LAUNCHER_NET_GATE=off`
     // is handled in `crate::sandbox::egress_decision` so turning it off also
     // shares the network rather than sealing the app in an empty namespace.
@@ -578,8 +581,7 @@ pub fn run_with(
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // 1. Service sockets.
-    let resolved =
-        resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
+    let resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let binds = to_service_binds(&resolved);
 
     // 2. Seccomp baseline → tmpfile → fd. The manifest *asks* for a profile;
@@ -664,7 +666,10 @@ pub fn run_with(
                 .map(|p| vec![p.display().to_string()])
                 .unwrap_or_default(),
         ),
-        LaunchMode::Cli { command, passthrough_argv } => {
+        LaunchMode::Cli {
+            command,
+            passthrough_argv,
+        } => {
             entry_bin_owned = manifest
                 .entrypoint
                 .cli_bin()
@@ -799,8 +804,12 @@ pub fn run_with(
     let need_shim = opts.landlock_enforce || net_gate.is_some();
     if need_shim {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
-        let launcher = std::env::current_exe()
-            .map_err(|e| RunError::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("current_exe: {e}"))))?;
+        let launcher = std::env::current_exe().map_err(|e| {
+            RunError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("current_exe: {e}"),
+            ))
+        })?;
         argv.push("--ro-bind".to_string());
         argv.push(launcher.display().to_string());
         argv.push(SHIM_MOUNT_PATH.to_string());
@@ -1067,7 +1076,9 @@ pub fn run_with_captured(
                 .map(|p| vec![p.display().to_string()])
                 .unwrap_or_default(),
         ),
-        LaunchMode::Cli { passthrough_argv, .. } => (
+        LaunchMode::Cli {
+            passthrough_argv, ..
+        } => (
             manifest
                 .entrypoint
                 .cli_bin()
@@ -1397,11 +1408,7 @@ mod identity_resolution_tests {
     fn xdg_wins_when_file_exists_there() {
         let saved = snapshot_and_clear();
         let tmp = tempfile::tempdir().unwrap();
-        let ident = tmp
-            .path()
-            .join("qos")
-            .join("identity")
-            .join("primary.json");
+        let ident = tmp.path().join("qos").join("identity").join("primary.json");
         std::fs::create_dir_all(ident.parent().unwrap()).unwrap();
         std::fs::write(&ident, b"{}").unwrap();
         // SAFETY: this test is in the `process_env` serial group.

@@ -15,19 +15,19 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::Scene;
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::color_compat::ColorCompat;
-use ui::icons::{draw_icon, Icon, LUCIDE_DEFAULT_STROKE_PX};
+use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::colors::ACCENT_PRIMARY_IDX;
 use ui::widget::Widget;
 
-use crate::command::{push, CommandSink, FileCommand};
+use crate::command::{CommandSink, FileCommand, push};
 
 /// Bar height in logical pixels — one line of `sm`-ish text plus padding.
 pub const BAR_HEIGHT: f32 = 32.0;
@@ -171,28 +171,37 @@ impl BreadcrumbBar {
         x += ICON_PX + ICON_GAP;
 
         // Helper: push a text slot at the running x, advancing it.
-        let push_text =
-            |laid: &mut Vec<LaidSlot>, x: &mut f64, tr: &mut TextRenderer, label: &str,
-             target: Option<PathBuf>, is_current: bool, chevron_before: bool| {
-                if chevron_before {
-                    *x += sep_block;
-                }
-                let (w, _) = tr.measure(label, TEXT_SIZE, None);
-                laid.push(LaidSlot {
-                    slot: Slot::Text(label.to_string()),
-                    rect: Rect::new(*x, cy - text_h / 2.0, *x + w as f64, cy + text_h / 2.0),
-                    target,
-                    is_current,
-                    chevron_before,
-                });
-                *x += w as f64;
-            };
+        let push_text = |laid: &mut Vec<LaidSlot>,
+                         x: &mut f64,
+                         tr: &mut TextRenderer,
+                         label: &str,
+                         target: Option<PathBuf>,
+                         is_current: bool,
+                         chevron_before: bool| {
+            if chevron_before {
+                *x += sep_block;
+            }
+            let (w, _) = tr.measure(label, TEXT_SIZE, None);
+            laid.push(LaidSlot {
+                slot: Slot::Text(label.to_string()),
+                rect: Rect::new(*x, cy - text_h / 2.0, *x + w as f64, cy + text_h / 2.0),
+                target,
+                is_current,
+                chevron_before,
+            });
+            *x += w as f64;
+        };
 
         // The root label always shows (no chevron — it pairs with the icon).
         let (root_label, root_path) = self.segments[0].clone();
         push_text(
-            &mut self.laid, &mut x, tr, &root_label,
-            Some(root_path), last_idx == 0, false,
+            &mut self.laid,
+            &mut x,
+            tr,
+            &root_label,
+            Some(root_path),
+            last_idx == 0,
+            false,
         );
 
         // Components below the root, chevron-joined. Tail-priority collapse:
@@ -234,8 +243,13 @@ impl BreadcrumbBar {
         for idx in show {
             let (label, target) = self.segments[idx].clone();
             push_text(
-                &mut self.laid, &mut x, tr, &label,
-                Some(target), idx == last_idx, true,
+                &mut self.laid,
+                &mut x,
+                tr,
+                &label,
+                Some(target),
+                idx == last_idx,
+                true,
             );
         }
     }
@@ -319,7 +333,8 @@ impl Widget for BreadcrumbBar {
             if ls.chevron_before {
                 let (cw, _) = text_renderer.measure(CHEVRON, TEXT_SIZE, None);
                 let sep_x = ls.rect.x0 - SEP_PAD - cw as f64;
-                let sep_y = crate::text_layout::centered_text_y(ls.rect.y0, ls.rect.height(), TEXT_SIZE);
+                let sep_y =
+                    crate::text_layout::centered_text_y(ls.rect.y0, ls.rect.height(), TEXT_SIZE);
                 text_renderer.draw_text(
                     scene,
                     CHEVRON,
@@ -342,7 +357,11 @@ impl Widget for BreadcrumbBar {
                     );
                 }
                 Slot::Text(label) => {
-                    let ty = crate::text_layout::centered_text_y(ls.rect.y0, ls.rect.height(), TEXT_SIZE);
+                    let ty = crate::text_layout::centered_text_y(
+                        ls.rect.y0,
+                        ls.rect.height(),
+                        TEXT_SIZE,
+                    );
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -416,7 +435,12 @@ impl Widget for BreadcrumbBar {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         for ls in &self.laid {
             if ls.target.is_some() && !ls.is_current {
-                let hot = Rect::new(ls.rect.x0 - 3.0, self.rect.y0, ls.rect.x1 + 3.0, self.rect.y1);
+                let hot = Rect::new(
+                    ls.rect.x0 - 3.0,
+                    self.rect.y0,
+                    ls.rect.x1 + 3.0,
+                    self.rect.y1,
+                );
                 if hot.contains(point) {
                     return Some(winit::window::CursorIcon::Pointer);
                 }
@@ -452,10 +476,7 @@ mod tests {
 
     #[test]
     fn root_icon_is_home_under_home_and_drive_under_root() {
-        let home = BreadcrumbBar::new(
-            vec![("Home".into(), PathBuf::from("/home/u"))],
-            new_sink(),
-        );
+        let home = BreadcrumbBar::new(vec![("Home".into(), PathBuf::from("/home/u"))], new_sink());
         assert_eq!(home.root_icon(), Icon::Home);
         let root = BreadcrumbBar::new(vec![("/".into(), PathBuf::from("/"))], new_sink());
         assert_eq!(root.root_icon(), Icon::HardDrive);
@@ -467,7 +488,10 @@ mod tests {
             vec![
                 ("Home".into(), PathBuf::from("/home/u")),
                 ("Documents".into(), PathBuf::from("/home/u/Documents")),
-                ("Projects".into(), PathBuf::from("/home/u/Documents/Projects")),
+                (
+                    "Projects".into(),
+                    PathBuf::from("/home/u/Documents/Projects"),
+                ),
             ],
             new_sink(),
         );
@@ -475,7 +499,10 @@ mod tests {
         // Leading icon + root label + two components, none collapsed.
         assert_eq!(bar.laid.len(), 4);
         assert!(matches!(bar.laid[0].slot, Slot::Icon(_)));
-        assert!(bar.laid[0].target.is_none(), "the icon is a decorative anchor");
+        assert!(
+            bar.laid[0].target.is_none(),
+            "the icon is a decorative anchor"
+        );
         // The root *label* carries the click to home.
         assert!(matches!(&bar.laid[1].slot, Slot::Text(t) if t == "Home"));
         assert_eq!(bar.laid[1].target.as_deref(), Some(Path::new("/home/u")));
@@ -489,7 +516,10 @@ mod tests {
         let mut bar = BreadcrumbBar::new(
             vec![
                 ("Home".into(), PathBuf::from("/home/u")),
-                ("a-really-long-directory-name".into(), PathBuf::from("/home/u/a")),
+                (
+                    "a-really-long-directory-name".into(),
+                    PathBuf::from("/home/u/a"),
+                ),
                 ("another-long-one".into(), PathBuf::from("/home/u/a/b")),
                 ("Projects".into(), PathBuf::from("/home/u/a/b/Projects")),
             ],
@@ -503,9 +533,15 @@ mod tests {
             .laid
             .iter()
             .any(|ls| matches!(&ls.slot, Slot::Text(t) if t == ELLIPSIS));
-        assert!(has_ellipsis, "narrow trail must fold leading components into …");
+        assert!(
+            has_ellipsis,
+            "narrow trail must fold leading components into …"
+        );
         let shows_current = bar.laid.iter().any(|ls| ls.is_current);
-        assert!(shows_current, "the current directory must always be visible");
+        assert!(
+            shows_current,
+            "the current directory must always be visible"
+        );
         // Every laid slot fits within the bar's right edge.
         for ls in &bar.laid {
             assert!(ls.rect.x1 <= bar.rect.x1 + 0.5, "slot overflowed the bar");
@@ -522,6 +558,9 @@ mod tests {
         assert!(matches!(bar.laid[0].slot, Slot::Icon(_)));
         assert!(!bar.laid[0].is_current);
         assert!(matches!(&bar.laid[1].slot, Slot::Text(t) if t == "Home"));
-        assert!(bar.laid[1].is_current, "root label is the current dir when alone");
+        assert!(
+            bar.laid[1].is_current,
+            "root label is the current dir when alone"
+        );
     }
 }

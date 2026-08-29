@@ -285,7 +285,10 @@ fn permission_context_built_from_an_actor_and_its_capabilities() {
     // The individual grant lifts her above her role's ceiling — but only
     // inside the scope it names.
     assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Admin)));
-    assert!(!ctx.check(&PermissionScope::app_kind(AppKind::FileExplorer, Verb::Admin)));
+    assert!(!ctx.check(&PermissionScope::app_kind(
+        AppKind::FileExplorer,
+        Verb::Admin
+    )));
 }
 
 #[test]
@@ -304,7 +307,10 @@ fn a_lapsed_capability_stops_granting() {
     assert!(live.check(&scope));
 
     let lapsed = PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(2_000);
-    assert!(!lapsed.check(&scope), "the deadline is exclusive: at it, the grant is dead");
+    assert!(
+        !lapsed.check(&scope),
+        "the deadline is exclusive: at it, the grant is dead"
+    );
     assert_eq!(
         lapsed.check_with_denied_feedback(&scope),
         Some(CapDecision::DeniedByRole)
@@ -320,7 +326,10 @@ fn permissive_holds_one_real_workspace_wide_admin_capability() {
     assert_eq!(ctx.capabilities()[0].verb, Verb::Admin);
     assert!(ctx.check(&PermissionScope::workspace(Verb::Admin)));
     assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Write)));
-    assert!(ctx.check(&PermissionScope::path("/var/workspace/anything", Verb::Write)));
+    assert!(ctx.check(&PermissionScope::path(
+        "/var/workspace/anything",
+        Verb::Write
+    )));
     assert_eq!(
         ctx.decide(&ResourceRef::Device("camera".into()), Verb::Read),
         CapDecision::Allow

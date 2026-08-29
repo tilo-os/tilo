@@ -381,7 +381,9 @@ pub fn preferred_backend(note: impl FnOnce(String)) -> Box<dyn MusicBackend> {
                 return Box::new(b);
             }
             Err(e) => {
-                note(format!("live backend unavailable ({e}); using offline sample"));
+                note(format!(
+                    "live backend unavailable ({e}); using offline sample"
+                ));
             }
         }
     }

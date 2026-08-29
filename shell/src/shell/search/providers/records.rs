@@ -86,10 +86,7 @@ impl SearchProvider for RecordsProvider {
         // the chrome mutably.
         let (here, rooms) = {
             let tree = ctx.chrome.tree();
-            (
-                tree.active_workspace().map(|w| w.room),
-                room_names(&tree),
-            )
+            (tree.active_workspace().map(|w| w.room), room_names(&tree))
         };
 
         let index = self.index.borrow();
@@ -253,9 +250,13 @@ fn starts_a_word(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
-    haystack
-        .match_indices(needle)
-        .any(|(at, _)| at == 0 || !haystack[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric()))
+    haystack.match_indices(needle).any(|(at, _)| {
+        at == 0
+            || !haystack[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric())
+    })
 }
 
 #[cfg(test)]
@@ -300,7 +301,9 @@ mod tests {
         let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
         let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
         let book = RecordId::minted();
-        index.borrow_mut().reference(rooms[1], &book, &RecordKind::new("book"));
+        index
+            .borrow_mut()
+            .reference(rooms[1], &book, &RecordKind::new("book"));
         index.borrow_mut().seed_observed([ObservedRecord {
             id: book.clone(),
             kind: RecordKind::new("book"),

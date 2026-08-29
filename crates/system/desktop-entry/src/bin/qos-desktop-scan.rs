@@ -91,9 +91,19 @@ fn main() -> ExitCode {
         .collect();
 
     for entry in &shown {
-        println!("{:<10}  {:<44}  {}", entry.source.label(), entry.id, entry.name);
+        println!(
+            "{:<10}  {:<44}  {}",
+            entry.source.label(),
+            entry.id,
+            entry.name
+        );
         if show_exec {
-            println!("{:<10}  {:<44}  Exec={}", "", "", entry.exec.as_deref().unwrap_or(""));
+            println!(
+                "{:<10}  {:<44}  Exec={}",
+                "",
+                "",
+                entry.exec.as_deref().unwrap_or("")
+            );
         }
     }
 

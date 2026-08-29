@@ -35,7 +35,11 @@ pub fn spawn_watcher(router: Router, registry_path: PathBuf) -> anyhow::Result<(
         let registry_name = registry_name.clone();
         notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(ev) = res {
-                if ev.paths.iter().any(|p| p.file_name() == Some(&registry_name)) {
+                if ev
+                    .paths
+                    .iter()
+                    .any(|p| p.file_name() == Some(&registry_name))
+                {
                     let _ = tx.blocking_send(());
                 }
             }

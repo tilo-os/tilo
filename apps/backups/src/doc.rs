@@ -147,10 +147,18 @@ impl BackupsDoc {
     pub fn policy(doc: &AutoCommit, root: &ObjId) -> RetentionPolicy {
         let d = RetentionPolicy::default();
         RetentionPolicy {
-            hourly: Self::get_int(doc, root, "ret_hourly").unwrap_or(d.hourly as i64).max(0) as u32,
-            daily: Self::get_int(doc, root, "ret_daily").unwrap_or(d.daily as i64).max(0) as u32,
-            weekly: Self::get_int(doc, root, "ret_weekly").unwrap_or(d.weekly as i64).max(0) as u32,
-            monthly: Self::get_int(doc, root, "ret_monthly").unwrap_or(d.monthly as i64).max(0) as u32,
+            hourly: Self::get_int(doc, root, "ret_hourly")
+                .unwrap_or(d.hourly as i64)
+                .max(0) as u32,
+            daily: Self::get_int(doc, root, "ret_daily")
+                .unwrap_or(d.daily as i64)
+                .max(0) as u32,
+            weekly: Self::get_int(doc, root, "ret_weekly")
+                .unwrap_or(d.weekly as i64)
+                .max(0) as u32,
+            monthly: Self::get_int(doc, root, "ret_monthly")
+                .unwrap_or(d.monthly as i64)
+                .max(0) as u32,
         }
     }
 
@@ -165,7 +173,9 @@ impl BackupsDoc {
             PolicyField::Weekly => d.weekly,
             PolicyField::Monthly => d.monthly,
         } as i64;
-        Self::get_int(doc, root, field.key()).unwrap_or(default).clamp(0, 999) as u32
+        Self::get_int(doc, root, field.key())
+            .unwrap_or(default)
+            .clamp(0, 999) as u32
     }
 
     /// Set one retention field to an absolute `count`, clamped to `[0, 999]`.

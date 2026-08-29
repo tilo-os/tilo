@@ -337,7 +337,9 @@ impl TubeApp {
             // decode path is exercised by `with_live_frame_for_shot` under the
             // separate `--live-shots` hook.)
             p.set_engine(media::MediaEngine::new_synthesized());
-            p.open(media::Source::Remote { url: "https://demo.local/clip.mp4".into() });
+            p.open(media::Source::Remote {
+                url: "https://demo.local/clip.mp4".into(),
+            });
             // Seed a colourful mid-stream frame for the still, then pump the
             // engine so the frame lands in the surface. The offscreen renderer
             // syncs the app exactly once — *before* this player is mounted in the
@@ -427,7 +429,9 @@ impl TubeApp {
         ));
         {
             let mut p = self.player.borrow_mut();
-            p.open(media::Source::Remote { url: "https://demo.local/clip.mp4".into() });
+            p.open(media::Source::Remote {
+                url: "https://demo.local/clip.mp4".into(),
+            });
             p.seek_to_ms(30_000);
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
@@ -666,8 +670,7 @@ impl TubeApp {
     /// Resolve whether the rail is currently shown, given the session
     /// preference and the layout default (overlay ⇒ closed, docked ⇒ open).
     fn sidebar_currently_open(&self) -> bool {
-        self.sidebar_open
-            .unwrap_or(!self.nav_is_overlay())
+        self.sidebar_open.unwrap_or(!self.nav_is_overlay())
     }
 
     /// Close the rail when it is an overlay flap (narrow window) — selecting a
@@ -682,7 +685,10 @@ impl TubeApp {
     /// Whether any real image (thumbnail / avatar / banner) is still loading, so
     /// the app keeps redrawing/idle-syncing until each decoded image lands.
     fn images_pending(&self) -> bool {
-        self.images.as_ref().map(|s| s.pending() > 0).unwrap_or(false)
+        self.images
+            .as_ref()
+            .map(|s| s.pending() > 0)
+            .unwrap_or(false)
     }
 
     /// If the current route is a watch page we haven't started playing yet, ask
@@ -819,7 +825,9 @@ impl TubeApp {
         // Bring up MPRIS once, in the live app, so media keys + the system media
         // widget can drive this player and show its now-playing.
         if self.online && !self.mpris_started {
-            self.player.borrow_mut().enable_mpris("qos-tube", "qOS Tube");
+            self.player
+                .borrow_mut()
+                .enable_mpris("qos-tube", "qOS Tube");
             self.mpris_started = true;
         }
         self.player_video = Some(video);
@@ -853,7 +861,9 @@ impl TubeApp {
         let v = self.model.video(id)?;
         v.sponsor
             .iter()
-            .find(|s| self.model.settings.should_show_skip(s.category) && s.contains(self.model.playhead))
+            .find(|s| {
+                self.model.settings.should_show_skip(s.category) && s.contains(self.model.playhead)
+            })
             .map(|s| s.end)
     }
 
@@ -869,12 +879,16 @@ impl TubeApp {
             return false;
         };
         let (seg_end, label) = {
-            let Some(v) = self.model.video(&id) else { return false };
+            let Some(v) = self.model.video(&id) else {
+                return false;
+            };
             let mut found = None;
             for s in &v.sponsor {
                 // Only Auto-skip-mode categories skip on their own; Show-mode
                 // segments wait for the manual skip button.
-                if self.model.settings.should_auto_skip(s.category) && s.contains(self.model.playhead) {
+                if self.model.settings.should_auto_skip(s.category)
+                    && s.contains(self.model.playhead)
+                {
                     found = Some((
                         s.end,
                         format!(
@@ -894,7 +908,9 @@ impl TubeApp {
         };
         self.model.playhead = seg_end;
         // Seek the real stream past the segment (no-op when no source is loaded).
-        self.player.borrow_mut().seek_to_ms((seg_end * 1000.0) as u64);
+        self.player
+            .borrow_mut()
+            .seek_to_ms((seg_end * 1000.0) as u64);
         self.model.push_notice(label);
         true
     }
@@ -1037,7 +1053,8 @@ impl TubeApp {
                     let to = to.clamp(0.0, d);
                     self.model.playhead = to;
                     self.player.borrow_mut().seek_to_ms((to * 1000.0) as u64);
-                    self.model.push_notice(format!("Skipped to {}", crate::util::clock(to)));
+                    self.model
+                        .push_notice(format!("Skipped to {}", crate::util::clock(to)));
                 }
             }
             Action::ToggleSetting(flag) => {
@@ -1057,7 +1074,8 @@ impl TubeApp {
             Action::SetQuality(_) => {
                 let cur = self.model.settings.preferred_quality.clone();
                 let idx = QUALITIES.iter().position(|q| *q == cur).unwrap_or(0);
-                self.model.settings.preferred_quality = QUALITIES[(idx + 1) % QUALITIES.len()].to_string();
+                self.model.settings.preferred_quality =
+                    QUALITIES[(idx + 1) % QUALITIES.len()].to_string();
             }
             Action::SubmitSearch => {
                 let q = self.read_search(state, root);
@@ -1163,7 +1181,11 @@ impl TubeApp {
                         changed = true;
                     }
                 }
-                Update::DeArrow { video, title, thumbnail_url } => {
+                Update::DeArrow {
+                    video,
+                    title,
+                    thumbnail_url,
+                } => {
                     if let Some(v) = self.model.videos.iter_mut().find(|v| v.id == video) {
                         if title.is_some() {
                             v.dearrow_title = title;
@@ -1188,7 +1210,12 @@ impl TubeApp {
                         changed = true;
                     }
                 }
-                Update::SearchResults { query, videos, playlists, channels } => {
+                Update::SearchResults {
+                    query,
+                    videos,
+                    playlists,
+                    channels,
+                } => {
                     // A response landed (possibly empty) — drop the skeleton.
                     self.model.search_loading = false;
                     // Record the backend's exact ordered result set for this
@@ -1196,7 +1223,8 @@ impl TubeApp {
                     // fold the videos + uploader stubs into the catalogue.
                     let ids: Vec<String> = videos.iter().map(|v| v.id.clone()).collect();
                     for nv in videos {
-                        self.model.ensure_channel_stub(&nv.channel_id, &nv.channel_name);
+                        self.model
+                            .ensure_channel_stub(&nv.channel_id, &nv.channel_name);
                         self.model.adopt_channel_avatar(
                             &nv.channel_id,
                             &nv.channel_name,
@@ -1204,9 +1232,11 @@ impl TubeApp {
                         );
                         self.model.upsert_video(nv);
                     }
-                    let playlist_ids: Vec<String> = playlists.iter().map(|p| p.id.clone()).collect();
+                    let playlist_ids: Vec<String> =
+                        playlists.iter().map(|p| p.id.clone()).collect();
                     for p in playlists {
-                        self.model.ensure_channel_stub(&p.channel_id, &p.channel_name);
+                        self.model
+                            .ensure_channel_stub(&p.channel_id, &p.channel_name);
                         self.model.upsert_playlist(p);
                     }
                     // Creator rows: fold in without clobbering a richer channel
@@ -1218,7 +1248,8 @@ impl TubeApp {
                         // that creator (matched by id OR normalized name) — stamp it
                         // there so the dominant channel's cards get the photo even
                         // when the video items didn't carry it.
-                        self.model.adopt_channel_avatar(&c.id, &c.name, &c.avatar_url);
+                        self.model
+                            .adopt_channel_avatar(&c.id, &c.name, &c.avatar_url);
                         if let Some(ex) = self.model.channels.iter_mut().find(|x| x.id == c.id) {
                             if ex.avatar_url.is_empty() {
                                 ex.avatar_url = c.avatar_url;
@@ -1260,7 +1291,11 @@ impl TubeApp {
                         .filter(|cid| {
                             !cid.is_empty()
                                 && seen.insert(cid.clone())
-                                && self.model.channel(cid).map(|c| c.avatar_url.is_empty()).unwrap_or(true)
+                                && self
+                                    .model
+                                    .channel(cid)
+                                    .map(|c| c.avatar_url.is_empty())
+                                    .unwrap_or(true)
                         })
                         .take(6)
                         .collect();
@@ -1271,11 +1306,14 @@ impl TubeApp {
                 }
                 Update::PlaylistPage { playlist, videos } => {
                     for v in videos {
-                        self.model.ensure_channel_stub(&v.channel_id, &v.channel_name);
-                        self.model.note_channel_avatar(&v.channel_id, &v.channel_avatar_url);
+                        self.model
+                            .ensure_channel_stub(&v.channel_id, &v.channel_name);
+                        self.model
+                            .note_channel_avatar(&v.channel_id, &v.channel_avatar_url);
                         self.model.upsert_video(v);
                     }
-                    self.model.ensure_channel_stub(&playlist.channel_id, &playlist.channel_name);
+                    self.model
+                        .ensure_channel_stub(&playlist.channel_id, &playlist.channel_name);
                     self.model.upsert_playlist(*playlist);
                     changed = true;
                 }
@@ -1288,7 +1326,8 @@ impl TubeApp {
                 Update::VideoMeta { video, related } => {
                     let id = video.id.clone();
                     let channel_id = video.channel_id.clone();
-                    self.model.ensure_channel_stub(&video.channel_id, &video.channel_name);
+                    self.model
+                        .ensure_channel_stub(&video.channel_id, &video.channel_name);
                     self.model.adopt_channel_avatar(
                         &video.channel_id,
                         &video.channel_name,
@@ -1308,7 +1347,8 @@ impl TubeApp {
                     }
                     let ids: Vec<String> = related.iter().map(|v| v.id.clone()).collect();
                     for rv in related {
-                        self.model.ensure_channel_stub(&rv.channel_id, &rv.channel_name);
+                        self.model
+                            .ensure_channel_stub(&rv.channel_id, &rv.channel_name);
                         self.model.adopt_channel_avatar(
                             &rv.channel_id,
                             &rv.channel_name,
@@ -1329,10 +1369,15 @@ impl TubeApp {
                     // video cards resolve it even when the channel page's returned
                     // id differs from the search item's channel_id — the exact
                     // reason the dominant channel kept showing initials.
-                    self.model.adopt_channel_avatar(&channel.id, &channel.name, &channel.avatar_url);
+                    self.model.adopt_channel_avatar(
+                        &channel.id,
+                        &channel.name,
+                        &channel.avatar_url,
+                    );
                     self.model.upsert_channel(*channel);
                     for uv in uploads {
-                        self.model.ensure_channel_stub(&uv.channel_id, &uv.channel_name);
+                        self.model
+                            .ensure_channel_stub(&uv.channel_id, &uv.channel_name);
                         self.model.adopt_channel_avatar(
                             &uv.channel_id,
                             &uv.channel_name,
@@ -1351,12 +1396,18 @@ impl TubeApp {
                         self.model.feed_loading = false;
                         self.model.search_loading = false;
                     }
-                    if self.model.data_source.live != live || self.model.data_source.label != label {
+                    if self.model.data_source.live != live || self.model.data_source.label != label
+                    {
                         self.model.data_source = crate::model::DataSource { live, label };
                         changed = true;
                     }
                 }
-                Update::StreamResolved { video, url, has_audio, quality } => {
+                Update::StreamResolved {
+                    video,
+                    url,
+                    has_audio,
+                    quality,
+                } => {
                     if self.load_resolved_stream(video, url, has_audio, quality) {
                         changed = true;
                     }
@@ -1589,7 +1640,14 @@ impl Widget for TubeApp {
             &self.rect,
         );
         if let Some(c) = &mut self.root_child {
-            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            c.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
     }
 
@@ -1651,7 +1709,12 @@ impl Widget for TubeApp {
         // Only when there is history and no overlay owns the key.
         if !self.model.palette_open
             && let WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } = event
         {
@@ -1670,24 +1733,43 @@ impl Widget for TubeApp {
         // the toolkit layer with no app-specific gesture code.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_pointer =
+                    Point::new(position.x / scale_factor, position.y / scale_factor);
                 if let Some(ui::NavAction::Back) = self.back_gesture.pointer_move(self.last_pointer)
                     && self.nav.can_go_back()
                 {
                     action::push(&self.bus, Action::Back);
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.back_gesture.pointer_down(self.last_pointer);
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.back_gesture.pointer_up();
             }
             _ => {}
         }
 
         if let Some(c) = &mut self.root_child {
-            c.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
         }
 
         // Esc dismisses an open overlay flap. The live split closes itself on
@@ -1813,7 +1895,11 @@ impl Widget for TubeApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.root_child.as_ref().map(|c| c.as_ref() as &dyn Widget).into_iter().collect()
+        self.root_child
+            .as_ref()
+            .map(|c| c.as_ref() as &dyn Widget)
+            .into_iter()
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1882,8 +1968,14 @@ mod tests {
             id: "resolution".into(),
             index: 1,
         });
-        assert_eq!(app.model.settings.preferred_quality, "720p", "picking index 1 selects 720p");
-        assert!(app.structure_dirty, "a resolution change rebuilds the watch tree");
+        assert_eq!(
+            app.model.settings.preferred_quality, "720p",
+            "picking index 1 selects 720p"
+        );
+        assert!(
+            app.structure_dirty,
+            "a resolution change rebuilds the watch tree"
+        );
         // A different setting id is ignored (no accidental clobber).
         app.apply_player_setting_event(ui::widget::video_player::PlayerSettingEvent::Chose {
             id: "unrelated".into(),
@@ -1897,9 +1989,17 @@ mod tests {
         // `TubeApp` must forward the player's fullscreen intent up to the root,
         // since `ui::App` only polls the root widget.
         let (mut app, _) = fresh_synth();
-        assert_eq!(Widget::fullscreen_intent(&app), None, "no opinion until the user acts");
+        assert_eq!(
+            Widget::fullscreen_intent(&app),
+            None,
+            "no opinion until the user acts"
+        );
         app.player.borrow_mut().toggle_fullscreen();
-        assert_eq!(Widget::fullscreen_intent(&app), Some(true), "toggle reaches the root");
+        assert_eq!(
+            Widget::fullscreen_intent(&app),
+            Some(true),
+            "toggle reaches the root"
+        );
         assert_eq!(
             Widget::fullscreen_params(&app).target,
             ui::fullscreen::FullscreenTarget::Largest,
@@ -1916,7 +2016,10 @@ mod tests {
         let r = automerge::ROOT;
         app.apply(Action::OpenVideo("vid_donut".into()), &mut doc, &r);
         assert_eq!(app.model.route, Route::Watch("vid_donut".into()));
-        assert_eq!(app.model.history.first().map(|s| s.as_str()), Some("vid_donut"));
+        assert_eq!(
+            app.model.history.first().map(|s| s.as_str()),
+            Some("vid_donut")
+        );
         assert_eq!(app.model.playhead, 0.0);
     }
 
@@ -1945,11 +2048,21 @@ mod tests {
             "360p".into(),
         );
         assert!(ok, "the resolved stream loaded for the open watch video");
-        assert!(app.player.borrow().is_playing(), "the engine is playing the stream");
-        let src = app.player.borrow().engine().and_then(|e| e.source().cloned());
+        assert!(
+            app.player.borrow().is_playing(),
+            "the engine is playing the stream"
+        );
+        let src = app
+            .player
+            .borrow()
+            .engine()
+            .and_then(|e| e.source().cloned());
         match src {
             Some(media::Source::Remote { url }) => {
-                assert!(url.contains("local=true"), "opened the rangeable proxy URL: {url}")
+                assert!(
+                    url.contains("local=true"),
+                    "opened the rangeable proxy URL: {url}"
+                )
             }
             other => panic!("expected a remote source on the engine, got {other:?}"),
         }
@@ -1967,7 +2080,13 @@ mod tests {
             "360p".into(),
         );
         assert!(!ok, "a stream for a non-open video is dropped");
-        assert!(app.player.borrow().engine().and_then(|e| e.source()).is_none());
+        assert!(
+            app.player
+                .borrow()
+                .engine()
+                .and_then(|e| e.source())
+                .is_none()
+        );
     }
 
     #[test]
@@ -1983,10 +2102,16 @@ mod tests {
         );
         assert!(app.player.borrow().is_playing());
         app.apply(Action::TogglePlay, &mut doc, &r);
-        assert!(!app.player.borrow().is_playing(), "TogglePlay paused the engine");
+        assert!(
+            !app.player.borrow().is_playing(),
+            "TogglePlay paused the engine"
+        );
         assert!(!app.model.playing, "the model mirrors the paused engine");
         app.apply(Action::TogglePlay, &mut doc, &r);
-        assert!(app.player.borrow().is_playing(), "TogglePlay resumed the engine");
+        assert!(
+            app.player.borrow().is_playing(),
+            "TogglePlay resumed the engine"
+        );
         assert!(app.model.playing, "the model mirrors the playing engine");
     }
 
@@ -2006,12 +2131,23 @@ mod tests {
         app.model.playhead = 1500.0;
         let skipped = app.apply_auto_skip();
         assert!(skipped, "a skip happened");
-        assert!(app.model.playhead >= 1570.0, "model playhead jumped past the segment");
+        assert!(
+            app.model.playhead >= 1570.0,
+            "model playhead jumped past the segment"
+        );
         // The seek reached the engine (its position advanced off the start). The
         // synthesized test engine caps its duration, so the exact target clamps —
         // proving it moved is the honest real-path assertion.
-        let engine_pos = app.player.borrow().engine().map(|e| e.position_ms()).unwrap_or(0);
-        assert!(engine_pos > 0, "the auto-skip seeked the engine (pos={engine_pos})");
+        let engine_pos = app
+            .player
+            .borrow()
+            .engine()
+            .map(|e| e.position_ms())
+            .unwrap_or(0);
+        assert!(
+            engine_pos > 0,
+            "the auto-skip seeked the engine (pos={engine_pos})"
+        );
         assert!(app.model.notices.iter().any(|n| n.contains("Sponsor")));
     }
 
@@ -2025,7 +2161,11 @@ mod tests {
         // Seek to ~1500s (inside the sponsor segment).
         app.apply(Action::Seek(1500.0 / dur), &mut doc, &r);
         // Auto-skip should jump the playhead to the segment end (1570).
-        assert!(app.model.playhead >= 1570.0, "playhead was {}", app.model.playhead);
+        assert!(
+            app.model.playhead >= 1570.0,
+            "playhead was {}",
+            app.model.playhead
+        );
         assert!(app.model.notices.iter().any(|l| l.contains("Sponsor")));
     }
 
@@ -2069,9 +2209,15 @@ mod tests {
         let r = automerge::ROOT;
         assert!(!app.model.is_liked("vid_donut"));
         app.apply(Action::ToggleLike("vid_donut".into()), &mut doc, &r);
-        assert!(app.model.is_liked("vid_donut"), "ToggleLike likes the video");
+        assert!(
+            app.model.is_liked("vid_donut"),
+            "ToggleLike likes the video"
+        );
         app.apply(Action::ToggleLike("vid_donut".into()), &mut doc, &r);
-        assert!(!app.model.is_liked("vid_donut"), "ToggleLike again unlikes it");
+        assert!(
+            !app.model.is_liked("vid_donut"),
+            "ToggleLike again unlikes it"
+        );
 
         app.apply(Action::Share("vid_donut".into()), &mut doc, &r);
         assert!(
@@ -2093,7 +2239,10 @@ mod tests {
         app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
         assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Show);
         app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
-        assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Disabled);
+        assert_eq!(
+            app.model.settings.mode_of(Category::Intro),
+            SkipMode::Disabled
+        );
         app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
         assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
     }
@@ -2116,12 +2265,18 @@ mod tests {
             .insert(Category::Sponsor.api_key().to_string(), SkipMode::Show);
         app.model.playhead = 1500.0;
         assert!(!app.apply_auto_skip(), "Show mode must NOT auto-skip");
-        assert_eq!(app.model.playhead, 1500.0, "playhead untouched by auto-skip");
+        assert_eq!(
+            app.model.playhead, 1500.0,
+            "playhead untouched by auto-skip"
+        );
         // The manual skip button jumps to the segment end.
         let mut doc = AutoCommit::new();
         let r = automerge::ROOT;
         app.apply(Action::SkipSegment(1570.0), &mut doc, &r);
-        assert!(app.model.playhead >= 1570.0, "manual skip advanced the playhead");
+        assert!(
+            app.model.playhead >= 1570.0,
+            "manual skip advanced the playhead"
+        );
     }
 
     #[test]
@@ -2159,9 +2314,18 @@ mod tests {
 
     #[test]
     fn rail_is_docked_wide_and_overlay_narrow() {
-        assert!(!at_width(1280.0).nav_is_overlay(), "wide window docks the rail");
-        assert!(!at_width(NAV_BREAKPOINT).nav_is_overlay(), "breakpoint is inclusive → docked");
-        assert!(at_width(NAV_BREAKPOINT - 1.0).nav_is_overlay(), "below breakpoint overlays the rail");
+        assert!(
+            !at_width(1280.0).nav_is_overlay(),
+            "wide window docks the rail"
+        );
+        assert!(
+            !at_width(NAV_BREAKPOINT).nav_is_overlay(),
+            "breakpoint is inclusive → docked"
+        );
+        assert!(
+            at_width(NAV_BREAKPOINT - 1.0).nav_is_overlay(),
+            "below breakpoint overlays the rail"
+        );
     }
 
     #[test]
@@ -2170,8 +2334,15 @@ mod tests {
         // The rail must NOT assume the wide/docked layout and flash open over
         // the content — it defaults to the overlay resolution (closed).
         let app = TubeApp::new();
-        assert_eq!(app.rect.width(), 0.0, "a fresh app has no measured width yet");
-        assert!(app.nav_is_overlay(), "unknown width resolves to overlay, not docked");
+        assert_eq!(
+            app.rect.width(),
+            0.0,
+            "a fresh app has no measured width yet"
+        );
+        assert!(
+            app.nav_is_overlay(),
+            "unknown width resolves to overlay, not docked"
+        );
         assert!(
             !app.sidebar_currently_open(),
             "with the width unknown the rail defaults closed (never assume wide)"
@@ -2184,19 +2355,29 @@ mod tests {
         // the layout from the true width up front: wide docks + opens, narrow
         // overlays + closes.
         assert!(
-            TubeApp::new().with_viewport(1280.0, 720.0).sidebar_currently_open(),
+            TubeApp::new()
+                .with_viewport(1280.0, 720.0)
+                .sidebar_currently_open(),
             "a wide shot viewport docks and opens the rail"
         );
         assert!(
-            !TubeApp::new().with_viewport(560.0, 720.0).sidebar_currently_open(),
+            !TubeApp::new()
+                .with_viewport(560.0, 720.0)
+                .sidebar_currently_open(),
             "a narrow shot viewport overlays and closes the rail"
         );
     }
 
     #[test]
     fn rail_default_open_when_docked_closed_when_overlay() {
-        assert!(at_width(1280.0).sidebar_currently_open(), "docked rail shows by default");
-        assert!(!at_width(560.0).sidebar_currently_open(), "overlay rail hides by default");
+        assert!(
+            at_width(1280.0).sidebar_currently_open(),
+            "docked rail shows by default"
+        );
+        assert!(
+            !at_width(560.0).sidebar_currently_open(),
+            "overlay rail hides by default"
+        );
     }
 
     #[test]
@@ -2205,9 +2386,15 @@ mod tests {
         let r = automerge::ROOT;
         assert!(!app.sidebar_currently_open(), "narrow rail starts closed");
         app.apply(Action::ToggleSidebar, &mut doc, &r);
-        assert!(app.sidebar_currently_open(), "hamburger summons the overlay rail");
+        assert!(
+            app.sidebar_currently_open(),
+            "hamburger summons the overlay rail"
+        );
         app.apply(Action::ToggleSidebar, &mut doc, &r);
-        assert!(!app.sidebar_currently_open(), "a second toggle dismisses it");
+        assert!(
+            !app.sidebar_currently_open(),
+            "a second toggle dismisses it"
+        );
     }
 
     #[test]
@@ -2217,7 +2404,10 @@ mod tests {
         app.apply(Action::ToggleSidebar, &mut doc, &r); // open it
         assert!(app.sidebar_currently_open());
         app.apply(Action::Navigate(Route::Trending), &mut doc, &r);
-        assert!(!app.sidebar_currently_open(), "navigating closes the overlay flap");
+        assert!(
+            !app.sidebar_currently_open(),
+            "navigating closes the overlay flap"
+        );
     }
 
     #[test]
@@ -2225,7 +2415,10 @@ mod tests {
         let (mut app, mut doc) = (at_width(1280.0), AutoCommit::new());
         let r = automerge::ROOT;
         app.apply(Action::Navigate(Route::History), &mut doc, &r);
-        assert!(app.sidebar_currently_open(), "the docked rail stays put when navigating");
+        assert!(
+            app.sidebar_currently_open(),
+            "the docked rail stays put when navigating"
+        );
     }
 
     // --- no fabricated content + loading states ---
@@ -2235,10 +2428,19 @@ mod tests {
         // The real (online) app must NOT present the bundled sample catalogue as
         // if it were real data — it starts empty and shows a loading skeleton.
         let app = TubeApp::new().online();
-        assert!(app.model.videos.is_empty(), "online start must seed no sample videos");
-        assert!(app.model.channels.is_empty(), "online start must seed no sample channels");
+        assert!(
+            app.model.videos.is_empty(),
+            "online start must seed no sample videos"
+        );
+        assert!(
+            app.model.channels.is_empty(),
+            "online start must seed no sample channels"
+        );
         assert!(app.model.subscriptions.is_empty());
-        assert!(app.model.feed_loading, "cold Home shows a loading skeleton, not a blank page");
+        assert!(
+            app.model.feed_loading,
+            "cold Home shows a loading skeleton, not a blank page"
+        );
     }
 
     #[test]
@@ -2253,7 +2455,10 @@ mod tests {
         doc.put(&r, "search_query", "rust").unwrap();
         assert!(!app.model.search_loading);
         app.apply(Action::SubmitSearch, &mut doc, &r);
-        assert!(app.model.search_loading, "an in-flight search must show the skeleton");
+        assert!(
+            app.model.search_loading,
+            "an in-flight search must show the skeleton"
+        );
         assert!(matches!(&app.model.route, Route::Search(q) if q == "rust"));
     }
 
@@ -2267,19 +2472,41 @@ mod tests {
         app.model.route = Route::Watch("vid_rust_async".into()); // Sponsor 1440..1570
         let key = Category::Sponsor.api_key().to_string();
 
-        app.model.settings.categories.insert(key.clone(), SkipMode::Skip);
+        app.model
+            .settings
+            .categories
+            .insert(key.clone(), SkipMode::Skip);
         app.model.playhead = 1500.0;
-        assert_eq!(app.current_show_skip_end(), None, "auto-skip shows no manual overlay");
+        assert_eq!(
+            app.current_show_skip_end(),
+            None,
+            "auto-skip shows no manual overlay"
+        );
 
-        app.model.settings.categories.insert(key.clone(), SkipMode::Show);
-        assert_eq!(app.current_show_skip_end(), Some(1570.0), "show-mode offers a Skip to the end");
+        app.model
+            .settings
+            .categories
+            .insert(key.clone(), SkipMode::Show);
+        assert_eq!(
+            app.current_show_skip_end(),
+            Some(1570.0),
+            "show-mode offers a Skip to the end"
+        );
 
         app.model.playhead = 100.0;
-        assert_eq!(app.current_show_skip_end(), None, "no overlay outside the segment");
+        assert_eq!(
+            app.current_show_skip_end(),
+            None,
+            "no overlay outside the segment"
+        );
 
         app.model.playhead = 1500.0;
         app.model.settings.sponsorblock_enabled = false;
-        assert_eq!(app.current_show_skip_end(), None, "master off suppresses the overlay");
+        assert_eq!(
+            app.current_show_skip_end(),
+            None,
+            "master off suppresses the overlay"
+        );
     }
 
     #[test]
@@ -2372,7 +2599,10 @@ mod tests {
             true,
             "360p".into(),
         );
-        assert!(ok && app.player_video.as_deref() == Some("vid_donut"), "source loaded");
+        assert!(
+            ok && app.player_video.as_deref() == Some("vid_donut"),
+            "source loaded"
+        );
         app.player.borrow_mut().pause();
         app.model.playing = false;
         assert!(!app.player.borrow().is_playing(), "precondition: paused");

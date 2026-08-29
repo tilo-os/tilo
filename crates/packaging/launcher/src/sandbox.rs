@@ -206,7 +206,10 @@ pub const WORKSPACE_ID_ENV: &str = "QOS_WORKSPACE_ID";
 /// Assumes the preload is linked against the host's libc, true for a
 /// runtime bundle only because it's baked from the same rootfs in the
 /// same image build.
-pub fn push_runtime_hardening(argv: &mut Vec<String>, hardening: &crate::hardening::RuntimeHardening) {
+pub fn push_runtime_hardening(
+    argv: &mut Vec<String>,
+    hardening: &crate::hardening::RuntimeHardening,
+) {
     if let Some(allocator) = &hardening.allocator {
         // Same path inside and out, so LD_PRELOAD and the bind cannot drift.
         push_bind(argv, "--ro-bind", allocator, allocator);
@@ -351,12 +354,7 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--die-with-parent".to_string());
 
     let payload_mount = payload_mount_for(&manifest.package_id);
-    push_bind(
-        &mut argv,
-        "--ro-bind",
-        payload_root,
-        &payload_mount,
-    );
+    push_bind(&mut argv, "--ro-bind", payload_root, &payload_mount);
 
     // QOS_PACKAGE_ID picks a per-app fallback state dir in standalone mode.
     argv.push("--setenv".to_string());
@@ -446,7 +444,12 @@ pub fn build_bwrap_argv_for_entry(
     // XDG portals: wire in the bind plan the caller supplied. No plan
     // means the bus is NOT exposed at all.
     if let Some(bind) = dbus_bind {
-        push_bind(&mut argv, "--ro-bind", &bind.host_socket, &bind.sandbox_path);
+        push_bind(
+            &mut argv,
+            "--ro-bind",
+            &bind.host_socket,
+            &bind.sandbox_path,
+        );
         argv.push("--setenv".to_string());
         argv.push("DBUS_SESSION_BUS_ADDRESS".to_string());
         argv.push(format!("unix:path={}", bind.sandbox_path.display()));
@@ -466,7 +469,8 @@ pub fn build_bwrap_argv_for_entry(
     // A **read-only participant gets no identity at all** — without a
     // signing key the app can't produce an authored change for anything
     // downstream to reject.
-    if let Some(host_path) = identity_host_path.filter(|_| capabilities.participation.carries_identity())
+    if let Some(host_path) =
+        identity_host_path.filter(|_| capabilities.participation.carries_identity())
     {
         argv.push("--ro-bind".to_string());
         argv.push(host_path.display().to_string());
@@ -673,9 +677,7 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
 pub fn host_dbus_bus_address_if_needed(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
 ) -> Option<String> {
-    let wants_bus = portals
-        .values()
-        .any(|p| matches!(p, PortalPolicy::ViaHost));
+    let wants_bus = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
     if !wants_bus {
         return None;
     }
@@ -870,7 +872,15 @@ mod tests {
     #[test]
     fn argv_includes_namespace_and_lifetime_flags() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert!(argv.iter().any(|a| a == "--unshare-all"));
         assert!(argv.iter().any(|a| a == "--die-with-parent"));
         assert!(!argv.iter().any(|a| a == "--share-net"));
@@ -932,9 +942,8 @@ mod tests {
         assert_eq!(argv[pos - 1], "--ro-bind");
         assert_eq!(argv[pos + 1], "/run/user/1000/wayland-0");
         assert!(
-            argv.windows(3).any(|w| w[0] == "--setenv"
-                && w[1] == "WAYLAND_DISPLAY"
-                && w[2] == "wayland-0"),
+            argv.windows(3)
+                .any(|w| w[0] == "--setenv" && w[1] == "WAYLAND_DISPLAY" && w[2] == "wayland-0"),
             "WAYLAND_DISPLAY setenv missing: {argv:?}"
         );
         assert!(
@@ -948,14 +957,30 @@ mod tests {
     #[test]
     fn argv_shares_net_when_mode_not_off() {
         let m = mk_manifest("on");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert!(argv.iter().any(|a| a == "--share-net"));
     }
 
     #[test]
     fn argv_binds_payload_root_to_qos_apps_path() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         let pos = argv
             .iter()
             .position(|a| a == "/host/pkg")
@@ -975,7 +1000,15 @@ mod tests {
     fn argv_exports_the_app_name_from_the_manifest() {
         // QOS_APP_NAME exported alongside QOS_PACKAGE_ID for the window title.
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert_eq!(setenv_value(&argv, "QOS_APP_NAME"), Some("Notes"));
     }
 
@@ -984,7 +1017,15 @@ mod tests {
         // A manifest with no `[package].name` exports nothing.
         let mut m = mk_manifest("off");
         m.name = None;
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert_eq!(setenv_value(&argv, "QOS_APP_NAME"), None);
     }
 
@@ -994,7 +1035,15 @@ mod tests {
         // in-sandbox payload mount.
         let mut m = mk_manifest("off");
         m.icon = Some("assets/icon.png".to_string());
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert_eq!(
             setenv_value(&argv, "QOS_APP_ICON"),
             Some("/var/qos-apps/com.example.notes/assets/icon.png"),
@@ -1005,7 +1054,15 @@ mod tests {
     fn argv_omits_the_icon_when_the_manifest_has_none() {
         // No icon art: no QOS_APP_ICON, so the toolkit draws its default.
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert_eq!(setenv_value(&argv, "QOS_APP_ICON"), None);
     }
 
@@ -1014,7 +1071,15 @@ mod tests {
     #[test]
     fn argv_reads_come_from_the_system_profile_not_the_manifest() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         for entry in crate::profile::SYSTEM_READ_PATHS {
             assert!(
                 argv.windows(3)
@@ -1043,7 +1108,8 @@ mod tests {
         // The payload mount stays a hard `--ro-bind`: a package whose
         // own payload is missing genuinely cannot run.
         assert!(
-            argv.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == "/host/pkg"),
+            argv.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == "/host/pkg"),
             "payload bind must stay non-try: {argv:?}"
         );
         // Nothing writable comes out of this builder. The app's one writable
@@ -1075,7 +1141,11 @@ mod tests {
         let _ = rt_pos;
         let ld_pos = argv
             .windows(3)
-            .position(|w| w[0] == "--setenv" && w[1] == "LD_LIBRARY_PATH" && w[2] == "/usr/lib/qos-runtime/1/lib")
+            .position(|w| {
+                w[0] == "--setenv"
+                    && w[1] == "LD_LIBRARY_PATH"
+                    && w[2] == "/usr/lib/qos-runtime/1/lib"
+            })
             .expect("LD_LIBRARY_PATH setenv");
         let _ = ld_pos;
     }
@@ -1083,7 +1153,15 @@ mod tests {
     #[test]
     fn argv_ends_with_entrypoint_path() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert_eq!(
             argv.last().map(String::as_str),
             Some("/var/qos-apps/com.example.notes/bin/notes")
@@ -1097,9 +1175,7 @@ mod tests {
             Some("/run/user/1000/bus".to_string())
         );
         assert_eq!(
-            parse_unix_path_bus_address(
-                "unix:path=/run/user/1000/bus,guid=deadbeef"
-            ),
+            parse_unix_path_bus_address("unix:path=/run/user/1000/bus,guid=deadbeef"),
             Some("/run/user/1000/bus".to_string())
         );
         // Abstract socket → None (can't be bind-mounted).
@@ -1114,10 +1190,9 @@ mod tests {
     #[test]
     fn argv_binds_dbus_proxy_socket_when_plan_is_supplied() {
         let mut m = mk_manifest("off");
-        m.sandbox.portals.insert(
-            "notifications".to_string(),
-            PortalPolicy::ViaHost,
-        );
+        m.sandbox
+            .portals
+            .insert("notifications".to_string(), PortalPolicy::ViaHost);
         let plan = DBusBindPlan {
             host_socket: PathBuf::from("/run/user/1234/qos/dbus-proxy/9999.sock"),
             sandbox_path: PathBuf::from("/run/user/1234/bus"),
@@ -1154,10 +1229,9 @@ mod tests {
         // Direct-bind fallback: proxy unavailable, so the raw bus is bound.
         // Argv shape identical to the proxy path — only `kind` distinguishes.
         let mut m = mk_manifest("off");
-        m.sandbox.portals.insert(
-            "notifications".to_string(),
-            PortalPolicy::ViaHost,
-        );
+        m.sandbox
+            .portals
+            .insert("notifications".to_string(), PortalPolicy::ViaHost);
         let plan = DBusBindPlan {
             host_socket: PathBuf::from("/run/user/1234/bus"),
             sandbox_path: PathBuf::from("/run/user/1234/bus"),
@@ -1183,7 +1257,15 @@ mod tests {
     #[test]
     fn argv_does_not_bind_dbus_without_plan() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert!(
             !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
             "bus must not leak into sandbox without a plan: {argv:?}"
@@ -1198,7 +1280,15 @@ mod tests {
         m.sandbox
             .portals
             .insert("screencast".to_string(), PortalPolicy::Deny);
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert!(
             !argv.iter().any(|a| a == "DBUS_SESSION_BUS_ADDRESS"),
             "bus must stay out when caller passes no plan: {argv:?}"
@@ -1294,7 +1384,15 @@ mod tests {
             participation: Participation::ReadOnly,
             ..CapabilityPlan::empty()
         };
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, Some(host), &read_only);
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            Some(host),
+            &read_only,
+        );
         assert!(
             !argv.iter().any(|a| a == "QOS_USER_IDENTITY"),
             "a read-only participant must not be told where an identity is: {argv:?}"
@@ -1306,9 +1404,8 @@ mod tests {
         // …and it is told which shape it is in, so chrome can present a
         // viewer rather than an editor whose saves vanish.
         assert!(
-            argv.windows(3).any(
-                |w| w[0] == "--setenv" && w[1] == "QOS_PARTICIPATION" && w[2] == "read-only"
-            ),
+            argv.windows(3)
+                .any(|w| w[0] == "--setenv" && w[1] == "QOS_PARTICIPATION" && w[2] == "read-only"),
             "the app must be able to see that it is a viewer: {argv:?}"
         );
 
@@ -1316,7 +1413,15 @@ mod tests {
             participation: Participation::Author,
             ..CapabilityPlan::empty()
         };
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, Some(host), &authoring);
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            Some(host),
+            &authoring,
+        );
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind"
                 && w[1] == host.to_str().unwrap()
@@ -1360,7 +1465,15 @@ mod tests {
     #[test]
     fn identity_bind_absent_when_host_path_is_none() {
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert!(
             !argv.iter().any(|a| a == "QOS_USER_IDENTITY"),
             "QOS_USER_IDENTITY must not appear without a host path: {argv:?}"
@@ -1380,7 +1493,9 @@ mod tests {
             node: PathBuf::from("/dev/dri/renderD128"),
             driver: Some("amdgpu".to_string()),
             egl_vendor_json: Some(PathBuf::from("/usr/share/glvnd/egl_vendor.d/50_mesa.json")),
-            vulkan_icd_json: Some(PathBuf::from("/usr/share/vulkan/icd.d/radeon_icd.x86_64.json")),
+            vulkan_icd_json: Some(PathBuf::from(
+                "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
+            )),
             notes: Vec::new(),
         };
         let mut argv = Vec::new();
@@ -1502,7 +1617,15 @@ mod tests {
             host_fd: 7,
             child_fd: 17,
         }];
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &binds, None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &binds,
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert!(
             argv.windows(3)
                 .any(|w| w[0] == "--setenv" && w[1] == "QOS_SVC_COLLAB_FD" && w[2] == "17"),
@@ -1528,7 +1651,15 @@ mod tests {
                 child_fd: 18,
             },
         ];
-        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &binds, None, None, &CapabilityPlan::empty());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &binds,
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         for copy_flag in ["--file", "--bind-data", "--ro-bind-data"] {
             for w in argv.windows(2) {
                 assert_ne!(
@@ -1552,7 +1683,9 @@ mod tests {
             "a service socket must never be handed to bwrap as a file: {argv:?}"
         );
         assert!(
-            !argv.iter().any(|a| a.ends_with("/qos/services/collab.sock")),
+            !argv
+                .iter()
+                .any(|a| a.ends_with("/qos/services/collab.sock")),
             "the service socket has no in-sandbox path any more; the app \
              gets a descriptor: {argv:?}",
         );
@@ -1633,8 +1766,15 @@ mod tests {
     fn no_capabilities_adds_no_binds_beyond_the_system_profile() {
         let baseline = argv_with_caps("com.example.notes", &[], 1_000);
         let m = mk_manifest("off");
-        let manifest_only =
-            build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        let manifest_only = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
         assert_eq!(
             baseline, manifest_only,
             "an app granted nothing must get byte-identical argv to a manifest-only launch"
@@ -1649,7 +1789,11 @@ mod tests {
 
     #[test]
     fn read_capability_binds_the_path_read_only_and_never_writable() {
-        let caps = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read)];
+        let caps = vec![fs_grant(
+            "dev.qos.books",
+            "/var/workspace/books",
+            Verb::Read,
+        )];
         let argv = argv_with_caps("dev.qos.books", &caps, 1_000);
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind-try"
@@ -1675,7 +1819,11 @@ mod tests {
 
     #[test]
     fn write_capability_binds_the_path_read_write() {
-        let caps = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Write)];
+        let caps = vec![fs_grant(
+            "dev.qos.books",
+            "/var/workspace/books",
+            Verb::Write,
+        )];
         let argv = argv_with_caps("dev.qos.books", &caps, 1_000);
         assert!(
             argv.windows(3).any(|w| w[0] == "--bind-try"
@@ -1710,9 +1858,9 @@ mod tests {
         )];
         let with = argv_with_caps("dev.qos.meet", &caps, 1_000);
         assert!(
-            with.windows(3).any(
-                |w| w[0] == "--dev-bind-try" && w[1] == "/dev/video0" && w[2] == "/dev/video0"
-            ),
+            with.windows(3).any(|w| w[0] == "--dev-bind-try"
+                && w[1] == "/dev/video0"
+                && w[2] == "/dev/video0"),
             "a camera capability must bind the device node: {with:?}"
         );
     }
@@ -1822,16 +1970,11 @@ mod tests {
 
         // And the grant does reach a mechanism now: the gate decision comes from
         // the same manifest + capability pair that built the argv above.
-        let plan = CapabilityPlan::for_app_with(
-            "dev.qos.mail",
-            &caps,
-            Some(1_000),
-            |_| Vec::new(),
-        );
+        let plan = CapabilityPlan::for_app_with("dev.qos.mail", &caps, Some(1_000), |_| Vec::new());
         let decision = egress_decision(&mk_manifest("off"), &plan);
-        let policy = decision
-            .policy()
-            .unwrap_or_else(|| panic!("a named host must resolve to a filtered egress policy, got {decision:?}"));
+        let policy = decision.policy().unwrap_or_else(|| {
+            panic!("a named host must resolve to a filtered egress policy, got {decision:?}")
+        });
         assert!(policy.permits("github.com"));
         assert!(
             !policy.permits("evil.example.com"),

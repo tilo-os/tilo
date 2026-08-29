@@ -558,7 +558,13 @@ mod tests {
         assert!(!pubr.document_incremental(&route, Transport::Capnp, vec![1]));
         assert!(!pubr.document_snapshot(&route, Transport::Capnp, vec![1]));
         assert!(!pubr.presence(&route, Transport::Capnp, vec![1]));
-        assert!(!pubr.scrollback_request(&route, Transport::Capnp, ArtifactId(uuid::Uuid::nil()), 5, 3));
+        assert!(!pubr.scrollback_request(
+            &route,
+            Transport::Capnp,
+            ArtifactId(uuid::Uuid::nil()),
+            5,
+            3
+        ));
     }
 
     #[test]

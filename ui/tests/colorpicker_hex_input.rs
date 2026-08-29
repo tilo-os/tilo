@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use ui::Widget;
 use ui::ColorCompat;
+use ui::Widget;
 use ui::widget::ColorPicker;
 use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
@@ -16,14 +16,20 @@ use winit::event::{ElementState, Ime, Modifiers, MouseButton, WindowEvent};
 fn layout_picker(picker: &mut ColorPicker) -> (TaffyTree<()>, NodeId) {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let root_node = (picker as &mut dyn Widget).build_layout(&mut taffy, &ui::theme::Theme::dark(), &mut node_map);
-    taffy.compute_layout(
-        root_node,
-        Size {
-            width: AvailableSpace::Definite(500.0),
-            height: AvailableSpace::Definite(400.0),
-        },
-    ).unwrap();
+    let root_node = (picker as &mut dyn Widget).build_layout(
+        &mut taffy,
+        &ui::theme::Theme::dark(),
+        &mut node_map,
+    );
+    taffy
+        .compute_layout(
+            root_node,
+            Size {
+                width: AvailableSpace::Definite(500.0),
+                height: AvailableSpace::Definite(400.0),
+            },
+        )
+        .unwrap();
     (picker as &mut dyn Widget).apply_layout(&taffy, root_node, vello::kurbo::Point::ZERO);
     (taffy, root_node)
 }
@@ -50,8 +56,15 @@ fn typing_hex_into_picker_updates_picker_color() {
     // sentinel set inside `set_hex_text_for_test`.
     let typing = WindowEvent::Ime(Ime::Commit(String::new()));
     (&mut picker as &mut dyn Widget).handle_event(
-        &typing, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &typing,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
 
     let c = picker.color();
@@ -71,8 +84,15 @@ fn typing_invalid_hex_leaves_picker_color_unchanged() {
     picker.set_hex_text_for_test("not a colour");
     let typing = WindowEvent::Ime(Ime::Commit(String::new()));
     (&mut picker as &mut dyn Widget).handle_event(
-        &typing, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &typing,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
 
     let c = picker.color();
@@ -101,8 +121,15 @@ fn clicking_hex_input_focuses_it() {
         position: PhysicalPosition::new(center_x, center_y),
     };
     (&mut picker as &mut dyn Widget).handle_event(
-        &move_ev, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &move_ev,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
 
     // The picker proposes focus on its own node id (the App needs that to
@@ -113,12 +140,23 @@ fn clicking_hex_input_focuses_it() {
         button: MouseButton::Left,
     };
     (&mut picker as &mut dyn Widget).handle_event(
-        &press_ev, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &press_ev,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
 
     // Simulate App::set_focused_node manually — tests don't run App.run().
-    assert_eq!(focus_target, Some(root_node), "picker must propose its own node as the focus target");
+    assert_eq!(
+        focus_target,
+        Some(root_node),
+        "picker must propose its own node as the focus target"
+    );
     (&mut picker as &mut dyn Widget).set_focus(true);
 
     assert!(
@@ -154,16 +192,33 @@ fn clicking_outside_hex_input_releases_input_focus() {
         button: MouseButton::Left,
     };
     (&mut picker as &mut dyn Widget).handle_event(
-        &move_in, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &move_in,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
     (&mut picker as &mut dyn Widget).handle_event(
-        &press, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &press,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
     // Drive the App-side focus routing (see other test).
     (&mut picker as &mut dyn Widget).set_focus(true);
-    assert!(picker.is_hex_input_focused_for_test(), "precondition: input must be focused after click-in");
+    assert!(
+        picker.is_hex_input_focused_for_test(),
+        "precondition: input must be focused after click-in"
+    );
 
     let release = WindowEvent::MouseInput {
         device_id: synth_device_id(),
@@ -171,8 +226,15 @@ fn clicking_outside_hex_input_releases_input_focus() {
         button: MouseButton::Left,
     };
     (&mut picker as &mut dyn Widget).handle_event(
-        &release, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &release,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
 
     // Well outside hex_input_rect, near the SV square rather than the
@@ -185,12 +247,26 @@ fn clicking_outside_hex_input_releases_input_focus() {
         position: PhysicalPosition::new(out_x, out_y),
     };
     (&mut picker as &mut dyn Widget).handle_event(
-        &move_out, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &move_out,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
     (&mut picker as &mut dyn Widget).handle_event(
-        &press, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
-        &mut handled, &mut focus_target, root_node, &taffy,
+        &press,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        &taffy,
     );
 
     assert!(

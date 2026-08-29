@@ -23,15 +23,13 @@
 use std::collections::HashMap;
 
 use automerge::{
-    transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value,
+    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
-use vello::Scene;
-use winit::event::{
-    ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent,
-};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
@@ -141,11 +139,7 @@ impl Dropdown {
     /// Conditionally start opened — convenience for callers that decide
     /// at build time (e.g. a shot seed).
     pub fn open_if(self, cond: bool) -> Self {
-        if cond {
-            self.open()
-        } else {
-            self
-        }
+        if cond { self.open() } else { self }
     }
 
     pub fn is_open(&self) -> bool {
@@ -263,7 +257,9 @@ impl Dropdown {
     fn commit_value(&mut self, value: &str, state: &mut AutoCommit, root: &ObjId) {
         let obj = match state.get(root, self.value_path.as_str()) {
             Ok(Some((Value::Object(ObjType::Text), obj))) => Some(obj),
-            _ => state.put_object(root, self.value_path.as_str(), ObjType::Text).ok(),
+            _ => state
+                .put_object(root, self.value_path.as_str(), ObjType::Text)
+                .ok(),
         };
         if let Some(obj) = obj {
             crate::doc::splice_text_diffed(state, &obj, value);
@@ -343,7 +339,13 @@ impl Widget for Dropdown {
         // group opacity so they read as non-interactive.
         let disabled = !self.enabled;
         if disabled {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &shape);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &shape,
+            );
         }
         let bg = if self.open || self.is_focused {
             theme.bg_active
@@ -464,7 +466,10 @@ impl Widget for Dropdown {
                     );
                 }
                 let color = if vi == self.highlight {
-                    theme.tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                    theme
+                        .tokens
+                        .colors
+                        .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
                 } else {
                     theme.text_primary
                 };
@@ -495,7 +500,9 @@ impl Widget for Dropdown {
         _taffy: &TaffyTree<()>,
     ) {
         // Disabled: reject all input — won't open, no selection, no hover.
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -510,8 +517,8 @@ impl Widget for Dropdown {
                     let filtered = self.filtered();
                     let list = self.list_rect(filtered.len());
                     if list.contains(pos) {
-                        let vi = ((pos.y - list.y0 + self.scroll as f64) / ITEM_HEIGHT)
-                            .floor() as isize;
+                        let vi =
+                            ((pos.y - list.y0 + self.scroll as f64) / ITEM_HEIGHT).floor() as isize;
                         if vi >= 0 && (vi as usize) < filtered.len() {
                             let vi = vi as usize;
                             if vi != self.highlight {
@@ -532,8 +539,8 @@ impl Widget for Dropdown {
                     let filtered = self.filtered();
                     let list = self.list_rect(filtered.len());
                     if list.contains(pos) {
-                        let vi = ((pos.y - list.y0 + self.scroll as f64) / ITEM_HEIGHT)
-                            .floor() as isize;
+                        let vi =
+                            ((pos.y - list.y0 + self.scroll as f64) / ITEM_HEIGHT).floor() as isize;
                         if vi >= 0 && (vi as usize) < filtered.len() {
                             self.highlight = vi as usize;
                             self.select_highlighted(state, root);
@@ -727,8 +734,7 @@ mod tests {
     fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -775,7 +781,12 @@ mod tests {
         let (mut doc, root) = doc_with_tz("UTC");
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
-        assert!(feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root));
+        assert!(feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root
+        ));
         assert!(dd.is_open());
         // Highlight lands on the currently-selected option.
         assert_eq!(dd.highlight_index(), 0);
@@ -788,10 +799,25 @@ mod tests {
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
         dd.do_open();
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.highlight_index(), 2);
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowUp), None), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowUp), None),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.highlight_index(), 1);
     }
 
@@ -803,13 +829,31 @@ mod tests {
         dd.set_focus(true);
         dd.do_open();
         // Move to "America/New_York" (index 2) and select it.
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
-        assert!(feed_key(&mut dd, &key(Key::Named(NamedKey::Enter), None), &mut doc, &root));
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
+        assert!(feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Enter), None),
+            &mut doc,
+            &root
+        ));
         assert!(!dd.is_open(), "selecting closes the list");
         assert_eq!(dd.selected(), "America/New_York");
         // The value landed in the CRDT Text object the host reads.
-        assert_eq!(Dropdown::read_value(&doc, &root, "tz").as_deref(), Some("America/New_York"));
+        assert_eq!(
+            Dropdown::read_value(&doc, &root, "tz").as_deref(),
+            Some("America/New_York")
+        );
     }
 
     #[test]
@@ -819,11 +863,24 @@ mod tests {
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
         dd.do_open();
-        feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
-        assert!(feed_key(&mut dd, &key(Key::Named(NamedKey::Escape), None), &mut doc, &root));
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
+        assert!(feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Escape), None),
+            &mut doc,
+            &root
+        ));
         assert!(!dd.is_open());
         assert_eq!(dd.selected(), "UTC", "Esc must not change the value");
-        assert_eq!(Dropdown::read_value(&doc, &root, "tz").as_deref(), Some("UTC"));
+        assert_eq!(
+            Dropdown::read_value(&doc, &root, "tz").as_deref(),
+            Some("UTC")
+        );
     }
 
     #[test]
@@ -835,13 +892,33 @@ mod tests {
         dd.do_open();
         assert_eq!(dd.visible_count(), 4);
         // "ame" matches only "America/New_York".
-        feed_key(&mut dd, &key(Key::Character("a".into()), Some("a")), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Character("m".into()), Some("m")), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Character("e".into()), Some("e")), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Character("a".into()), Some("a")),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Character("m".into()), Some("m")),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Character("e".into()), Some("e")),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.filter_query(), "ame");
         assert_eq!(dd.visible_count(), 1);
         // Enter selects the sole filtered match.
-        feed_key(&mut dd, &key(Key::Named(NamedKey::Enter), None), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Enter), None),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.selected(), "America/New_York");
     }
 
@@ -852,10 +929,25 @@ mod tests {
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
         dd.do_open();
-        feed_key(&mut dd, &key(Key::Character("a".into()), Some("a")), &mut doc, &root);
-        feed_key(&mut dd, &key(Key::Character("z".into()), Some("z")), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Character("a".into()), Some("a")),
+            &mut doc,
+            &root,
+        );
+        feed_key(
+            &mut dd,
+            &key(Key::Character("z".into()), Some("z")),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.visible_count(), 0); // "az" matches nothing
-        feed_key(&mut dd, &key(Key::Named(NamedKey::Backspace), None), &mut doc, &root);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Backspace), None),
+            &mut doc,
+            &root,
+        );
         assert_eq!(dd.filter_query(), "a");
         // "a" matches Amsterdam, America, Asia.
         assert_eq!(dd.visible_count(), 3);
@@ -937,7 +1029,10 @@ mod tests {
             dd.commit_value("Asia/Tokyo", &mut doc, &root);
         }
 
-        assert_eq!(Dropdown::read_value(&doc, &root, "tz").as_deref(), Some("Asia/Tokyo"));
+        assert_eq!(
+            Dropdown::read_value(&doc, &root, "tz").as_deref(),
+            Some("Asia/Tokyo")
+        );
         assert_eq!(
             doc.save().len(),
             before,
@@ -951,14 +1046,21 @@ mod tests {
         let (mut doc, root) = doc_with_tz("Asia/Tokyo");
         dd.sync(&mut doc, &root);
         assert!(dd.is_open());
-        assert_eq!(dd.highlight_index(), 3, "highlight tracks the selected option");
+        assert_eq!(
+            dd.highlight_index(),
+            3,
+            "highlight tracks the selected option"
+        );
     }
 
     #[test]
     fn with_enabled_false_is_reported_by_is_enabled() {
         let dd = Dropdown::new(opts(), "tz").with_enabled(false);
         assert!(!Widget::is_enabled(&dd));
-        assert!(Widget::is_enabled(&Dropdown::new(opts(), "tz")), "default is enabled");
+        assert!(
+            Widget::is_enabled(&Dropdown::new(opts(), "tz")),
+            "default is enabled"
+        );
     }
 
     #[test]
@@ -967,10 +1069,19 @@ mod tests {
         let (mut doc, root) = doc_with_tz("UTC");
         dd.sync(&mut doc, &root);
         dd.set_focus(true);
-        let handled = feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
+        let handled = feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut doc,
+            &root,
+        );
         assert!(!dd.is_open(), "disabled dropdown must not open");
         assert!(!handled, "disabled dropdown must not swallow input");
-        assert_eq!(dd.selected(), "UTC", "disabled dropdown must not change the value");
+        assert_eq!(
+            dd.selected(),
+            "UTC",
+            "disabled dropdown must not change the value"
+        );
     }
 
     #[test]
@@ -983,7 +1094,11 @@ mod tests {
         assert_eq!(node.role, Role::ComboBox);
         assert_eq!(node.name.as_deref(), Some("Asia/Tokyo"));
         assert_eq!(node.value.as_deref(), Some("Asia/Tokyo"));
-        assert_eq!(node.state.expanded, Some(false), "closed dropdown is collapsed");
+        assert_eq!(
+            node.state.expanded,
+            Some(false),
+            "closed dropdown is collapsed"
+        );
         assert!(node.state.focusable);
         assert!(!node.state.disabled);
     }
@@ -994,7 +1109,11 @@ mod tests {
         let dd = Dropdown::new(opts(), "tz").with_placeholder("Pick a zone");
         let node = Widget::accessibility(&dd).unwrap();
         assert_eq!(node.role, Role::ComboBox);
-        assert_eq!(node.name.as_deref(), Some("Pick a zone"), "placeholder is the name when unset");
+        assert_eq!(
+            node.name.as_deref(),
+            Some("Pick a zone"),
+            "placeholder is the name when unset"
+        );
         assert_eq!(node.value, None, "no value until something is selected");
     }
 

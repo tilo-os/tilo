@@ -181,7 +181,13 @@ impl Widget for FileTree {
     ) {
         let c = &theme.tokens.colors;
         // Sidebar background.
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &self.rect,
+        );
 
         // Header: "EXPLORER" + project name.
         let header_rect = Rect::new(
@@ -190,7 +196,13 @@ impl Widget for FileTree {
             self.rect.x1,
             self.rect.y0 + HEADER_HEIGHT,
         );
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &header_rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.base,
+            None,
+            &header_rect,
+        );
         text_renderer.draw_text_weighted(
             scene,
             &self.project_name.to_uppercase(),
@@ -215,7 +227,13 @@ impl Widget for FileTree {
 
             // Active / hover background.
             if self.active == Some(meta.id) {
-                scene.fill(Fill::NonZero, transform, c.surface_white_10, None, &row_rect);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    c.surface_white_10,
+                    None,
+                    &row_rect,
+                );
                 // Accent rail on the left of the active row.
                 let rail = Rect::new(self.rect.x0, y, self.rect.x0 + 2.0, y + ROW_HEIGHT);
                 scene.fill(Fill::NonZero, transform, c.accent[5], None, &rail);
@@ -229,16 +247,31 @@ impl Widget for FileTree {
 
             if meta.is_folder {
                 // Disclosure chevron.
-                draw_chevron(scene, transform, Point::new(icon_cx, icon_cy), meta.expanded, c.text_dim);
+                draw_chevron(
+                    scene,
+                    transform,
+                    Point::new(icon_cx, icon_cy),
+                    meta.expanded,
+                    c.text_dim,
+                );
                 // Folder glyph.
                 draw_folder_icon(
                     scene,
                     transform,
                     Point::new(icon_cx + 14.0, icon_cy),
-                    if meta.expanded { c.accent[6] } else { c.text_dim },
+                    if meta.expanded {
+                        c.accent[6]
+                    } else {
+                        c.text_dim
+                    },
                 );
             } else {
-                draw_file_icon(scene, transform, Point::new(icon_cx + 14.0, icon_cy), c.text_dim);
+                draw_file_icon(
+                    scene,
+                    transform,
+                    Point::new(icon_cx + 14.0, icon_cy),
+                    c.text_dim,
+                );
             }
 
             let label_x = base_x + 28.0 + ICON_PAD;
@@ -272,8 +305,7 @@ impl Widget for FileTree {
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 let new_hover = self.row_at(self.last_cursor);
                 if new_hover != self.hovered {
                     self.hovered = new_hover;
@@ -360,7 +392,12 @@ fn draw_chevron(
 }
 
 /// A simple folder glyph (a rounded rectangle with a tab).
-fn draw_folder_icon(scene: &mut Scene, transform: Affine, center: Point, color: vello::peniko::Color) {
+fn draw_folder_icon(
+    scene: &mut Scene,
+    transform: Affine,
+    center: Point,
+    color: vello::peniko::Color,
+) {
     let w = 11.0;
     let h = 8.0;
     let x0 = center.x - w / 2.0;
@@ -373,7 +410,12 @@ fn draw_folder_icon(scene: &mut Scene, transform: Affine, center: Point, color: 
 }
 
 /// A simple document glyph (a page with a folded corner).
-fn draw_file_icon(scene: &mut Scene, transform: Affine, center: Point, color: vello::peniko::Color) {
+fn draw_file_icon(
+    scene: &mut Scene,
+    transform: Affine,
+    center: Point,
+    color: vello::peniko::Color,
+) {
     let w = 9.0;
     let h = 11.0;
     let x0 = center.x - w / 2.0;

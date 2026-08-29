@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
-use uuid::Uuid;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -33,15 +33,16 @@ use ui::widget::{
 };
 
 use crate::actions::{
-    delete_clip_action, remove_media_action, ripple_delete_action, split_clip_action,
-    upsert_clip_action, upsert_media_action, upsert_track_action, VideoResourceCtx,
-    VIDEO_EDITOR_ACTION_TYPE,
+    VIDEO_EDITOR_ACTION_TYPE, VideoResourceCtx, delete_clip_action, remove_media_action,
+    ripple_delete_action, split_clip_action, upsert_clip_action, upsert_media_action,
+    upsert_track_action,
 };
 use crate::doc::VideoDoc;
-use crate::export::{
-    begin_export, Container, ExportSettings, ExportStatus, FrameRate, Resolution,
+use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution, begin_export};
+use crate::model::{
+    Clip, ClipId, EffectKind, Filters, MediaId, MediaItem, MediaKind, Project, TrackId, TrackKind,
+    Transition,
 };
-use crate::model::{Clip, ClipId, EffectKind, Filters, MediaId, MediaItem, MediaKind, Project, TrackId, TrackKind, Transition};
 use crate::portal::{self, ImportChannel, ImportOutcome};
 use crate::preview::{self, CompositedFrame, Rgb};
 use crate::probe;
@@ -106,9 +107,16 @@ enum TransportAction {
 enum Drag {
     Playhead,
     Scrubber,
-    ClipMove { id: ClipId, grab_dt: f64 },
-    TrimIn { id: ClipId },
-    TrimOut { id: ClipId },
+    ClipMove {
+        id: ClipId,
+        grab_dt: f64,
+    },
+    TrimIn {
+        id: ClipId,
+    },
+    TrimOut {
+        id: ClipId,
+    },
     Opacity,
     Volume,
     Brightness,
@@ -117,7 +125,9 @@ enum Drag {
     FadeIn,
     FadeOut,
     /// Dragging the intensity slider of the effect at `idx` on the selected clip.
-    EffectAmount { idx: usize },
+    EffectAmount {
+        idx: usize,
+    },
 }
 
 /// Which inspector slider a drag is editing. Brightness/contrast/saturation
@@ -177,7 +187,7 @@ pub struct VideoEditorApp {
     shot_interaction_applied: bool,
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
-    zoom: f64,  // pixels per second
+    zoom: f64,   // pixels per second
     scroll: f64, // seconds at the left edge of the lane area
     selected: Option<ClipId>,
     selected_media: Option<MediaId>,
@@ -471,14 +481,52 @@ impl VideoEditorApp {
         };
         let preview = Rect::new(preview_x0, mid_top, inspector.x0, mid_bot);
         let transport = Rect::new(preview.x0, preview.y1 - TRANSPORT_H, preview.x1, preview.y1);
-        let canvas_area = Rect::new(preview.x0 + 10.0, preview.y0 + 10.0, preview.x1 - 10.0, transport.y0 - 8.0);
-        let canvas = fit_aspect(canvas_area, self.project.width.max(16) as f64, self.project.height.max(9) as f64);
-        let ruler = Rect::new(timeline.x0 + GUTTER_W, timeline.y0, timeline.x1, timeline.y0 + RULER_H);
-        let gutter = Rect::new(timeline.x0, timeline.y0 + RULER_H, timeline.x0 + GUTTER_W, timeline.y1);
-        let lanes = Rect::new(timeline.x0 + GUTTER_W, timeline.y0 + RULER_H, timeline.x1, timeline.y1);
+        let canvas_area = Rect::new(
+            preview.x0 + 10.0,
+            preview.y0 + 10.0,
+            preview.x1 - 10.0,
+            transport.y0 - 8.0,
+        );
+        let canvas = fit_aspect(
+            canvas_area,
+            self.project.width.max(16) as f64,
+            self.project.height.max(9) as f64,
+        );
+        let ruler = Rect::new(
+            timeline.x0 + GUTTER_W,
+            timeline.y0,
+            timeline.x1,
+            timeline.y0 + RULER_H,
+        );
+        let gutter = Rect::new(
+            timeline.x0,
+            timeline.y0 + RULER_H,
+            timeline.x0 + GUTTER_W,
+            timeline.y1,
+        );
+        let lanes = Rect::new(
+            timeline.x0 + GUTTER_W,
+            timeline.y0 + RULER_H,
+            timeline.x1,
+            timeline.y1,
+        );
         Regions {
-            topbar, menu_btn, export_btn, split_btn, import_btn, bin, preview, canvas, transport,
-            inspector, timeline, ruler, gutter, lanes, scrim, bin_overlay: overlay,
+            topbar,
+            menu_btn,
+            export_btn,
+            split_btn,
+            import_btn,
+            bin,
+            preview,
+            canvas,
+            transport,
+            inspector,
+            timeline,
+            ruler,
+            gutter,
+            lanes,
+            scrim,
+            bin_overlay: overlay,
         }
     }
 
@@ -495,7 +543,11 @@ impl VideoEditorApp {
         let mut out = Vec::new();
         let mut y = r.lanes.y0 + LANE_GAP;
         for t in self.project.display_tracks() {
-            let h = if t.kind == TrackKind::Video { VIDEO_LANE_H } else { AUDIO_LANE_H };
+            let h = if t.kind == TrackKind::Video {
+                VIDEO_LANE_H
+            } else {
+                AUDIO_LANE_H
+            };
             let lane = Rect::new(r.lanes.x0, y, r.lanes.x1, y + h);
             out.push((t.id, t.kind, lane));
             y += h + LANE_GAP;
@@ -511,7 +563,12 @@ impl VideoEditorApp {
 
     /// The mute pill rect on a track header (shared by draw + hit-test).
     fn mute_pill_rect(&self, header: Rect) -> Rect {
-        Rect::new(header.x1 - 26.0, header.center().y - 9.0, header.x1 - 8.0, header.center().y + 9.0)
+        Rect::new(
+            header.x1 - 26.0,
+            header.center().y - 9.0,
+            header.x1 - 8.0,
+            header.center().y + 9.0,
+        )
     }
 
     /// The two "add track" buttons in the gutter footer, if there is room below
@@ -550,7 +607,12 @@ impl VideoEditorApp {
     }
 
     fn scrubber_rect(&self, r: &Regions) -> Rect {
-        Rect::new(r.transport.x0 + 220.0, r.transport.y0 + 38.0, r.transport.x1 - 16.0, r.transport.y0 + 46.0)
+        Rect::new(
+            r.transport.x0 + 220.0,
+            r.transport.y0 + 38.0,
+            r.transport.x1 - 16.0,
+            r.transport.y0 + 46.0,
+        )
     }
 
     /// Media for the bin in a stable, meaningful order: visual media
@@ -559,7 +621,10 @@ impl VideoEditorApp {
     fn bin_order(&self) -> Vec<MediaId> {
         let mut v: Vec<&crate::model::MediaItem> = self.project.media.iter().collect();
         v.sort_by(|a, b| {
-            b.kind.is_visual().cmp(&a.kind.is_visual()).then(a.name.cmp(&b.name))
+            b.kind
+                .is_visual()
+                .cmp(&a.kind.is_visual())
+                .then(a.name.cmp(&b.name))
         });
         v.into_iter().map(|m| m.id).collect()
     }
@@ -706,8 +771,11 @@ impl VideoEditorApp {
             .iter()
             .filter_map(|m| self.project.clip(*m).cloned())
             .collect();
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &ripple_delete_action(&id, &moved));
+        self.actions.dispatch(
+            doc,
+            VIDEO_EDITOR_ACTION_TYPE,
+            &ripple_delete_action(&id, &moved),
+        );
         self.selected = None;
     }
 
@@ -721,14 +789,20 @@ impl VideoEditorApp {
     /// Paste the clipboard clip at the playhead, on its original track.
     /// Falls back to the selected clip's track. New clip becomes selected.
     fn paste_clip(&mut self, doc: &mut AutoCommit) {
-        let Some(src) = self.clipboard.clone() else { return };
+        let Some(src) = self.clipboard.clone() else {
+            return;
+        };
         // Keep the copied clip's track if it still exists, else the
         // currently-selected clip's track, else the first track.
         let track = self
             .project
             .track(src.track)
             .map(|t| t.id)
-            .or_else(|| self.selected.and_then(|s| self.project.clip(s)).map(|c| c.track))
+            .or_else(|| {
+                self.selected
+                    .and_then(|s| self.project.clip(s))
+                    .map(|c| c.track)
+            })
             .or_else(|| self.project.tracks.first().map(|t| t.id));
         let Some(track) = track else { return };
         let id = self.project.paste_clip(src, track, self.playhead);
@@ -740,7 +814,11 @@ impl VideoEditorApp {
     /// the head so the clip starts at the current frame.
     fn set_in_at_playhead(&mut self, doc: &mut AutoCommit) {
         let Some(id) = self.selected else { return };
-        let delta = self.project.clip(id).map(|c| self.playhead - c.start).unwrap_or(0.0);
+        let delta = self
+            .project
+            .clip(id)
+            .map(|c| self.playhead - c.start)
+            .unwrap_or(0.0);
         if delta.abs() < 1e-6 {
             return;
         }
@@ -752,7 +830,11 @@ impl VideoEditorApp {
     /// the tail so the clip ends at the current frame.
     fn set_out_at_playhead(&mut self, doc: &mut AutoCommit) {
         let Some(id) = self.selected else { return };
-        let delta = self.project.clip(id).map(|c| self.playhead - c.end()).unwrap_or(0.0);
+        let delta = self
+            .project
+            .clip(id)
+            .map(|c| self.playhead - c.end())
+            .unwrap_or(0.0);
         if delta.abs() < 1e-6 {
             return;
         }
@@ -840,8 +922,12 @@ impl VideoEditorApp {
     /// action, in the same undo boundary as the caller's edit) when the project
     /// has none — so placing a clip from the bin works even on a blank project.
     fn ensure_track_of_kind(&mut self, doc: &mut AutoCommit, kind: TrackKind) -> TrackId {
-        if let Some(t) =
-            self.project.tracks.iter().filter(|t| t.kind == kind).min_by_key(|t| t.index)
+        if let Some(t) = self
+            .project
+            .tracks
+            .iter()
+            .filter(|t| t.kind == kind)
+            .min_by_key(|t| t.index)
         {
             return t.id;
         }
@@ -854,7 +940,10 @@ impl VideoEditorApp {
             .max()
             .unwrap_or(0)
             + 1;
-        let name = format!("{}{index}", if kind == TrackKind::Video { "V" } else { "A" });
+        let name = format!(
+            "{}{index}",
+            if kind == TrackKind::Video { "V" } else { "A" }
+        );
         let track = crate::model::Track {
             id: Uuid::new_v4(),
             name,
@@ -875,7 +964,11 @@ impl VideoEditorApp {
     /// new clip id.
     fn add_media_to_timeline(&mut self, doc: &mut AutoCommit, media: MediaId) -> Option<ClipId> {
         let m = self.project.media(media).cloned()?;
-        let kind = if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio };
+        let kind = if m.kind.is_visual() {
+            TrackKind::Video
+        } else {
+            TrackKind::Audio
+        };
         let track = self.ensure_track_of_kind(doc, kind);
         let start = self
             .project
@@ -933,12 +1026,19 @@ impl VideoEditorApp {
     /// time on a matching-kind track (created if needed); a drop elsewhere on
     /// the timeline appends to a matching track. A drop off the timeline cancels.
     fn release_bin_drag(&mut self, doc: &mut AutoCommit, r: &Regions) {
-        let Some(bd) = self.bin_drag.take() else { return };
+        let Some(bd) = self.bin_drag.take() else {
+            return;
+        };
         if !bd.active {
             return; // a plain click that never moved — nothing to place
         }
         let p = self.last_mouse;
-        let want_kind = if self.project.media(bd.media).map(|m| m.kind.is_visual()).unwrap_or(true) {
+        let want_kind = if self
+            .project
+            .media(bd.media)
+            .map(|m| m.kind.is_visual())
+            .unwrap_or(true)
+        {
             TrackKind::Video
         } else {
             TrackKind::Audio
@@ -1070,7 +1170,10 @@ impl VideoEditorApp {
             .max()
             .unwrap_or(0)
             + 1;
-        let name = format!("{}{index}", if kind == TrackKind::Video { "V" } else { "A" });
+        let name = format!(
+            "{}{index}",
+            if kind == TrackKind::Video { "V" } else { "A" }
+        );
         let track = crate::model::Track {
             id: Uuid::new_v4(),
             name,
@@ -1088,8 +1191,13 @@ impl VideoEditorApp {
 
     /// Delete a track and every clip on it, as one action.
     fn delete_track(&mut self, doc: &mut AutoCommit, tid: TrackId) {
-        let clip_ids: Vec<ClipId> =
-            self.project.clips.iter().filter(|c| c.track == tid).map(|c| c.id).collect();
+        let clip_ids: Vec<ClipId> = self
+            .project
+            .clips
+            .iter()
+            .filter(|c| c.track == tid)
+            .map(|c| c.id)
+            .collect();
         if let Some(sel) = self.selected {
             if clip_ids.contains(&sel) {
                 self.selected = None;
@@ -1115,7 +1223,9 @@ impl VideoEditorApp {
     /// Begin an inline rename of bin media `mid` using the shared editable
     /// label (real caret / selection / clipboard). No-op if the media is gone.
     fn begin_rename(&mut self, mid: MediaId) {
-        let Some(m) = self.project.media(mid) else { return };
+        let Some(m) = self.project.media(mid) else {
+            return;
+        };
         let mut label = EditableLabel::new(&m.name)
             .with_font_size(13.0)
             .with_id("bin_rename");
@@ -1143,16 +1253,24 @@ impl VideoEditorApp {
 
     /// Delete a bin media and every clip that placed it, as one action.
     fn delete_media(&mut self, doc: &mut AutoCommit, mid: MediaId) {
-        let clip_ids: Vec<ClipId> =
-            self.project.clips.iter().filter(|c| c.media == mid).map(|c| c.id).collect();
+        let clip_ids: Vec<ClipId> = self
+            .project
+            .clips
+            .iter()
+            .filter(|c| c.media == mid)
+            .map(|c| c.id)
+            .collect();
         // Keep the in-memory selection consistent before the reload.
         if let Some(sel) = self.selected {
             if clip_ids.contains(&sel) {
                 self.selected = None;
             }
         }
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &remove_media_action(&mid, &clip_ids));
+        self.actions.dispatch(
+            doc,
+            VIDEO_EDITOR_ACTION_TYPE,
+            &remove_media_action(&mid, &clip_ids),
+        );
         if self.selected_media == Some(mid) {
             self.selected_media = None;
         }
@@ -1257,7 +1375,9 @@ impl VideoEditorApp {
     fn ensure_track_and_place(&mut self, doc: &mut AutoCommit, media_id: MediaId) {
         // `add_media_to_timeline` now creates a matching track when the project
         // has none, so this just places and parks the playhead in the new clip.
-        let Some(cid) = self.add_media_to_timeline(doc, media_id) else { return };
+        let Some(cid) = self.add_media_to_timeline(doc, media_id) else {
+            return;
+        };
         if let Some(c) = self.project.clip(cid) {
             let inside = c.start + (c.duration() * 0.4);
             self.playhead = inside.clamp(c.start, (c.end() - 0.05).max(c.start));
@@ -1300,7 +1420,9 @@ impl VideoEditorApp {
     fn inspector_layout(&self, r: &Regions) -> InspectorLayout {
         let mut l = InspectorLayout::default();
         let Some(id) = self.selected else { return l };
-        let Some(clip) = self.project.clip(id) else { return l };
+        let Some(clip) = self.project.clip(id) else {
+            return l;
+        };
         let is_video = self
             .project
             .media(clip.media)
@@ -1318,12 +1440,17 @@ impl VideoEditorApp {
         let track_at = |y: f64| Rect::new(x0, y + 19.0, x1, y + 28.0);
 
         if is_video {
-            l.opacity = Some(track_at(y)); y += row;
-            l.brightness = Some(track_at(y)); y += row;
-            l.contrast = Some(track_at(y)); y += row;
-            l.saturation = Some(track_at(y)); y += row;
+            l.opacity = Some(track_at(y));
+            y += row;
+            l.brightness = Some(track_at(y));
+            y += row;
+            l.contrast = Some(track_at(y));
+            y += row;
+            l.saturation = Some(track_at(y));
+            y += row;
         } else {
-            l.volume = Some(track_at(y)); y += row;
+            l.volume = Some(track_at(y));
+            y += row;
         }
         // Fade in / out share a row (two half-width tracks).
         let half = (x1 - x0) / 2.0 - 6.0;
@@ -1336,7 +1463,8 @@ impl VideoEditorApp {
         l.transition_y = y + 15.0;
         for (i, t) in Transition::ALL.iter().enumerate() {
             let sx0 = x0 + i as f64 * seg_w;
-            l.transitions.push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 37.0)));
+            l.transitions
+                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 37.0)));
         }
         y += 48.0;
         // Label color swatches.
@@ -1344,8 +1472,11 @@ impl VideoEditorApp {
         let sw = 24.0;
         for i in 0..7u8 {
             let sx0 = x0 + i as f64 * (sw + 4.0);
-            if sx0 + sw > x1 { break; }
-            l.colors.push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
+            if sx0 + sw > x1 {
+                break;
+            }
+            l.colors
+                .push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
         }
         y += 44.0;
         // Effects stack (video only): a label, one row per effect, then an
@@ -1391,16 +1522,36 @@ impl VideoEditorApp {
         let card_h = 360.0;
         let cx = (r.timeline.x0 + r.timeline.x1) / 2.0;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
-        let card = Rect::new(cx - card_w / 2.0, cy - card_h / 2.0, cx + card_w / 2.0, cy + card_h / 2.0);
+        let card = Rect::new(
+            cx - card_w / 2.0,
+            cy - card_h / 2.0,
+            cx + card_w / 2.0,
+            cy + card_h / 2.0,
+        );
         let x0 = card.x0 + 24.0;
         let x1 = card.x1 - 24.0;
-        let mut l = ExportLayout { card, ..Default::default() };
+        let mut l = ExportLayout {
+            card,
+            ..Default::default()
+        };
         let mut y = card.y0 + 70.0;
         let seg = |x0: f64, x1: f64, n: usize, y: f64| -> Vec<Rect> {
             let w = (x1 - x0) / n as f64;
-            (0..n).map(|i| Rect::new(x0 + i as f64 * w, y, x0 + (i as f64 + 1.0) * w - 4.0, y + 32.0)).collect()
+            (0..n)
+                .map(|i| {
+                    Rect::new(
+                        x0 + i as f64 * w,
+                        y,
+                        x0 + (i as f64 + 1.0) * w - 4.0,
+                        y + 32.0,
+                    )
+                })
+                .collect()
         };
-        for (i, rect) in seg(x0, x1, Resolution::ALL.len(), y).into_iter().enumerate() {
+        for (i, rect) in seg(x0, x1, Resolution::ALL.len(), y)
+            .into_iter()
+            .enumerate()
+        {
             l.resolution.push((Resolution::ALL[i], rect));
         }
         y += 64.0;
@@ -1473,10 +1624,12 @@ impl VideoEditorApp {
             }
             ShotScenario::DragToTimeline => {
                 // A video bin item mid-drag over the V1 lane.
-                let item = self
-                    .bin_item_rects(r)
-                    .into_iter()
-                    .find(|(m, _)| self.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false));
+                let item = self.bin_item_rects(r).into_iter().find(|(m, _)| {
+                    self.project
+                        .media(*m)
+                        .map(|mm| mm.kind.is_visual())
+                        .unwrap_or(false)
+                });
                 let lane = self
                     .lane_rects(r)
                     .into_iter()
@@ -1642,13 +1795,21 @@ impl Widget for VideoEditorApp {
             .media
             .iter()
             .filter(|m| m.kind.is_visual())
-            .map(|m| (m.id, m.palette, m.source(), (m.duration * 0.3).clamp(0.2, 3.0)))
+            .map(|m| {
+                (
+                    m.id,
+                    m.palette,
+                    m.source(),
+                    (m.duration * 0.3).clamp(0.2, 3.0),
+                )
+            })
             .collect();
         for (id, palette, src, at) in visual {
             self.thumbnails.ensure(id, palette, &src, at);
         }
         // Apply a one-shot capture scenario once the project is loaded.
-        if !self.shot_applied && self.shot_scenario != ShotScenario::Live
+        if !self.shot_applied
+            && self.shot_scenario != ShotScenario::Live
             && !self.project.clips.is_empty()
         {
             self.apply_shot_scenario(state);
@@ -1796,7 +1957,14 @@ impl Widget for VideoEditorApp {
                     label.apply_layout_external(rect);
                 }
                 label.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
                     taffy,
                 );
                 (*mid, label.take_outcome())
@@ -1816,7 +1984,15 @@ impl Widget for VideoEditorApp {
         // An open bin context menu is a transient overlay that owns clicks/keys.
         if self.bin_menu.is_open() {
             self.bin_menu.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             );
             if let Some(idx) = self.bin_menu.take_selection() {
                 self.bin_menu_choose(state, idx);
@@ -1838,18 +2014,26 @@ impl Widget for VideoEditorApp {
             }
         }
         match event {
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed =>
-            {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
                 if self.handle_key(&key_event.logical_key, modifiers, state, &r) {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.handle_press(state, &r);
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if self.bin_drag.is_some() {
                     // A bin→timeline drag drops a clip at the release position.
                     self.release_bin_drag(state, &r);
@@ -1979,7 +2163,11 @@ impl VideoEditorApp {
             // Arrows nudge the selected clip a frame (Shift = one second); with
             // nothing selected they step the playhead instead.
             Key::Named(NamedKey::ArrowLeft) => {
-                let step = if shift { 1.0 } else { frame_step(self.project.fps) };
+                let step = if shift {
+                    1.0
+                } else {
+                    frame_step(self.project.fps)
+                };
                 if self.selected.is_some() {
                     self.nudge_selected(state, -step);
                 } else {
@@ -1988,7 +2176,11 @@ impl VideoEditorApp {
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
-                let step = if shift { 1.0 } else { frame_step(self.project.fps) };
+                let step = if shift {
+                    1.0
+                } else {
+                    frame_step(self.project.fps)
+                };
                 if self.selected.is_some() {
                     self.nudge_selected(state, step);
                 } else {
@@ -2143,8 +2335,7 @@ impl VideoEditorApp {
                     // selection) gates both the double-click and the rename, so a
                     // freshly-imported, auto-selected item is never renamed on the
                     // first click.
-                    let clicked_before =
-                        matches!(self.last_click_media, Some((m, _)) if m == mid);
+                    let clicked_before = matches!(self.last_click_media, Some((m, _)) if m == mid);
                     let dbl = matches!(self.last_click_media, Some((m, t)) if m == mid && t.elapsed().as_millis() < 400);
                     if dbl {
                         self.add_media_to_timeline(state, mid);
@@ -2157,7 +2348,11 @@ impl VideoEditorApp {
                         self.last_click_media = None;
                     } else {
                         // Arm a potential bin→timeline drag from this press.
-                        self.bin_drag = Some(BinDrag { media: mid, origin: p, active: false });
+                        self.bin_drag = Some(BinDrag {
+                            media: mid,
+                            origin: p,
+                            active: false,
+                        });
                         self.last_click_media = Some((mid, Instant::now()));
                     }
                     return;
@@ -2177,7 +2372,9 @@ impl VideoEditorApp {
             }
         }
         let scrub = self.scrubber_rect(r);
-        if scrub.contains(p) || (p.x >= scrub.x0 && p.x <= scrub.x1 && (p.y - scrub.center().y).abs() < 14.0) {
+        if scrub.contains(p)
+            || (p.x >= scrub.x0 && p.x <= scrub.x1 && (p.y - scrub.center().y).abs() < 14.0)
+        {
             self.drag = Some(Drag::Scrubber);
             self.apply_scrubber(p, r);
             return;
@@ -2222,7 +2419,9 @@ impl VideoEditorApp {
             // Search clips on this lane.
             let clip_ids: Vec<ClipId> = self.project.clips_on(tid).iter().map(|c| c.id).collect();
             for cid in clip_ids {
-                let Some(clip) = self.project.clip(cid).cloned() else { continue };
+                let Some(clip) = self.project.clip(cid).cloned() else {
+                    continue;
+                };
                 let cr = self.clip_rect(&clip, &lane, r);
                 if p.x < cr.x0 - 2.0 || p.x > cr.x1 + 2.0 {
                     continue;
@@ -2233,7 +2432,10 @@ impl VideoEditorApp {
                 } else if (p.x - cr.x1).abs() <= TRIM_HIT {
                     self.drag = Some(Drag::TrimOut { id: cid });
                 } else {
-                    self.drag = Some(Drag::ClipMove { id: cid, grab_dt: self.x_to_time(p.x, &r.lanes) - clip.start });
+                    self.drag = Some(Drag::ClipMove {
+                        id: cid,
+                        grab_dt: self.x_to_time(p.x, &r.lanes) - clip.start,
+                    });
                 }
                 return;
             }
@@ -2288,7 +2490,11 @@ impl VideoEditorApp {
             }
         }
         // Fade in / out sliders (value in seconds, 0..clip-duration).
-        let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+        let max = self
+            .selected
+            .and_then(|id| self.project.clip(id))
+            .map(|c| c.duration())
+            .unwrap_or(0.0);
         if let Some(track) = l.fade_in {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::FadeIn);
@@ -2432,13 +2638,21 @@ impl VideoEditorApp {
             Drag::TrimIn { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self.project.clip(id).map(|c| target - c.start).unwrap_or(0.0);
+                let delta = self
+                    .project
+                    .clip(id)
+                    .map(|c| target - c.start)
+                    .unwrap_or(0.0);
                 self.project.trim_in(id, delta);
             }
             Drag::TrimOut { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self.project.clip(id).map(|c| target - c.end()).unwrap_or(0.0);
+                let delta = self
+                    .project
+                    .clip(id)
+                    .map(|c| target - c.end())
+                    .unwrap_or(0.0);
                 self.project.trim_out(id, delta);
             }
             Drag::Opacity => {
@@ -2455,7 +2669,9 @@ impl VideoEditorApp {
             }
             Drag::Brightness | Drag::Contrast | Drag::Saturation => {
                 let (track, field) = match drag {
-                    Drag::Brightness => (self.inspector_layout(r).brightness, FilterField::Brightness),
+                    Drag::Brightness => {
+                        (self.inspector_layout(r).brightness, FilterField::Brightness)
+                    }
                     Drag::Contrast => (self.inspector_layout(r).contrast, FilterField::Contrast),
                     _ => (self.inspector_layout(r).saturation, FilterField::Saturation),
                 };
@@ -2471,19 +2687,32 @@ impl VideoEditorApp {
             Drag::FadeIn => {
                 if let Some(track) = self.inspector_layout(r).fade_in {
                     let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+                    let max = self
+                        .selected
+                        .and_then(|id| self.project.clip(id))
+                        .map(|c| c.duration())
+                        .unwrap_or(0.0);
                     self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
                 }
             }
             Drag::FadeOut => {
                 if let Some(track) = self.inspector_layout(r).fade_out {
                     let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+                    let max = self
+                        .selected
+                        .and_then(|id| self.project.clip(id))
+                        .map(|c| c.duration())
+                        .unwrap_or(0.0);
                     self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
                 }
             }
             Drag::EffectAmount { idx } => {
-                if let Some(slider) = self.inspector_layout(r).effect_rows.get(idx).map(|row| Self::effect_row_parts(*row).2) {
+                if let Some(slider) = self
+                    .inspector_layout(r)
+                    .effect_rows
+                    .get(idx)
+                    .map(|row| Self::effect_row_parts(*row).2)
+                {
                     let v = ((p.x - slider.x0) / slider.width()).clamp(0.0, 1.0);
                     self.preview_edit(move |c| {
                         if let Some(e) = c.effects.get_mut(idx) {
@@ -2564,7 +2793,10 @@ impl VideoEditorApp {
         let p = self.last_mouse;
         let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
         self.hover_media = if bin_visible {
-            self.bin_item_rects(r).into_iter().find(|(_, rect)| rect.contains(p)).map(|(m, _)| m)
+            self.bin_item_rects(r)
+                .into_iter()
+                .find(|(_, rect)| rect.contains(p))
+                .map(|(m, _)| m)
         } else {
             None
         };
@@ -2589,12 +2821,28 @@ impl VideoEditorApp {
 // Drawing helpers
 // ==========================================================================
 impl VideoEditorApp {
-    fn draw_chrome(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_chrome(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.base, self.rect);
         // Top bar.
         fill_rect(scene, tf, c.surfaces.raised, r.topbar);
-        stroke_line(scene, tf, c.border_standard, r.topbar.x0, r.topbar.y1, r.topbar.x1, r.topbar.y1, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.topbar.x0,
+            r.topbar.y1,
+            r.topbar.x1,
+            r.topbar.y1,
+            1.0,
+        );
         // Leading slot: a hamburger toggle when the bin is collapsed to an
         // overlay flap. The OS owns the window title/app-name/logo, so the app
         // draws no glyph or wordmark here.
@@ -2611,7 +2859,16 @@ impl VideoEditorApp {
             timecode(self.project.duration(), self.project.fps),
         );
         let (mw, _) = tr.measure(&meta, 13.0, None);
-        text(scene, tr, tf, &meta, 13.0, c.text_dim, (self.rect.x0 + self.rect.x1) / 2.0 - mw as f64 / 2.0, r.topbar.y0 + 17.0);
+        text(
+            scene,
+            tr,
+            tf,
+            &meta,
+            13.0,
+            c.text_dim,
+            (self.rect.x0 + self.rect.x1) / 2.0 - mw as f64 / 2.0,
+            r.topbar.y0 + 17.0,
+        );
         // Buttons.
         draw_button(scene, tf, tr, theme, r.import_btn, "Import…", false);
         draw_button(scene, tf, tr, theme, r.split_btn, "Split  (S)", false);
@@ -2644,25 +2901,76 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_bin(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_bin(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.bin);
-        stroke_line(scene, tf, c.border_standard, r.bin.x1, r.bin.y0, r.bin.x1, r.bin.y1, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.bin.x1,
+            r.bin.y0,
+            r.bin.x1,
+            r.bin.y1,
+            1.0,
+        );
         // Invite an external file drop while the OS is hovering one over us.
         if self.file_hovering {
             fill_rect(scene, tf, with_alpha(c.accent[5], 0.10), r.bin);
             stroke_rrect(scene, tf, c.accent[5], r.bin.inset(-3.0), 8.0, 2.0);
             let hint = "Drop to import";
             let (hw, _) = tr.measure_weighted(hint, 13.0, None, TextWeight::Semibold);
-            text_w(scene, tr, tf, hint, 13.0, c.accent[5], r.bin.center().x - hw as f64 / 2.0, r.bin.center().y, TextWeight::Semibold);
+            text_w(
+                scene,
+                tr,
+                tf,
+                hint,
+                13.0,
+                c.accent[5],
+                r.bin.center().x - hw as f64 / 2.0,
+                r.bin.center().y,
+                TextWeight::Semibold,
+            );
         }
-        text_w(scene, tr, tf, "MEDIA BIN", 11.0, c.text_dim, r.bin.x0 + 14.0, r.bin.y0 + 14.0, TextWeight::Semibold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            "MEDIA BIN",
+            11.0,
+            c.text_dim,
+            r.bin.x0 + 14.0,
+            r.bin.y0 + 14.0,
+            TextWeight::Semibold,
+        );
         let count = format!("{} clips", self.project.media.len());
         let (cw, _) = tr.measure(&count, 11.0, None);
-        text(scene, tr, tf, &count, 11.0, c.text_dim, r.bin.x1 - 14.0 - cw as f64, r.bin.y0 + 14.0);
+        text(
+            scene,
+            tr,
+            tf,
+            &count,
+            11.0,
+            c.text_dim,
+            r.bin.x1 - 14.0 - cw as f64,
+            r.bin.y0 + 14.0,
+        );
 
         // Clip bin content so a long list can't bleed over the timeline.
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1));
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1),
+        );
         if self.project.media.is_empty() {
             // Empty state: a real "Import media" affordance (the button opens the
             // host file picker) plus an honest status line.
@@ -2670,7 +2978,16 @@ impl VideoEditorApp {
             let cy = r.bin.y0 + 120.0;
             let line1 = "No media yet";
             let (w1, _) = tr.measure(line1, 14.0, None);
-            text(scene, tr, tf, line1, 14.0, c.text_primary, cx - w1 as f64 / 2.0, cy);
+            text(
+                scene,
+                tr,
+                tf,
+                line1,
+                14.0,
+                c.text_primary,
+                cx - w1 as f64 / 2.0,
+                cy,
+            );
             if let Some(btn) = self.empty_bin_import_rect(r) {
                 draw_button(scene, tf, tr, theme, btn, "Import media", true);
             }
@@ -2678,11 +2995,22 @@ impl VideoEditorApp {
             // portal round-trip failed) — never a fake success.
             if let Some(notice) = &self.import_notice {
                 let (nw, _) = tr.measure(notice, 10.5, None);
-                text(scene, tr, tf, notice, 10.5, c.text_dim, cx - nw as f64 / 2.0, r.bin.y0 + 200.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    notice,
+                    10.5,
+                    c.text_dim,
+                    cx - nw as f64 / 2.0,
+                    r.bin.y0 + 200.0,
+                );
             }
         }
         for (mid, rect) in self.bin_item_rects(r) {
-            let Some(m) = self.project.media(mid) else { continue };
+            let Some(m) = self.project.media(mid) else {
+                continue;
+            };
             let selected = self.selected_media == Some(mid);
             let hover = self.hover_media == Some(mid);
             if selected {
@@ -2692,7 +3020,12 @@ impl VideoEditorApp {
                 fill_rrect(scene, tf, c.surface_white_5, rect, 8.0);
             }
             // Thumbnail swatch.
-            let thumb = Rect::new(rect.x0 + 8.0, rect.y0 + 8.0, rect.x0 + 8.0 + 64.0, rect.y1 - 8.0);
+            let thumb = Rect::new(
+                rect.x0 + 8.0,
+                rect.y0 + 8.0,
+                rect.x0 + 8.0 + 64.0,
+                rect.y1 - 8.0,
+            );
             let base = clip_color(theme, m.palette);
             fill_rrect(scene, tf, darken(base, 0.25), thumb, 5.0);
             // Visual media: the cached thumbnail frame (representative, or real
@@ -2710,14 +3043,26 @@ impl VideoEditorApp {
             } else {
                 let color = lighten(base, 0.25);
                 if let Some(peaks) = self.waveforms.peaks(m.id) {
-                    let inner = Rect::new(thumb.x0 + 4.0, thumb.y0 + 6.0, thumb.x1 - 4.0, thumb.y1 - 6.0);
-                    draw_waveform(scene, tf, inner, peaks, 0.0, m.duration, m.duration, 1.0, color);
+                    let inner = Rect::new(
+                        thumb.x0 + 4.0,
+                        thumb.y0 + 6.0,
+                        thumb.x1 - 4.0,
+                        thumb.y1 - 6.0,
+                    );
+                    draw_waveform(
+                        scene, tf, inner, peaks, 0.0, m.duration, m.duration, 1.0, color,
+                    );
                 } else {
                     let midy = thumb.center().y;
                     for i in 0..9 {
                         let bx = thumb.x0 + 6.0 + i as f64 * 6.4;
                         let amp = waveform_amp(i as f64) * (thumb.height() / 2.0 - 6.0);
-                        fill_rect(scene, tf, color, Rect::new(bx, midy - amp, bx + 3.0, midy + amp));
+                        fill_rect(
+                            scene,
+                            tf,
+                            color,
+                            Rect::new(bx, midy - amp, bx + 3.0, midy + amp),
+                        );
                     }
                 }
             }
@@ -2727,12 +3072,28 @@ impl VideoEditorApp {
                 MediaKind::Audio => c.semantic.success,
                 MediaKind::Image => c.semantic.warning,
             };
-            scene.fill(Fill::NonZero, tf, kc, None, &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0));
+            scene.fill(
+                Fill::NonZero,
+                tf,
+                kc,
+                None,
+                &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0),
+            );
             // text (the name is drawn by the inline rename field while editing).
             let tx = thumb.x1 + 12.0;
             let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(mid);
             if !renaming {
-                text_w(scene, tr, tf, &elide(&m.name, 22), 13.0, c.text_primary, tx, rect.y0 + 10.0, TextWeight::Medium);
+                text_w(
+                    scene,
+                    tr,
+                    tf,
+                    &elide(&m.name, 22),
+                    13.0,
+                    c.text_primary,
+                    tx,
+                    rect.y0 + 10.0,
+                    TextWeight::Medium,
+                );
             }
             let sub = match m.kind {
                 MediaKind::Audio => format!("Audio · {}", clock(m.duration)),
@@ -2745,7 +3106,14 @@ impl VideoEditorApp {
 
     /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
     /// the insertion point at the drop time, and float a ghost chip at the cursor.
-    fn draw_bin_drag(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_bin_drag(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let Some(bd) = self.bin_drag else { return };
         if !bd.active {
             return;
@@ -2768,11 +3136,24 @@ impl VideoEditorApp {
         if let Some(m) = self.project.media(bd.media) {
             let (w, h) = (154.0, 30.0);
             let gr = Rect::new(p.x + 12.0, p.y - h / 2.0, p.x + 12.0 + w, p.y + h / 2.0);
-            fill_rrect(scene, tf, with_alpha(clip_color(theme, m.palette), 0.92), gr, 6.0);
+            fill_rrect(
+                scene,
+                tf,
+                with_alpha(clip_color(theme, m.palette), 0.92),
+                gr,
+                6.0,
+            );
             stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.9), gr, 6.0, 1.0);
             text_w(
-                scene, tr, tf, &elide(&m.name, 20), 12.0, Color::WHITE,
-                gr.x0 + 10.0, gr.center().y - 8.0, TextWeight::Medium,
+                scene,
+                tr,
+                tf,
+                &elide(&m.name, 20),
+                12.0,
+                Color::WHITE,
+                gr.x0 + 10.0,
+                gr.center().y - 8.0,
+                TextWeight::Medium,
             );
         }
     }
@@ -2810,7 +3191,14 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_preview(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_preview(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.base, r.preview);
         // Canvas backdrop (letterbox black).
@@ -2826,7 +3214,13 @@ impl VideoEditorApp {
         #[allow(unused_mut)]
         let mut showed_real = false;
         match frame {
-            CompositedFrame::Clip { media, base, envelope, flash, decoded } => {
+            CompositedFrame::Clip {
+                media,
+                base,
+                envelope,
+                flash,
+                decoded,
+            } => {
                 let _ = decoded;
                 // Blit the real decoded frame when the decode pipeline has one
                 // for this clip; otherwise the representative two-band gradient.
@@ -2846,12 +3240,35 @@ impl VideoEditorApp {
                     fill_rect(scene, tf, darken(col, 0.18), canvas);
                     let upper = Rect::new(canvas.x0, canvas.y0, canvas.x1, canvas.center().y);
                     fill_rect(scene, tf, with_alpha(lighten(col, 0.18), 0.55), upper);
-                    let band = Rect::new(canvas.x0, canvas.y0 + canvas.height() * 0.62, canvas.x1, canvas.y0 + canvas.height() * 0.72);
+                    let band = Rect::new(
+                        canvas.x0,
+                        canvas.y0 + canvas.height() * 0.62,
+                        canvas.x1,
+                        canvas.y0 + canvas.height() * 0.72,
+                    );
                     fill_rect(scene, tf, with_alpha(darken(col, 0.15), 0.6), band);
-                    stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.5), canvas.inset(2.0), 2.0, 18.0);
+                    stroke_rrect(
+                        scene,
+                        tf,
+                        with_alpha(Color::BLACK, 0.5),
+                        canvas.inset(2.0),
+                        2.0,
+                        18.0,
+                    );
                     if let Some(m) = self.project.media(media) {
-                        let (nw, _) = tr.measure_weighted(&m.name, 22.0, None, TextWeight::Semibold);
-                        text_w(scene, tr, tf, &m.name, 22.0, with_alpha(Color::WHITE, 0.92), canvas.center().x - nw as f64 / 2.0, canvas.center().y - 16.0, TextWeight::Semibold);
+                        let (nw, _) =
+                            tr.measure_weighted(&m.name, 22.0, None, TextWeight::Semibold);
+                        text_w(
+                            scene,
+                            tr,
+                            tf,
+                            &m.name,
+                            22.0,
+                            with_alpha(Color::WHITE, 0.92),
+                            canvas.center().x - nw as f64 / 2.0,
+                            canvas.center().y - 16.0,
+                            TextWeight::Semibold,
+                        );
                     }
                 }
                 // The fade/opacity envelope dims the whole frame toward black.
@@ -2866,14 +3283,42 @@ impl VideoEditorApp {
             }
             CompositedFrame::Empty => {
                 let (tw, _) = tr.measure("No clip at playhead", 14.0, None);
-                text(scene, tr, tf, "No clip at playhead", 14.0, c.text_dim, canvas.center().x - tw as f64 / 2.0, canvas.center().y - 8.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "No clip at playhead",
+                    14.0,
+                    c.text_dim,
+                    canvas.center().x - tw as f64 / 2.0,
+                    canvas.center().y - 8.0,
+                );
             }
         }
         // HUD overlays.
-        text_w(scene, tr, tf, &timecode(self.playhead, self.project.fps), 13.0, with_alpha(Color::WHITE, 0.85), canvas.x0 + 10.0, canvas.y0 + 8.0, TextWeight::Bold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            &timecode(self.playhead, self.project.fps),
+            13.0,
+            with_alpha(Color::WHITE, 0.85),
+            canvas.x0 + 10.0,
+            canvas.y0 + 8.0,
+            TextWeight::Bold,
+        );
         let res = format!("{}×{}", self.project.width, self.project.height);
         let (rw, _) = tr.measure(&res, 12.0, None);
-        text(scene, tr, tf, &res, 12.0, with_alpha(Color::WHITE, 0.7), canvas.x1 - 10.0 - rw as f64, canvas.y0 + 8.0);
+        text(
+            scene,
+            tr,
+            tf,
+            &res,
+            12.0,
+            with_alpha(Color::WHITE, 0.7),
+            canvas.x1 - 10.0 - rw as f64,
+            canvas.y0 + 8.0,
+        );
         // Decode-mode badge so the gated-vs-real state is legible in a shot:
         // LIVE when a real decoded frame is on the canvas, DECODE when the
         // pipeline is compiled but has no hydrated frame, PREVIEW otherwise.
@@ -2884,49 +3329,157 @@ impl VideoEditorApp {
         } else {
             "PREVIEW"
         };
-        let badge_col = if showed_real { c.semantic.success } else { with_alpha(Color::WHITE, 0.45) };
-        text(scene, tr, tf, badge, 9.5, badge_col, canvas.x0 + 10.0, canvas.y1 - 18.0);
+        let badge_col = if showed_real {
+            c.semantic.success
+        } else {
+            with_alpha(Color::WHITE, 0.45)
+        };
+        text(
+            scene,
+            tr,
+            tf,
+            badge,
+            9.5,
+            badge_col,
+            canvas.x0 + 10.0,
+            canvas.y1 - 18.0,
+        );
         // Safe-area guide.
-        stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.12), canvas.inset(-canvas.width() * 0.05), 0.0, 1.0);
+        stroke_rrect(
+            scene,
+            tf,
+            with_alpha(Color::WHITE, 0.12),
+            canvas.inset(-canvas.width() * 0.05),
+            0.0,
+            1.0,
+        );
     }
 
-    fn draw_transport(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_transport(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.transport);
-        stroke_line(scene, tf, c.border_standard, r.transport.x0, r.transport.y0, r.transport.x1, r.transport.y0, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.transport.x0,
+            r.transport.y0,
+            r.transport.x1,
+            r.transport.y0,
+            1.0,
+        );
         for (action, rect) in self.transport_buttons(r) {
             let is_play = action == TransportAction::PlayPause;
             let hovered = rect.contains(self.last_mouse);
-            let bg = if is_play { c.accent[5] } else if hovered { c.surface_white_10 } else { c.neutral[3] };
-            scene.fill(Fill::NonZero, tf, bg, None, &Circle::new(rect.center(), rect.width() / 2.0));
-            let col = if is_play { Color::WHITE } else { c.text_primary };
+            let bg = if is_play {
+                c.accent[5]
+            } else if hovered {
+                c.surface_white_10
+            } else {
+                c.neutral[3]
+            };
+            scene.fill(
+                Fill::NonZero,
+                tf,
+                bg,
+                None,
+                &Circle::new(rect.center(), rect.width() / 2.0),
+            );
+            let col = if is_play {
+                Color::WHITE
+            } else {
+                c.text_primary
+            };
             self.draw_transport_icon(scene, tf, action, rect.center(), col);
         }
         // Timecode readout.
         let big = timecode(self.playhead, self.project.fps);
-        text_w(scene, tr, tf, &big, 18.0, c.text_primary, r.transport.x0 + 220.0, r.transport.y0 + 8.0, TextWeight::Bold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            &big,
+            18.0,
+            c.text_primary,
+            r.transport.x0 + 220.0,
+            r.transport.y0 + 8.0,
+            TextWeight::Bold,
+        );
         let total = format!("/  {}", timecode(self.project.duration(), self.project.fps));
         let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
-        text(scene, tr, tf, &total, 13.0, c.text_dim, r.transport.x0 + 224.0 + bw as f64, r.transport.y0 + 13.0);
+        text(
+            scene,
+            tr,
+            tf,
+            &total,
+            13.0,
+            c.text_dim,
+            r.transport.x0 + 224.0 + bw as f64,
+            r.transport.y0 + 13.0,
+        );
         // Scrubber.
         let scrub = self.scrubber_rect(r);
         fill_rrect(scene, tf, c.neutral[3], scrub, 4.0);
         let frac = (self.playhead / self.project.duration()).clamp(0.0, 1.0);
-        let filled = Rect::new(scrub.x0, scrub.y0, scrub.x0 + scrub.width() * frac, scrub.y1);
+        let filled = Rect::new(
+            scrub.x0,
+            scrub.y0,
+            scrub.x0 + scrub.width() * frac,
+            scrub.y1,
+        );
         fill_rrect(scene, tf, c.accent[5], filled, 4.0);
-        scene.fill(Fill::NonZero, tf, Color::WHITE, None, &Circle::new(Point::new(filled.x1, scrub.center().y), 6.0));
+        scene.fill(
+            Fill::NonZero,
+            tf,
+            Color::WHITE,
+            None,
+            &Circle::new(Point::new(filled.x1, scrub.center().y), 6.0),
+        );
         if self.playing {
-            text(scene, tr, tf, "PLAYING", 10.0, c.semantic.success, scrub.x0, scrub.y0 - 16.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "PLAYING",
+                10.0,
+                c.semantic.success,
+                scrub.x0,
+                scrub.y0 - 16.0,
+            );
         }
     }
 
-    fn draw_transport_icon(&self, scene: &mut Scene, tf: Affine, action: TransportAction, ctr: Point, col: Color) {
+    fn draw_transport_icon(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        action: TransportAction,
+        ctr: Point,
+        col: Color,
+    ) {
         let s = 6.0;
         match action {
             TransportAction::PlayPause => {
                 if self.playing {
-                    fill_rect(scene, tf, col, Rect::new(ctr.x - 5.0, ctr.y - 6.0, ctr.x - 1.0, ctr.y + 6.0));
-                    fill_rect(scene, tf, col, Rect::new(ctr.x + 1.0, ctr.y - 6.0, ctr.x + 5.0, ctr.y + 6.0));
+                    fill_rect(
+                        scene,
+                        tf,
+                        col,
+                        Rect::new(ctr.x - 5.0, ctr.y - 6.0, ctr.x - 1.0, ctr.y + 6.0),
+                    );
+                    fill_rect(
+                        scene,
+                        tf,
+                        col,
+                        Rect::new(ctr.x + 1.0, ctr.y - 6.0, ctr.x + 5.0, ctr.y + 6.0),
+                    );
                 } else {
                     let mut p = BezPath::new();
                     p.move_to((ctr.x - 5.0, ctr.y - 7.0));
@@ -2943,7 +3496,12 @@ impl VideoEditorApp {
                 p.line_to((ctr.x + s, ctr.y + s));
                 p.close_path();
                 scene.fill(Fill::NonZero, tf, col, None, &p);
-                fill_rect(scene, tf, col, Rect::new(ctr.x - 6.0, ctr.y - s, ctr.x - 4.0, ctr.y + s));
+                fill_rect(
+                    scene,
+                    tf,
+                    col,
+                    Rect::new(ctr.x - 6.0, ctr.y - s, ctr.x - 4.0, ctr.y + s),
+                );
             }
             TransportAction::StepFwd => {
                 let mut p = BezPath::new();
@@ -2952,10 +3510,20 @@ impl VideoEditorApp {
                 p.line_to((ctr.x - s, ctr.y + s));
                 p.close_path();
                 scene.fill(Fill::NonZero, tf, col, None, &p);
-                fill_rect(scene, tf, col, Rect::new(ctr.x + 4.0, ctr.y - s, ctr.x + 6.0, ctr.y + s));
+                fill_rect(
+                    scene,
+                    tf,
+                    col,
+                    Rect::new(ctr.x + 4.0, ctr.y - s, ctr.x + 6.0, ctr.y + s),
+                );
             }
             TransportAction::ToStart => {
-                fill_rect(scene, tf, col, Rect::new(ctr.x - 7.0, ctr.y - s, ctr.x - 5.0, ctr.y + s));
+                fill_rect(
+                    scene,
+                    tf,
+                    col,
+                    Rect::new(ctr.x - 7.0, ctr.y - s, ctr.x - 5.0, ctr.y + s),
+                );
                 let mut p = BezPath::new();
                 p.move_to((ctr.x + 6.0, ctr.y - s));
                 p.line_to((ctr.x - 3.0, ctr.y));
@@ -2964,7 +3532,12 @@ impl VideoEditorApp {
                 scene.fill(Fill::NonZero, tf, col, None, &p);
             }
             TransportAction::ToEnd => {
-                fill_rect(scene, tf, col, Rect::new(ctr.x + 5.0, ctr.y - s, ctr.x + 7.0, ctr.y + s));
+                fill_rect(
+                    scene,
+                    tf,
+                    col,
+                    Rect::new(ctr.x + 5.0, ctr.y - s, ctr.x + 7.0, ctr.y + s),
+                );
                 let mut p = BezPath::new();
                 p.move_to((ctr.x - 6.0, ctr.y - s));
                 p.line_to((ctr.x + 3.0, ctr.y));
@@ -2975,13 +3548,35 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_inspector(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_inspector(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.inspector);
-        stroke_line(scene, tf, c.border_standard, r.inspector.x0, r.inspector.y0, r.inspector.x0, r.inspector.y1, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.inspector.x0,
+            r.inspector.y0,
+            r.inspector.x0,
+            r.inspector.y1,
+            1.0,
+        );
         // Clip everything to the inspector rect so controls never bleed into
         // the timeline if the selected clip's control stack runs tall.
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &r.inspector);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &r.inspector,
+        );
         self.draw_inspector_body(scene, tf, tr, theme, r);
         scene.pop_layer();
         // Scroll indicator on the right edge when the content overflows the pane.
@@ -2997,31 +3592,94 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_inspector_body(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_inspector_body(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
         // The whole body scrolls together by `inspector_scroll` (clamped to 0
         // when nothing is selected, so the empty state stays put).
         let top = r.inspector.y0 - self.inspector_scroll;
-        text_w(scene, tr, tf, "INSPECTOR", 11.0, c.text_dim, x0, top + 14.0, TextWeight::Semibold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            "INSPECTOR",
+            11.0,
+            c.text_dim,
+            x0,
+            top + 14.0,
+            TextWeight::Semibold,
+        );
 
         let Some(id) = self.selected else {
-            text(scene, tr, tf, "No clip selected", 13.0, c.text_dim, x0, top + 60.0);
-            text(scene, tr, tf, "Click a clip in the timeline", 11.5, c.text_dim, x0, top + 82.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "No clip selected",
+                13.0,
+                c.text_dim,
+                x0,
+                top + 60.0,
+            );
+            text(
+                scene,
+                tr,
+                tf,
+                "Click a clip in the timeline",
+                11.5,
+                c.text_dim,
+                x0,
+                top + 82.0,
+            );
             return;
         };
-        let Some(clip) = self.project.clip(id).cloned() else { return };
+        let Some(clip) = self.project.clip(id).cloned() else {
+            return;
+        };
         let media = self.project.media(clip.media).cloned();
         let is_video = media.as_ref().map(|m| m.kind.is_visual()).unwrap_or(true);
-        let track_name = self.project.track(clip.track).map(|t| t.name.clone()).unwrap_or_default();
+        let track_name = self
+            .project
+            .track(clip.track)
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
 
         // Header card with color tag + name (scrolls with the body).
         let tag = Rect::new(x0, top + 36.0, x0 + 6.0, top + 64.0);
         fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0);
-        let name = media.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "clip".into());
-        text_w(scene, tr, tf, &elide(&name, 26), 15.0, c.text_primary, x0 + 14.0, top + 38.0, TextWeight::Semibold);
-        text(scene, tr, tf, &format!("on {track_name}"), 11.5, c.text_dim, x0 + 14.0, top + 58.0);
+        let name = media
+            .as_ref()
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| "clip".into());
+        text_w(
+            scene,
+            tr,
+            tf,
+            &elide(&name, 26),
+            15.0,
+            c.text_primary,
+            x0 + 14.0,
+            top + 38.0,
+            TextWeight::Semibold,
+        );
+        text(
+            scene,
+            tr,
+            tf,
+            &format!("on {track_name}"),
+            11.5,
+            c.text_dim,
+            x0 + 14.0,
+            top + 58.0,
+        );
 
         // Property rows.
         let mut y = top + 78.0;
@@ -3029,60 +3687,182 @@ impl VideoEditorApp {
         let prop = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, value: &str, y: f64| {
             text(scene, tr, tf, label, 12.0, c.text_dim, x0, y);
             let (vw, _) = tr.measure_weighted(value, 12.0, None, TextWeight::Medium);
-            text_w(scene, tr, tf, value, 12.0, c.text_primary, x1 - vw as f64, y, TextWeight::Medium);
+            text_w(
+                scene,
+                tr,
+                tf,
+                value,
+                12.0,
+                c.text_primary,
+                x1 - vw as f64,
+                y,
+                TextWeight::Medium,
+            );
         };
-        prop(scene, tr, "Position", &timecode(clip.start, fps), y); y += 18.0;
-        prop(scene, tr, "Duration", &timecode(clip.duration(), fps), y); y += 18.0;
-        prop(scene, tr, "Source In", &timecode(clip.in_point, fps), y); y += 18.0;
+        prop(scene, tr, "Position", &timecode(clip.start, fps), y);
+        y += 18.0;
+        prop(scene, tr, "Duration", &timecode(clip.duration(), fps), y);
+        y += 18.0;
+        prop(scene, tr, "Source In", &timecode(clip.in_point, fps), y);
+        y += 18.0;
         prop(scene, tr, "Source Out", &timecode(clip.out_point, fps), y);
 
         let l = self.inspector_layout(r);
         // Opacity / Volume slider.
         if let Some(track) = l.opacity {
-            text(scene, tr, tf, "Opacity", 12.0, c.text_dim, x0, track.y0 - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Opacity",
+                12.0,
+                c.text_dim,
+                x0,
+                track.y0 - 20.0,
+            );
             let pct = format!("{:.0}%", clip.opacity * 100.0);
             let (pw, _) = tr.measure(&pct, 12.0, None);
-            text(scene, tr, tf, &pct, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                &pct,
+                12.0,
+                c.text_primary,
+                x1 - pw as f64,
+                track.y0 - 20.0,
+            );
             draw_track(scene, tf, theme, track, clip.opacity);
         }
         if let Some(track) = l.volume {
-            text(scene, tr, tf, "Volume", 12.0, c.text_dim, x0, track.y0 - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Volume",
+                12.0,
+                c.text_dim,
+                x0,
+                track.y0 - 20.0,
+            );
             let pct = format!("{:.0}%", clip.volume * 100.0);
             let (pw, _) = tr.measure(&pct, 12.0, None);
-            text(scene, tr, tf, &pct, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                &pct,
+                12.0,
+                c.text_primary,
+                x1 - pw as f64,
+                track.y0 - 20.0,
+            );
             draw_track(scene, tf, theme, track, clip.volume);
         }
         // Colour-grade sliders (video only). The right-hand readout shows
         // the multiplier (0.5 slider == 1.0×, the identity).
-        let grade = |scene: &mut Scene, tr: &mut TextRenderer, track: Option<Rect>, label: &str, v: f64| {
-            if let Some(track) = track {
-                text(scene, tr, tf, label, 12.0, c.text_dim, x0, track.y0 - 20.0);
-                let mult = format!("{:.2}×", Filters::gain(v));
-                let (pw, _) = tr.measure(&mult, 12.0, None);
-                text(scene, tr, tf, &mult, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
-                draw_track(scene, tf, theme, track, v);
-            }
-        };
-        grade(scene, tr, l.brightness, "Brightness", clip.filters.brightness);
+        let grade =
+            |scene: &mut Scene, tr: &mut TextRenderer, track: Option<Rect>, label: &str, v: f64| {
+                if let Some(track) = track {
+                    text(scene, tr, tf, label, 12.0, c.text_dim, x0, track.y0 - 20.0);
+                    let mult = format!("{:.2}×", Filters::gain(v));
+                    let (pw, _) = tr.measure(&mult, 12.0, None);
+                    text(
+                        scene,
+                        tr,
+                        tf,
+                        &mult,
+                        12.0,
+                        c.text_primary,
+                        x1 - pw as f64,
+                        track.y0 - 20.0,
+                    );
+                    draw_track(scene, tf, theme, track, v);
+                }
+            };
+        grade(
+            scene,
+            tr,
+            l.brightness,
+            "Brightness",
+            clip.filters.brightness,
+        );
         grade(scene, tr, l.contrast, "Contrast", clip.filters.contrast);
-        grade(scene, tr, l.saturation, "Saturation", clip.filters.saturation);
+        grade(
+            scene,
+            tr,
+            l.saturation,
+            "Saturation",
+            clip.filters.saturation,
+        );
         // Fade in / out (seconds). Two half-width tracks share a row.
         let cd = clip.duration().max(1e-6);
         if let Some(track) = l.fade_in {
-            text(scene, tr, tf, "Fade In", 11.0, c.text_dim, track.x0, track.y0 - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Fade In",
+                11.0,
+                c.text_dim,
+                track.x0,
+                track.y0 - 20.0,
+            );
             let v = format!("{:.1}s", clip.fade_in);
-            text(scene, tr, tf, &v, 11.0, c.text_primary, track.x1 - 30.0, track.y0 - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                &v,
+                11.0,
+                c.text_primary,
+                track.x1 - 30.0,
+                track.y0 - 20.0,
+            );
             draw_track(scene, tf, theme, track, (clip.fade_in / cd).clamp(0.0, 1.0));
         }
         if let Some(track) = l.fade_out {
-            text(scene, tr, tf, "Fade Out", 11.0, c.text_dim, track.x0, track.y0 - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Fade Out",
+                11.0,
+                c.text_dim,
+                track.x0,
+                track.y0 - 20.0,
+            );
             let v = format!("{:.1}s", clip.fade_out);
-            text(scene, tr, tf, &v, 11.0, c.text_primary, track.x1 - 30.0, track.y0 - 20.0);
-            draw_track(scene, tf, theme, track, (clip.fade_out / cd).clamp(0.0, 1.0));
+            text(
+                scene,
+                tr,
+                tf,
+                &v,
+                11.0,
+                c.text_primary,
+                track.x1 - 30.0,
+                track.y0 - 20.0,
+            );
+            draw_track(
+                scene,
+                tf,
+                theme,
+                track,
+                (clip.fade_out / cd).clamp(0.0, 1.0),
+            );
         }
         // Transition segmented control.
         if !l.transitions.is_empty() {
-            text(scene, tr, tf, "Transition", 12.0, c.text_dim, x0, l.transition_y - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Transition",
+                12.0,
+                c.text_dim,
+                x0,
+                l.transition_y - 20.0,
+            );
             for (t, rect) in &l.transitions {
                 let on = clip.transition == *t;
                 let bg = if on { c.accent[5] } else { c.neutral[3] };
@@ -3090,12 +3870,30 @@ impl VideoEditorApp {
                 let col = if on { Color::WHITE } else { c.text_dim };
                 let lab = t.label();
                 let (lw, _) = tr.measure(lab, 10.0, None);
-                text(scene, tr, tf, lab, 10.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 6.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    lab,
+                    10.0,
+                    col,
+                    rect.center().x - lw as f64 / 2.0,
+                    rect.center().y - 6.0,
+                );
             }
         }
         // Color swatches.
         if !l.colors.is_empty() {
-            text(scene, tr, tf, "Label", 12.0, c.text_dim, x0, l.colors_y - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Label",
+                12.0,
+                c.text_dim,
+                x0,
+                l.colors_y - 20.0,
+            );
             for (pal, rect) in &l.colors {
                 fill_rrect(scene, tf, clip_color(theme, *pal), *rect, 6.0);
                 if clip.palette == *pal {
@@ -3105,30 +3903,102 @@ impl VideoEditorApp {
         }
         // Effects stack (video only).
         if is_video {
-        text_w(scene, tr, tf, "EFFECTS", 11.0, c.text_dim, x0, l.effects_label_y, TextWeight::Semibold);
-        for (i, row) in l.effect_rows.iter().enumerate() {
-            let Some(e) = clip.effects.get(i) else { continue };
-            let (up, down, slider, remove) = Self::effect_row_parts(*row);
-            fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
-            // Reorder arrows (dim at the ends where they're inert).
-            let up_col = if i > 0 { c.text_primary } else { c.text_dim };
-            let down_col = if i + 1 < clip.effects.len() { c.text_primary } else { c.text_dim };
-            let (uw, _) = tr.measure("▲", 9.0, None);
-            text(scene, tr, tf, "▲", 9.0, up_col, up.center().x - uw as f64 / 2.0, up.center().y - 6.0);
-            text(scene, tr, tf, "▼", 9.0, down_col, down.center().x - uw as f64 / 2.0, down.center().y - 6.0);
-            // Name.
-            text_w(scene, tr, tf, e.kind.label(), 12.0, c.text_primary, down.x1 + 8.0, row.center().y - 8.0, TextWeight::Medium);
-            // Intensity slider.
-            draw_track(scene, tf, theme, slider, e.amount);
-            // Remove.
-            let (xw, _) = tr.measure("✕", 11.0, None);
-            text(scene, tr, tf, "✕", 11.0, c.semantic.danger, remove.center().x - xw as f64 / 2.0, remove.center().y - 7.0);
-        }
-        // Add-effect button.
-        let add_hover = l.add_effect.contains(self.last_mouse);
-        fill_rrect(scene, tf, if add_hover { c.surface_white_10 } else { c.neutral[3] }, l.add_effect, 6.0);
-        stroke_rrect(scene, tf, c.border_standard, l.add_effect, 6.0, 1.0);
-        text(scene, tr, tf, "+ Add effect", 12.0, c.text_primary, l.add_effect.x0 + 12.0, l.add_effect.center().y - 8.0);
+            text_w(
+                scene,
+                tr,
+                tf,
+                "EFFECTS",
+                11.0,
+                c.text_dim,
+                x0,
+                l.effects_label_y,
+                TextWeight::Semibold,
+            );
+            for (i, row) in l.effect_rows.iter().enumerate() {
+                let Some(e) = clip.effects.get(i) else {
+                    continue;
+                };
+                let (up, down, slider, remove) = Self::effect_row_parts(*row);
+                fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
+                // Reorder arrows (dim at the ends where they're inert).
+                let up_col = if i > 0 { c.text_primary } else { c.text_dim };
+                let down_col = if i + 1 < clip.effects.len() {
+                    c.text_primary
+                } else {
+                    c.text_dim
+                };
+                let (uw, _) = tr.measure("▲", 9.0, None);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "▲",
+                    9.0,
+                    up_col,
+                    up.center().x - uw as f64 / 2.0,
+                    up.center().y - 6.0,
+                );
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "▼",
+                    9.0,
+                    down_col,
+                    down.center().x - uw as f64 / 2.0,
+                    down.center().y - 6.0,
+                );
+                // Name.
+                text_w(
+                    scene,
+                    tr,
+                    tf,
+                    e.kind.label(),
+                    12.0,
+                    c.text_primary,
+                    down.x1 + 8.0,
+                    row.center().y - 8.0,
+                    TextWeight::Medium,
+                );
+                // Intensity slider.
+                draw_track(scene, tf, theme, slider, e.amount);
+                // Remove.
+                let (xw, _) = tr.measure("✕", 11.0, None);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "✕",
+                    11.0,
+                    c.semantic.danger,
+                    remove.center().x - xw as f64 / 2.0,
+                    remove.center().y - 7.0,
+                );
+            }
+            // Add-effect button.
+            let add_hover = l.add_effect.contains(self.last_mouse);
+            fill_rrect(
+                scene,
+                tf,
+                if add_hover {
+                    c.surface_white_10
+                } else {
+                    c.neutral[3]
+                },
+                l.add_effect,
+                6.0,
+            );
+            stroke_rrect(scene, tf, c.border_standard, l.add_effect, 6.0, 1.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "+ Add effect",
+                12.0,
+                c.text_primary,
+                l.add_effect.x0 + 12.0,
+                l.add_effect.center().y - 8.0,
+            );
         }
 
         if l.valid {
@@ -3137,10 +4007,26 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_timeline(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_timeline(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.base, r.timeline);
-        stroke_line(scene, tf, c.border_standard, r.timeline.x0, r.timeline.y0, r.timeline.x1, r.timeline.y0, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.timeline.x0,
+            r.timeline.y0,
+            r.timeline.x1,
+            r.timeline.y0,
+            1.0,
+        );
 
         // --- ruler ticks ---
         fill_rect(scene, tf, c.surfaces.raised, r.ruler);
@@ -3151,11 +4037,38 @@ impl VideoEditorApp {
         while t <= end_t {
             let x = self.time_to_x(t, &r.lanes);
             if x >= r.ruler.x0 - 1.0 && x <= r.ruler.x1 {
-                stroke_line(scene, tf, c.border_standard, x, r.ruler.y1 - 8.0, x, r.ruler.y1, 1.0);
+                stroke_line(
+                    scene,
+                    tf,
+                    c.border_standard,
+                    x,
+                    r.ruler.y1 - 8.0,
+                    x,
+                    r.ruler.y1,
+                    1.0,
+                );
                 let label = timecode(t, self.project.fps);
-                text(scene, tr, tf, &label, 10.0, c.text_dim, x + 4.0, r.ruler.y0 + 6.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &label,
+                    10.0,
+                    c.text_dim,
+                    x + 4.0,
+                    r.ruler.y0 + 6.0,
+                );
                 // faint grid line down the lanes
-                stroke_line(scene, tf, with_alpha(c.border_standard, 0.4), x, r.lanes.y0, x, r.timeline.y1, 1.0);
+                stroke_line(
+                    scene,
+                    tf,
+                    with_alpha(c.border_standard, 0.4),
+                    x,
+                    r.lanes.y0,
+                    x,
+                    r.timeline.y1,
+                    1.0,
+                );
             }
             t += tick_step;
         }
@@ -3164,16 +4077,48 @@ impl VideoEditorApp {
         let lanes = self.lane_rects(r);
         for (tid, kind, lane) in &lanes {
             // lane background stripe
-            let stripe = if *kind == TrackKind::Video { c.surface_white_5 } else { with_alpha(c.semantic.success, 0.05) };
-            fill_rect(scene, tf, stripe, Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1));
+            let stripe = if *kind == TrackKind::Video {
+                c.surface_white_5
+            } else {
+                with_alpha(c.semantic.success, 0.05)
+            };
+            fill_rect(
+                scene,
+                tf,
+                stripe,
+                Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1),
+            );
             // header
             let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
             fill_rect(scene, tf, c.surfaces.raised, header);
             let track = self.project.track(*tid);
             let name = track.map(|t| t.name.as_str()).unwrap_or("?");
-            text_w(scene, tr, tf, name, 13.0, c.text_primary, header.x0 + 12.0, header.center().y - 8.0, TextWeight::Semibold);
-            let knd = if *kind == TrackKind::Video { "VIDEO" } else { "AUDIO" };
-            text(scene, tr, tf, knd, 9.0, c.text_dim, header.x0 + 12.0, header.center().y + 6.0);
+            text_w(
+                scene,
+                tr,
+                tf,
+                name,
+                13.0,
+                c.text_primary,
+                header.x0 + 12.0,
+                header.center().y - 8.0,
+                TextWeight::Semibold,
+            );
+            let knd = if *kind == TrackKind::Video {
+                "VIDEO"
+            } else {
+                "AUDIO"
+            };
+            text(
+                scene,
+                tr,
+                tf,
+                knd,
+                9.0,
+                c.text_dim,
+                header.x0 + 12.0,
+                header.center().y + 6.0,
+            );
             // mute pill (clickable toggle)
             let muted = track.map(|t| t.muted).unwrap_or(false);
             let pill = self.mute_pill_rect(header);
@@ -3186,13 +4131,32 @@ impl VideoEditorApp {
                 c.neutral[3]
             };
             fill_rrect(scene, tf, pill_bg, pill, 4.0);
-            let (ml, mc) = if muted { ("M", Color::WHITE) } else { ("M", c.text_dim) };
+            let (ml, mc) = if muted {
+                ("M", Color::WHITE)
+            } else {
+                ("M", c.text_dim)
+            };
             let (mlw, _) = tr.measure(ml, 10.0, None);
-            text(scene, tr, tf, ml, 10.0, mc, pill.center().x - mlw as f64 / 2.0, pill.center().y - 6.0);
+            text(
+                scene,
+                tr,
+                tf,
+                ml,
+                10.0,
+                mc,
+                pill.center().x - mlw as f64 / 2.0,
+                pill.center().y - 6.0,
+            );
         }
 
         // Clip bodies clipped to the lane area so they don't bleed over the gutter/ruler.
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1));
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
+        );
         for (tid, kind, lane) in &lanes {
             for clip in self.project.clips_on(*tid) {
                 self.draw_clip(scene, tf, tr, theme, clip, lane, *kind, r);
@@ -3203,7 +4167,16 @@ impl VideoEditorApp {
         // --- playhead ---
         let px = self.time_to_x(self.playhead, &r.lanes);
         if px >= r.lanes.x0 - 0.5 && px <= r.lanes.x1 + 0.5 {
-            stroke_line(scene, tf, c.accent[5], px, r.ruler.y0 + 4.0, px, r.timeline.y1, 1.5);
+            stroke_line(
+                scene,
+                tf,
+                c.accent[5],
+                px,
+                r.ruler.y0 + 4.0,
+                px,
+                r.timeline.y1,
+                1.5,
+            );
             let head = triangle_down(px, r.ruler.y0 + 4.0, 10.0);
             scene.fill(Fill::NonZero, tf, c.accent[5], None, &head);
         }
@@ -3211,22 +4184,70 @@ impl VideoEditorApp {
         let tag = timecode(self.playhead, self.project.fps);
         let (tw, _) = tr.measure_weighted(&tag, 10.0, None, TextWeight::Bold);
         let tagx = (px + 6.0).min(r.ruler.x1 - tw as f64 - 8.0).max(r.ruler.x0);
-        let tagrect = Rect::new(tagx - 3.0, r.ruler.y0 + 2.0, tagx + tw as f64 + 5.0, r.ruler.y0 + 16.0);
+        let tagrect = Rect::new(
+            tagx - 3.0,
+            r.ruler.y0 + 2.0,
+            tagx + tw as f64 + 5.0,
+            r.ruler.y0 + 16.0,
+        );
         fill_rrect(scene, tf, c.accent[5], tagrect, 3.0);
-        text_w(scene, tr, tf, &tag, 10.0, Color::WHITE, tagx, r.ruler.y0 + 3.0, TextWeight::Bold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            &tag,
+            10.0,
+            Color::WHITE,
+            tagx,
+            r.ruler.y0 + 3.0,
+            TextWeight::Bold,
+        );
 
         // Add-track buttons in the gutter footer.
         for (kind, rect) in self.add_track_buttons(r) {
             let hover = rect.contains(self.last_mouse);
-            fill_rrect(scene, tf, if hover { c.surface_white_10 } else { c.neutral[3] }, rect, 6.0);
+            fill_rrect(
+                scene,
+                tf,
+                if hover {
+                    c.surface_white_10
+                } else {
+                    c.neutral[3]
+                },
+                rect,
+                6.0,
+            );
             stroke_rrect(scene, tf, c.border_standard, rect, 6.0, 1.0);
-            let label = if kind == TrackKind::Video { "+ Video" } else { "+ Audio" };
+            let label = if kind == TrackKind::Video {
+                "+ Video"
+            } else {
+                "+ Audio"
+            };
             let (lw, _) = tr.measure(label, 11.0, None);
-            text(scene, tr, tf, label, 11.0, c.text_primary, rect.center().x - lw as f64 / 2.0, rect.center().y - 7.0);
+            text(
+                scene,
+                tr,
+                tf,
+                label,
+                11.0,
+                c.text_primary,
+                rect.center().x - lw as f64 / 2.0,
+                rect.center().y - 7.0,
+            );
         }
     }
 
-    fn draw_clip(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, clip: &Clip, lane: &Rect, kind: TrackKind, r: &Regions) {
+    fn draw_clip(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        clip: &Clip,
+        lane: &Rect,
+        kind: TrackKind,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         let cr = self.clip_rect(clip, lane, r);
         if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
@@ -3235,9 +4256,26 @@ impl VideoEditorApp {
         let base = clip_color(theme, clip.palette);
         let selected = self.selected == Some(clip.id);
         let hovered = self.hover_clip == Some(clip.id);
-        let body = if kind == TrackKind::Video { base } else { darken(base, 0.05) };
+        let body = if kind == TrackKind::Video {
+            base
+        } else {
+            darken(base, 0.05)
+        };
         let body = if hovered { lighten(body, 0.08) } else { body };
-        fill_rrect(scene, tf, with_alpha(body, if kind == TrackKind::Video { clip.opacity * 0.85 + 0.15 } else { 0.92 }), cr, 6.0);
+        fill_rrect(
+            scene,
+            tf,
+            with_alpha(
+                body,
+                if kind == TrackKind::Video {
+                    clip.opacity * 0.85 + 0.15
+                } else {
+                    0.92
+                },
+            ),
+            cr,
+            6.0,
+        );
         // header strip
         let strip = Rect::new(cr.x0, cr.y0, cr.x1, (cr.y0 + 18.0).min(cr.y1));
         fill_rrect(scene, tf, darken(base, 0.3), strip, 6.0);
@@ -3253,7 +4291,9 @@ impl VideoEditorApp {
                 let n = (inner.width() / (cell_w + 2.0)).floor().max(1.0) as i64;
                 for i in 0..n {
                     let bx = inner.x0 + 4.0 + i as f64 * (cell_w + 2.0);
-                    if bx + cell_w > inner.x1 { break; }
+                    if bx + cell_w > inner.x1 {
+                        break;
+                    }
                     let cell = Rect::new(bx, inner.y0 + 3.0, bx + cell_w, inner.y1 - 3.0);
                     match thumb {
                         Some(t) => blit_thumb(scene, tf, t, cell, 2.0),
@@ -3262,28 +4302,63 @@ impl VideoEditorApp {
                 }
             } else {
                 let color = lighten(base, 0.3);
-                let media_dur = self.project.media(clip.media).map(|m| m.duration).unwrap_or(0.0);
+                let media_dur = self
+                    .project
+                    .media(clip.media)
+                    .map(|m| m.duration)
+                    .unwrap_or(0.0);
                 if let Some(peaks) = self.waveforms.peaks(clip.media) {
                     // Real waveform: map the clip's source window into the peaks.
-                    draw_waveform(scene, tf, inner, peaks, clip.in_point, clip.out_point, media_dur, clip.volume, color);
+                    draw_waveform(
+                        scene,
+                        tf,
+                        inner,
+                        peaks,
+                        clip.in_point,
+                        clip.out_point,
+                        media_dur,
+                        clip.volume,
+                        color,
+                    );
                 } else {
                     // No real signal yet — a neutral representative envelope.
                     let midy = inner.center().y;
                     let n = (inner.width() / 4.0).floor() as i64;
                     for i in 0..n {
                         let bx = inner.x0 + 2.0 + i as f64 * 4.0;
-                        let amp = waveform_amp(i as f64 + clip.start) * (inner.height() / 2.0 - 2.0) * (0.35 + clip.volume * 0.65);
-                        fill_rect(scene, tf, color, Rect::new(bx, midy - amp, bx + 2.0, midy + amp));
+                        let amp = waveform_amp(i as f64 + clip.start)
+                            * (inner.height() / 2.0 - 2.0)
+                            * (0.35 + clip.volume * 0.65);
+                        fill_rect(
+                            scene,
+                            tf,
+                            color,
+                            Rect::new(bx, midy - amp, bx + 2.0, midy + amp),
+                        );
                     }
                 }
             }
         }
         // name label
-        let label = self.project.media(clip.media).map(|m| m.name.clone()).unwrap_or_default();
+        let label = self
+            .project
+            .media(clip.media)
+            .map(|m| m.name.clone())
+            .unwrap_or_default();
         let avail = (cr.width() - 10.0).max(4.0) as f32;
         if cr.width() > 30.0 {
             let shown = elide_w(&label, avail, tr);
-            text_w(scene, tr, tf, &shown, 11.0, with_alpha(Color::WHITE, 0.95), cr.x0 + 5.0, cr.y0 + 3.0, TextWeight::Medium);
+            text_w(
+                scene,
+                tr,
+                tf,
+                &shown,
+                11.0,
+                with_alpha(Color::WHITE, 0.95),
+                cr.x0 + 5.0,
+                cr.y0 + 3.0,
+                TextWeight::Medium,
+            );
         }
         // transition marker at head
         if clip.transition != Transition::None && cr.width() > 16.0 {
@@ -3302,7 +4377,14 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_export_modal(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_export_modal(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         // Scrim.
         fill_rect(scene, tf, c.surfaces.overlay, self.rect);
@@ -3311,49 +4393,154 @@ impl VideoEditorApp {
         fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
         stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
         let x0 = card.x0 + 24.0;
-        text_w(scene, tr, tf, "Export Project", 18.0, c.text_primary, x0, card.y0 + 20.0, TextWeight::Bold);
-        text(scene, tr, tf, &self.export.suggested_filename(&self.project.name), 12.0, c.text_dim, x0, card.y0 + 44.0);
+        text_w(
+            scene,
+            tr,
+            tf,
+            "Export Project",
+            18.0,
+            c.text_primary,
+            x0,
+            card.y0 + 20.0,
+            TextWeight::Bold,
+        );
+        text(
+            scene,
+            tr,
+            tf,
+            &self.export.suggested_filename(&self.project.name),
+            12.0,
+            c.text_dim,
+            x0,
+            card.y0 + 44.0,
+        );
 
-        let seg_group = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, items: &[(String, Rect, bool)]| {
+        let seg_group = |scene: &mut Scene,
+                         tr: &mut TextRenderer,
+                         label: &str,
+                         items: &[(String, Rect, bool)]| {
             if let Some((_, first, _)) = items.first() {
-                text(scene, tr, tf, label, 11.0, c.text_dim, first.x0, first.y0 - 18.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    label,
+                    11.0,
+                    c.text_dim,
+                    first.x0,
+                    first.y0 - 18.0,
+                );
             }
             for (name, rect, on) in items {
                 let bg = if *on { c.accent[5] } else { c.neutral[3] };
                 fill_rrect(scene, tf, bg, *rect, 6.0);
                 let col = if *on { Color::WHITE } else { c.text_dim };
                 let (lw, _) = tr.measure(name, 12.0, None);
-                text(scene, tr, tf, name, 12.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 7.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    name,
+                    12.0,
+                    col,
+                    rect.center().x - lw as f64 / 2.0,
+                    rect.center().y - 7.0,
+                );
             }
         };
-        let res: Vec<_> = l.resolution.iter().map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution)).collect();
+        let res: Vec<_> = l
+            .resolution
+            .iter()
+            .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution))
+            .collect();
         seg_group(scene, tr, "RESOLUTION", &res);
-        let con: Vec<_> = l.container.iter().map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container)).collect();
+        let con: Vec<_> = l
+            .container
+            .iter()
+            .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container))
+            .collect();
         seg_group(scene, tr, "FORMAT", &con);
-        let fps: Vec<_> = l.fps.iter().map(|(v, r)| (format!("{} fps", v.label()), *r, *v == self.export.frame_rate)).collect();
+        let fps: Vec<_> = l
+            .fps
+            .iter()
+            .map(|(v, r)| {
+                (
+                    format!("{} fps", v.label()),
+                    *r,
+                    *v == self.export.frame_rate,
+                )
+            })
+            .collect();
         seg_group(scene, tr, "FRAME RATE", &fps);
 
         // Estimate + status.
         let est = self.export.estimated_mb(self.project.duration());
         let (w, h) = self.export.resolution.dims();
-        let info = format!("≈ {:.0} MB   ·   {}×{}   ·   {}", est, w, h, timecode(self.project.duration(), self.project.fps));
+        let info = format!(
+            "≈ {:.0} MB   ·   {}×{}   ·   {}",
+            est,
+            w,
+            h,
+            timecode(self.project.duration(), self.project.fps)
+        );
         text(scene, tr, tf, &info, 12.0, c.text_dim, x0, card.y1 - 96.0);
         match &self.export_status {
             ExportStatus::Rendering { progress } => {
                 let bar = Rect::new(x0, card.y1 - 74.0, card.x1 - 24.0, card.y1 - 66.0);
                 fill_rrect(scene, tf, c.neutral[3], bar, 4.0);
-                let f = Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * progress.max(0.04), bar.y1);
+                let f = Rect::new(
+                    bar.x0,
+                    bar.y0,
+                    bar.x0 + bar.width() * progress.max(0.04),
+                    bar.y1,
+                );
                 fill_rrect(scene, tf, c.accent[5], f, 4.0);
-                text(scene, tr, tf, "Rendering…", 10.5, c.text_dim, x0, card.y1 - 62.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "Rendering…",
+                    10.5,
+                    c.text_dim,
+                    x0,
+                    card.y1 - 62.0,
+                );
             }
             ExportStatus::Done { path } => {
-                text(scene, tr, tf, &format!("Done: {path}"), 11.0, c.semantic.success, x0, card.y1 - 68.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &format!("Done: {path}"),
+                    11.0,
+                    c.semantic.success,
+                    x0,
+                    card.y1 - 68.0,
+                );
             }
             ExportStatus::Failed { reason } => {
-                text(scene, tr, tf, reason, 10.5, c.semantic.warning, x0, card.y1 - 68.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    reason,
+                    10.5,
+                    c.semantic.warning,
+                    x0,
+                    card.y1 - 68.0,
+                );
             }
             ExportStatus::Idle => {
-                text(scene, tr, tf, "Export isn't available yet — video encoding is coming soon.", 10.5, c.text_dim, x0, card.y1 - 68.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "Export isn't available yet — video encoding is coming soon.",
+                    10.5,
+                    c.text_dim,
+                    x0,
+                    card.y1 - 68.0,
+                );
             }
         }
         draw_button(scene, tf, tr, theme, l.cancel, "Close", false);
@@ -3409,7 +4596,13 @@ fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFrame, canvas
 /// corners `radius`. Used for the bin swatch and timeline filmstrip cells; the
 /// same path shows the generated representative frame or (under decode) the real
 /// decoded frame.
-fn blit_thumb(scene: &mut Scene, tf: Affine, thumb: &crate::thumbnail::Thumb, dest: Rect, radius: f64) {
+fn blit_thumb(
+    scene: &mut Scene,
+    tf: Affine,
+    thumb: &crate::thumbnail::Thumb,
+    dest: Rect,
+    radius: f64,
+) {
     use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
     let iw = thumb.width as f64;
     let ih = thumb.height as f64;
@@ -3431,39 +4624,121 @@ fn blit_thumb(scene: &mut Scene, tf: Affine, thumb: &crate::thumbnail::Thumb, de
     let dy = dest.y0 + (dest.height() - dh) * 0.5;
     let brush_tf = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
     let brush = ImageBrush::new(img);
-    scene.fill(Fill::NonZero, tf, &brush, Some(brush_tf), &RoundedRect::from_rect(dest, radius));
+    scene.fill(
+        Fill::NonZero,
+        tf,
+        &brush,
+        Some(brush_tf),
+        &RoundedRect::from_rect(dest, radius),
+    );
 }
 
 fn fill_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect) {
     scene.fill(Fill::NonZero, tf, color, None, &rect);
 }
 fn fill_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64) {
-    scene.fill(Fill::NonZero, tf, color, None, &RoundedRect::from_rect(rect, radius));
+    scene.fill(
+        Fill::NonZero,
+        tf,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
 }
 fn stroke_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64, w: f64) {
-    scene.stroke(&Stroke::new(w), tf, color, None, &RoundedRect::from_rect(rect, radius));
+    scene.stroke(
+        &Stroke::new(w),
+        tf,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
 }
-fn stroke_line(scene: &mut Scene, tf: Affine, color: Color, x0: f64, y0: f64, x1: f64, y1: f64, w: f64) {
-    scene.stroke(&Stroke::new(w), tf, color, None, &Line::new(Point::new(x0, y0), Point::new(x1, y1)));
+fn stroke_line(
+    scene: &mut Scene,
+    tf: Affine,
+    color: Color,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    w: f64,
+) {
+    scene.stroke(
+        &Stroke::new(w),
+        tf,
+        color,
+        None,
+        &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
+    );
 }
-fn text(scene: &mut Scene, tr: &mut TextRenderer, tf: Affine, s: &str, size: f32, color: Color, x: f64, y: f64) {
+fn text(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    tf: Affine,
+    s: &str,
+    size: f32,
+    color: Color,
+    x: f64,
+    y: f64,
+) {
     tr.draw_text(scene, s, size, color, tf * Affine::translate((x, y)), None);
 }
 #[allow(clippy::too_many_arguments)]
-fn text_w(scene: &mut Scene, tr: &mut TextRenderer, tf: Affine, s: &str, size: f32, color: Color, x: f64, y: f64, weight: TextWeight) {
-    tr.draw_text_weighted(scene, s, size, color, tf * Affine::translate((x, y)), None, weight);
+fn text_w(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    tf: Affine,
+    s: &str,
+    size: f32,
+    color: Color,
+    x: f64,
+    y: f64,
+    weight: TextWeight,
+) {
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        tf * Affine::translate((x, y)),
+        None,
+        weight,
+    );
 }
 
-fn draw_button(scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, label: &str, primary: bool) {
+fn draw_button(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+    primary: bool,
+) {
     let c = &theme.tokens.colors;
     let bg = if primary { c.accent[5] } else { c.neutral[3] };
     fill_rrect(scene, tf, bg, rect, 7.0);
     if !primary {
         stroke_rrect(scene, tf, c.border_standard, rect, 7.0, 1.0);
     }
-    let col = if primary { Color::WHITE } else { c.text_primary };
+    let col = if primary {
+        Color::WHITE
+    } else {
+        c.text_primary
+    };
     let (lw, _) = tr.measure_weighted(label, 13.0, None, TextWeight::Medium);
-    text_w(scene, tr, tf, label, 13.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 8.0, TextWeight::Medium);
+    text_w(
+        scene,
+        tr,
+        tf,
+        label,
+        13.0,
+        col,
+        rect.center().x - lw as f64 / 2.0,
+        rect.center().y - 8.0,
+        TextWeight::Medium,
+    );
 }
 
 /// Draw an inspector slider track + fill + knob for a 0..1 value.
@@ -3473,8 +4748,20 @@ fn draw_track(scene: &mut Scene, tf: Affine, theme: &Theme, track: Rect, value: 
     let v = value.clamp(0.0, 1.0);
     let filled = Rect::new(track.x0, track.y0, track.x0 + track.width() * v, track.y1);
     fill_rrect(scene, tf, c.accent[5], filled, 4.0);
-    scene.fill(Fill::NonZero, tf, Color::WHITE, None, &Circle::new(Point::new(filled.x1, track.center().y), 7.0));
-    scene.stroke(&Stroke::new(1.0), tf, c.border_standard, None, &Circle::new(Point::new(filled.x1, track.center().y), 7.0));
+    scene.fill(
+        Fill::NonZero,
+        tf,
+        Color::WHITE,
+        None,
+        &Circle::new(Point::new(filled.x1, track.center().y), 7.0),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        tf,
+        c.border_standard,
+        None,
+        &Circle::new(Point::new(filled.x1, track.center().y), 7.0),
+    );
 }
 
 fn hit_slider(track: Rect, p: Point) -> bool {
@@ -3530,16 +4817,29 @@ fn rgb_to_color(c: Rgb) -> Color {
 }
 
 fn with_alpha(c: Color, a: f64) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), (a.clamp(0.0, 1.0) * 255.0).round() as u8)
+    Color::from_rgba8(
+        c.r(),
+        c.g(),
+        c.b(),
+        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
 }
 fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
     (a as f64 + (b as f64 - a as f64) * t.clamp(0.0, 1.0)).round() as u8
 }
 fn lighten(c: Color, t: f64) -> Color {
-    Color::from_rgb8(lerp_u8(c.r(), 255, t), lerp_u8(c.g(), 255, t), lerp_u8(c.b(), 255, t))
+    Color::from_rgb8(
+        lerp_u8(c.r(), 255, t),
+        lerp_u8(c.g(), 255, t),
+        lerp_u8(c.b(), 255, t),
+    )
 }
 fn darken(c: Color, t: f64) -> Color {
-    Color::from_rgb8(lerp_u8(c.r(), 0, t), lerp_u8(c.g(), 0, t), lerp_u8(c.b(), 0, t))
+    Color::from_rgb8(
+        lerp_u8(c.r(), 0, t),
+        lerp_u8(c.g(), 0, t),
+        lerp_u8(c.b(), 0, t),
+    )
 }
 
 /// Draw a real audio waveform from normalized `peaks` into `area`, mapping the
@@ -3572,7 +4872,12 @@ fn draw_waveform(
         let frac = (t / dur).clamp(0.0, 1.0);
         let idx = ((frac * peaks.len() as f64) as usize).min(peaks.len() - 1);
         let amp = (peaks[idx] as f64 * half * vscale).max(0.5);
-        fill_rect(scene, tf, color, Rect::new(x, midy - amp, x + 2.0, midy + amp));
+        fill_rect(
+            scene,
+            tf,
+            color,
+            Rect::new(x, midy - amp, x + 2.0, midy + amp),
+        );
     }
 }
 
@@ -3666,9 +4971,18 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.project.clips.is_empty(), "no fabricated clips on the live path");
-        assert!(app.project.media.is_empty(), "no fabricated media on the live path");
-        assert!(app.selected.is_none(), "nothing selected in a blank project");
+        assert!(
+            app.project.clips.is_empty(),
+            "no fabricated clips on the live path"
+        );
+        assert!(
+            app.project.media.is_empty(),
+            "no fabricated media on the live path"
+        );
+        assert!(
+            app.selected.is_none(),
+            "nothing selected in a blank project"
+        );
     }
 
     #[test]
@@ -3678,8 +4992,14 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(!app.project.clips.is_empty(), "demo build seeds sample clips");
-        assert!(!app.project.media.is_empty(), "demo build seeds sample media");
+        assert!(
+            !app.project.clips.is_empty(),
+            "demo build seeds sample clips"
+        );
+        assert!(
+            !app.project.media.is_empty(),
+            "demo build seeds sample media"
+        );
     }
 
     /// Write a real PNG (crafted header, known dimensions) to a temp file so a
@@ -3692,8 +5012,11 @@ mod tests {
         png.extend_from_slice(&w.to_be_bytes());
         png.extend_from_slice(&h.to_be_bytes());
         png.extend_from_slice(&[8, 2, 0, 0, 0]);
-        let f = std::env::temp_dir()
-            .join(format!("qos-ve-import-app-{}-{}.png", std::process::id(), w));
+        let f = std::env::temp_dir().join(format!(
+            "qos-ve-import-app-{}-{}.png",
+            std::process::id(),
+            w
+        ));
         std::fs::write(&f, &png).unwrap();
         f
     }
@@ -3708,7 +5031,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
 
-        assert_eq!(app.project.media.len(), 1, "the picked file is now in the bin");
+        assert_eq!(
+            app.project.media.len(),
+            1,
+            "the picked file is now in the bin"
+        );
         let m = &app.project.media[0];
         assert_eq!(m.name, f.file_name().unwrap().to_string_lossy());
         assert_eq!(m.kind, MediaKind::Image);
@@ -3717,7 +5044,10 @@ mod tests {
             (m.duration - crate::probe::DEFAULT_IMAGE_DURATION).abs() < 1e-9,
             "a still gets the default timeline duration",
         );
-        assert!(m.hydration.is_local(), "the imported bytes are local/decodable");
+        assert!(
+            m.hydration.is_local(),
+            "the imported bytes are local/decodable"
+        );
         // It replicated through the document (a peer would load it).
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(reloaded.media.len(), 1);
@@ -3736,25 +5066,44 @@ mod tests {
         let f = write_real_png(480, 270);
         let mut app = VideoEditorApp::new();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Selected(vec![f.clone()])));
+        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Selected(vec![
+            f.clone(),
+        ])));
 
         let mut doc = AutoCommit::new();
-        assert!(app.project.media.is_empty(), "blank project starts with no media");
+        assert!(
+            app.project.media.is_empty(),
+            "blank project starts with no media"
+        );
         app.sync(&mut doc, &automerge::ROOT);
 
         // The in-memory projection gained the clip with real, probed metadata…
-        assert_eq!(app.project.media.len(), 1, "the picked file landed in the bin");
+        assert_eq!(
+            app.project.media.len(),
+            1,
+            "the picked file landed in the bin"
+        );
         let m = &app.project.media[0];
         assert_eq!(m.name, f.file_name().unwrap().to_string_lossy());
         assert_eq!((m.width, m.height), (480, 270), "real probed dimensions");
-        assert!(m.hydration.is_local(), "the imported bytes are local/decodable");
+        assert!(
+            m.hydration.is_local(),
+            "the imported bytes are local/decodable"
+        );
 
         // …and, crucially, so did the CRDT the action wrote to: the import is a
         // document mutation dispatched through the action model, not a local-only
         // edit, so a second replica loading these bytes sees the same clip.
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.media.len(), 1, "import routed through the doc action");
-        assert_eq!(reloaded.media[0].width, 480, "real probed metadata replicated");
+        assert_eq!(
+            reloaded.media.len(),
+            1,
+            "import routed through the doc action"
+        );
+        assert_eq!(
+            reloaded.media[0].width, 480,
+            "real probed metadata replicated"
+        );
         std::fs::remove_file(&f).ok();
     }
 
@@ -3769,17 +5118,26 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
 
         assert_eq!(app.project.media.len(), 1);
-        assert_eq!(app.project.tracks.len(), 1, "a track was created for the clip");
+        assert_eq!(
+            app.project.tracks.len(),
+            1,
+            "a track was created for the clip"
+        );
         assert_eq!(app.project.clips.len(), 1, "the clip is on the timeline");
         let clip = &app.project.clips[0];
         assert!(
             app.playhead > clip.start && app.playhead < clip.end(),
             "playhead {} parked inside the clip [{}, {}]",
-            app.playhead, clip.start, clip.end(),
+            app.playhead,
+            clip.start,
+            clip.end(),
         );
         // The preview composites the placed clip (not Empty) at the playhead.
         assert!(
-            matches!(preview::composite(&app.project, app.playhead), CompositedFrame::Clip { .. }),
+            matches!(
+                preview::composite(&app.project, app.playhead),
+                CompositedFrame::Clip { .. }
+            ),
             "the preview has a clip to render",
         );
         std::fs::remove_file(&f).ok();
@@ -3851,11 +5209,20 @@ mod tests {
         app.advance_flap(); // first frame settles the bin to the width default
         assert_eq!(app.bin_layout(), SplitLayout::Overlay);
         let r = app.regions();
-        assert!(r.bin_overlay, "narrow window collapses the bin to an overlay");
-        assert!(r.menu_btn.width() > 0.0, "narrow window shows the hamburger");
+        assert!(
+            r.bin_overlay,
+            "narrow window collapses the bin to an overlay"
+        );
+        assert!(
+            r.menu_btn.width() > 0.0,
+            "narrow window shows the hamburger"
+        );
         // Closed by default: the bin sits fully off the left edge and the
         // preview reclaims the full editor width.
-        assert!(r.bin.x1 <= app.rect.x0 + 0.5, "closed overlay bin is off-screen left");
+        assert!(
+            r.bin.x1 <= app.rect.x0 + 0.5,
+            "closed overlay bin is off-screen left"
+        );
         assert!(
             (r.preview.x0 - app.rect.x0).abs() < 0.5,
             "narrow preview reclaims the bin's column"
@@ -3871,9 +5238,15 @@ mod tests {
         app.bin_flap.snap(true); // settle the slide deterministically
         let r = app.regions();
         assert!(app.bin_flap.is_open(SplitLayout::Overlay));
-        assert!(r.scrim.width() > 0.0, "open overlay bin dims the editor with a scrim");
+        assert!(
+            r.scrim.width() > 0.0,
+            "open overlay bin dims the editor with a scrim"
+        );
         // Fully revealed: the bin sits flush at the left edge.
-        assert!((r.bin.x0 - app.rect.x0).abs() < 0.5, "revealed bin is flush left");
+        assert!(
+            (r.bin.x0 - app.rect.x0).abs() < 0.5,
+            "revealed bin is flush left"
+        );
     }
 
     #[test]
@@ -3889,7 +5262,10 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.advance_flap();
         assert_eq!(app.bin_layout(), SplitLayout::Docked);
-        assert!(app.bin_flap.is_open(SplitLayout::Docked), "widening re-docks the open bin");
+        assert!(
+            app.bin_flap.is_open(SplitLayout::Docked),
+            "widening re-docks the open bin"
+        );
     }
 
     // ---- shortcut / edit-path tests --------------------------------------
@@ -3929,7 +5305,11 @@ mod tests {
         assert!(key_press(&mut app, &mut doc, "s", false), "S handled");
         // The new clip is in the *document*, not just the in-memory mirror.
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.clips.len(), before + 1, "split wrote a clip to the CRDT");
+        assert_eq!(
+            reloaded.clips.len(),
+            before + 1,
+            "split wrote a clip to the CRDT"
+        );
         assert!(
             app.actions.take_committed().is_some(),
             "split dispatched an action, arming one undo boundary",
@@ -3961,7 +5341,11 @@ mod tests {
         app.playhead = 30.0;
         assert!(key_press(&mut app, &mut doc, "v", true), "Ctrl+V handled");
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.clips.len(), before + 1, "paste added a clip to the CRDT");
+        assert_eq!(
+            reloaded.clips.len(),
+            before + 1,
+            "paste added a clip to the CRDT"
+        );
         // The pasted clip is the new selection and sits at the playhead.
         let pasted = app.selected.unwrap();
         assert_ne!(pasted, id);
@@ -3978,7 +5362,10 @@ mod tests {
         app.playhead = 15.0;
         assert!(key_press(&mut app, &mut doc, "o", false), "O handled");
         let reloaded = VideoDoc::load_project(&doc);
-        assert!((reloaded.clip(id).unwrap().end() - 15.0).abs() < 1e-6, "O trims the tail to the playhead");
+        assert!(
+            (reloaded.clip(id).unwrap().end() - 15.0).abs() < 1e-6,
+            "O trims the tail to the playhead"
+        );
         assert!(
             app.actions.take_committed().is_some(),
             "setting the out-point dispatched an action, arming one undo boundary",
@@ -4007,16 +5394,27 @@ mod tests {
         let track = v1_first.track;
         let first = v1_first.id;
         // Record the next clip on the same track and its start.
-        let next = app.project.clips_on(track).into_iter().find(|c| c.id != first).map(|c| (c.id, c.start));
+        let next = app
+            .project
+            .clips_on(track)
+            .into_iter()
+            .find(|c| c.id != first)
+            .map(|c| (c.id, c.start));
         app.selected = Some(first);
         let mods = winit::event::Modifiers::from(ModifiersState::SHIFT);
         let r = app.regions();
         // Shift+Delete ripples.
         app.handle_key(&WKey::Named(NamedKey::Delete), &mods, &mut doc, &r);
         let reloaded = VideoDoc::load_project(&doc);
-        assert!(reloaded.clip(first).is_none(), "rippled clip removed from CRDT");
+        assert!(
+            reloaded.clip(first).is_none(),
+            "rippled clip removed from CRDT"
+        );
         if let Some((nid, old_start)) = next {
-            assert!(reloaded.clip(nid).unwrap().start < old_start, "later clip shifted left in the CRDT");
+            assert!(
+                reloaded.clip(nid).unwrap().start < old_start,
+                "later clip shifted left in the CRDT"
+            );
         }
     }
 
@@ -4031,7 +5429,10 @@ mod tests {
         let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
         app.handle_key(&WKey::Named(NamedKey::ArrowRight), &shift, &mut doc, &r);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().start;
-        assert!((after - before - 1.0).abs() < 1e-6, "Shift+Right nudges +1s in the CRDT");
+        assert!(
+            (after - before - 1.0).abs() < 1e-6,
+            "Shift+Right nudges +1s in the CRDT"
+        );
     }
 
     // ---- click-driven tests: drive the REAL handle_event pipeline --------
@@ -4050,28 +5451,50 @@ mod tests {
         let mut focus = None;
         let taffy = TaffyTree::<()>::new();
         let node = NodeId::new(0);
-        app.handle_event(&ev, 1.0, &winit::event::Modifiers::default(), doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        app.handle_event(
+            &ev,
+            1.0,
+            &winit::event::Modifiers::default(),
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     fn move_to(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
-        dispatch(app, doc, WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        });
+        dispatch(
+            app,
+            doc,
+            WindowEvent::CursorMoved {
+                device_id: fake_device_id(),
+                position: winit::dpi::PhysicalPosition::new(x, y),
+            },
+        );
     }
     fn press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-        dispatch(app, doc, WindowEvent::MouseInput {
-            device_id: fake_device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        dispatch(
+            app,
+            doc,
+            WindowEvent::MouseInput {
+                device_id: fake_device_id(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
     }
     fn release(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-        dispatch(app, doc, WindowEvent::MouseInput {
-            device_id: fake_device_id(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        dispatch(
+            app,
+            doc,
+            WindowEvent::MouseInput {
+                device_id: fake_device_id(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
     }
     /// A full click at (x,y): move (sets last_mouse, as the live loop does),
     /// then press.
@@ -4080,33 +5503,47 @@ mod tests {
         press(app, doc);
     }
     fn right_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-        dispatch(app, doc, WindowEvent::MouseInput {
-            device_id: fake_device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Right,
-        });
+        dispatch(
+            app,
+            doc,
+            WindowEvent::MouseInput {
+                device_id: fake_device_id(),
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+            },
+        );
     }
     fn char_ev(s: &str) -> WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = WKey::Character(s.into());
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = Some(s.into());
-        WindowEvent::KeyboardInput { device_id: fake_device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: fake_device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
     fn named_ev(k: NamedKey) -> WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = WKey::Named(k);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
-        WindowEvent::KeyboardInput { device_id: fake_device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: fake_device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     #[test]
@@ -4117,7 +5554,10 @@ mod tests {
         // Right-click the row → the context menu opens targeting that media.
         move_to(&mut app, &mut doc, row.center().x, row.center().y);
         right_press(&mut app, &mut doc);
-        assert!(app.bin_menu.is_open(), "right-click opens the bin context menu");
+        assert!(
+            app.bin_menu.is_open(),
+            "right-click opens the bin context menu"
+        );
         assert!(matches!(app.menu_target, Some(MenuTarget::Media(m)) if m == mid));
 
         // Locate the "Delete" row (index 3) and click it through the real menu.
@@ -4131,9 +5571,16 @@ mod tests {
         move_to(&mut app, &mut doc, cx, del_y);
         press(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc);
-        assert_eq!(after.media.len(), before - 1, "Delete removed the media from the CRDT");
+        assert_eq!(
+            after.media.len(),
+            before - 1,
+            "Delete removed the media from the CRDT"
+        );
         assert!(after.media(mid).is_none(), "the deleted source is gone");
-        assert!(!app.bin_menu.is_open(), "the menu closed after choosing Delete");
+        assert!(
+            !app.bin_menu.is_open(),
+            "the menu closed after choosing Delete"
+        );
     }
 
     #[test]
@@ -4151,7 +5598,11 @@ mod tests {
         dispatch(&mut app, &mut doc, named_ev(NamedKey::Enter));
         assert!(app.bin_rename.is_none(), "Enter ends the rename");
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.media(mid).unwrap().name, "Reel", "rename wrote through to the CRDT");
+        assert_eq!(
+            reloaded.media(mid).unwrap().name,
+            "Reel",
+            "rename wrote through to the CRDT"
+        );
         assert!(
             app.actions.take_committed().is_some(),
             "the rename dispatched an action, arming one undo boundary",
@@ -4166,7 +5617,12 @@ mod tests {
         let (mid, row) = app
             .bin_item_rects(&r)
             .into_iter()
-            .find(|(m, _)| app.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false))
+            .find(|(m, _)| {
+                app.project
+                    .media(*m)
+                    .map(|mm| mm.kind.is_visual())
+                    .unwrap_or(false)
+            })
             .expect("a visual bin item");
         let (tid, _k, lane) = app
             .lane_rects(&r)
@@ -4191,8 +5647,14 @@ mod tests {
             before + 1,
             "a clip was placed on the drop track in the CRDT",
         );
-        let placed = app.selected.and_then(|id| reloaded.clip(id)).expect("placed clip selected");
-        assert_eq!(placed.media, mid, "the placed clip references the dragged media");
+        let placed = app
+            .selected
+            .and_then(|id| reloaded.clip(id))
+            .expect("placed clip selected");
+        assert_eq!(
+            placed.media, mid,
+            "the placed clip references the dragged media"
+        );
         let expected_t = app.x_to_time(drop_x, &r.lanes);
         assert!(
             (placed.start - expected_t).abs() < 0.2,
@@ -4260,7 +5722,10 @@ mod tests {
         );
         let peaks = app.waveforms.peaks(mid).unwrap();
         assert_eq!(peaks.len(), crate::waveform::WAVE_BUCKETS);
-        assert!(peaks.iter().cloned().fold(0.0, f32::max) > 0.9, "a real signal is present");
+        assert!(
+            peaks.iter().cloned().fold(0.0, f32::max) > 0.9,
+            "a real signal is present"
+        );
         std::fs::remove_file(&f).ok();
     }
 
@@ -4281,7 +5746,11 @@ mod tests {
         click(&mut app, &mut doc, abtn.center().x, abtn.center().y);
         let after = VideoDoc::load_project(&doc);
         assert_eq!(
-            after.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count(),
+            after
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
             before + 1,
             "the add-audio-track button added a track to the CRDT",
         );
@@ -4314,10 +5783,17 @@ mod tests {
         move_to(&mut app, &mut doc, cx, del_y);
         press(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc);
-        assert_eq!(after.tracks.len(), before - 1, "the track was removed from the CRDT");
+        assert_eq!(
+            after.tracks.len(),
+            before - 1,
+            "the track was removed from the CRDT"
+        );
         assert!(after.track(tid).is_none());
         for cid in clip_ids {
-            assert!(after.clip(cid).is_none(), "the track's clips were removed too");
+            assert!(
+                after.clip(cid).is_none(),
+                "the track's clips were removed too"
+            );
         }
     }
 
@@ -4336,7 +5812,12 @@ mod tests {
             "the add-effect button is visible when scrolled",
         );
         let before = VideoDoc::load_project(&doc).clip(id).unwrap().effects.len();
-        click(&mut app, &mut doc, l.add_effect.center().x, l.add_effect.center().y);
+        click(
+            &mut app,
+            &mut doc,
+            l.add_effect.center().x,
+            l.add_effect.center().y,
+        );
         assert!(app.bin_menu.is_open(), "add-effect opens the picker");
         assert!(matches!(app.menu_target, Some(MenuTarget::AddEffect)));
         // Choose the first effect kind (Grayscale, idx 0).
@@ -4348,8 +5829,16 @@ mod tests {
             .unwrap();
         move_to(&mut app, &mut doc, cx, ry);
         press(&mut app, &mut doc);
-        let after = VideoDoc::load_project(&doc).clip(id).unwrap().effects.clone();
-        assert_eq!(after.len(), before + 1, "an effect was added through the inspector");
+        let after = VideoDoc::load_project(&doc)
+            .clip(id)
+            .unwrap()
+            .effects
+            .clone();
+        assert_eq!(
+            after.len(),
+            before + 1,
+            "an effect was added through the inspector"
+        );
         assert_eq!(after.last().unwrap().kind, EffectKind::Grayscale);
     }
 
@@ -4372,7 +5861,10 @@ mod tests {
         let l = app.inspector_layout(&r);
         // Move the second effect up via its ▲.
         let (up, _d, _s, _x) = VideoEditorApp::effect_row_parts(l.effect_rows[1]);
-        assert!(r.inspector.contains(up.center()), "the reorder control is visible");
+        assert!(
+            r.inspector.contains(up.center()),
+            "the reorder control is visible"
+        );
         click(&mut app, &mut doc, up.center().x, up.center().y);
         let kinds1: Vec<_> = VideoDoc::load_project(&doc)
             .clip(id)
@@ -4388,7 +5880,11 @@ mod tests {
         let (_u, _dn, _sl, remove) = VideoEditorApp::effect_row_parts(l.effect_rows[0]);
         click(&mut app, &mut doc, remove.center().x, remove.center().y);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().effects.len();
-        assert_eq!(after, kinds0.len() - 1, "the ✕ removed one effect from the CRDT");
+        assert_eq!(
+            after,
+            kinds0.len() - 1,
+            "the ✕ removed one effect from the CRDT"
+        );
     }
 
     #[test]
@@ -4401,9 +5897,17 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert!(app.project.media.is_empty(), "blank project starts empty");
         dispatch(&mut app, &mut doc, WindowEvent::DroppedFile(f.clone()));
-        assert_eq!(app.project.media.len(), 1, "the dropped file landed in the bin");
+        assert_eq!(
+            app.project.media.len(),
+            1,
+            "the dropped file landed in the bin"
+        );
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.media.len(), 1, "and replicated through the document");
+        assert_eq!(
+            reloaded.media.len(),
+            1,
+            "and replicated through the document"
+        );
         assert_eq!(reloaded.media[0].width, 200, "with real probed metadata");
         std::fs::remove_file(&f).ok();
     }
@@ -4418,14 +5922,21 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(app.project.media.len(), 1);
-        assert!(app.project.tracks.is_empty(), "blank project starts with no tracks");
+        assert!(
+            app.project.tracks.is_empty(),
+            "blank project starts with no tracks"
+        );
         let r = app.regions();
         let (_mid, rect) = app.bin_item_rects(&r)[0];
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(reloaded.tracks.len(), 1, "a matching track was created");
-        assert_eq!(reloaded.clips.len(), 1, "the clip was placed on the timeline");
+        assert_eq!(
+            reloaded.clips.len(),
+            1,
+            "the clip was placed on the timeline"
+        );
         std::fs::remove_file(&f).ok();
     }
 
@@ -4439,7 +5950,11 @@ mod tests {
         let y = r.ruler.center().y;
         let expected = app.x_to_time(x, &r.lanes);
         click(&mut app, &mut doc, x, y);
-        assert!((app.playhead - expected).abs() < 0.1, "ruler click scrubs playhead to {expected}, got {}", app.playhead);
+        assert!(
+            (app.playhead - expected).abs() < 0.1,
+            "ruler click scrubs playhead to {expected}, got {}",
+            app.playhead
+        );
     }
 
     #[test]
@@ -4453,7 +5968,11 @@ mod tests {
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let after = VideoDoc::load_project(&doc).clips.len();
-        assert_eq!(after, before + 1, "double-click on a bin item appends a clip to the CRDT");
+        assert_eq!(
+            after,
+            before + 1,
+            "double-click on a bin item appends a clip to the CRDT"
+        );
     }
 
     #[test]
@@ -4462,8 +5981,11 @@ mod tests {
         let r = app.regions();
         // Find the drone clip's on-screen rect on V1 (the first video lane row).
         let clip = app.project.top_video_clip_at(3.0).unwrap().clone();
-        let (_tid, _k, lane) = app.lane_rects(&r).into_iter()
-            .find(|(tid, _, _)| *tid == clip.track).unwrap();
+        let (_tid, _k, lane) = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(tid, _, _)| *tid == clip.track)
+            .unwrap();
         let cr = app.clip_rect(&clip, &lane, &r);
         let start_before = VideoDoc::load_project(&doc).clip(clip.id).unwrap().start;
         // Grab the body (avoid the ±8px trim edges), drag right ~2 seconds.
@@ -4475,7 +5997,10 @@ mod tests {
         move_to(&mut app, &mut doc, drop_x, grab_y);
         release(&mut app, &mut doc);
         let start_after = VideoDoc::load_project(&doc).clip(clip.id).unwrap().start;
-        assert!(start_after > start_before + 1.0, "dragging moved the clip right in the CRDT ({start_before} -> {start_after})");
+        assert!(
+            start_after > start_before + 1.0,
+            "dragging moved the clip right in the CRDT ({start_before} -> {start_after})"
+        );
     }
 
     #[test]
@@ -4483,21 +6008,36 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let clip = app.project.top_video_clip_at(3.0).unwrap().clone();
-        let (_tid, _k, lane) = app.lane_rects(&r).into_iter()
-            .find(|(tid, _, _)| *tid == clip.track).unwrap();
+        let (_tid, _k, lane) = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(tid, _, _)| *tid == clip.track)
+            .unwrap();
         let cr = app.clip_rect(&clip, &lane, &r);
-        let out_before = VideoDoc::load_project(&doc).clip(clip.id).unwrap().out_point;
+        let out_before = VideoDoc::load_project(&doc)
+            .clip(clip.id)
+            .unwrap()
+            .out_point;
         // Grab within TRIM_HIT of the right edge and drag left ~1.5s.
         let grab_x = cr.x1 - 1.0;
         let grab_y = cr.center().y;
         let drop_x = grab_x - 1.5 * app.zoom;
         move_to(&mut app, &mut doc, grab_x, grab_y);
         press(&mut app, &mut doc);
-        assert!(matches!(app.drag, Some(Drag::TrimOut { .. })), "grabbing the right edge starts a trim-out drag");
+        assert!(
+            matches!(app.drag, Some(Drag::TrimOut { .. })),
+            "grabbing the right edge starts a trim-out drag"
+        );
         move_to(&mut app, &mut doc, drop_x, grab_y);
         release(&mut app, &mut doc);
-        let out_after = VideoDoc::load_project(&doc).clip(clip.id).unwrap().out_point;
-        assert!(out_after < out_before, "trimming the right edge shortened out_point in the CRDT ({out_before} -> {out_after})");
+        let out_after = VideoDoc::load_project(&doc)
+            .clip(clip.id)
+            .unwrap()
+            .out_point;
+        assert!(
+            out_after < out_before,
+            "trimming the right edge shortened out_point in the CRDT ({out_before} -> {out_after})"
+        );
     }
 
     #[test]
@@ -4507,8 +6047,11 @@ mod tests {
         let r = app.regions();
         // The market cutaway on V1 sits around t=22.
         let clip = app.project.top_video_clip_at(22.0).unwrap().clone();
-        let (_tid, _k, lane) = app.lane_rects(&r).into_iter()
-            .find(|(tid, _, _)| *tid == clip.track).unwrap();
+        let (_tid, _k, lane) = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(tid, _, _)| *tid == clip.track)
+            .unwrap();
         let cr = app.clip_rect(&clip, &lane, &r);
         click(&mut app, &mut doc, cr.center().x, cr.center().y);
         assert_eq!(app.selected, Some(clip.id), "clicking a clip selects it");
@@ -4535,6 +6078,9 @@ mod tests {
             CompositedFrame::Clip { base, .. } => base.luma(),
             _ => panic!("expected clip"),
         };
-        assert!(after > before, "raising brightness brightens the composite ({before} -> {after})");
+        assert!(
+            after > before,
+            "raising brightness brightens the composite ({before} -> {after})"
+        );
     }
 }

@@ -3,7 +3,7 @@
 //! re-writes byte-faithfully (mimetype first + stored, the rest deflated). It is
 //! the lossless backbone: parts the codec doesn't model are carried verbatim.
 
-use crate::codecs::safety::{read_zip_parts, ZipLimits};
+use crate::codecs::safety::{ZipLimits, read_zip_parts};
 use crate::format::CodecError;
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
@@ -22,7 +22,10 @@ impl OdtContainer {
     }
 
     pub fn get(&self, name: &str) -> Option<&[u8]> {
-        self.parts.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice())
+        self.parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.as_slice())
     }
 
     /// Replace an existing part (preserving its position) or append a new one.
@@ -81,7 +84,10 @@ pub(crate) fn minimal_odt_styled(styles_xml: &str, body_xml: &str) -> Vec<u8> {
 <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
 </manifest:manifest>"#;
     let mut c = OdtContainer { parts: vec![] };
-    c.set("mimetype", b"application/vnd.oasis.opendocument.text".to_vec());
+    c.set(
+        "mimetype",
+        b"application/vnd.oasis.opendocument.text".to_vec(),
+    );
     c.set("content.xml", content.into_bytes());
     c.set("META-INF/manifest.xml", manifest.as_bytes().to_vec());
     c.write().unwrap()
@@ -107,8 +113,15 @@ mod tests {
         let names1: Vec<_> = c.parts.iter().map(|(n, _)| n.clone()).collect();
         let names2: Vec<_> = c2.parts.iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(names1, names2, "part set + order preserved");
-        assert_eq!(c2.get("content.xml"), c.get("content.xml"), "content preserved verbatim");
-        assert_eq!(c2.parts[0].0, "mimetype", "mimetype still first after rewrite");
+        assert_eq!(
+            c2.get("content.xml"),
+            c.get("content.xml"),
+            "content preserved verbatim"
+        );
+        assert_eq!(
+            c2.parts[0].0, "mimetype",
+            "mimetype still first after rewrite"
+        );
     }
 
     #[test]

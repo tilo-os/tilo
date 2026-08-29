@@ -7,9 +7,9 @@
 
 use std::collections::HashMap;
 
+use notes::NotesApp;
 use notes::doc::NotesDoc;
 use notes::model::PageMeta;
-use notes::NotesApp;
 use taffy::prelude::*;
 use tempfile::TempDir;
 use ui::permissions::PermissionContext;
@@ -23,12 +23,7 @@ use vello::kurbo::{Affine, Point};
 /// Run a full layout pass (sync + build + compute + apply) — the part of
 /// the frame that sizes every widget's rects, including the sidebar's
 /// per-row `row_rects`.
-fn relayout(
-    app: &mut NotesApp,
-    state: &mut ui::State,
-    theme: &Theme,
-    tr: &mut TextRenderer,
-) {
+fn relayout(app: &mut NotesApp, state: &mut ui::State, theme: &Theme, tr: &mut TextRenderer) {
     app.sync(&mut state.doc, &state.root);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();

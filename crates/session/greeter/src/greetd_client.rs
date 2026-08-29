@@ -388,7 +388,9 @@ mod tests {
 
             // 5. StartSession with our argv.
             let req = Request::read_from(&mut server).unwrap();
-            assert!(matches!(req, Request::StartSession { cmd, .. } if cmd == vec!["/usr/bin/shell".to_string(), "--backend".to_string(), "drm".to_string()]));
+            assert!(
+                matches!(req, Request::StartSession { cmd, .. } if cmd == vec!["/usr/bin/shell".to_string(), "--backend".to_string(), "drm".to_string()])
+            );
 
             // 6. Session accepted.
             Response::Success.write_to(&mut server).unwrap();
@@ -549,7 +551,10 @@ mod tests {
         let result = run_exchange(&mut client, "alice", "pw", &[], &[], ignore_prompts);
         server_thread.join().unwrap();
 
-        assert_eq!(result, Err(AuthError::Greetd("session slot busy".to_string())));
+        assert_eq!(
+            result,
+            Err(AuthError::Greetd("session slot busy".to_string()))
+        );
         let err = result.unwrap_err();
         assert_eq!(err.user_message(), "Could not start the session");
         assert_eq!(err.detail(), Some("session slot busy".to_string()));

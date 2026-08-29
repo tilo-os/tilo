@@ -174,7 +174,6 @@ impl Dispatch<wp_color_management_surface_v1::WpColorManagementSurfaceV1, ()> fo
     }
 }
 
-
 /// Pump the client → server → client round-trip until pending events
 /// settle: both sides flush and dispatch in a bounded loop.
 fn pump(

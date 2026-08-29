@@ -8,13 +8,13 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -55,7 +55,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, monitor::app_root(), "dev.qos.monitor"));
+        std::process::exit(ui::headless::run(
+            spec,
+            monitor::app_root(),
+            "dev.qos.monitor",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.monitor");
@@ -271,7 +275,12 @@ fn bench_frame(
     );
     let draw_us = us(t);
 
-    (scene, taffy, child, [sync_us, build_us, layout_us, apply_us, draw_us])
+    (
+        scene,
+        taffy,
+        child,
+        [sync_us, build_us, layout_us, apply_us, draw_us],
+    )
 }
 
 fn synth_cursor(x: f64, y: f64) -> WindowEvent {
@@ -317,7 +326,14 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
     // Warm caches (the first frames pay cold text-shape + allocation cost).
     for _ in 0..3 {
         let _ = bench_frame(
-            &mut widget, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h,
+            &mut widget,
+            &mut state,
+            &mut text_renderer,
+            &theme,
+            &presence,
+            &permission,
+            w,
+            h,
         );
     }
     let mut renderer = OffscreenRenderer::new(w, h);
@@ -325,14 +341,22 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
     let actions: Vec<(&str, BenchAction)> = vec![
         ("click Resources tab", BenchAction::Click(705.0, 42.0)),
         ("click Processes tab", BenchAction::Click(575.0, 42.0)),
-        ("scroll process table down", BenchAction::Scroll(700.0, 300.0, -8.0)),
-        ("scroll process table up", BenchAction::Scroll(700.0, 300.0, 8.0)),
+        (
+            "scroll process table down",
+            BenchAction::Scroll(700.0, 300.0, -8.0),
+        ),
+        (
+            "scroll process table up",
+            BenchAction::Scroll(700.0, 300.0, 8.0),
+        ),
         ("click a process row", BenchAction::Click(700.0, 240.0)),
         ("toggle kernel threads", BenchAction::Click(1205.0, 102.0)),
         ("toggle Tree/flat", BenchAction::Click(985.0, 102.0)),
     ];
 
-    println!("monitor interaction bench @ {w}x{h}  (microseconds; compute-only, excludes window present)");
+    println!(
+        "monitor interaction bench @ {w}x{h}  (microseconds; compute-only, excludes window present)"
+    );
     println!(
         "{:<28} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
         "action", "event", "sync", "layout", "draw", "encode", "frame", "TOTAL"
@@ -342,22 +366,42 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
     for (label, action) in &actions {
         // Lay out the current state so events dispatch into a real tree.
         let (_s, taffy, child, _) = bench_frame(
-            &mut widget, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h,
+            &mut widget,
+            &mut state,
+            &mut text_renderer,
+            &theme,
+            &presence,
+            &permission,
+            w,
+            h,
         );
-        let dispatch = |widget: &mut Box<dyn Widget>, state: &mut ui::State, ev: &WindowEvent| -> f64 {
-            let mut handled = false;
-            let mut focus = None;
-            let t = Instant::now();
-            widget.handle_event(
-                ev, 1.0, &modifiers, &mut state.doc, &state.root, &mut handled, &mut focus, child, &taffy,
-            );
-            t.elapsed().as_secs_f64() * 1e6
-        };
+        let dispatch =
+            |widget: &mut Box<dyn Widget>, state: &mut ui::State, ev: &WindowEvent| -> f64 {
+                let mut handled = false;
+                let mut focus = None;
+                let t = Instant::now();
+                widget.handle_event(
+                    ev,
+                    1.0,
+                    &modifiers,
+                    &mut state.doc,
+                    &state.root,
+                    &mut handled,
+                    &mut focus,
+                    child,
+                    &taffy,
+                );
+                t.elapsed().as_secs_f64() * 1e6
+            };
         let event_us = match action {
             BenchAction::Click(x, y) => {
                 dispatch(&mut widget, &mut state, &synth_cursor(*x, *y))
                     + dispatch(&mut widget, &mut state, &synth_click(ElementState::Pressed))
-                    + dispatch(&mut widget, &mut state, &synth_click(ElementState::Released))
+                    + dispatch(
+                        &mut widget,
+                        &mut state,
+                        &synth_click(ElementState::Released),
+                    )
             }
             BenchAction::Scroll(x, y, dy) => {
                 dispatch(&mut widget, &mut state, &synth_cursor(*x, *y))
@@ -366,7 +410,14 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
         };
         // The repaint reflecting the event: full frame + GPU scene encode.
         let (scene, _t, _c, ft) = bench_frame(
-            &mut widget, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h,
+            &mut widget,
+            &mut state,
+            &mut text_renderer,
+            &theme,
+            &presence,
+            &permission,
+            w,
+            h,
         );
         let te = Instant::now();
         let _rgba = renderer.render_rgba(&scene);

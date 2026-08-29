@@ -61,7 +61,11 @@ impl ShellLayout {
     /// Resolve purely from the allocated width. The boundary is inclusive at
     /// the breakpoint → [`ShellLayout::Wide`].
     pub fn from_width(width: f64, breakpoint: f64) -> Self {
-        if width >= breakpoint { ShellLayout::Wide } else { ShellLayout::Narrow }
+        if width >= breakpoint {
+            ShellLayout::Wide
+        } else {
+            ShellLayout::Narrow
+        }
     }
 }
 
@@ -317,24 +321,47 @@ impl AppShell {
                 } else {
                     (length(0.0_f32), length(BACK_BAND_H as f32))
                 };
-                s.inset = taffy::Rect { left, right: length(0.0_f32), top, bottom: length(0.0_f32) };
-                s.size = taffy::Size { width: auto(), height: auto() };
+                s.inset = taffy::Rect {
+                    left,
+                    right: length(0.0_f32),
+                    top,
+                    bottom: length(0.0_f32),
+                };
+                s.size = taffy::Size {
+                    width: auto(),
+                    height: auto(),
+                };
             }
             Slot::Nav => {
-                let right = if self.layout == ShellLayout::Wide { auto() } else { length(0.0_f32) };
-                let width = if self.layout == ShellLayout::Wide { length(sw as f32) } else { auto() };
+                let right = if self.layout == ShellLayout::Wide {
+                    auto()
+                } else {
+                    length(0.0_f32)
+                };
+                let width = if self.layout == ShellLayout::Wide {
+                    length(sw as f32)
+                } else {
+                    auto()
+                };
                 s.inset = taffy::Rect {
                     left: length(0.0_f32),
                     right,
                     top: length(SEARCH_BAND_H as f32),
                     bottom: length(0.0_f32),
                 };
-                s.size = taffy::Size { width, height: auto() };
+                s.size = taffy::Size {
+                    width,
+                    height: auto(),
+                };
             }
             Slot::Search => {
                 s.inset = taffy::Rect {
                     left: length(PAD as f32),
-                    right: if self.layout == ShellLayout::Wide { auto() } else { length(PAD as f32) },
+                    right: if self.layout == ShellLayout::Wide {
+                        auto()
+                    } else {
+                        length(PAD as f32)
+                    },
                     top: length(PAD as f32),
                     bottom: auto(),
                 };
@@ -343,13 +370,22 @@ impl AppShell {
                 } else {
                     auto()
                 };
-                s.size = taffy::Size { width, height: length(CTRL_H as f32) };
+                s.size = taffy::Size {
+                    width,
+                    height: length(CTRL_H as f32),
+                };
             }
         }
         s
     }
 
-    fn draw_back(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_back(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let radius = theme.tokens.radii.md as f64;
         if self.back_press {
             let pill = RoundedRect::from_rect(self.back_rect, radius);
@@ -387,17 +423,36 @@ impl AppShell {
         let content_fill = theme.tokens.colors.surfaces.base;
         let divider = theme.tokens.colors.border_standard;
 
-        let narrow_list = self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::List;
+        let narrow_list =
+            self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::List;
 
-        let base = if narrow_list { sidebar_fill } else { content_fill };
+        let base = if narrow_list {
+            sidebar_fill
+        } else {
+            content_fill
+        };
         scene.fill(Fill::NonZero, transform, base, None, &self.rect);
 
         if self.content_shown() {
-            paint_child(self.content.as_mut(), scene, transform, tr, theme, presence, permissions);
+            paint_child(
+                self.content.as_mut(),
+                scene,
+                transform,
+                tr,
+                theme,
+                presence,
+                permissions,
+            );
         }
 
         if self.layout == ShellLayout::Wide {
-            scene.fill(Fill::NonZero, transform, sidebar_fill, None, &self.sidebar_panel_rect);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                sidebar_fill,
+                None,
+                &self.sidebar_panel_rect,
+            );
             let x = self.sidebar_panel_rect.x1;
             scene.stroke(
                 &Stroke::new(1.0),
@@ -409,9 +464,25 @@ impl AppShell {
         }
 
         if self.sidebar_shown() {
-            paint_child(self.nav.as_mut(), scene, transform, tr, theme, presence, permissions);
+            paint_child(
+                self.nav.as_mut(),
+                scene,
+                transform,
+                tr,
+                theme,
+                presence,
+                permissions,
+            );
             if let Some(search) = &mut self.search {
-                paint_child(search.as_mut(), scene, transform, tr, theme, presence, permissions);
+                paint_child(
+                    search.as_mut(),
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    presence,
+                    permissions,
+                );
             }
         }
 
@@ -496,7 +567,10 @@ impl Widget for AppShell {
             .new_with_children(
                 Style {
                     display: taffy::Display::Flex,
-                    size: taffy::Size { width: percent(1.0_f32), height: percent(1.0_f32) },
+                    size: taffy::Size {
+                        width: percent(1.0_f32),
+                        height: percent(1.0_f32),
+                    },
                     ..Default::default()
                 },
                 &child_nodes,
@@ -566,7 +640,14 @@ impl Widget for AppShell {
         presence: &PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        self.paint(scene, transform, text_renderer, theme, presence, Some(permissions));
+        self.paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            Some(permissions),
+        );
     }
 
     fn handle_event(
@@ -584,13 +665,19 @@ impl Widget for AppShell {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-                let hover = self.back_rect.width() > 0.0 && self.back_rect.contains(self.last_cursor);
+                let hover =
+                    self.back_rect.width() > 0.0 && self.back_rect.contains(self.last_cursor);
                 if hover != self.back_hover {
                     self.back_hover = hover;
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 // Esc on the narrow content screen goes back to the list.
@@ -599,7 +686,11 @@ impl Widget for AppShell {
                     return;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if self.back_rect.width() > 0.0 && self.back_rect.contains(self.last_cursor) {
                     self.back_press = true;
                     *handled = true;
@@ -618,9 +709,11 @@ impl Widget for AppShell {
                     self.last_active = NarrowScreen::List;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. }
-                if self.back_press =>
-            {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.back_press => {
                 let on_back = self.back_rect.contains(self.last_cursor);
                 self.back_press = false;
                 if on_back {
@@ -658,7 +751,17 @@ impl Widget for AppShell {
                     Slot::Nav => self.nav.as_mut(),
                     Slot::Content => self.content.as_mut(),
                 };
-                w.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
+                w.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
             }
         }
     }
@@ -717,7 +820,11 @@ impl Widget for AppShell {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.pending_rebuild);
-        let search = self.search.as_mut().map(|s| s.take_structure_dirty()).unwrap_or(false);
+        let search = self
+            .search
+            .as_mut()
+            .map(|s| s.take_structure_dirty())
+            .unwrap_or(false);
         let nav = self.nav.take_structure_dirty();
         let content = self.content.take_structure_dirty();
         own || search || nav || content
@@ -726,7 +833,10 @@ impl Widget for AppShell {
     fn needs_animation_frame(&self) -> bool {
         self.content.needs_animation_frame()
             || self.nav.needs_animation_frame()
-            || self.search.as_ref().is_some_and(|s| s.needs_animation_frame())
+            || self
+                .search
+                .as_ref()
+                .is_some_and(|s| s.needs_animation_frame())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -738,7 +848,10 @@ impl Widget for AppShell {
     fn layout_needs_measure(&self) -> bool {
         self.content.layout_needs_measure()
             || self.nav.layout_needs_measure()
-            || self.search.as_ref().is_some_and(|s| s.layout_needs_measure())
+            || self
+                .search
+                .as_ref()
+                .is_some_and(|s| s.layout_needs_measure())
     }
 }
 
@@ -799,21 +912,37 @@ mod tests {
         lay(&mut s, 1000.0, 700.0);
         assert!(!s.is_narrow(), "1000px is wide (the sidebar fits)");
         assert!(s.sidebar_open(), "the fitting sidebar is always shown");
-        assert_eq!(s.back_rect(), Rect::ZERO, "there is no toggle/back button when the sidebar fits");
+        assert_eq!(
+            s.back_rect(),
+            Rect::ZERO,
+            "there is no toggle/back button when the sidebar fits"
+        );
         assert_eq!(s.sidebar_panel_rect.x0, 0.0, "sidebar panel is flush left");
-        assert!((s.sidebar_panel_rect.height() - 700.0).abs() < 0.5, "panel spans full height");
+        assert!(
+            (s.sidebar_panel_rect.height() - 700.0).abs() < 0.5,
+            "panel spans full height"
+        );
         assert!(
             (s.sidebar_panel_rect.width() - s.sidebar_width).abs() < 0.5,
             "panel is exactly the sidebar width"
         );
         let sr = search_rect(&s);
-        assert!(sr.x0 >= s.sidebar_panel_rect.x0 && sr.x1 <= s.sidebar_panel_rect.x1 + 0.5, "search over the sidebar column");
-        assert!(sr.y0 <= s.rect.y0 + PAD + 0.5, "search is pinned to the top of the sidebar");
+        assert!(
+            sr.x0 >= s.sidebar_panel_rect.x0 && sr.x1 <= s.sidebar_panel_rect.x1 + 0.5,
+            "search over the sidebar column"
+        );
+        assert!(
+            sr.y0 <= s.rect.y0 + PAD + 0.5,
+            "search is pinned to the top of the sidebar"
+        );
         assert!(
             (s.content_area_rect.x0 - s.sidebar_panel_rect.x1).abs() < 0.5,
             "content starts flush against the sidebar"
         );
-        assert!(s.content_area_rect.x1 > s.sidebar_panel_rect.x1, "content fills the area to the right");
+        assert!(
+            s.content_area_rect.x1 > s.sidebar_panel_rect.x1,
+            "content fills the area to the right"
+        );
     }
 
     /// Narrow collapse keeps the CONTENT on screen, never the category list.
@@ -830,29 +959,65 @@ mod tests {
             NarrowScreen::Content,
             "a collapse keeps the content — never defaults to the nav list",
         );
-        assert!(!s.sidebar_open(), "the category list is NOT the shown surface");
-        assert!((s.content_area_rect.width() - 460.0).abs() < 0.5, "content fills the screen width");
-        assert!((s.content_area_rect.height() - 820.0).abs() < 0.5, "content fills the screen height");
-        assert!(s.back_rect().width() > 0.0, "the content screen offers a back arrow to reach the list");
+        assert!(
+            !s.sidebar_open(),
+            "the category list is NOT the shown surface"
+        );
+        assert!(
+            (s.content_area_rect.width() - 460.0).abs() < 0.5,
+            "content fills the screen width"
+        );
+        assert!(
+            (s.content_area_rect.height() - 820.0).abs() < 0.5,
+            "content fills the screen height"
+        );
+        assert!(
+            s.back_rect().width() > 0.0,
+            "the content screen offers a back arrow to reach the list"
+        );
         let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
-        assert_eq!(names, vec!["Text"], "content screen composes only the content");
+        assert_eq!(
+            names,
+            vec!["Text"],
+            "content screen composes only the content"
+        );
     }
 
     /// The list screen is its OWN full-screen screen — not an overlay or
     /// scrim; the content is not even built behind it.
     #[test]
     fn narrow_list_screen_is_standalone_not_an_overlay() {
-        let mut s = shell().with_width_hint(460.0).with_narrow_screen(NarrowScreen::List);
+        let mut s = shell()
+            .with_width_hint(460.0)
+            .with_narrow_screen(NarrowScreen::List);
         lay(&mut s, 460.0, 820.0);
         assert!(s.is_narrow(), "460px resolves to the narrow layout");
         assert_eq!(s.narrow_screen(), NarrowScreen::List);
         assert!(s.sidebar_open(), "the list screen shows the sidebar");
-        assert!((s.sidebar_panel_rect.width() - 460.0).abs() < 0.5, "the list fills the screen width");
-        assert!((s.sidebar_panel_rect.height() - 820.0).abs() < 0.5, "the list fills the screen height");
-        assert_eq!(s.content_area_rect, Rect::ZERO, "no content is shown behind the list (no scrim)");
-        assert_eq!(s.back_rect(), Rect::ZERO, "the list screen has no back button");
+        assert!(
+            (s.sidebar_panel_rect.width() - 460.0).abs() < 0.5,
+            "the list fills the screen width"
+        );
+        assert!(
+            (s.sidebar_panel_rect.height() - 820.0).abs() < 0.5,
+            "the list fills the screen height"
+        );
+        assert_eq!(
+            s.content_area_rect,
+            Rect::ZERO,
+            "no content is shown behind the list (no scrim)"
+        );
+        assert_eq!(
+            s.back_rect(),
+            Rect::ZERO,
+            "the list screen has no back button"
+        );
         let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
-        assert_eq!(names, vec!["TextInput", "Text"], "list screen composes only search + nav");
+        assert_eq!(
+            names,
+            vec!["TextInput", "Text"],
+            "list screen composes only search + nav"
+        );
     }
 
     /// Narrow: picking a category navigates the list screen → the content
@@ -864,15 +1029,35 @@ mod tests {
         lay(&mut s, 460.0, 820.0);
         assert_eq!(s.narrow_screen(), NarrowScreen::List);
         s.notify_selection(); // the host calls this when a row is picked
-        assert!(s.take_structure_dirty(), "a narrow selection requests a rebuild");
+        assert!(
+            s.take_structure_dirty(),
+            "a narrow selection requests a rebuild"
+        );
         lay(&mut s, 460.0, 820.0);
-        assert_eq!(s.narrow_screen(), NarrowScreen::Content, "the pick navigates to the content screen");
+        assert_eq!(
+            s.narrow_screen(),
+            NarrowScreen::Content,
+            "the pick navigates to the content screen"
+        );
         assert!(!s.sidebar_open(), "the list is no longer shown");
-        assert!((s.content_area_rect.width() - 460.0).abs() < 0.5, "content fills the screen");
-        assert!(s.back_rect().width() > 0.0, "the content screen has a back arrow");
-        assert!(s.back_rect().x0 < 60.0 && s.back_rect().y0 < 60.0, "the back arrow is in the top-left");
+        assert!(
+            (s.content_area_rect.width() - 460.0).abs() < 0.5,
+            "content fills the screen"
+        );
+        assert!(
+            s.back_rect().width() > 0.0,
+            "the content screen has a back arrow"
+        );
+        assert!(
+            s.back_rect().x0 < 60.0 && s.back_rect().y0 < 60.0,
+            "the back arrow is in the top-left"
+        );
         let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
-        assert_eq!(names, vec!["Text"], "content screen composes only the content");
+        assert_eq!(
+            names,
+            vec!["Text"],
+            "content screen composes only the content"
+        );
     }
 
     /// Narrow: the back arrow is the way from the content screen back to the
@@ -881,7 +1066,11 @@ mod tests {
     fn back_from_content_returns_to_the_list() {
         let mut s = shell().with_narrow_screen(NarrowScreen::Content);
         lay(&mut s, 460.0, 820.0);
-        assert_eq!(s.narrow_screen(), NarrowScreen::Content, "starts on the content screen");
+        assert_eq!(
+            s.narrow_screen(),
+            NarrowScreen::Content,
+            "starts on the content screen"
+        );
         assert!(s.back_rect().width() > 0.0, "the back arrow is present");
         // A real click on the back arrow.
         let mid = Point::new(
@@ -889,11 +1078,22 @@ mod tests {
             (s.back_rect().y0 + s.back_rect().y1) / 2.0,
         );
         click(&mut s, mid);
-        assert_eq!(s.narrow_screen(), NarrowScreen::List, "back returns to the list screen");
-        assert!(s.take_structure_dirty(), "the back navigation requests a rebuild");
+        assert_eq!(
+            s.narrow_screen(),
+            NarrowScreen::List,
+            "back returns to the list screen"
+        );
+        assert!(
+            s.take_structure_dirty(),
+            "the back navigation requests a rebuild"
+        );
         lay(&mut s, 460.0, 820.0);
         assert!(s.sidebar_open(), "the list screen is shown again");
-        assert_eq!(s.content_area_rect, Rect::ZERO, "no content behind the list");
+        assert_eq!(
+            s.content_area_rect,
+            Rect::ZERO,
+            "no content behind the list"
+        );
     }
 
     #[test]
@@ -904,7 +1104,11 @@ mod tests {
         let mut handled = false;
         dispatch(&mut s, &esc_event(), &mut handled);
         assert!(handled, "Esc on the content screen is consumed");
-        assert_eq!(s.narrow_screen(), NarrowScreen::List, "Esc navigates back to the list");
+        assert_eq!(
+            s.narrow_screen(),
+            NarrowScreen::List,
+            "Esc navigates back to the list"
+        );
     }
 
     #[test]
@@ -930,10 +1134,18 @@ mod tests {
         // layout, exactly what the host's frame loop does.
         lay(&mut s, 460.0, 820.0);
         lay(&mut s, 460.0, 820.0);
-        assert_eq!(s.children().len(), 1, "narrow collapse composes only the content");
+        assert_eq!(
+            s.children().len(),
+            1,
+            "narrow collapse composes only the content"
+        );
         assert!(s.back(), "back moves to the list screen");
         lay(&mut s, 460.0, 820.0);
-        assert_eq!(s.children().len(), 2, "narrow list composes search + nav (no content behind)");
+        assert_eq!(
+            s.children().len(),
+            2,
+            "narrow list composes search + nav (no content behind)"
+        );
     }
 
     #[test]
@@ -945,8 +1157,20 @@ mod tests {
         let presence = PresenceCtx::default();
         let perms = crate::permissions::PermissionContext::permissive();
         let mut scene = Scene::new();
-        s.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
-        let fills = scene.encoding().draw_tags.iter().filter(|t| **t == DrawTag::COLOR).count();
+        s.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &perms,
+        );
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
         assert!(fills >= 2, "a laid-out shell paints its surfaces + content");
     }
 
@@ -955,23 +1179,40 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved { device_id: synth_device(), position: winit::dpi::PhysicalPosition::new(p.x, p.y) }
+        WindowEvent::CursorMoved {
+            device_id: synth_device(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
     }
     fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Pressed, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
     }
     fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Released, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
     }
     fn esc_event() -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Escape);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
-        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
     fn dispatch(s: &mut AppShell, event: &WindowEvent, handled: &mut bool) {
         // A throwaway taffy tree with a matching child count so routing works.
@@ -982,7 +1223,17 @@ mod tests {
         let mut focus = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        s.handle_event(event, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, handled, &mut focus, node, &taffy);
+        s.handle_event(
+            event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
     fn click(s: &mut AppShell, at: Point) {
         let mut handled = false;

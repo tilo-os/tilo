@@ -116,7 +116,10 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
     let head = text.get(..caret)?;
     let at = head.rfind('@')?;
     // The `@` must open a word: nothing before it, or whitespace.
-    let opens_word = head[..at].chars().next_back().is_none_or(|c| c.is_whitespace());
+    let opens_word = head[..at]
+        .chars()
+        .next_back()
+        .is_none_or(|c| c.is_whitespace());
     if !opens_word {
         return None;
     }
@@ -124,7 +127,10 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
     if query.len() > MAX_QUERY_LEN || query.contains('\n') || query.contains('@') {
         return None;
     }
-    Some(MentionQuery { start: at, query: query.to_string() })
+    Some(MentionQuery {
+        start: at,
+        query: query.to_string(),
+    })
 }
 
 /// Whether the composer should be offering participants right now, and for
@@ -137,12 +143,18 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
 /// space typed. That last case is why the raw lexer is not enough on its own:
 /// names contain spaces, so a run cannot be ended by whitespace alone, and
 /// without the room to compare against, a finished pick keeps the list up.
-pub fn picker_query(text: &str, caret: usize, participants: &[Participant]) -> Option<MentionQuery> {
+pub fn picker_query(
+    text: &str,
+    caret: usize,
+    participants: &[Participant],
+) -> Option<MentionQuery> {
     let q = query_at_caret(text, caret)?;
     // Already picked: the run is exactly one participant's name plus the space
     // `apply_completion` appends to close it.
     if let Some(name) = q.query.strip_suffix(' ') {
-        let done = participants.iter().any(|p| !p.name.is_empty() && p.name.eq_ignore_ascii_case(name));
+        let done = participants
+            .iter()
+            .any(|p| !p.name.is_empty() && p.name.eq_ignore_ascii_case(name));
         if done {
             return None;
         }
@@ -186,7 +198,12 @@ pub fn candidates<'a>(participants: &'a [Participant], query: &str) -> Vec<&'a P
 ///
 /// The trailing space is what closes the run: without it the next character
 /// typed would re-open the picker on a name that is already chosen.
-pub fn apply_completion(text: &str, q: &MentionQuery, caret: usize, who: &Participant) -> (String, usize) {
+pub fn apply_completion(
+    text: &str,
+    q: &MentionQuery,
+    caret: usize,
+    who: &Participant,
+) -> (String, usize) {
     let caret = caret.min(text.len());
     let end = caret.max(q.start);
     let mut out = String::with_capacity(text.len() + who.name.len());
@@ -224,7 +241,10 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
     let mut cursor = 0usize;
     while let Some(rel) = text[cursor..].find('@') {
         let at = cursor + rel;
-        let opens_word = text[..at].chars().next_back().is_none_or(|c| c.is_whitespace());
+        let opens_word = text[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c.is_whitespace());
         if !opens_word {
             cursor = at + '@'.len_utf8();
             continue;
@@ -251,7 +271,10 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
             // A name must not run into the middle of a longer word: `@ada` in
             // "@adamant" is not a mention of Ada.
             let tail = after + needle.len();
-            let boundary = text[tail..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+            let boundary = text[tail..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric());
             if boundary {
                 matched = Some(needle.len());
                 who = Some(p);
@@ -260,7 +283,12 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
         }
         match (matched, who) {
             (Some(n), Some(p)) => {
-                out.push(Mention { user: p.id.clone(), start: at, len: '@'.len_utf8() + n, is_agent: p.is_agent });
+                out.push(Mention {
+                    user: p.id.clone(),
+                    start: at,
+                    len: '@'.len_utf8() + n,
+                    is_agent: p.is_agent,
+                });
                 cursor = after + n;
             }
             _ => cursor = after,
@@ -275,9 +303,21 @@ mod tests {
 
     fn room() -> Vec<Participant> {
         vec![
-            Participant { id: "u_ada".into(), name: "Ada".into(), is_agent: false },
-            Participant { id: "u_lovelace".into(), name: "Ada Lovelace".into(), is_agent: false },
-            Participant { id: "agent_scribe".into(), name: "Scribe".into(), is_agent: true },
+            Participant {
+                id: "u_ada".into(),
+                name: "Ada".into(),
+                is_agent: false,
+            },
+            Participant {
+                id: "u_lovelace".into(),
+                name: "Ada Lovelace".into(),
+                is_agent: false,
+            },
+            Participant {
+                id: "agent_scribe".into(),
+                name: "Scribe".into(),
+                is_agent: true,
+            },
         ]
     }
 
@@ -303,7 +343,10 @@ mod tests {
     fn an_agent_resolves_the_same_way_a_person_does() {
         let m = resolve("@Scribe please summarise", &room());
         assert_eq!(m[0].user, "agent_scribe");
-        assert!(m[0].is_agent, "the room's agent flag travels with the mention");
+        assert!(
+            m[0].is_agent,
+            "the room's agent flag travels with the mention"
+        );
     }
 
     #[test]
@@ -331,8 +374,14 @@ mod tests {
     fn the_caret_query_opens_only_on_a_word_leading_at() {
         assert_eq!(query_at_caret("hi @ad", 6).unwrap().query, "ad");
         assert_eq!(query_at_caret("hi @ad", 6).unwrap().start, 3);
-        assert!(query_at_caret("mail@ad", 7).is_none(), "an infix @ is an address");
-        assert!(query_at_caret("hi @a\nb", 7).is_none(), "a newline ends the run");
+        assert!(
+            query_at_caret("mail@ad", 7).is_none(),
+            "an infix @ is an address"
+        );
+        assert!(
+            query_at_caret("hi @a\nb", 7).is_none(),
+            "a newline ends the run"
+        );
     }
 
     #[test]
@@ -342,17 +391,28 @@ mod tests {
         assert_eq!(c[0].id, "u_ada");
         let c = candidates(&r, "lov");
         assert_eq!(c[0].id, "u_lovelace", "a later word still matches");
-        assert_eq!(candidates(&r, "").len(), 3, "an empty query offers the room");
+        assert_eq!(
+            candidates(&r, "").len(),
+            3,
+            "an empty query offers the room"
+        );
     }
 
     #[test]
     fn completion_closes_the_run_so_the_picker_does_not_reopen() {
         let q = query_at_caret("hi @ad", 6).unwrap();
-        let who = Participant { id: "u_lovelace".into(), name: "Ada Lovelace".into(), is_agent: false };
+        let who = Participant {
+            id: "u_lovelace".into(),
+            name: "Ada Lovelace".into(),
+            is_agent: false,
+        };
         let (text, caret) = apply_completion("hi @ad", &q, 6, &who);
         assert_eq!(text, "hi @Ada Lovelace ");
         assert_eq!(caret, text.len());
-        assert!(picker_query(&text, caret, &room()).is_none(), "a finished pick must not leave the list up");
+        assert!(
+            picker_query(&text, caret, &room()).is_none(),
+            "a finished pick must not leave the list up"
+        );
     }
 
     #[test]
@@ -364,7 +424,11 @@ mod tests {
     #[test]
     fn completing_mid_sentence_keeps_the_tail() {
         let q = query_at_caret("hi @ad, look", 6).unwrap();
-        let who = Participant { id: "u_ada".into(), name: "Ada".into(), is_agent: false };
+        let who = Participant {
+            id: "u_ada".into(),
+            name: "Ada".into(),
+            is_agent: false,
+        };
         let (text, caret) = apply_completion("hi @ad, look", &q, 6, &who);
         assert_eq!(text, "hi @Ada , look");
         assert_eq!(&text[..caret], "hi @Ada ");

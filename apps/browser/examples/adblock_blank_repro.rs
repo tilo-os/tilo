@@ -17,7 +17,12 @@ use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
 const OUT: &str = "/tmp/claude-1000/-var-home-quinten-Development-quickdesktop/4b954627-69cb-4365-8ed0-231ae0028e62/scratchpad";
 
 fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {
-    engine.frames().lock().unwrap().as_ref().map(|f| (f.rgba.clone(), f.width, f.height))
+    engine
+        .frames()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|f| (f.rgba.clone(), f.width, f.height))
 }
 
 fn uniformity(rgba: &[u8]) -> f64 {
@@ -40,7 +45,10 @@ fn save(engine: &dyn WebViewEngine, name: &str) {
     match latest(engine) {
         Some((rgba, w, h)) => {
             let u = uniformity(&rgba) * 100.0;
-            println!("  {name}: {w}x{h} uniformity {u:.1}% {}", if u > 97.0 { "<< BLANK" } else { "" });
+            println!(
+                "  {name}: {w}x{h} uniformity {u:.1}% {}",
+                if u > 97.0 { "<< BLANK" } else { "" }
+            );
         }
         None => println!("  {name}: NO FRAME"),
     }
@@ -48,7 +56,9 @@ fn save(engine: &dyn WebViewEngine, name: &str) {
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "both".into());
-    let url = std::env::args().nth(2).unwrap_or_else(|| "https://duckduckgo.com".into());
+    let url = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "https://duckduckgo.com".into());
     println!("mode={mode} url={url}");
 
     if mode == "analyze" {
@@ -57,7 +67,11 @@ fn main() {
     }
 
     let engine: SharedEngine = WpeEngine::new().expect("engine");
-    engine.send(WebViewCommand::Resize { width: 900, height: 600, scale_factor: 1.0 });
+    engine.send(WebViewCommand::Resize {
+        width: 900,
+        height: 600,
+        scale_factor: 1.0,
+    });
     engine.send(WebViewCommand::Navigate(url));
 
     // Wait for the real page.
@@ -75,7 +89,10 @@ fn main() {
 
     // Optional 3rd arg: install only the first N compiled chunks (to find
     // whether it's a volume limit). Default: all, via the real loader.
-    let max_chunks: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+    let max_chunks: usize = std::env::args()
+        .nth(3)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(usize::MAX);
     match mode.as_str() {
         "filter" | "both" => {
             if max_chunks == usize::MAX {
@@ -86,7 +103,10 @@ fn main() {
                 // REPRO_LISTS=easylist,easyprivacy restricts to those lists
                 // (name prefix match); default = all cached lists.
                 let want = std::env::var("REPRO_LISTS").unwrap_or_default();
-                let dir = dirs::cache_dir().unwrap().join("qos-browser").join("filters");
+                let dir = dirs::cache_dir()
+                    .unwrap()
+                    .join("qos-browser")
+                    .join("filters");
                 let texts: Vec<String> = std::fs::read_dir(&dir)
                     .unwrap()
                     .flatten()
@@ -99,7 +119,10 @@ fn main() {
                     })
                     .filter_map(|e| {
                         let n = e.file_name().to_string_lossy().to_string();
-                        std::fs::read_to_string(e.path()).ok().map(|t| { println!("  + {n}"); t })
+                        std::fs::read_to_string(e.path()).ok().map(|t| {
+                            println!("  + {n}");
+                            t
+                        })
                     })
                     .collect();
                 let chunked = ui::webview::adblock::compile_filter_lists_chunked(
@@ -107,7 +130,8 @@ fn main() {
                     25_000,
                 )
                 .unwrap();
-                let chunks: Vec<Arc<String>> = chunked.chunks.into_iter().take(max_chunks).collect();
+                let chunks: Vec<Arc<String>> =
+                    chunked.chunks.into_iter().take(max_chunks).collect();
                 println!("  sending {} chunks", chunks.len());
                 // Distinct version per N so the store doesn't serve a
                 // cached superset.
@@ -121,14 +145,18 @@ fn main() {
     }
     if mode == "scripts" || mode == "both" {
         println!("installing user scripts…");
-        engine.send(WebViewCommand::SetUserScripts(Arc::new(browser::blocker::user_scripts())));
+        engine.send(WebViewCommand::SetUserScripts(Arc::new(
+            browser::blocker::user_scripts(),
+        )));
     }
 
     // Wait past the async fetch + compile + install (~5–15s).
     for i in 1..=18 {
         std::thread::sleep(Duration::from_secs(1));
         if i % 3 == 0 {
-            let u = latest(&*engine).map(|(r, _, _)| uniformity(&r) * 100.0).unwrap_or(0.0);
+            let u = latest(&*engine)
+                .map(|(r, _, _)| uniformity(&r) * 100.0)
+                .unwrap_or(0.0);
             println!("  t+{i}s uniformity {u:.1}%");
         }
     }
@@ -142,7 +170,9 @@ fn main() {
     for i in 1..=10 {
         std::thread::sleep(Duration::from_secs(1));
         if i % 2 == 0 {
-            let u = latest(&*engine).map(|(r, _, _)| uniformity(&r) * 100.0).unwrap_or(0.0);
+            let u = latest(&*engine)
+                .map(|(r, _, _)| uniformity(&r) * 100.0)
+                .unwrap_or(0.0);
             println!("  reload t+{i}s uniformity {u:.1}%");
         }
     }
@@ -154,7 +184,9 @@ fn main() {
     for i in 1..=10 {
         std::thread::sleep(Duration::from_secs(1));
         if i % 2 == 0 {
-            let u = latest(&*engine).map(|(r, _, _)| uniformity(&r) * 100.0).unwrap_or(0.0);
+            let u = latest(&*engine)
+                .map(|(r, _, _)| uniformity(&r) * 100.0)
+                .unwrap_or(0.0);
             println!("  navigate t+{i}s uniformity {u:.1}%");
         }
     }
@@ -169,7 +201,10 @@ fn main() {
 /// stylesheets), which is how a generic list can kill a page's own assets.
 fn analyze() {
     let want = std::env::var("REPRO_LISTS").unwrap_or_default();
-    let dir = dirs::cache_dir().unwrap().join("qos-browser").join("filters");
+    let dir = dirs::cache_dir()
+        .unwrap()
+        .join("qos-browser")
+        .join("filters");
     let mut texts = Vec::new();
     let mut names = Vec::new();
     for e in std::fs::read_dir(&dir).unwrap().flatten() {
@@ -191,7 +226,11 @@ fn analyze() {
         25_000,
     )
     .expect("compile");
-    println!("rules={} chunks={}", chunked.rule_count, chunked.chunks.len());
+    println!(
+        "rules={} chunks={}",
+        chunked.rule_count,
+        chunked.chunks.len()
+    );
 
     let broad_css = |sel: &str| {
         let s = sel.trim();

@@ -126,7 +126,11 @@ impl SelectionModel {
             self.select_only(i);
             return;
         };
-        let (lo, hi) = if anchor <= i { (anchor, i) } else { (i, anchor) };
+        let (lo, hi) = if anchor <= i {
+            (anchor, i)
+        } else {
+            (i, anchor)
+        };
         if !additive {
             self.selected.clear();
         }

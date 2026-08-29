@@ -107,11 +107,7 @@ impl<T> DropOldest<T> {
 #[derive(Debug, Clone)]
 pub enum PresenceEnvelope {
     /// Legacy `RemoteCursorMoved` — no key; the SDK-facing stream synthesises one.
-    Cursor {
-        user_id: String,
-        x: f32,
-        y: f32,
-    },
+    Cursor { user_id: String, x: f32, y: f32 },
     /// Full `RemotePresenceUpdate`, carrying a postcard key blob the bridge
     /// forwards undecoded so SDK apps can decode into their own `PresenceKey`.
     Update {
@@ -190,8 +186,8 @@ impl UpstreamHandle {
 
     /// Serialize + frame a `CollabRequest` and push it upstream.
     pub async fn send_request(&self, req: &CollabRequest) -> std::io::Result<()> {
-        let bytes = serde_json::to_vec(req)
-            .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
+        let bytes =
+            serde_json::to_vec(req).map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
         let len = (bytes.len() as u32).to_le_bytes();
         let mut w = self.writer.lock().await;
         w.write_all(&len).await?;
@@ -249,7 +245,10 @@ pub async fn connect(path: PathBuf) -> std::io::Result<UpstreamHandle> {
             };
             tracing::trace!(?event, "upstream event");
             match event {
-                CollabEvent::SignedCRDTIncremental { envelope, from_user_id } => {
+                CollabEvent::SignedCRDTIncremental {
+                    envelope,
+                    from_user_id,
+                } => {
                     let op_bytes = match postcard::to_stdvec(&*envelope) {
                         Ok(v) => v,
                         Err(e) => {
@@ -284,7 +283,11 @@ pub async fn connect(path: PathBuf) -> std::io::Result<UpstreamHandle> {
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     presence_task.push(PresenceEnvelope::Cursor { user_id, x, y });
                 }
-                CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+                CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    key,
+                    payload,
+                } => {
                     let key_bytes = match postcard::to_stdvec(&key) {
                         Ok(v) => v,
                         Err(e) => {
@@ -298,10 +301,20 @@ pub async fn connect(path: PathBuf) -> std::io::Result<UpstreamHandle> {
                         payload,
                     });
                 }
-                CollabEvent::Context { collaborators, permissions } => {
-                    let _ = context_tx.send(ContextSnapshot { collaborators, permissions });
+                CollabEvent::Context {
+                    collaborators,
+                    permissions,
+                } => {
+                    let _ = context_tx.send(ContextSnapshot {
+                        collaborators,
+                        permissions,
+                    });
                 }
-                CollabEvent::ScrollbackBatch { artifact, ops, exhausted } => {
+                CollabEvent::ScrollbackBatch {
+                    artifact,
+                    ops,
+                    exhausted,
+                } => {
                     let _ = scrollback_tx.send(ScrollbackReply {
                         artifact,
                         ops,

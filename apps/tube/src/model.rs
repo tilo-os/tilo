@@ -245,7 +245,12 @@ pub struct SearchTypeFilter {
 
 impl Default for SearchTypeFilter {
     fn default() -> Self {
-        Self { video: true, playlist: true, creator: true, pristine: true }
+        Self {
+            video: true,
+            playlist: true,
+            creator: true,
+            pristine: true,
+        }
     }
 }
 
@@ -428,7 +433,10 @@ impl Settings {
         if !self.sponsorblock_enabled {
             return SkipMode::Disabled;
         }
-        self.categories.get(c.api_key()).copied().unwrap_or(SkipMode::Skip)
+        self.categories
+            .get(c.api_key())
+            .copied()
+            .unwrap_or(SkipMode::Skip)
     }
 
     /// Whether the category is marked/considered at all (Show or Auto-skip).
@@ -448,7 +456,11 @@ impl Settings {
 
     /// Cycle a category's mode: Auto-skip → Show → Off → Auto-skip.
     pub fn cycle_category(&mut self, c: Category) {
-        let cur = self.categories.get(c.api_key()).copied().unwrap_or(SkipMode::Skip);
+        let cur = self
+            .categories
+            .get(c.api_key())
+            .copied()
+            .unwrap_or(SkipMode::Skip);
         self.categories.insert(c.api_key().to_string(), cur.next());
     }
 
@@ -477,7 +489,10 @@ pub struct DataSource {
 
 impl Default for DataSource {
     fn default() -> Self {
-        Self { live: false, label: "sample data".into() }
+        Self {
+            live: false,
+            label: "sample data".into(),
+        }
     }
 }
 
@@ -903,7 +918,10 @@ impl TubeModel {
         self.search_hits_query.clear();
         self.related_hits.clear();
         self.related_of.clear();
-        self.data_source = DataSource { live: true, label: label.into() };
+        self.data_source = DataSource {
+            live: true,
+            label: label.into(),
+        };
     }
 
     /// Simple case-insensitive title/channel search.
@@ -927,8 +945,11 @@ impl TubeModel {
     /// (offline / before a live response lands).
     pub fn search_display(&self, query: &str) -> Vec<&Video> {
         if self.search_hits_query == query && !self.search_hits.is_empty() {
-            let hits: Vec<&Video> =
-                self.search_hits.iter().filter_map(|id| self.video(id)).collect();
+            let hits: Vec<&Video> = self
+                .search_hits
+                .iter()
+                .filter_map(|id| self.video(id))
+                .collect();
             if !hits.is_empty() {
                 return hits;
             }
@@ -941,8 +962,11 @@ impl TubeModel {
     /// same-category heuristic.
     pub fn related_display(&self, id: &str) -> Vec<&Video> {
         if self.related_of == id && !self.related_hits.is_empty() {
-            let hits: Vec<&Video> =
-                self.related_hits.iter().filter_map(|rid| self.video(rid)).collect();
+            let hits: Vec<&Video> = self
+                .related_hits
+                .iter()
+                .filter_map(|rid| self.video(rid))
+                .collect();
             if !hits.is_empty() {
                 return hits;
             }
@@ -953,7 +977,10 @@ impl TubeModel {
     /// "Up next" suggestions for a watch page: same category first, then
     /// fill with the rest, excluding the current video.
     pub fn related(&self, id: &str) -> Vec<&Video> {
-        let cat = self.video(id).map(|v| v.category.clone()).unwrap_or_default();
+        let cat = self
+            .video(id)
+            .map(|v| v.category.clone())
+            .unwrap_or_default();
         let mut same: Vec<&Video> = self
             .videos
             .iter()
@@ -997,7 +1024,10 @@ mod tests {
 
     #[test]
     fn sponsorblock_master_switch_overrides_categories() {
-        let s = Settings { sponsorblock_enabled: false, ..Settings::default() };
+        let s = Settings {
+            sponsorblock_enabled: false,
+            ..Settings::default()
+        };
         assert!(!s.category_enabled(Category::Sponsor));
         assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
         assert!(!s.should_auto_skip(Category::Sponsor));
@@ -1015,7 +1045,11 @@ mod tests {
         assert_eq!(s.mode_of(Category::Intro), SkipMode::Disabled);
         assert!(!s.category_enabled(Category::Intro));
         s.cycle_category(Category::Intro);
-        assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip, "cycles back to Auto-skip");
+        assert_eq!(
+            s.mode_of(Category::Intro),
+            SkipMode::Skip,
+            "cycles back to Auto-skip"
+        );
     }
 
     #[test]
@@ -1025,7 +1059,10 @@ mod tests {
         s.dearrow_titles = false;
         assert!(!s.dearrow_titles_on() && s.dearrow_thumbs_on());
         s.dearrow_enabled = false;
-        assert!(!s.dearrow_titles_on() && !s.dearrow_thumbs_on(), "master gates both");
+        assert!(
+            !s.dearrow_titles_on() && !s.dearrow_thumbs_on(),
+            "master gates both"
+        );
     }
 
     #[test]
@@ -1051,8 +1088,14 @@ mod tests {
     fn search_type_filter_first_click_narrows_to_that_type() {
         let mut f = SearchTypeFilter::default();
         f.click(SearchType::Playlist);
-        assert!(!f.shows(SearchType::Video), "first click deselects the others");
-        assert!(f.shows(SearchType::Playlist), "first click selects the clicked type");
+        assert!(
+            !f.shows(SearchType::Video),
+            "first click deselects the others"
+        );
+        assert!(
+            f.shows(SearchType::Playlist),
+            "first click selects the clicked type"
+        );
         assert!(!f.shows(SearchType::Creator));
         assert!(!f.pristine);
     }
@@ -1103,21 +1146,33 @@ mod tests {
         // on the id-A record so its cards resolve.
         let changed = m.adopt_channel_avatar("UC_B", "Blender Studio", "https://yt3/av");
         assert!(changed, "adopt reported a change");
-        assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/av", "matched by name");
+        assert_eq!(
+            m.channel("UC_A").unwrap().avatar_url,
+            "https://yt3/av",
+            "matched by name"
+        );
 
         // A fresh stub matched by exact id.
         m.channels.push(chan("UC_C", "Other Creator", ""));
         m.adopt_channel_avatar("UC_C", "irrelevant name", "https://yt3/c");
-        assert_eq!(m.channel("UC_C").unwrap().avatar_url, "https://yt3/c", "matched by id");
+        assert_eq!(
+            m.channel("UC_C").unwrap().avatar_url,
+            "https://yt3/c",
+            "matched by id"
+        );
     }
 
     #[test]
     fn adopt_channel_avatar_never_overwrites_an_existing_avatar() {
         let mut m = TubeModel::default();
-        m.channels.push(chan("UC_A", "Chan", "https://yt3/original"));
+        m.channels
+            .push(chan("UC_A", "Chan", "https://yt3/original"));
         let changed = m.adopt_channel_avatar("UC_A", "Chan", "https://yt3/other");
         assert!(!changed);
-        assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/original");
+        assert_eq!(
+            m.channel("UC_A").unwrap().avatar_url,
+            "https://yt3/original"
+        );
     }
 
     #[test]
@@ -1136,7 +1191,8 @@ mod tests {
         // The video card's uploader record (id A) has no avatar; a creator-row
         // record (id B) for the same creator has one. Reconcile must fill A.
         m.channels.push(chan("UC_A", "Blender Studio", ""));
-        m.channels.push(chan("UC_B", "Blender Studio", "https://yt3/bs"));
+        m.channels
+            .push(chan("UC_B", "Blender Studio", "https://yt3/bs"));
         m.reconcile_channel_avatars();
         assert_eq!(
             m.channel("UC_A").unwrap().avatar_url,
@@ -1170,8 +1226,15 @@ mod tests {
             video_ids: vec![],
         });
         let p = m.playlist("PL1").unwrap();
-        assert_eq!(p.video_ids.len(), 3, "stub upsert keeps the fetched video list");
-        assert_eq!(p.thumbnail_url, "https://x/t.jpg", "but refreshes other fields");
+        assert_eq!(
+            p.video_ids.len(),
+            3,
+            "stub upsert keeps the fetched video list"
+        );
+        assert_eq!(
+            p.thumbnail_url, "https://x/t.jpg",
+            "but refreshes other fields"
+        );
     }
 
     #[test]

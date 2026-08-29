@@ -188,7 +188,10 @@ mod tests {
     #[test]
     fn an_empty_policy_hardens_nothing() {
         assert!(!policy_matches("", "dev.qos.browser"));
-        assert!(!policy_matches("# everything commented\n", "dev.qos.browser"));
+        assert!(!policy_matches(
+            "# everything commented\n",
+            "dev.qos.browser"
+        ));
     }
 
     #[test]

@@ -465,7 +465,9 @@ impl Topology {
                 pct_used: None,
                 written_gb: None,
                 attrs: vec![],
-                detail: Some("USB mass-storage bridges rarely pass through SMART telemetry.".into()),
+                detail: Some(
+                    "USB mass-storage bridges rarely pass through SMART telemetry.".into(),
+                ),
             }),
         };
 
@@ -610,16 +612,34 @@ mod tests {
     #[test]
     fn kind_from_lsblk_covers_media_and_virtual_devices() {
         // Physical media by transport / rotation.
-        assert_eq!(DriveKind::from_lsblk("nvme0n1", false, Some("nvme")), DriveKind::Nvme);
-        assert_eq!(DriveKind::from_lsblk("sda", false, Some("sata")), DriveKind::Ssd);
-        assert_eq!(DriveKind::from_lsblk("sdb", true, Some("sata")), DriveKind::Hdd);
-        assert_eq!(DriveKind::from_lsblk("sdc", false, Some("usb")), DriveKind::Usb);
+        assert_eq!(
+            DriveKind::from_lsblk("nvme0n1", false, Some("nvme")),
+            DriveKind::Nvme
+        );
+        assert_eq!(
+            DriveKind::from_lsblk("sda", false, Some("sata")),
+            DriveKind::Ssd
+        );
+        assert_eq!(
+            DriveKind::from_lsblk("sdb", true, Some("sata")),
+            DriveKind::Hdd
+        );
+        assert_eq!(
+            DriveKind::from_lsblk("sdc", false, Some("usb")),
+            DriveKind::Usb
+        );
         // A zram swap device is non-rotational but must NOT read as an SSD.
         assert_eq!(DriveKind::from_lsblk("zram0", false, None), DriveKind::Zram);
         assert!(DriveKind::from_lsblk("zram0", false, None).is_virtual());
         // Loop / device-mapper / MD are virtual.
-        assert_eq!(DriveKind::from_lsblk("loop0", false, None), DriveKind::Virtual);
-        assert_eq!(DriveKind::from_lsblk("dm-0", false, None), DriveKind::Virtual);
+        assert_eq!(
+            DriveKind::from_lsblk("loop0", false, None),
+            DriveKind::Virtual
+        );
+        assert_eq!(
+            DriveKind::from_lsblk("dm-0", false, None),
+            DriveKind::Virtual
+        );
         assert!(!DriveKind::from_lsblk("nvme0n1", false, Some("nvme")).is_virtual());
     }
 }

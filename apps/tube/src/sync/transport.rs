@@ -27,16 +27,16 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 use snow::{Builder, HandshakeState, TransportState};
 
 use super::protocol::{
-    self, content_encoding, notify, opcode, stream, sync_opcode, Frame, SerializedChannel,
-    Subscription, SyncDeviceInfo, SyncSessionData, SyncSubscriptionsPackage, HEADER_SIZE,
-    MAXIMUM_PACKET_SIZE, MAXIMUM_PACKET_SIZE_ENCRYPTED, MINIMUM_PROTOCOL_VERSION, NOISE_PATTERN_MAIN,
-    NOISE_PATTERN_PAIRING, PROTOCOL_VERSION,
+    self, Frame, HEADER_SIZE, MAXIMUM_PACKET_SIZE, MAXIMUM_PACKET_SIZE_ENCRYPTED,
+    MINIMUM_PROTOCOL_VERSION, NOISE_PATTERN_MAIN, NOISE_PATTERN_PAIRING, PROTOCOL_VERSION,
+    SerializedChannel, Subscription, SyncDeviceInfo, SyncSessionData, SyncSubscriptionsPackage,
+    content_encoding, notify, opcode, stream, sync_opcode,
 };
 use super::{PeerId, SyncError, SyncResult, SyncState, SyncTransport};
 
@@ -66,7 +66,10 @@ fn b64_decode(s: &str) -> SyncResult<Vec<u8>> {
 }
 
 fn now_epoch_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn snow_err(e: snow::Error) -> SyncError {
@@ -94,12 +97,18 @@ impl DeviceKey {
     pub fn generate() -> SyncResult<Self> {
         let params = NOISE_PATTERN_MAIN.parse().map_err(snow_err)?;
         let kp = Builder::new(params).generate_keypair().map_err(snow_err)?;
-        Ok(DeviceKey { private: kp.private, public: kp.public })
+        Ok(DeviceKey {
+            private: kp.private,
+            public: kp.public,
+        })
     }
 
     /// Restore from a stored base64 keypair.
     pub fn from_base64(private_b64: &str, public_b64: &str) -> SyncResult<Self> {
-        Ok(DeviceKey { private: b64_decode(private_b64)?, public: b64_decode(public_b64)? })
+        Ok(DeviceKey {
+            private: b64_decode(private_b64)?,
+            public: b64_decode(public_b64)?,
+        })
     }
 
     /// Our public key in Grayjay's base64 form (the value a peer pairs against).
@@ -171,7 +180,9 @@ impl GrayjaySession {
 
     /// Raw-socket version exchange that precedes the Noise handshake.
     fn version_check(stream: &mut TcpStream) -> SyncResult<i32> {
-        stream.write_all(&PROTOCOL_VERSION.to_le_bytes()).map_err(io_err)?;
+        stream
+            .write_all(&PROTOCOL_VERSION.to_le_bytes())
+            .map_err(io_err)?;
         let mut buf = [0u8; 4];
         read_exact(stream, &mut buf)?;
         let remote = i32::from_le_bytes(buf);
@@ -207,10 +218,14 @@ impl GrayjaySession {
         // Optional pairing sub-handshake (Noise_N) carrying the pairing code.
         let pairing_msg: Vec<u8> = if let Some(code) = pairing_code {
             let pparams = NOISE_PATTERN_PAIRING.parse().map_err(snow_err)?;
-            let mut ph: HandshakeState =
-                Builder::new(pparams).remote_public_key(&remote_pub).build_initiator().map_err(snow_err)?;
+            let mut ph: HandshakeState = Builder::new(pparams)
+                .remote_public_key(&remote_pub)
+                .build_initiator()
+                .map_err(snow_err)?;
             let mut buf = vec![0u8; 512];
-            let n = ph.write_message(code.as_bytes(), &mut buf).map_err(snow_err)?;
+            let n = ph
+                .write_message(code.as_bytes(), &mut buf)
+                .map_err(snow_err)?;
             buf.truncate(n);
             buf
         } else {
@@ -237,7 +252,9 @@ impl GrayjaySession {
         read_exact(&mut stream, &mut lenb)?;
         let resp_len = u32::from_le_bytes(lenb) as usize;
         if resp_len > MAXIMUM_PACKET_SIZE_ENCRYPTED {
-            return Err(SyncError::Transport(format!("handshake response too large: {resp_len}")));
+            return Err(SyncError::Transport(format!(
+                "handshake response too large: {resp_len}"
+            )));
         }
         let mut resp = vec![0u8; resp_len];
         read_exact(&mut stream, &mut resp)?;
@@ -284,15 +301,19 @@ impl GrayjaySession {
         let remote_version = Self::version_check(&mut stream)?;
 
         let params = NOISE_PATTERN_MAIN.parse().map_err(snow_err)?;
-        let mut hs: HandshakeState =
-            Builder::new(params).local_private_key(&device.private).build_responder().map_err(snow_err)?;
+        let mut hs: HandshakeState = Builder::new(params)
+            .local_private_key(&device.private)
+            .build_responder()
+            .map_err(snow_err)?;
 
         // Read the first frame: [messageSize][appId][pairingLen][pairing][main].
         let mut lenb = [0u8; 4];
         read_exact(&mut stream, &mut lenb)?;
         let message_size = u32::from_le_bytes(lenb) as usize;
         if message_size > MAXIMUM_PACKET_SIZE_ENCRYPTED {
-            return Err(SyncError::Transport(format!("handshake frame too large: {message_size}")));
+            return Err(SyncError::Transport(format!(
+                "handshake frame too large: {message_size}"
+            )));
         }
         let mut msg = vec![0u8; message_size];
         read_exact(&mut stream, &mut msg)?;
@@ -303,15 +324,19 @@ impl GrayjaySession {
         let pairing_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
         let rest = &msg[8..];
         if pairing_len > rest.len() {
-            return Err(SyncError::Transport("pairing length overflows frame".into()));
+            return Err(SyncError::Transport(
+                "pairing length overflows frame".into(),
+            ));
         }
         let (pairing_msg, main_msg) = rest.split_at(pairing_len);
 
         // Decode the pairing code, if present (Noise_N responder).
         let pairing_code: Option<String> = if pairing_len > 0 {
             let pparams = NOISE_PATTERN_PAIRING.parse().map_err(snow_err)?;
-            let mut ph: HandshakeState =
-                Builder::new(pparams).local_private_key(&device.private).build_responder().map_err(snow_err)?;
+            let mut ph: HandshakeState = Builder::new(pparams)
+                .local_private_key(&device.private)
+                .build_responder()
+                .map_err(snow_err)?;
             let mut pt = vec![0u8; 512];
             let n = ph.read_message(pairing_msg, &mut pt).map_err(snow_err)?;
             Some(String::from_utf8_lossy(&pt[..n]).into_owned())
@@ -328,7 +353,9 @@ impl GrayjaySession {
             .ok_or_else(|| SyncError::Transport("initiator did not present a static key".into()))?;
         let remote_static_b64 = b64_encode(&remote_static);
 
-        if remote_static_b64 == device.public_base64() || !allow(&remote_static_b64, pairing_code.as_deref()) {
+        if remote_static_b64 == device.public_base64()
+            || !allow(&remote_static_b64, pairing_code.as_deref())
+        {
             return Err(SyncError::Pairing("handshake not allowed".into()));
         }
 
@@ -360,7 +387,10 @@ impl GrayjaySession {
     /// Encrypt one plaintext frame and write `[len u32][ciphertext]`.
     fn write_encrypted(&mut self, plaintext: &[u8]) -> SyncResult<()> {
         let mut cipher = vec![0u8; plaintext.len() + 16];
-        let len = self.transport.write_message(plaintext, &mut cipher).map_err(snow_err)?;
+        let len = self
+            .transport
+            .write_message(plaintext, &mut cipher)
+            .map_err(snow_err)?;
         let mut out = Vec::with_capacity(4 + len);
         out.extend_from_slice(&(len as u32).to_le_bytes());
         out.extend_from_slice(&cipher[..len]);
@@ -379,7 +409,10 @@ impl GrayjaySession {
         let mut cipher = vec![0u8; mlen];
         read_exact(&mut self.stream, &mut cipher)?;
         let mut plain = vec![0u8; mlen];
-        let plen = self.transport.read_message(&cipher, &mut plain).map_err(snow_err)?;
+        let plen = self
+            .transport
+            .read_message(&cipher, &mut plain)
+            .map_err(snow_err)?;
         plain.truncate(plen);
         Ok(plain)
     }
@@ -417,14 +450,19 @@ impl GrayjaySession {
                 (stream::START, bts)
             } else {
                 let bts = (segment_size - 4 - 4).min(remaining);
-                let op = if bts >= remaining { stream::END } else { stream::DATA };
+                let op = if bts >= remaining {
+                    stream::END
+                } else {
+                    stream::DATA
+                };
                 seg.extend_from_slice(&id.to_le_bytes());
                 seg.extend_from_slice(&(offset as u32).to_le_bytes());
                 (op, bts)
             };
             seg.extend_from_slice(&processed[offset..offset + bytes_to_send]);
             // Each segment is itself a normal (un-gzip'd) STREAM frame.
-            let plaintext = protocol::encode_frame(opcode::STREAM, stream_op, content_encoding::RAW, &seg);
+            let plaintext =
+                protocol::encode_frame(opcode::STREAM, stream_op, content_encoding::RAW, &seg);
             self.write_encrypted(&plaintext)?;
             offset += bytes_to_send;
         }
@@ -510,7 +548,10 @@ impl GrayjaySession {
         } else {
             frame.payload
         };
-        Ok(Some(Incoming::Data { sub_opcode: frame.sub_opcode, payload }))
+        Ok(Some(Incoming::Data {
+            sub_opcode: frame.sub_opcode,
+            payload,
+        }))
     }
 
     /// Feed a STREAM segment into reassembly; on END return the completed frame.
@@ -529,7 +570,16 @@ impl GrayjaySession {
                 let ce = d[10];
                 let mut buf = Vec::with_capacity(expected);
                 buf.extend_from_slice(&d[11..]);
-                self.streams.insert(id, Reasm { opcode: op, sub_opcode: sub, content_encoding: ce, expected_size: expected, buf });
+                self.streams.insert(
+                    id,
+                    Reasm {
+                        opcode: op,
+                        sub_opcode: sub,
+                        content_encoding: ce,
+                        expected_size: expected,
+                        buf,
+                    },
+                );
                 Ok(None)
             }
             stream::DATA => {
@@ -538,7 +588,10 @@ impl GrayjaySession {
                 }
                 let id = i32::from_le_bytes([d[0], d[1], d[2], d[3]]);
                 let expected_off = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
-                let r = self.streams.get_mut(&id).ok_or_else(|| SyncError::Transport("stream data for unknown id".into()))?;
+                let r = self
+                    .streams
+                    .get_mut(&id)
+                    .ok_or_else(|| SyncError::Transport("stream data for unknown id".into()))?;
                 if expected_off != r.buf.len() {
                     return Err(SyncError::Transport("stream offset mismatch".into()));
                 }
@@ -551,13 +604,18 @@ impl GrayjaySession {
                 }
                 let id = i32::from_le_bytes([d[0], d[1], d[2], d[3]]);
                 let expected_off = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
-                let mut r = self.streams.remove(&id).ok_or_else(|| SyncError::Transport("stream end for unknown id".into()))?;
+                let mut r = self
+                    .streams
+                    .remove(&id)
+                    .ok_or_else(|| SyncError::Transport("stream end for unknown id".into()))?;
                 if expected_off != r.buf.len() {
                     return Err(SyncError::Transport("stream offset mismatch at end".into()));
                 }
                 r.buf.extend_from_slice(&d[8..]);
                 if r.buf.len() != r.expected_size {
-                    return Err(SyncError::Transport("reassembled stream size mismatch".into()));
+                    return Err(SyncError::Transport(
+                        "reassembled stream size mismatch".into(),
+                    ));
                 }
                 Ok(Some(Frame {
                     opcode: r.opcode,
@@ -575,11 +633,15 @@ impl GrayjaySession {
         self.send_authorized()?;
         loop {
             if Instant::now() >= deadline {
-                return Err(SyncError::Transport("timed out waiting for peer authorization".into()));
+                return Err(SyncError::Transport(
+                    "timed out waiting for peer authorization".into(),
+                ));
             }
             match self.recv()? {
                 Incoming::Authorized { remote_name } => return Ok(remote_name),
-                Incoming::Unauthorized => return Err(SyncError::Pairing("peer refused authorization".into())),
+                Incoming::Unauthorized => {
+                    return Err(SyncError::Pairing("peer refused authorization".into()));
+                }
                 // A peer may start streaming data before/after AUTHORIZED; keep
                 // waiting for the AUTHORIZED specifically.
                 Incoming::Data { .. } => {}
@@ -685,7 +747,11 @@ impl GrayjaySyncTransport {
     }
 
     /// Open + handshake + authorize a session to a paired peer.
-    fn open_session(&self, info: &SyncDeviceInfo, pairing_code: Option<&str>) -> SyncResult<GrayjaySession> {
+    fn open_session(
+        &self,
+        info: &SyncDeviceInfo,
+        pairing_code: Option<&str>,
+    ) -> SyncResult<GrayjaySession> {
         let mut last_err = SyncError::Transport("no addresses to connect".into());
         for addr in &info.addresses {
             let target = format!("{addr}:{}", info.port);
@@ -731,11 +797,15 @@ impl GrayjaySyncTransport {
             subscriptions: state
                 .subscriptions
                 .iter()
-                .map(|url| Subscription { channel: SerializedChannel::from_url(url.clone()), creation_time: now })
+                .map(|url| Subscription {
+                    channel: SerializedChannel::from_url(url.clone()),
+                    creation_time: now,
+                })
                 .collect(),
             subscription_removals: BTreeMap::new(),
         };
-        serde_json::to_string(&pkg).map_err(|e| SyncError::Transport(format!("encode subscriptions: {e}")))
+        serde_json::to_string(&pkg)
+            .map_err(|e| SyncError::Transport(format!("encode subscriptions: {e}")))
     }
 }
 
@@ -784,7 +854,8 @@ impl SyncTransport for GrayjaySyncTransport {
 
         // Ask for everything.
         let req = SyncSessionData::request_all(self.device.public_base64());
-        let req_json = serde_json::to_string(&req).map_err(|e| SyncError::Transport(format!("encode state-exchange: {e}")))?;
+        let req_json = serde_json::to_string(&req)
+            .map_err(|e| SyncError::Transport(format!("encode state-exchange: {e}")))?;
         session.send_data(sync_opcode::SYNC_STATE_EXCHANGE, &req_json)?;
 
         let mut out = SyncState::default();
@@ -792,10 +863,19 @@ impl SyncTransport for GrayjaySyncTransport {
         let mut got_subs = false;
         while Instant::now() < deadline {
             match session.recv() {
-                Ok(Incoming::Data { sub_opcode, payload }) => match sub_opcode {
+                Ok(Incoming::Data {
+                    sub_opcode,
+                    payload,
+                }) => match sub_opcode {
                     sync_opcode::SYNC_SUBSCRIPTIONS => {
-                        if let Ok(pkg) = serde_json::from_slice::<SyncSubscriptionsPackage>(&payload) {
-                            out.subscriptions = pkg.subscriptions.into_iter().map(|s| s.channel.url).collect();
+                        if let Ok(pkg) =
+                            serde_json::from_slice::<SyncSubscriptionsPackage>(&payload)
+                        {
+                            out.subscriptions = pkg
+                                .subscriptions
+                                .into_iter()
+                                .map(|s| s.channel.url)
+                                .collect();
                             got_subs = true;
                         }
                     }
@@ -834,7 +914,11 @@ fn parse_history_urls(payload: &[u8]) -> Vec<String> {
         video: Option<Vid>,
     }
     serde_json::from_slice::<Vec<Hist>>(payload)
-        .map(|list| list.into_iter().filter_map(|h| h.video.and_then(|v| v.url)).collect())
+        .map(|list| {
+            list.into_iter()
+                .filter_map(|h| h.video.and_then(|v| v.url))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -864,14 +948,14 @@ mod tests {
         let expect_initiator = initiator_pub.clone();
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-            let mut session = GrayjaySession::accept_responder(
-                stream,
-                &rkey,
-                "responder",
-                |peer_key, _code| peer_key == expect_initiator,
-            )
-            .unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut session =
+                GrayjaySession::accept_responder(stream, &rkey, "responder", |peer_key, _code| {
+                    peer_key == expect_initiator
+                })
+                .unwrap();
 
             let deadline = Instant::now() + Duration::from_secs(10);
             session.complete_authorization(deadline).unwrap();
@@ -879,7 +963,11 @@ mod tests {
             // Expect the state-exchange request.
             let mut asked = false;
             for _ in 0..8 {
-                if let Incoming::Data { sub_opcode, payload } = session.recv().unwrap() {
+                if let Incoming::Data {
+                    sub_opcode,
+                    payload,
+                } = session.recv().unwrap()
+                {
                     if sub_opcode == sync_opcode::SYNC_STATE_EXCHANGE {
                         let _req: SyncSessionData = serde_json::from_slice(&payload).unwrap();
                         asked = true;
@@ -891,20 +979,30 @@ mod tests {
 
             let pkg = SyncSubscriptionsPackage {
                 subscriptions: vec![
-                    Subscription { channel: SerializedChannel::from_url("https://youtube.com/@alice"), creation_time: 111 },
-                    Subscription { channel: SerializedChannel::from_url("https://youtube.com/@bob"), creation_time: 222 },
+                    Subscription {
+                        channel: SerializedChannel::from_url("https://youtube.com/@alice"),
+                        creation_time: 111,
+                    },
+                    Subscription {
+                        channel: SerializedChannel::from_url("https://youtube.com/@bob"),
+                        creation_time: 222,
+                    },
                 ],
                 subscription_removals: BTreeMap::new(),
             };
             let json = serde_json::to_string(&pkg).unwrap();
-            session.send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json).unwrap();
+            session
+                .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json)
+                .unwrap();
             // keep the socket open briefly so the initiator can read the frame
             thread::sleep(Duration::from_millis(200));
         });
 
         // Initiator side.
         let stream = TcpStream::connect(addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let mut session = GrayjaySession::connect_initiator(
             stream,
             &initiator_key,
@@ -922,20 +1020,39 @@ mod tests {
 
         // Ask for state, then read the subscriptions package back.
         let req = SyncSessionData::request_all(initiator_key.public_base64());
-        session.send_data(sync_opcode::SYNC_STATE_EXCHANGE, &serde_json::to_string(&req).unwrap()).unwrap();
+        session
+            .send_data(
+                sync_opcode::SYNC_STATE_EXCHANGE,
+                &serde_json::to_string(&req).unwrap(),
+            )
+            .unwrap();
 
         let mut urls = Vec::new();
         for _ in 0..8 {
-            if let Incoming::Data { sub_opcode, payload } = session.recv().unwrap() {
+            if let Incoming::Data {
+                sub_opcode,
+                payload,
+            } = session.recv().unwrap()
+            {
                 if sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS {
                     let pkg: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
-                    urls = pkg.subscriptions.into_iter().map(|s| s.channel.url).collect();
+                    urls = pkg
+                        .subscriptions
+                        .into_iter()
+                        .map(|s| s.channel.url)
+                        .collect();
                     break;
                 }
             }
         }
         handle.join().unwrap();
-        assert_eq!(urls, vec!["https://youtube.com/@alice".to_string(), "https://youtube.com/@bob".to_string()]);
+        assert_eq!(
+            urls,
+            vec![
+                "https://youtube.com/@alice".to_string(),
+                "https://youtube.com/@bob".to_string()
+            ]
+        );
     }
 
     /// The pairing sub-handshake (Noise_N) must carry the pairing code to the
@@ -952,21 +1069,23 @@ mod tests {
         let rkey = responder_key.clone();
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
             // Responder only proceeds if the pairing code matches.
-            let mut session = GrayjaySession::accept_responder(
-                stream,
-                &rkey,
-                "responder",
-                |_peer, code| code == Some("SECRET42"),
-            )
-            .unwrap();
+            let mut session =
+                GrayjaySession::accept_responder(stream, &rkey, "responder", |_peer, code| {
+                    code == Some("SECRET42")
+                })
+                .unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
             session.complete_authorization(deadline).unwrap();
         });
 
         let stream = TcpStream::connect(addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let mut session = GrayjaySession::connect_initiator(
             stream,
             &initiator_key,
@@ -994,13 +1113,21 @@ mod tests {
         let mut subs = Vec::new();
         for i in 0..4000 {
             subs.push(Subscription {
-                channel: SerializedChannel::from_url(format!("https://youtube.com/channel/UC{i:08}xxxxxxxx")),
+                channel: SerializedChannel::from_url(format!(
+                    "https://youtube.com/channel/UC{i:08}xxxxxxxx"
+                )),
                 creation_time: i as i64,
             });
         }
-        let pkg = SyncSubscriptionsPackage { subscriptions: subs, subscription_removals: BTreeMap::new() };
+        let pkg = SyncSubscriptionsPackage {
+            subscriptions: subs,
+            subscription_removals: BTreeMap::new(),
+        };
         let json = serde_json::to_string(&pkg).unwrap();
-        assert!(json.len() > MAXIMUM_PACKET_SIZE, "test payload must exceed one packet");
+        assert!(
+            json.len() > MAXIMUM_PACKET_SIZE,
+            "test payload must exceed one packet"
+        );
         let expected_len = pkg.subscriptions.len();
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1011,32 +1138,47 @@ mod tests {
         let json_for_thread = json.clone();
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-            let mut session = GrayjaySession::accept_responder(
-                stream,
-                &rkey,
-                "responder",
-                |peer, _code| peer == expect_initiator,
-            )
-            .unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut session =
+                GrayjaySession::accept_responder(stream, &rkey, "responder", |peer, _code| {
+                    peer == expect_initiator
+                })
+                .unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
             session.complete_authorization(deadline).unwrap();
-            session.send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json_for_thread).unwrap();
+            session
+                .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json_for_thread)
+                .unwrap();
             thread::sleep(Duration::from_millis(300));
         });
 
         let stream = TcpStream::connect(addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let mut session =
-            GrayjaySession::connect_initiator(stream, &initiator_key, &responder_pub, None, "initiator").unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut session = GrayjaySession::connect_initiator(
+            stream,
+            &initiator_key,
+            &responder_pub,
+            None,
+            "initiator",
+        )
+        .unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         session.complete_authorization(deadline).unwrap();
 
         let mut got = 0usize;
         for _ in 0..4 {
-            if let Incoming::Data { sub_opcode, payload } = session.recv().unwrap() {
+            if let Incoming::Data {
+                sub_opcode,
+                payload,
+            } = session.recv().unwrap()
+            {
                 if sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS {
-                    let received: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
+                    let received: SyncSubscriptionsPackage =
+                        serde_json::from_slice(&payload).unwrap();
                     got = received.subscriptions.len();
                     break;
                 }
@@ -1048,7 +1190,8 @@ mod tests {
 
     #[test]
     fn blob_parses_json_and_base64() {
-        let json = r#"{"publicKey":"AAAA","addresses":["10.0.0.2"],"port":12315,"pairingCode":"Xy"}"#;
+        let json =
+            r#"{"publicKey":"AAAA","addresses":["10.0.0.2"],"port":12315,"pairingCode":"Xy"}"#;
         let a = GrayjaySyncTransport::parse_blob(json).unwrap();
         assert_eq!(a.port, 12315);
 

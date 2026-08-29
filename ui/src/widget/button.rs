@@ -1,15 +1,15 @@
-use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
-use vello::Scene;
-use vello::kurbo::{Affine, RoundedRect, Rect, Point};
-use winit::event::{WindowEvent, MouseButton, ElementState};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
+use crate::i18n;
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
-use crate::i18n;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 pub struct Button {
     _id: String,
@@ -185,8 +185,7 @@ impl Button {
     /// the button still owns its focus / a11y / activation contract, only
     /// its geometry is caller-driven.
     pub fn apply_layout_external(&mut self, rect: Rect) {
-        let size_changed =
-            rect.width() != self.rect.width() || rect.height() != self.rect.height();
+        let size_changed = rect.width() != self.rect.width() || rect.height() != self.rect.height();
         self.rect = rect;
         if size_changed {
             self.dirty = true;
@@ -226,7 +225,11 @@ pub fn face_colors(
     theme: &Theme,
     style: ButtonStyle,
     interact: ButtonInteract,
-) -> (vello::peniko::Color, Option<vello::peniko::Color>, vello::peniko::Color) {
+) -> (
+    vello::peniko::Color,
+    Option<vello::peniko::Color>,
+    vello::peniko::Color,
+) {
     use vello::peniko::Color;
     match style {
         ButtonStyle::Neutral => {
@@ -248,20 +251,30 @@ pub fn face_colors(
         ButtonStyle::Primary => {
             let rest = theme.accent_primary;
             let active = theme.accent_hover;
-            let bg = if interact.hovered || interact.pressed { active } else { rest };
+            let bg = if interact.hovered || interact.pressed {
+                active
+            } else {
+                rest
+            };
             // White is the label this style wants and, on a dark enough
             // accent, what comes back; on a bright one it walks out far
             // enough to be read — resolved once over both fills so it
             // doesn't change under the pointer.
             let fg =
-                theme.tokens.colors.ink_on_any(&[rest, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
+                theme
+                    .tokens
+                    .colors
+                    .ink_on_any(&[rest, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
             (bg, None, fg)
         }
         ButtonStyle::Danger => {
             use crate::color_compat::ColorCompat;
             let d = theme.tokens.colors.semantic.danger;
             // The label is resolved first: the feedback has to respect it.
-            let fg = theme.tokens.colors.ink_on(d, Color::WHITE, ON_FILL_MIN_CONTRAST);
+            let fg = theme
+                .tokens
+                .colors
+                .ink_on(d, Color::WHITE, ON_FILL_MIN_CONTRAST);
             // Hover/press shift the fill ~15%, and the direction is not a
             // constant: lifting a mid-tone danger toward white took a
             // white label from 4.97:1 at rest to 3.96:1 the moment the
@@ -277,7 +290,11 @@ pub fn face_colors(
             };
             let shift = |a: u8| (a as f32 * 0.85 + toward as f32 * 0.15).round() as u8;
             let active = Color::from_rgba8(shift(d.r()), shift(d.g()), shift(d.b()), d.a());
-            let bg = if interact.hovered || interact.pressed { active } else { d };
+            let bg = if interact.hovered || interact.pressed {
+                active
+            } else {
+                d
+            };
             (bg, None, fg)
         }
         ButtonStyle::Ghost => {
@@ -293,7 +310,11 @@ pub fn face_colors(
             // is most at risk on `bg_hover`, close enough to the dim
             // tier that it can all but vanish.
             let fg = theme.tokens.colors.ink_on_any(
-                &[theme.tokens.colors.surfaces.base, theme.bg_hover, theme.bg_active],
+                &[
+                    theme.tokens.colors.surfaces.base,
+                    theme.bg_hover,
+                    theme.bg_active,
+                ],
                 theme.tokens.colors.text_dim,
                 ON_FILL_MIN_CONTRAST,
             );
@@ -330,27 +351,77 @@ impl<'a> ButtonFace<'a> {
             accessible_name: None,
         }
     }
-    pub fn style(mut self, style: ButtonStyle) -> Self { self.style = style; self }
-    pub fn primary(mut self) -> Self { self.style = ButtonStyle::Primary; self }
-    pub fn danger(mut self) -> Self { self.style = ButtonStyle::Danger; self }
-    pub fn ghost(mut self) -> Self { self.style = ButtonStyle::Ghost; self }
-    pub fn icon(mut self, icon: crate::icons::Icon) -> Self { self.icon = Some(icon); self }
-    pub fn radius(mut self, radius: f64) -> Self { self.radius = radius; self }
-    pub fn weight(mut self, weight: crate::text_render::TextWeight) -> Self { self.weight = weight; self }
-    pub fn text_size(mut self, size: f32) -> Self { self.text_size = size; self }
-    pub fn hovered(mut self, v: bool) -> Self { self.interact.hovered = v; self }
-    pub fn pressed(mut self, v: bool) -> Self { self.interact.pressed = v; self }
-    pub fn focused(mut self, v: bool) -> Self { self.interact.focused = v; self }
-    pub fn disabled(mut self, v: bool) -> Self { self.interact.disabled = v; self }
+    pub fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+    pub fn primary(mut self) -> Self {
+        self.style = ButtonStyle::Primary;
+        self
+    }
+    pub fn danger(mut self) -> Self {
+        self.style = ButtonStyle::Danger;
+        self
+    }
+    pub fn ghost(mut self) -> Self {
+        self.style = ButtonStyle::Ghost;
+        self
+    }
+    pub fn icon(mut self, icon: crate::icons::Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+    pub fn radius(mut self, radius: f64) -> Self {
+        self.radius = radius;
+        self
+    }
+    pub fn weight(mut self, weight: crate::text_render::TextWeight) -> Self {
+        self.weight = weight;
+        self
+    }
+    pub fn text_size(mut self, size: f32) -> Self {
+        self.text_size = size;
+        self
+    }
+    pub fn hovered(mut self, v: bool) -> Self {
+        self.interact.hovered = v;
+        self
+    }
+    pub fn pressed(mut self, v: bool) -> Self {
+        self.interact.pressed = v;
+        self
+    }
+    pub fn focused(mut self, v: bool) -> Self {
+        self.interact.focused = v;
+        self
+    }
+    pub fn disabled(mut self, v: bool) -> Self {
+        self.interact.disabled = v;
+        self
+    }
     /// For callers that expose their own accessibility node for the region.
-    pub fn accessible_name(mut self, name: &'a str) -> Self { self.accessible_name = Some(name); self }
+    pub fn accessible_name(mut self, name: &'a str) -> Self {
+        self.accessible_name = Some(name);
+        self
+    }
     /// The visible label, or the explicit `accessible_name` when it's empty.
     pub fn spoken_name(&self) -> &str {
-        if !self.label.is_empty() { self.label } else { self.accessible_name.unwrap_or("") }
+        if !self.label.is_empty() {
+            self.label
+        } else {
+            self.accessible_name.unwrap_or("")
+        }
     }
     /// Exposed for tests and callers that want the resolved palette
     /// without painting.
-    pub fn colors(&self, theme: &Theme) -> (vello::peniko::Color, Option<vello::peniko::Color>, vello::peniko::Color) {
+    pub fn colors(
+        &self,
+        theme: &Theme,
+    ) -> (
+        vello::peniko::Color,
+        Option<vello::peniko::Color>,
+        vello::peniko::Color,
+    ) {
         face_colors(theme, self.style, self.interact)
     }
 }
@@ -385,7 +456,13 @@ impl Button {
 
         scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
         if face.interact.focused {
-            scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, theme.border_focus, None, &shape);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &shape,
+            );
         } else if let Some(bc) = border {
             scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, bc, None, &shape);
         }
@@ -446,19 +523,25 @@ impl Button {
 }
 
 impl Widget for Button {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-    }
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         let (w, h) = self.size.unwrap_or((120.0, 40.0));
-        let node = taffy.new_leaf(Style {
-            flex_shrink: 0.0,
-            size: Size {
-                width: Dimension::length(w),
-                height: Dimension::length(h),
-            },
-            ..Default::default()
-        }).unwrap();
+        let node = taffy
+            .new_leaf(Style {
+                flex_shrink: 0.0,
+                size: Size {
+                    width: Dimension::length(w),
+                    height: Dimension::length(h),
+                },
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -478,7 +561,14 @@ impl Widget for Button {
         }
     }
 
-    fn draw(&mut self, out_scene: &mut Scene, out_transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        out_scene: &mut Scene,
+        out_transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
         let current_state = (self.is_hovered, self.is_pressed, self.is_focused);
         if current_state != self.last_state {
             self.dirty = true;
@@ -493,7 +583,13 @@ impl Widget for Button {
                 out_scene.append(&self.cached, Some(inner));
             } else {
                 let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-                out_scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, out_transform, &clip);
+                out_scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    crate::widget::DISABLED_ALPHA,
+                    out_transform,
+                    &clip,
+                );
                 out_scene.append(&self.cached, Some(inner));
                 out_scene.pop_layer();
             }
@@ -597,28 +693,50 @@ impl Widget for Button {
             out_scene.append(&self.cached, Some(out_transform));
         } else {
             let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-            out_scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, out_transform, &clip);
+            out_scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                out_transform,
+                &clip,
+            );
             out_scene.append(&self.cached, Some(out_transform));
             out_scene.pop_layer();
         }
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
-            || (self.is_hovered, self.is_pressed, self.is_focused) != self.last_state
+        self.dirty || (self.is_hovered, self.is_pressed, self.is_focused) != self.last_state
     }
 
-    fn mark_drawn(&mut self) { self.dirty = false; }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
 
     /// The `Rect::ZERO` sentinel keeps the first frame's
     /// `compute_layout` running so `apply_layout` can populate the rect;
     /// after that it stays clean (pure translation handled via the
     /// cache's append transform, no taffy involvement).
-    fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool {
+        self.cache_rect == Rect::ZERO
+    }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
         // Reject all input without setting `handled`.
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -631,7 +749,11 @@ impl Widget for Button {
                 // the press position that followed it.
                 self.is_hovered = hover;
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if self.is_hovered {
                     let pressed = *element_state == ElementState::Pressed;
                     if pressed != self.is_pressed {
@@ -645,19 +767,17 @@ impl Widget for Button {
                         if !self.is_pressed {
                             if let Some(path) = &self.on_click_path {
                                 match state.get(root, path.as_str()) {
-                                    Ok(Some((Value::Scalar(s), _))) => {
-                                        match s.as_ref() {
-                                            automerge::ScalarValue::Counter(_) => {
-                                                let _ = state.increment(root, path.as_str(), 1);
-                                            }
-                                            automerge::ScalarValue::Boolean(_) => {
-                                                let _ = state.put(root, path.as_str(), true);
-                                            }
-                                            _ => {
-                                                let _ = state.put(root, path.as_str(), true);
-                                            }
+                                    Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                                        automerge::ScalarValue::Counter(_) => {
+                                            let _ = state.increment(root, path.as_str(), 1);
                                         }
-                                    }
+                                        automerge::ScalarValue::Boolean(_) => {
+                                            let _ = state.put(root, path.as_str(), true);
+                                        }
+                                        _ => {
+                                            let _ = state.put(root, path.as_str(), true);
+                                        }
+                                    },
                                     _ => {
                                         let _ = state.put(root, path.as_str(), true);
                                     }
@@ -677,7 +797,9 @@ impl Widget for Button {
         }
     }
 
-    fn name(&self) -> &str { "Button" }
+    fn name(&self) -> &str {
+        "Button"
+    }
 
     fn test_id(&self) -> Option<&str> {
         Some(self.label.as_str())
@@ -701,10 +823,18 @@ impl Widget for Button {
         }
     }
 
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
-    fn is_enabled(&self) -> bool { self.enabled }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 
     /// Enter, Space, or an AccessKit `Activate` performs the same CRDT
     /// mutation + imperative callback as a mouse click.
@@ -772,7 +902,9 @@ impl Widget for Button {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -789,14 +921,22 @@ impl Widget for Button {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(scope) = self.permission_scope()
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
         if let Some(key) = self.presence_key()
@@ -823,24 +963,53 @@ mod tests {
     fn face_colors_neutral_tracks_hover_and_press() {
         let theme = Theme::dark();
         let rest = ButtonInteract::default();
-        let hover = ButtonInteract { hovered: true, ..Default::default() };
-        let press = ButtonInteract { pressed: true, ..Default::default() };
+        let hover = ButtonInteract {
+            hovered: true,
+            ..Default::default()
+        };
+        let press = ButtonInteract {
+            pressed: true,
+            ..Default::default()
+        };
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Neutral, rest);
-        assert_eq!(bg, theme.tokens.colors.surfaces.raised, "rest fill = raised surface");
-        assert_eq!(border, Some(theme.tokens.colors.border_standard), "neutral shows a border");
+        assert_eq!(
+            bg, theme.tokens.colors.surfaces.raised,
+            "rest fill = raised surface"
+        );
+        assert_eq!(
+            border,
+            Some(theme.tokens.colors.border_standard),
+            "neutral shows a border"
+        );
         assert_eq!(fg, theme.tokens.colors.text_primary);
-        assert_eq!(face_colors(&theme, ButtonStyle::Neutral, hover).0, theme.bg_hover);
-        assert_eq!(face_colors(&theme, ButtonStyle::Neutral, press).0, theme.bg_active);
+        assert_eq!(
+            face_colors(&theme, ButtonStyle::Neutral, hover).0,
+            theme.bg_hover
+        );
+        assert_eq!(
+            face_colors(&theme, ButtonStyle::Neutral, press).0,
+            theme.bg_active
+        );
     }
 
     #[test]
     fn face_colors_ghost_is_transparent_at_rest_then_tints() {
         let theme = Theme::dark();
         let rest = ButtonInteract::default();
-        let hover = ButtonInteract { hovered: true, ..Default::default() };
-        let press = ButtonInteract { pressed: true, ..Default::default() };
+        let hover = ButtonInteract {
+            hovered: true,
+            ..Default::default()
+        };
+        let press = ButtonInteract {
+            pressed: true,
+            ..Default::default()
+        };
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Ghost, rest);
-        assert_eq!(bg, vello::peniko::Color::TRANSPARENT, "ghost rest fill is transparent");
+        assert_eq!(
+            bg,
+            vello::peniko::Color::TRANSPARENT,
+            "ghost rest fill is transparent"
+        );
         assert_eq!(border, None, "ghost has no border");
         // Quiet is a rank, not a licence to be unreadable: the tone starts
         // at `text_dim` and steps out only as far as the hover surface demands.
@@ -854,8 +1023,14 @@ mod tests {
             contrast_ratio(fg, theme.bg_hover) >= ON_FILL_MIN_CONTRAST,
             "ghost label must survive the surface hover paints under it",
         );
-        assert_eq!(face_colors(&theme, ButtonStyle::Ghost, hover).0, theme.bg_hover);
-        assert_eq!(face_colors(&theme, ButtonStyle::Ghost, press).0, theme.bg_active);
+        assert_eq!(
+            face_colors(&theme, ButtonStyle::Ghost, hover).0,
+            theme.bg_hover
+        );
+        assert_eq!(
+            face_colors(&theme, ButtonStyle::Ghost, press).0,
+            theme.bg_active
+        );
     }
 
     #[test]
@@ -863,7 +1038,10 @@ mod tests {
         use crate::a11y::contrast_ratio;
         let theme = Theme::dark();
         let rest = ButtonInteract::default();
-        let hover = ButtonInteract { hovered: true, ..Default::default() };
+        let hover = ButtonInteract {
+            hovered: true,
+            ..Default::default()
+        };
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Primary, rest);
         assert_eq!(bg, theme.accent_primary, "primary rest = accent fill");
         assert_eq!(border, None, "accent fill is self-defining — no border");
@@ -873,8 +1051,14 @@ mod tests {
             "primary label {fg:?} on {bg:?} is {r:.2}:1, under the {ON_FILL_MIN_CONTRAST}:1 floor",
         );
         let (hbg, _, hfg) = face_colors(&theme, ButtonStyle::Primary, hover);
-        assert_eq!(hbg, theme.accent_hover, "primary hover darkens to the accent-hover token");
-        assert_eq!(hfg, fg, "the label must not change colour under the pointer");
+        assert_eq!(
+            hbg, theme.accent_hover,
+            "primary hover darkens to the accent-hover token"
+        );
+        assert_eq!(
+            hfg, fg,
+            "the label must not change colour under the pointer"
+        );
     }
 
     #[test]
@@ -882,9 +1066,15 @@ mod tests {
         use crate::a11y::contrast_ratio;
         let theme = Theme::dark();
         let rest = ButtonInteract::default();
-        let hover = ButtonInteract { hovered: true, ..Default::default() };
+        let hover = ButtonInteract {
+            hovered: true,
+            ..Default::default()
+        };
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Danger, rest);
-        assert_eq!(bg, theme.tokens.colors.semantic.danger, "danger rest = solid danger");
+        assert_eq!(
+            bg, theme.tokens.colors.semantic.danger,
+            "danger rest = solid danger"
+        );
         assert_eq!(border, None);
         let r = contrast_ratio(fg, bg);
         assert!(
@@ -893,13 +1083,18 @@ mod tests {
         );
         let (hbg, _, hfg) = face_colors(&theme, ButtonStyle::Danger, hover);
         assert_ne!(
-            hbg,
-            theme.tokens.colors.semantic.danger,
+            hbg, theme.tokens.colors.semantic.danger,
             "danger hover lifts off the rest colour for feedback",
         );
         let hr = contrast_ratio(hfg, hbg);
-        assert!(hr >= ON_FILL_MIN_CONTRAST, "danger hover label {hfg:?} on {hbg:?} is {hr:.2}:1");
-        assert_eq!(hfg, fg, "the label must not change colour under the pointer");
+        assert!(
+            hr >= ON_FILL_MIN_CONTRAST,
+            "danger hover label {hfg:?} on {hbg:?} is {hr:.2}:1"
+        );
+        assert_eq!(
+            hfg, fg,
+            "the label must not change colour under the pointer"
+        );
     }
 
     #[test]
@@ -920,7 +1115,10 @@ mod tests {
             face_colors(
                 &theme,
                 ButtonStyle::Primary,
-                ButtonInteract { hovered: true, ..Default::default() }
+                ButtonInteract {
+                    hovered: true,
+                    ..Default::default()
+                }
             )
             .2,
         );
@@ -955,7 +1153,10 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count();
-        assert!(fills > 1, "body fill + label glyphs ⇒ several COLOR tags, got {fills}");
+        assert!(
+            fills > 1,
+            "body fill + label glyphs ⇒ several COLOR tags, got {fills}"
+        );
     }
 
     #[test]
@@ -1020,13 +1221,43 @@ mod tests {
         let mut dispatch = |b: &mut Button, ev: WindowEvent| {
             let mut handled = false;
             let mut focus = None;
-            b.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree);
+            b.handle_event(
+                &ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
+            );
         };
 
-        dispatch(&mut b, WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() });
-        dispatch(&mut b, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
+        dispatch(
+            &mut b,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (10.0, 10.0).into(),
+            },
+        );
+        dispatch(
+            &mut b,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
         assert_eq!(fired.get(), 0, "not fired until release");
-        dispatch(&mut b, WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left });
+        dispatch(
+            &mut b,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
         assert_eq!(fired.get(), 1, "fired once on release over the button");
     }
 
@@ -1148,11 +1379,32 @@ mod tests {
         let mut handled = false;
 
         for ev in [
-            WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() },
-            WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left },
-            WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left },
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (10.0, 10.0).into(),
+            },
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
         ] {
-            b.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree);
+            b.handle_event(
+                &ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
+            );
         }
 
         assert_eq!(fired.get(), 0, "disabled button must not fire on_click");

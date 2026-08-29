@@ -168,7 +168,13 @@ pub struct ChipStyle {
 
 impl Default for ChipStyle {
     fn default() -> Self {
-        Self { tint: None, ghost: false, bare: false, alpha: 1.0, resolved: None }
+        Self {
+            tint: None,
+            ghost: false,
+            bare: false,
+            alpha: 1.0,
+            resolved: None,
+        }
     }
 }
 
@@ -180,25 +186,38 @@ impl ChipStyle {
 
     /// Selected chip — `tint` carries the fill, border and label colour.
     pub fn tinted(tint: Color) -> Self {
-        Self { tint: Some(tint), ..Self::default() }
+        Self {
+            tint: Some(tint),
+            ..Self::default()
+        }
     }
 
     /// Empty-slot chip — dashed border, dimmed contents.
     pub fn ghost() -> Self {
-        Self { ghost: true, ..Self::default() }
+        Self {
+            ghost: true,
+            ..Self::default()
+        }
     }
 
     /// `tint` still colours the lead and the label, so a bare chip has
     /// the same quiet/selected pair the pill form does. See
     /// [`ChipStyle::bare`] for when this is the right shape.
     pub fn bare(tint: Option<Color>) -> Self {
-        Self { tint, bare: true, ..Self::default() }
+        Self {
+            tint,
+            bare: true,
+            ..Self::default()
+        }
     }
 
     /// Chip painted from colours the caller has already measured against the
     /// ground it lands on. See [`ChipStyle::resolved`].
     pub fn measured(chip: AccentChip) -> Self {
-        Self { resolved: Some(chip), ..Self::default() }
+        Self {
+            resolved: Some(chip),
+            ..Self::default()
+        }
     }
 
     /// Fade the whole chip by `alpha` (clamped to `0.0..=1.0`).
@@ -406,7 +425,10 @@ impl Widget for Chip {
         let node = taffy
             .new_leaf(Style {
                 flex_shrink: 0.0,
-                size: taffy::Size { width: length(approx as f32), height: length(HEIGHT as f32) },
+                size: taffy::Size {
+                    width: length(approx as f32),
+                    height: length(HEIGHT as f32),
+                },
                 ..Default::default()
             })
             .unwrap();
@@ -456,7 +478,11 @@ impl Widget for Chip {
         } else {
             theme.tokens.colors.surface_white_5
         };
-        let border = if selected { accent } else { theme.border_standard };
+        let border = if selected {
+            accent
+        } else {
+            theme.border_standard
+        };
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
         scene.stroke(&Stroke::new(1.0), transform, border, None, &pill);
 
@@ -493,7 +519,11 @@ impl Widget for Chip {
             let xr = Rect::from_center_size(Point::new(x + X_D / 2.0, cy), (X_D, X_D));
             self.x_rect = xr;
             let hovered = xr.contains(self.last_cursor);
-            let col = if hovered { theme.text_primary } else { theme.text_dim };
+            let col = if hovered {
+                theme.text_primary
+            } else {
+                theme.text_dim
+            };
             Icon::X.draw_with_stroke(scene, transform, xr, col, 1.6);
         } else {
             self.x_rect = Rect::ZERO;
@@ -542,9 +572,13 @@ impl Widget for Chip {
         }
     }
 
-    fn name(&self) -> &str { "Chip" }
+    fn name(&self) -> &str {
+        "Chip"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -552,7 +586,12 @@ impl Widget for Chip {
             Some(
                 AccessNode::new(Role::ToggleButton)
                     .with_name(self.label.clone())
-                    .with_state(AccessState::new().focusable(true).selected(self.selected).checked(self.selected)),
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.selected)
+                            .checked(self.selected),
+                    ),
             )
         } else {
             Some(AccessNode::new(Role::StaticText).with_value(self.label.clone()))
@@ -578,7 +617,10 @@ mod tests {
                     height: taffy::AvailableSpace::Definite(60.0),
                 },
                 |k, a, id, _, _| {
-                    node_map.get(&id).map(|&p| unsafe { (*p).measure(k, a, &mut tr) }).unwrap_or(taffy::Size::ZERO)
+                    node_map
+                        .get(&id)
+                        .map(|&p| unsafe { (*p).measure(k, a, &mut tr) })
+                        .unwrap_or(taffy::Size::ZERO)
                 },
             )
             .unwrap();
@@ -593,12 +635,21 @@ mod tests {
         w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    fn synth() -> winit::event::DeviceId { unsafe { std::mem::zeroed() } }
+    fn synth() -> winit::event::DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
     fn cursor(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved { device_id: synth(), position: winit::dpi::PhysicalPosition::new(p.x, p.y) }
+        WindowEvent::CursorMoved {
+            device_id: synth(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
     }
     fn press() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth(), state: ElementState::Pressed, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: synth(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
     }
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
@@ -607,7 +658,17 @@ mod tests {
         let mut ft = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        w.handle_event(e, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        w.handle_event(
+            e,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         handled
     }
 
@@ -619,7 +680,10 @@ mod tests {
         assert!(!c.is_selected());
         let center = c.get_rect().center();
         dispatch(&mut c, &cursor(center));
-        assert!(dispatch(&mut c, &press()), "body click on a selectable chip is consumed");
+        assert!(
+            dispatch(&mut c, &press()),
+            "body click on a selectable chip is consumed"
+        );
         assert!(c.is_selected(), "click selects");
         assert!(c.take_toggled(), "toggle signal fires");
         assert!(!c.take_toggled(), "toggle drains after one read");
@@ -671,10 +735,17 @@ mod tests {
         let sel = Chip::new("Filter").selected(true);
         let node = Widget::accessibility(&sel).unwrap();
         assert_eq!(node.role, Role::ToggleButton);
-        assert_eq!(node.state.checked, Some(true), "a selected chip reports checked");
+        assert_eq!(
+            node.state.checked,
+            Some(true),
+            "a selected chip reports checked"
+        );
         assert!(node.state.focusable);
 
         let plain = Chip::new("tag");
-        assert_eq!(Widget::accessibility(&plain).unwrap().role, Role::StaticText);
+        assert_eq!(
+            Widget::accessibility(&plain).unwrap().role,
+            Role::StaticText
+        );
     }
 }

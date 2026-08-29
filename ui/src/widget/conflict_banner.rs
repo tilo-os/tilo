@@ -161,10 +161,7 @@ impl ConflictBanner {
     /// so the picker + banner stay consistent.
     fn count_label(&self) -> String {
         if self.conflict_count == 1 {
-            format!(
-                "{} \u{2014} 1 conflict in this doc",
-                self.family_name
-            )
+            format!("{} \u{2014} 1 conflict in this doc", self.family_name)
         } else {
             format!(
                 "{} \u{2014} {} conflicts in this doc",
@@ -276,12 +273,7 @@ impl Widget for ConflictBanner {
         }
         let warn = theme.tokens.colors.semantic.warning;
         let warn_rgba = warn.to_rgba8();
-        let bg_color = Color::from_rgba8(
-            warn_rgba.r,
-            warn_rgba.g,
-            warn_rgba.b,
-            BANNER_BG_ALPHA,
-        );
+        let bg_color = Color::from_rgba8(warn_rgba.r, warn_rgba.g, warn_rgba.b, BANNER_BG_ALPHA);
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.sm as f64);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -290,13 +282,7 @@ impl Widget for ConflictBanner {
             None,
             &shape,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            warn,
-            None,
-            &shape,
-        );
+        scene.stroke(&Stroke::new(1.0), transform, warn, None, &shape);
 
         let text_size = theme.tokens.typography.scale.sm;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
@@ -553,8 +539,8 @@ mod tests {
         // exactly once. Pins the hover→hit-test→callback wire.
         let fired: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
         let fired_clone = fired.clone();
-        let mut b = ConflictBanner::new("Kanban move")
-            .on_review(move || *fired_clone.borrow_mut() += 1);
+        let mut b =
+            ConflictBanner::new("Kanban move").on_review(move || *fired_clone.borrow_mut() += 1);
         b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
         b.set_conflict_count(2);
 

@@ -19,8 +19,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
 use launcher::capabilities::CapabilityPlan;
+use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 
@@ -36,8 +36,7 @@ static RUNTIME_ENV_MUTEX: Mutex<()> = Mutex::new(());
 /// workspace and this wants a single-shot build that doesn't dirty the
 /// workspace target dir.
 fn build_hello(out_dir: &Path) -> PathBuf {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/hello/src/main.rs");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello/src/main.rs");
     let bin = out_dir.join("bin").join("hello");
     std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
     let status = std::process::Command::new("rustc")
@@ -89,11 +88,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
 /// Locate bwrap, or return None if absent. Skip live tests on absence.
 fn bwrap_path() -> Option<PathBuf> {
     let p = PathBuf::from("/usr/bin/bwrap");
-    if p.exists() {
-        Some(p)
-    } else {
-        None
-    }
+    if p.exists() { Some(p) } else { None }
 }
 
 // tests
@@ -167,8 +162,7 @@ fn hello_world_runs() {
         mode: launcher::run::LaunchMode::Gui,
         ..Default::default()
     };
-    let (status, stdout) =
-        run_with_captured(&m, payload.path(), &opts).expect("launch");
+    let (status, stdout) = run_with_captured(&m, payload.path(), &opts).expect("launch");
     assert!(status.success(), "child exited non-zero: {status:?}");
     let stdout = String::from_utf8_lossy(&stdout);
     assert!(
@@ -365,7 +359,10 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
             cli_bin: None,
         },
         sandbox: Sandbox {
-            net: Net { mode: "off".to_string(), ..Net::default() },
+            net: Net {
+                mode: "off".to_string(),
+                ..Net::default()
+            },
             fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
@@ -386,10 +383,9 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         &CapabilityPlan::empty(),
     );
     assert!(
-        argv.windows(3)
-            .any(|w| w[0] == "--ro-bind"
-                && w[1] == bundle_dir.display().to_string()
-                && w[2] == "/usr/lib/qos-runtime/smoke-1.0.0"),
+        argv.windows(3).any(|w| w[0] == "--ro-bind"
+            && w[1] == bundle_dir.display().to_string()
+            && w[2] == "/usr/lib/qos-runtime/smoke-1.0.0"),
         "runtime bind not in argv: {argv:?}"
     );
     assert!(
@@ -408,8 +404,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         minimal_libs: true,
         ..Default::default()
     };
-    let resolved =
-        launcher::run::resolve_runtime_test_helper(&m, &opts).expect("resolve ok");
+    let resolved = launcher::run::resolve_runtime_test_helper(&m, &opts).expect("resolve ok");
     assert!(resolved.is_some(), "runtime should resolve");
     let (path, version) = resolved.unwrap();
     assert_eq!(version, "smoke-1.0.0");
@@ -417,8 +412,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
 
     // And no-runtime manifest resolves to None (no error).
     m.runtime = None;
-    let resolved =
-        launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no runtime = ok");
+    let resolved = launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no runtime = ok");
     assert!(resolved.is_none());
 }
 
@@ -490,7 +484,10 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
             cli_bin: None,
         },
         sandbox: Sandbox {
-            net: Net { mode: "off".to_string(), ..Net::default() },
+            net: Net {
+                mode: "off".to_string(),
+                ..Net::default()
+            },
             fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
@@ -507,10 +504,9 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         landlock_enforce: false,
         ..Default::default()
     };
-    let (resolved_path, resolved_ver) =
-        launcher::run::resolve_runtime_test_helper(&m, &opts)
-            .expect("resolve ok")
-            .expect("bundle resolves");
+    let (resolved_path, resolved_ver) = launcher::run::resolve_runtime_test_helper(&m, &opts)
+        .expect("resolve ok")
+        .expect("bundle resolves");
     assert_eq!(resolved_ver, version);
     assert_eq!(resolved_path, bundle_dir);
 
@@ -585,19 +581,18 @@ wait $!
 
     // Build a manifest declaring `notifications = via-host`.
     let mut m = hello_manifest(tmp.path(), BTreeMap::new());
-    m.sandbox
-        .portals
-        .insert("notifications".to_string(), launcher::manifest::PortalPolicy::ViaHost);
+    m.sandbox.portals.insert(
+        "notifications".to_string(),
+        launcher::manifest::PortalPolicy::ViaHost,
+    );
 
     // Drive the proxy path via the launcher's public helper. In-test uid
     // is fictitious (1234), so use a tempdir socket instead of the
     // canonical /run/user/1234/... path a real launch would use.
     let sock = tmp.path().join("proxy.sock");
-    let bin = launcher::dbus_proxy::find_proxy_binary()
-        .expect("PROXY_BIN_ENV was set above");
-    let guard =
-        launcher::dbus_proxy::spawn_dbus_proxy(&bin, "unix:path=/run/user/1234/bus", &sock)
-            .expect("spawn mock proxy");
+    let bin = launcher::dbus_proxy::find_proxy_binary().expect("PROXY_BIN_ENV was set above");
+    let guard = launcher::dbus_proxy::spawn_dbus_proxy(&bin, "unix:path=/run/user/1234/bus", &sock)
+        .expect("spawn mock proxy");
     let plan = launcher::sandbox::DBusBindPlan {
         host_socket: guard.socket_path().to_path_buf(),
         sandbox_path: launcher::dbus_proxy::sandbox_bus_path(1234),
@@ -627,7 +622,9 @@ wait $!
         "expected `--ro-bind {proxy_sock} /run/user/1234/bus`, got {argv:?}"
     );
     assert!(
-        !argv.iter().any(|a| a == "/run/user/1234/bus" && argv.iter().position(|x| x == a) != argv.iter().rposition(|x| x == a) && a != &proxy_sock),
+        !argv.iter().any(|a| a == "/run/user/1234/bus"
+            && argv.iter().position(|x| x == a) != argv.iter().rposition(|x| x == a)
+            && a != &proxy_sock),
         "raw bus path must not appear as a host source in argv"
     );
 
@@ -657,9 +654,10 @@ wait $!
 fn dbus_direct_bind_used_when_proxy_missing() {
     use launcher::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
     let mut m = hello_manifest(std::path::Path::new("/dev/null"), BTreeMap::new());
-    m.sandbox
-        .portals
-        .insert("notifications".to_string(), launcher::manifest::PortalPolicy::ViaHost);
+    m.sandbox.portals.insert(
+        "notifications".to_string(),
+        launcher::manifest::PortalPolicy::ViaHost,
+    );
     let plan = DBusBindPlan {
         host_socket: PathBuf::from("/run/user/1234/bus"),
         sandbox_path: PathBuf::from("/run/user/1234/bus"),
@@ -675,10 +673,9 @@ fn dbus_direct_bind_used_when_proxy_missing() {
         &CapabilityPlan::empty(),
     );
     assert!(
-        argv.windows(3)
-            .any(|w| w[0] == "--ro-bind"
-                && w[1] == "/run/user/1234/bus"
-                && w[2] == "/run/user/1234/bus"),
+        argv.windows(3).any(|w| w[0] == "--ro-bind"
+            && w[1] == "/run/user/1234/bus"
+            && w[2] == "/run/user/1234/bus"),
         "direct bind must appear when the caller supplies a Direct plan"
     );
 }
@@ -786,10 +783,7 @@ fn trusted_publisher_file_gates_mount() {
     )
     .unwrap();
     unsafe {
-        std::env::set_var(
-            "QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
-            &trust_file,
-        );
+        std::env::set_var("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
     }
     launcher::run::resolve_runtime_test_helper(&m, &opts).expect("trusted pubkey ok");
 
@@ -872,7 +866,6 @@ fn signed_bundle_publisher_pin_enforced() {
         other => panic!("expected RuntimeBundleSignature, got {other:?}"),
     }
 }
-
 
 // workspace capabilities
 

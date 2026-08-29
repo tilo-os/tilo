@@ -33,7 +33,9 @@ const COLLECTION: &str = "collection.qcl";
 /// What went wrong, at the link where it went wrong.
 #[derive(Debug, thiserror::Error)]
 pub enum IntegrityError {
-    #[error("no integrity record for {0} — it was installed before integrity records existed, or the record was deleted. Reinstall to create one.")]
+    #[error(
+        "no integrity record for {0} — it was installed before integrity records existed, or the record was deleted. Reinstall to create one."
+    )]
     NoRecord(String),
     #[error("reading integrity record at {path}: {source}")]
     Read {
@@ -47,7 +49,9 @@ pub enum IntegrityError {
         #[source]
         source: std::io::Error,
     },
-    #[error("the recorded signed root does not hash to the package id — the record itself was tampered with")]
+    #[error(
+        "the recorded signed root does not hash to the package id — the record itself was tampered with"
+    )]
     RootIdMismatch,
     #[error("recorded signed root is malformed: {0}")]
     RootMalformed(String),
@@ -120,7 +124,10 @@ fn sanitise(raw: &str) -> String {
         })
         .collect();
     if mapped.is_empty() || mapped.chars().all(|c| c == '.') {
-        return format!("pkg_{}", hex::encode(blake3::hash(raw.as_bytes()).as_bytes()));
+        return format!(
+            "pkg_{}",
+            hex::encode(blake3::hash(raw.as_bytes()).as_bytes())
+        );
     }
     mapped
 }
@@ -280,10 +287,7 @@ mod tests {
 
         let manifest_bytes = b"[package]\nid = \"dev.qos.example\"\n".to_vec();
         let collection = Collection::from_entries([
-            (
-                "bin/app".to_string(),
-                BlobHash::of(b"binary bytes"),
-            ),
+            ("bin/app".to_string(), BlobHash::of(b"binary bytes")),
             ("data.txt".to_string(), BlobHash::of(b"hello")),
         ]);
         let collection_bytes = collection.encode();

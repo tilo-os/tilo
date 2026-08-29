@@ -22,7 +22,10 @@ use registry_server::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "qos-registry-server", about = "Self-hostable qOS app registry.")]
+#[command(
+    name = "qos-registry-server",
+    about = "Self-hostable qOS app registry."
+)]
 struct Cli {
     /// Location of the on-disk state. Defaults to
     /// `$XDG_STATE_HOME/qos-registry` (see `default_data_dir`).
@@ -116,7 +119,11 @@ async fn main() -> anyhow::Result<()> {
     let storage = Storage::open(&data_dir).map_err(|e| anyhow::anyhow!("open storage: {e}"))?;
 
     match cli.cmd {
-        Cmd::Serve { port, bind, identity: _ } => {
+        Cmd::Serve {
+            port,
+            bind,
+            identity: _,
+        } => {
             let ident: ServerIdentity = storage
                 .load_identity()
                 .map_err(|e| anyhow::anyhow!("load identity: {e}"))?;

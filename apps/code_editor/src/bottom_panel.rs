@@ -405,7 +405,12 @@ impl BottomPanel {
     /// The content region below the tab strip — where the embedded terminal is
     /// placed and drawn.
     pub fn content_rect(&self) -> Rect {
-        Rect::new(self.rect.x0, self.rect.y0 + TAB_H, self.rect.x1, self.rect.y1)
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 + TAB_H,
+            self.rect.x1,
+            self.rect.y1,
+        )
     }
 
     pub fn problem_count(&self) -> usize {
@@ -453,15 +458,18 @@ fn ellipsize_front(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Str
     let (mut lo, mut hi) = (0usize, chars.len());
     while lo < hi {
         let mid = (lo + hi) / 2;
-        let candidate: String =
-            std::iter::once('\u{2026}').chain(chars[mid..].iter().copied()).collect();
+        let candidate: String = std::iter::once('\u{2026}')
+            .chain(chars[mid..].iter().copied())
+            .collect();
         if (tr.measure(&candidate, size, None).0 as f64) <= max_w {
             hi = mid;
         } else {
             lo = mid + 1;
         }
     }
-    std::iter::once('\u{2026}').chain(chars[lo..].iter().copied()).collect()
+    std::iter::once('\u{2026}')
+        .chain(chars[lo..].iter().copied())
+        .collect()
 }
 
 /// Trim `s` from the **back** until it fits `max_w`, appending an ellipsis.
@@ -477,14 +485,22 @@ fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Stri
     let (mut lo, mut hi) = (0usize, chars.len());
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars[..mid].iter().copied().chain(std::iter::once('\u{2026}')).collect();
+        let candidate: String = chars[..mid]
+            .iter()
+            .copied()
+            .chain(std::iter::once('\u{2026}'))
+            .collect();
         if (tr.measure(&candidate, size, None).0 as f64) <= max_w {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
-    chars[..lo].iter().copied().chain(std::iter::once('\u{2026}')).collect()
+    chars[..lo]
+        .iter()
+        .copied()
+        .chain(std::iter::once('\u{2026}'))
+        .collect()
 }
 
 impl Widget for BottomPanel {
@@ -529,7 +545,13 @@ impl Widget for BottomPanel {
         _presence: &PresenceCtx,
     ) {
         let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &self.rect,
+        );
         // Top divider.
         scene.stroke(
             &Stroke::new(1.0),
@@ -550,7 +572,10 @@ impl Widget for BottomPanel {
             format!("Search ({})", self.search.rows.len())
         };
         let labels = [
-            (PanelTab::Problems, format!("Problems ({})", self.problems.len())),
+            (
+                PanelTab::Problems,
+                format!("Problems ({})", self.problems.len()),
+            ),
             (PanelTab::Search, search_label),
             (PanelTab::Terminal, "Terminal".to_string()),
         ];
@@ -568,7 +593,11 @@ impl Widget for BottomPanel {
                 color,
                 transform * Affine::translate((x + 6.0, self.rect.y0 + 9.0)),
                 None,
-                if active { TextWeight::Semibold } else { TextWeight::Regular },
+                if active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
             );
             if active {
                 let underline = Rect::new(x, self.rect.y0 + TAB_H - 2.0, x1, self.rect.y0 + TAB_H);
@@ -708,8 +737,7 @@ impl Widget for BottomPanel {
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.tab != PanelTab::Search || !self.rect.contains(self.last_cursor) {
@@ -734,8 +762,7 @@ impl Widget for BottomPanel {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.last_cursor.y >= self.rect.y0
-                    && self.last_cursor.y <= self.rect.y0 + TAB_H
+                if self.last_cursor.y >= self.rect.y0 && self.last_cursor.y <= self.rect.y0 + TAB_H
                 {
                     for (x0, x1, tab) in &self.tab_rects {
                         if self.last_cursor.x >= *x0 && self.last_cursor.x < *x1 {
@@ -808,8 +835,14 @@ mod tests {
     #[test]
     fn a_short_string_is_left_alone() {
         let mut t = tr();
-        assert_eq!(ellipsize_front(&mut t, "src/a.rs:1", 12.0, 500.0), "src/a.rs:1");
-        assert_eq!(ellipsize_back(&mut t, "fn main() {}", 12.0, 500.0), "fn main() {}");
+        assert_eq!(
+            ellipsize_front(&mut t, "src/a.rs:1", 12.0, 500.0),
+            "src/a.rs:1"
+        );
+        assert_eq!(
+            ellipsize_back(&mut t, "fn main() {}", 12.0, 500.0),
+            "fn main() {}"
+        );
     }
 
     #[test]

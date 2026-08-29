@@ -189,14 +189,19 @@ impl ConflictPicker {
         if available_w >= NARROW_THRESHOLD && side_by_side_card_w >= MIN_CARD_W {
             let mut x = inner.x0;
             for _ in 0..total_cards {
-                rects.push(Rect::new(x, middle_top, x + side_by_side_card_w, middle_top + card_h));
+                rects.push(Rect::new(
+                    x,
+                    middle_top,
+                    x + side_by_side_card_w,
+                    middle_top + card_h,
+                ));
                 x += side_by_side_card_w + gap;
             }
         } else {
             // Stacked layout: cap per-card height so the stack still fits the middle band.
-            let stacked_card_h =
-                ((middle_h - gap * (total_cards as f64 - 1.0).max(0.0)) / (total_cards as f64))
-                    .min(card_h);
+            let stacked_card_h = ((middle_h - gap * (total_cards as f64 - 1.0).max(0.0))
+                / (total_cards as f64))
+                .min(card_h);
             let mut y = middle_top;
             for _ in 0..total_cards {
                 rects.push(Rect::new(inner.x0, y, inner.x1, y + stacked_card_h));
@@ -295,7 +300,12 @@ impl ConflictPicker {
             &body,
         );
 
-        let inner = Rect::new(card.x0 + 12.0, card.y0 + 10.0, card.x1 - 12.0, card.y1 - 10.0);
+        let inner = Rect::new(
+            card.x0 + 12.0,
+            card.y0 + 10.0,
+            card.x1 - 12.0,
+            card.y1 - 10.0,
+        );
         let text_size_sm = theme.tokens.typography.scale.sm;
         let text_size_md = theme.tokens.typography.scale.base;
 
@@ -454,10 +464,7 @@ impl Widget for ConflictPicker {
             title_size,
             theme.tokens.colors.text_primary,
             transform
-                * Affine::translate((
-                    title.x0,
-                    title.y0 + (title.height() - th as f64) / 2.0,
-                )),
+                * Affine::translate((title.x0, title.y0 + (title.height() - th as f64) / 2.0)),
             None,
         );
 
@@ -472,8 +479,7 @@ impl Widget for ConflictPicker {
             };
             if i < alt_count {
                 let alt = &self.alternatives()[i];
-                let ts_label =
-                    crate::widget::history::format_relative_time(alt.timestamp, now);
+                let ts_label = crate::widget::history::format_relative_time(alt.timestamp, now);
                 let button_label = format!("Pick {}'s", alt.author);
                 self.draw_card(
                     scene,
@@ -507,8 +513,7 @@ impl Widget for ConflictPicker {
                     hovered,
                     pick_btn,
                 );
-                let btn_shape =
-                    RoundedRect::from_rect(pick_btn, theme.tokens.radii.sm as f64);
+                let btn_shape = RoundedRect::from_rect(pick_btn, theme.tokens.radii.sm as f64);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -595,10 +600,8 @@ impl Widget for ConflictPicker {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = p;
                 let card_idx = self.card_at(p);
-                let new_alt =
-                    card_idx.filter(|&i| i < alt_count);
-                let new_merged =
-                    card_idx.is_some_and(|i| i == alt_count && self.has_merged_card());
+                let new_alt = card_idx.filter(|&i| i < alt_count);
+                let new_merged = card_idx.is_some_and(|i| i == alt_count && self.has_merged_card());
                 let new_keep = self.keep_current_rect().contains(p);
                 if new_alt != self.hover_alt
                     || new_merged != self.hover_merged
@@ -624,7 +627,9 @@ impl Widget for ConflictPicker {
                         && btn.contains(self.last_cursor)
                     {
                         if i < alt_count {
-                            self.fire(PickerOutcome::Picked { alternative_index: i });
+                            self.fire(PickerOutcome::Picked {
+                                alternative_index: i,
+                            });
                         } else {
                             self.fire(PickerOutcome::PickedMerged);
                         }
@@ -643,7 +648,9 @@ impl Widget for ConflictPicker {
                     *handled = true;
                 }
             }
-            WindowEvent::KeyboardInput { event: key_event, .. } => {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
                 let KeyEvent {
                     logical_key,
                     state: element_state,
@@ -772,9 +779,7 @@ mod tests {
         // `logical_key` + `state`.
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(key);
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -840,7 +845,9 @@ mod tests {
         assert_eq!(outcomes.borrow().len(), 1);
         assert_eq!(
             outcomes.borrow()[0],
-            PickerOutcome::Picked { alternative_index: 1 }
+            PickerOutcome::Picked {
+                alternative_index: 1
+            }
         );
     }
 
@@ -908,9 +915,15 @@ mod tests {
         };
         let mut p = picker_at(Rect::new(0.0, 0.0, 1280.0, 360.0), kind);
         let cards = p.card_rects();
-        dispatch(&mut p, &cursor_moved(cards[0].center().x, cards[0].center().y));
+        dispatch(
+            &mut p,
+            &cursor_moved(cards[0].center().x, cards[0].center().y),
+        );
         assert_eq!(p.hover_alt(), Some(0));
-        dispatch(&mut p, &cursor_moved(cards[1].center().x, cards[1].center().y));
+        dispatch(
+            &mut p,
+            &cursor_moved(cards[1].center().x, cards[1].center().y),
+        );
         assert_eq!(p.hover_alt(), Some(1));
         // Cache the bounds first so the borrow checker doesn't see a live
         // `&p` while we hand `&mut p` to `dispatch`.
@@ -984,13 +997,13 @@ mod tests {
         // Combined host-flow test: chrome wires a banner's `[Review]`
         // callback to open a picker. Drive the banner click, observe
         // Review fires, then dispatch a Pick click and observe Picked.
-        use crate::widget::conflict_banner::{ConflictBanner, BANNER_HEIGHT};
+        use crate::widget::conflict_banner::{BANNER_HEIGHT, ConflictBanner};
 
         // 1. Banner click drives the host to open a picker.
         let review_fired: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
         let rf = review_fired.clone();
-        let mut banner = ConflictBanner::new("Kanban move")
-            .on_review(move || *rf.borrow_mut() = true);
+        let mut banner =
+            ConflictBanner::new("Kanban move").on_review(move || *rf.borrow_mut() = true);
         banner.set_rect_for_test(Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT));
         banner.set_conflict_count(2);
 
@@ -1041,7 +1054,9 @@ mod tests {
         dispatch(&mut picker, &mouse_press());
         assert_eq!(
             outcomes.borrow()[0],
-            PickerOutcome::Picked { alternative_index: 0 }
+            PickerOutcome::Picked {
+                alternative_index: 0
+            }
         );
     }
 }

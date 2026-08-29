@@ -17,7 +17,7 @@ use std::fs;
 
 use ui::widget::{Column, Text, Widget};
 
-use crate::widgets::{card, caption, rows, El};
+use crate::widgets::{El, caption, card, rows};
 
 /// A login account on this device.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,7 +139,10 @@ pub fn build() -> Box<dyn Widget> {
 pub fn build_with(users: &[DeviceUser]) -> Box<dyn Widget> {
     let list = if users.is_empty() {
         // Honest empty state — never fabricated people.
-        card("People", rows(vec![caption("No user accounts found on this device.")]))
+        card(
+            "People",
+            rows(vec![caption("No user accounts found on this device.")]),
+        )
     } else {
         let mut user_rows: Vec<El> = Vec::new();
         for u in users {
@@ -225,7 +228,10 @@ mod tests {
     fn empty_passwd_yields_no_login_users() {
         let admins = HashSet::new();
         let users = read_passwd_users("", None, &admins);
-        assert!(users.is_empty(), "no login users parse from an empty passwd");
+        assert!(
+            users.is_empty(),
+            "no login users parse from an empty passwd"
+        );
         // The sample roster exists only for tests / --shots, never as a
         // production fallback.
         assert!(!sample_users().is_empty());
@@ -238,7 +244,9 @@ mod tests {
     fn production_roster_never_fabricates_the_sample() {
         let real = users_for_display();
         assert!(
-            !real.iter().any(|u| u.full_name == "Ada Lovelace" || u.username == "charles"),
+            !real
+                .iter()
+                .any(|u| u.full_name == "Ada Lovelace" || u.username == "charles"),
             "the sample must not leak into the production roster: {real:?}"
         );
     }

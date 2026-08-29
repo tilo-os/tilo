@@ -1,13 +1,13 @@
-use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
-use vello::Scene;
-use vello::kurbo::{Affine, RoundedRect, Circle, Rect, Point};
-use winit::event::{WindowEvent, MouseButton, ElementState};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// Horizontal padding between `rect` and the track on each side.
 /// Both `draw` and `handle_event` use this to translate between
@@ -173,14 +173,21 @@ impl Widget for Slider {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(30.0),
-            },
-            ..Default::default()
-        }).unwrap();
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(30.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -195,12 +202,25 @@ impl Widget for Slider {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
         // Disabled widgets paint their (forced-idle) look under a reduced
         // group opacity so they read as non-interactive.
         let disabled = !self.enabled;
         if disabled {
-            scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &self.rect);
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &self.rect,
+            );
         }
         let track_height = 6.0;
         let track_rect = Rect::new(
@@ -210,8 +230,20 @@ impl Widget for Slider {
             self.rect.y0 + (self.rect.height() + track_height) / 2.0,
         );
         let track_shape = RoundedRect::from_rect(track_rect, 3.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.neutral[3], None, &track_shape);
-        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &track_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.neutral[3],
+            None,
+            &track_shape,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &track_shape,
+        );
 
         let active_track_rect = Rect::new(
             track_rect.x0,
@@ -220,7 +252,13 @@ impl Widget for Slider {
             track_rect.y1,
         );
         let active_track_shape = RoundedRect::from_rect(active_track_rect, 3.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &active_track_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.accent_primary,
+            None,
+            &active_track_shape,
+        );
 
         // Radius scales with state so hover/press are obvious even before
         // you read the colours.
@@ -245,12 +283,36 @@ impl Widget for Slider {
         if self.is_dragging {
             let halo_outer = Circle::new(knob_center, knob_radius + 4.0);
             let halo_inner = Circle::new(knob_center, knob_radius + 2.0);
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, colors.border_white_10, None, &halo_outer);
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, colors.border_white_20, None, &halo_inner);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                colors.border_white_10,
+                None,
+                &halo_outer,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                colors.border_white_20,
+                None,
+                &halo_inner,
+            );
         }
 
-        scene.fill(vello::peniko::Fill::NonZero, transform, fill_color, None, &knob_shape);
-        scene.stroke(&vello::kurbo::Stroke::new(border_width), transform, border_color, None, &knob_shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            fill_color,
+            None,
+            &knob_shape,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(border_width),
+            transform,
+            border_color,
+            None,
+            &knob_shape,
+        );
 
         // Tight focus ring around the knob (2px outset), not the whole rect.
         if self.is_focused {
@@ -269,9 +331,22 @@ impl Widget for Slider {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
         // Disabled: reject all input — no drag, no value change, no hover.
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -289,24 +364,24 @@ impl Widget for Slider {
                     }
                 }
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 // Press uses `rect.contains(last_cursor)` rather than
                 // `is_hovered` so the press latches without depending on
                 // an earlier hover-edge transition (e.g. focus delivered
                 // a press without a preceding `CursorMoved`). On entry
                 // we also jump `value` to the click x — the standard
                 // "press on track to jump" affordance.
-                if *element_state == ElementState::Pressed
-                    && self.rect.contains(self.last_cursor)
-                {
+                if *element_state == ElementState::Pressed && self.rect.contains(self.last_cursor) {
                     self.is_dragging = true;
                     *focus_target = Some(node_id);
                     *handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
                     self.commit_value(new_value, state, root);
-                } else if *element_state == ElementState::Released
-                    && self.is_dragging
-                {
+                } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
                     *handled = true;
                 }
@@ -322,7 +397,9 @@ impl Widget for Slider {
         self.is_dragging
     }
 
-    fn name(&self) -> &str { "Slider" }
+    fn name(&self) -> &str {
+        "Slider"
+    }
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id_override.as_deref().unwrap_or("slider"))
@@ -332,10 +409,18 @@ impl Widget for Slider {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
-    fn is_enabled(&self) -> bool { self.enabled }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -411,7 +496,9 @@ impl Widget for Slider {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -428,14 +515,22 @@ impl Widget for Slider {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(scope) = self.permission_scope()
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
         if let Some(key) = self.presence_key()
@@ -519,7 +614,12 @@ mod tests {
         let r2 = s.knob_radius_for_state();
 
         assert!(r0 < r1, "hover must grow knob: idle={}, hover={}", r0, r1);
-        assert!(r1 < r2, "press must grow knob further: hover={}, press={}", r1, r2);
+        assert!(
+            r1 < r2,
+            "press must grow knob further: hover={}, press={}",
+            r1,
+            r2
+        );
     }
 
     #[test]
@@ -596,7 +696,10 @@ mod tests {
     fn with_enabled_false_is_reported_by_is_enabled() {
         let s = Slider::new("any", "value").with_enabled(false);
         assert!(!Widget::is_enabled(&s));
-        assert!(Widget::is_enabled(&Slider::new("any", "value")), "default is enabled");
+        assert!(
+            Widget::is_enabled(&Slider::new("any", "value")),
+            "default is enabled"
+        );
     }
 
     #[test]
@@ -641,9 +744,19 @@ mod tests {
         let root = automerge::ROOT;
         let mut s = Slider::new("any", "value"); // default 0.5
 
-        assert!(Widget::perform_action(&mut s, &Action::Increment, &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut s,
+            &Action::Increment,
+            &mut doc,
+            &root
+        ));
         assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
-        assert!(Widget::perform_action(&mut s, &Action::Decrement, &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut s,
+            &Action::Decrement,
+            &mut doc,
+            &root
+        ));
         assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
 
         // SetValue accepts a 0..100 percentage.
@@ -672,7 +785,12 @@ mod tests {
         let root = automerge::ROOT;
         let mut s = Slider::new("any", "value").with_enabled(false);
         let before = s.value;
-        assert!(!Widget::perform_action(&mut s, &Action::Increment, &mut doc, &root));
+        assert!(!Widget::perform_action(
+            &mut s,
+            &Action::Increment,
+            &mut doc,
+            &root
+        ));
         assert_eq!(s.value, before, "a disabled slider must not change value");
     }
 
@@ -691,4 +809,3 @@ mod tests {
         assert_eq!(s.value, before, "disabled slider must not change its value");
     }
 }
-

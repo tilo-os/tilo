@@ -204,7 +204,13 @@ impl Widget for ImageViewer {
 
         // Clips so pan/zoom doesn't bleed over adjacent chrome when
         // the image is bigger than its viewport.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &self.rect);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &self.rect,
+        );
 
         // `draw_image` maps the image's unit pixel space directly into
         // world space, so scale-then-translate composes the quad.

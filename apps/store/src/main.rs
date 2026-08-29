@@ -12,7 +12,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use store::config::{load_registries, RegistryConfig};
+use store::config::{RegistryConfig, load_registries};
 use store::model::ActionKind;
 use store::sources::{flathub_placeholder_to_item, merge, qos_to_store_item};
 use store::{StoreApp, StoreItem};
@@ -75,10 +75,7 @@ struct LiveStore {
 }
 
 impl LiveStore {
-    fn new(
-        rx: mpsc::Receiver<Snapshot>,
-        action_tx: mpsc::Sender<(StoreItem, ActionKind)>,
-    ) -> Self {
+    fn new(rx: mpsc::Receiver<Snapshot>, action_tx: mpsc::Sender<(StoreItem, ActionKind)>) -> Self {
         Self {
             inner: StoreApp::new(),
             rx,
@@ -128,7 +125,8 @@ impl ui::widget::Widget for LiveStore {
         theme: &ui::theme::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        self.inner.draw(scene, transform, text_renderer, theme, presence);
+        self.inner
+            .draw(scene, transform, text_renderer, theme, presence);
     }
     fn draw_with_presence(
         &mut self,
@@ -139,8 +137,14 @@ impl ui::widget::Widget for LiveStore {
         presence: &ui::presence::PresenceCtx,
         permissions: &ui::permissions::PermissionContext,
     ) {
-        self.inner
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        self.inner.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
     }
     fn draw_overlay(
         &mut self,
@@ -202,19 +206,27 @@ impl ui::widget::Widget for LiveStore {
 /// empty state) rather than a blank surface while the network
 /// round-trip finishes.
 fn spawn_refresh_worker(tx: mpsc::Sender<Snapshot>) {
-    std::thread::spawn(move || loop {
-        let items = collect_items();
-        let status = if items.is_empty() {
-            "No apps yet. Check your registries.toml + network.".to_string()
-        } else {
-            format!("Loaded {} apps.", items.len())
-        };
-        if tx.send(Snapshot { items, status_line: status }).is_err() {
-            // UI thread is gone; wind down.
-            break;
+    std::thread::spawn(move || {
+        loop {
+            let items = collect_items();
+            let status = if items.is_empty() {
+                "No apps yet. Check your registries.toml + network.".to_string()
+            } else {
+                format!("Loaded {} apps.", items.len())
+            };
+            if tx
+                .send(Snapshot {
+                    items,
+                    status_line: status,
+                })
+                .is_err()
+            {
+                // UI thread is gone; wind down.
+                break;
+            }
+            // Refresh every 15 minutes.
+            std::thread::sleep(Duration::from_secs(15 * 60));
         }
-        // Refresh every 15 minutes.
-        std::thread::sleep(Duration::from_secs(15 * 60));
     });
 }
 
@@ -223,10 +235,7 @@ fn spawn_refresh_worker(tx: mpsc::Sender<Snapshot>) {
 /// handing it to `qos-install`, launching it, or toggling the pin —
 /// then the catalog is re-collected so the card's installed/pinned
 /// state + ranking update, and a fresh snapshot is streamed back.
-fn spawn_action_worker(
-    tx: mpsc::Sender<Snapshot>,
-    rx: mpsc::Receiver<(StoreItem, ActionKind)>,
-) {
+fn spawn_action_worker(tx: mpsc::Sender<Snapshot>, rx: mpsc::Receiver<(StoreItem, ActionKind)>) {
     std::thread::spawn(move || {
         let staging = store::actions::qpkg_staging_dir()
             .unwrap_or_else(|| std::env::temp_dir().join("qos-store-staged"));
@@ -235,7 +244,13 @@ fn spawn_action_worker(
             let outcome = store::actions::execute(&item, action, &staging);
             // Reflect the new install/pin state and re-rank.
             let items = collect_items();
-            if tx.send(Snapshot { items, status_line: outcome.status_line }).is_err() {
+            if tx
+                .send(Snapshot {
+                    items,
+                    status_line: outcome.status_line,
+                })
+                .is_err()
+            {
                 break; // UI gone.
             }
         }

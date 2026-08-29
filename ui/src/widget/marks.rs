@@ -188,7 +188,12 @@ pub fn add_mark_to_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, mark: M
 /// aligned after a user edit. Insertion: spans at/after `at` shift right,
 /// straddling spans extend right. Deletion of `[at, at+removed_len)`: spans
 /// entirely inside are dropped, straddling spans are clipped.
-pub fn shift_after_edit(spans: &mut Vec<MarkSpan>, at: usize, inserted_len: usize, removed_len: usize) {
+pub fn shift_after_edit(
+    spans: &mut Vec<MarkSpan>,
+    at: usize,
+    inserted_len: usize,
+    removed_len: usize,
+) {
     if inserted_len == 0 && removed_len == 0 {
         return;
     }

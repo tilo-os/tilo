@@ -79,10 +79,7 @@ pub fn install_from_url(url: &str) -> Result<ExtensionInfo, ExtensionError> {
 }
 
 /// Unpack an extension archive into `root` and inventory it.
-pub fn install_from_bytes(
-    archive: &[u8],
-    root: PathBuf,
-) -> Result<ExtensionInfo, ExtensionError> {
+pub fn install_from_bytes(archive: &[u8], root: PathBuf) -> Result<ExtensionInfo, ExtensionError> {
     let zip_bytes = strip_crx_header(archive)?;
     let mut zip = zip::ZipArchive::new(Cursor::new(zip_bytes))
         .map_err(|e| ExtensionError::Archive(e.to_string()))?;
@@ -156,7 +153,11 @@ fn strip_crx_header(bytes: &[u8]) -> Result<&[u8], ExtensionError> {
             let header_len = word(8)? as usize;
             12 + header_len
         }
-        v => return Err(ExtensionError::Archive(format!("unsupported CRX version {v}"))),
+        v => {
+            return Err(ExtensionError::Archive(format!(
+                "unsupported CRX version {v}"
+            )));
+        }
     };
     bytes
         .get(zip_start..)
@@ -175,7 +176,10 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
         .ok_or_else(|| ExtensionError::Manifest("manifest has no version".into()))?
         .to_string();
     let manifest_version = value["manifest_version"].as_u64().unwrap_or(2);
-    let description = value["description"].as_str().unwrap_or_default().to_string();
+    let description = value["description"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let permissions = value["permissions"]
         .as_array()
         .map(|a| {

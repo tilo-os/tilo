@@ -474,7 +474,10 @@ impl ActivityTimeline {
         } else {
             format!("{hidden} hidden by {summary}")
         };
-        ("No activity matches these filters".to_string(), Some(detail))
+        (
+            "No activity matches these filters".to_string(),
+            Some(detail),
+        )
     }
 
     /// `Rect::ZERO` when the filtered-to-nothing empty state is not on
@@ -1093,11 +1096,7 @@ impl ActivityTimeline {
             // Both conditions are about the *whole* list, not this band.
             // Count bands, not groups — a run of unnamed changes draws as
             // plain rows, not a band, so it should not count toward density.
-            let bands = self
-                .groups
-                .iter()
-                .filter(|g| !g.is_bare_change())
-                .count();
+            let bands = self.groups.iter().filter(|g| !g.is_bare_change()).count();
             bands <= DENSE_GROUP_COUNT && visible_count <= *budget
         };
         if expanded {
@@ -1162,9 +1161,7 @@ impl ActivityTimeline {
                         rows.push(VisualRow::Entry(e, g.depth + 1));
                     }
                 }
-                Member::Child(c) => {
-                    self.emit_group(c, chip_ops, needle, rows, row_groups, budget)
-                }
+                Member::Child(c) => self.emit_group(c, chip_ops, needle, rows, row_groups, budget),
             }
         }
     }
@@ -1209,8 +1206,6 @@ enum Member<'a> {
     Child(&'a HistoryGroup),
     Entry(usize),
 }
-
-
 
 /// `accent` fills the pill with the accent colour (the affirmative action);
 /// otherwise it is a quiet outlined chip.
@@ -1648,7 +1643,11 @@ impl ActivityTimeline {
         let (rel_w, _) = tr.measure(&rel, meta_size, None);
         // Author dots sit between the subtitle and the timestamp; reserve them.
         let dots = rg.authors.len().min(3);
-        let dots_w = if dots > 0 { dots as f64 * 10.0 + 6.0 } else { 0.0 };
+        let dots_w = if dots > 0 {
+            dots as f64 * 10.0 + 6.0
+        } else {
+            0.0
+        };
         let sub_budget = (row.x1 - title_x - rel_w as f64 - dots_w - 24.0).max(0.0);
         let sub = fit_text(tr, &rg.subtitle, meta_size, sub_budget);
         tr.draw_text(
@@ -1766,15 +1765,19 @@ impl ActivityTimeline {
         } else {
             format!("author:{}", self.author_query)
         };
-        let author_full_w =
-            (text_renderer.measure(&author_label, chip_text_size, None).0 as f64 + 16.0)
-                .min(strip.width() * 0.45);
+        let author_full_w = (text_renderer.measure(&author_label, chip_text_size, None).0 as f64
+            + 16.0)
+            .min(strip.width() * 0.45);
         let chips_budget = (strip.width() - author_full_w - 8.0).max(0.0);
 
         let measure_run = |tr: &mut TextRenderer, short: bool| -> f64 {
             let mut total = 0.0;
             for chip in ChipKind::ALL {
-                let l = if short { chip.short_label() } else { chip.label() };
+                let l = if short {
+                    chip.short_label()
+                } else {
+                    chip.label()
+                };
                 total += tr.measure(l, chip_text_size, None).0 as f64 + 16.0 + 6.0;
             }
             total
@@ -1803,13 +1806,7 @@ impl ActivityTimeline {
             let body = if active { active_fill } else { idle_fill };
             let text_color = if active { active_text } else { idle_text };
             let shape = RoundedRect::from_rect(chip_rect, chip_h / 2.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                body,
-                None,
-                &shape,
-            );
+            scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
             let (lw, lh) = text_renderer.measure(label, chip_text_size, None);
             text_renderer.draw_text(
                 scene,
@@ -1849,13 +1846,7 @@ impl ActivityTimeline {
             active_text
         };
         let shape = RoundedRect::from_rect(chip_rect, chip_h / 2.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            body,
-            None,
-            &shape,
-        );
+        scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
         let (lw, lh) = text_renderer.measure(&drawn_author, chip_text_size, None);
         text_renderer.draw_text(
             scene,
@@ -2123,9 +2114,20 @@ impl Widget for ActivityTimeline {
             let is_hovered = self.hover_row == Some(i);
             match self.rows[i] {
                 VisualRow::Group(g) => {
-                    let naming = naming_group.as_ref().filter(|(ng, _)| *ng == g).map(|(_, f)| f);
+                    let naming = naming_group
+                        .as_ref()
+                        .filter(|(ng, _)| *ng == g)
+                        .map(|(_, f)| f);
                     self.draw_group_row(
-                        scene, transform, text_renderer, theme, row, g, is_hovered, naming, now,
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        row,
+                        g,
+                        is_hovered,
+                        naming,
+                        now,
                     );
                 }
                 VisualRow::Entry(e, depth) => {
@@ -2237,9 +2239,7 @@ impl Widget for ActivityTimeline {
                             *handled = true;
                         }
                     }
-                    Key::Named(NamedKey::Escape)
-                        if self.selection.take().is_some() =>
-                    {
+                    Key::Named(NamedKey::Escape) if self.selection.take().is_some() => {
                         self.selection_anchor = None;
                         self.rebuild_rows();
                         *handled = true;
@@ -2456,12 +2456,12 @@ impl Widget for ActivityTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::history::HistoryAuthor;
+    use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::Duration;
-    use collab_types::ArtifactKind;
     use winit::event::Modifiers;
-    use crate::widget::history::HistoryAuthor;
 
     fn entry(op: OpClass, author: &str, ts: u64, id: u8) -> HistoryEntry {
         let mut id_bytes = [0u8; 16];
@@ -2517,8 +2517,9 @@ mod tests {
         // `Option` whose niche-optimised `None` is all-zero.
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -2836,7 +2837,10 @@ mod tests {
         let (title, detail) = t.empty_state_lines();
         assert_eq!(title, "No activity matches these filters");
         let detail = detail.expect("a filtered-empty list must say why");
-        assert!(detail.contains("2 hidden"), "counts what it is hiding: {detail}");
+        assert!(
+            detail.contains("2 hidden"),
+            "counts what it is hiding: {detail}"
+        );
         assert!(detail.contains("COMMENTS"), "names the filter: {detail}");
     }
 
@@ -2899,11 +2903,17 @@ mod tests {
             entry(OpClass::Splice, "Bob", 2, 2),
         ];
         let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), entries);
-        dispatch(&mut t, &key_press(winit::keyboard::Key::Character("b".into())));
+        dispatch(
+            &mut t,
+            &key_press(winit::keyboard::Key::Character("b".into())),
+        );
         assert_eq!(t.author_query(), "b");
         assert_eq!(t.visible_len(), 1);
         assert_eq!(t.visible_entry(0).unwrap().author.name, "Bob");
-        dispatch(&mut t, &key_press(winit::keyboard::Key::Named(NamedKey::Backspace)));
+        dispatch(
+            &mut t,
+            &key_press(winit::keyboard::Key::Named(NamedKey::Backspace)),
+        );
         assert_eq!(t.author_query(), "");
         assert_eq!(t.visible_len(), 2);
     }
@@ -2927,7 +2937,10 @@ mod tests {
             narrow_chip.x0 > narrow_row.x0 + narrow.author_slot_w(),
             "the chip must not overlap the author cluster"
         );
-        assert!(narrow_chip.x1 <= narrow_row.x1, "and must stay inside the row");
+        assert!(
+            narrow_chip.x1 <= narrow_row.x1,
+            "and must stay inside the row"
+        );
     }
 
     #[test]
@@ -2939,8 +2952,24 @@ mod tests {
         ];
         let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
         t.set_newest_first(true);
-        assert_eq!(t.visible_entry(0).unwrap().timestamp.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(), 300);
-        assert_eq!(t.visible_entry(2).unwrap().timestamp.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(), 100);
+        assert_eq!(
+            t.visible_entry(0)
+                .unwrap()
+                .timestamp
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            300
+        );
+        assert_eq!(
+            t.visible_entry(2)
+                .unwrap()
+                .timestamp
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            100
+        );
     }
 }
 
@@ -3038,7 +3067,15 @@ mod group_tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         t.handle_event(
-            event, 1.0, &m, &mut doc, &root, &mut handled, &mut focus, node, &tree,
+            event,
+            1.0,
+            &m,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
         );
     }
 
@@ -3087,7 +3124,11 @@ mod group_tests {
         assert!(t.group_at_row(0).unwrap().1, "the click opened it");
         assert_eq!(t.row_count(), 21, "header plus twenty changes");
         assert!(t.row_entry(1).is_some(), "line 1 is a change");
-        assert_eq!(t.row_depth_at(1), Some(1), "and it is indented under the band");
+        assert_eq!(
+            t.row_depth_at(1),
+            Some(1),
+            "and it is indented under the band"
+        );
 
         click(&mut t, Point::new(row.x0 + 60.0, row.center().y));
         assert_eq!(t.row_count(), 1, "clicking again closes it");
@@ -3120,7 +3161,9 @@ mod group_tests {
         t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
         t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
 
-        let (name_chip, _) = t.group_chip_rects(0).expect("a band header has a name chip");
+        let (name_chip, _) = t
+            .group_chip_rects(0)
+            .expect("a band header has a name chip");
         click(&mut t, name_chip.center());
         assert_eq!(t.naming_buffer(), Some(""), "the field is up and empty");
         assert!(t.wants_keyboard(), "the field owns the keyboard");
@@ -3137,7 +3180,11 @@ mod group_tests {
         let mut first = [0u8; 16];
         let mut last = [0u8; 16];
         last[0] = 19;
-        assert_eq!(r.start, HistoryEntryId(first), "the range starts at change 0");
+        assert_eq!(
+            r.start,
+            HistoryEntryId(first),
+            "the range starts at change 0"
+        );
         assert_eq!(r.end, HistoryEntryId(last), "and ends at change 19");
         let _ = &mut first;
         assert!(!t.wants_keyboard(), "the field is gone");
@@ -3331,7 +3378,9 @@ mod group_tests {
             named_by: Some(HistoryAuthor::new("Ada Lovelace", 300.0, "cafebabe")),
             created: SystemTime::UNIX_EPOCH,
         }]);
-        let sub = t.group_subtitle_at_row(0).expect("a band has a second line");
+        let sub = t
+            .group_subtitle_at_row(0)
+            .expect("a band has a second line");
         assert!(
             sub.contains("named by Ada Lovelace"),
             "a name written by someone else must say so: {sub:?}"
@@ -3399,7 +3448,10 @@ mod group_tests {
         // Paint so the bar's action rect is where the click handler will look.
         paint(&mut t);
         let action = t.name_selection_rect();
-        assert!(action.area() > 0.0, "the selection bar offers a name action");
+        assert!(
+            action.area() > 0.0,
+            "the selection bar offers a name action"
+        );
         click(&mut t, action.center());
         type_str(&mut t, "Second pass");
         dispatch(&mut t, &key_press(Key::Named(NamedKey::Enter)));
@@ -3471,7 +3523,10 @@ mod group_tests {
         t.set_entries(grown);
         let sub = t.group_subtitle_at_row(0).unwrap();
         assert!(sub.contains("21 changes"), "got {sub:?}");
-        assert!(sub.starts_with("still open"), "and it is still open: {sub:?}");
+        assert!(
+            sub.starts_with("still open"),
+            "and it is still open: {sub:?}"
+        );
     }
 
     #[test]
@@ -3567,7 +3622,10 @@ mod group_tests {
             shown.chars().count() < long.chars().count(),
             "the header's own budget must actually truncate this name"
         );
-        assert!(shown.ends_with('\u{2026}'), "and say that it did: {shown:?}");
+        assert!(
+            shown.ends_with('\u{2026}'),
+            "and say that it did: {shown:?}"
+        );
     }
 
     #[test]
@@ -3610,7 +3668,10 @@ mod group_tests {
         assert_eq!(t.row_depth_at(nested), Some(1));
         let (n2, _) = t.group_chip_rects(nested).unwrap();
         let row2 = t.row_rect(nested).unwrap();
-        assert!(n2.x0 > row2.x0 + INDENT, "indented, and the chip still fits");
+        assert!(
+            n2.x0 > row2.x0 + INDENT,
+            "indented, and the chip still fits"
+        );
         paint(&mut t);
     }
 
@@ -3640,7 +3701,11 @@ mod group_tests {
         let depths: Vec<usize> = (0..t.row_count())
             .map(|i| t.row_depth_at(i).unwrap())
             .collect();
-        assert_eq!(*depths.iter().max().unwrap(), 2, "rows inside a nested band");
+        assert_eq!(
+            *depths.iter().max().unwrap(),
+            2,
+            "rows inside a nested band"
+        );
         assert_eq!(t.group_title_at_row(0), Some("Q3 release"));
         let inner = (0..t.row_count())
             .find(|i| t.group_title_at_row(*i) == Some("Intro rewrite"))
@@ -3723,7 +3788,12 @@ mod group_tests {
         }
         // Peer session, merged after but stamped days earlier.
         for i in 0..3 {
-            entries.push(entry(OpClass::Splice, "Ada", NOW - 5 * day + i as u64, 10 + i));
+            entries.push(entry(
+                OpClass::Splice,
+                "Ada",
+                NOW - 5 * day + i as u64,
+                10 + i,
+            ));
         }
         let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 900.0), entries);
         let mut tl = t;

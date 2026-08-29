@@ -158,12 +158,16 @@ pub fn f64_in(
 
 /// Read a `&str` at `section.key`.
 pub fn str_at<'a>(doc: &'a Map<String, Value>, section: &str, key: &str) -> Option<&'a str> {
-    doc.get(section).and_then(|s| s.get(key)).and_then(|v| v.as_str())
+    doc.get(section)
+        .and_then(|s| s.get(key))
+        .and_then(|v| v.as_str())
 }
 
 /// Read a `bool` at `section.key`.
 pub fn bool_at(doc: &Map<String, Value>, section: &str, key: &str) -> Option<bool> {
-    doc.get(section).and_then(|s| s.get(key)).and_then(|v| v.as_bool())
+    doc.get(section)
+        .and_then(|s| s.get(key))
+        .and_then(|v| v.as_bool())
 }
 
 #[cfg(test)]
@@ -211,7 +215,10 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", "relative/config") };
 
         let root = config_root().expect("falls back to $HOME/.config");
-        assert!(root.is_absolute(), "a settings path must never be relative: {root:?}");
+        assert!(
+            root.is_absolute(),
+            "a settings path must never be relative: {root:?}"
+        );
         assert!(
             !root.starts_with("relative"),
             "a relative XDG_CONFIG_HOME must be ignored, got {root:?}"
@@ -258,8 +265,14 @@ mod tests {
     #[test]
     fn a_section_of_the_wrong_type_reads_as_absent() {
         let text = r#"{"display": 3, "region": ["x"], "power": {"idle": 5}}"#;
-        assert!(section(text, "display").is_empty(), "a number is not a section");
-        assert!(section(text, "region").is_empty(), "an array is not a section");
+        assert!(
+            section(text, "display").is_empty(),
+            "a number is not a section"
+        );
+        assert!(
+            section(text, "region").is_empty(),
+            "an array is not a section"
+        );
         assert_eq!(section(text, "power").get("idle"), Some(&json!(5)));
     }
 
@@ -275,7 +288,11 @@ mod tests {
         assert_eq!(f64_in(&doc, "absent", "scale", 0.0..=9.0, 7.0), 7.0);
 
         assert_eq!(str_at(&doc, "display", "mode"), Some("dark"));
-        assert_eq!(str_at(&doc, "display", "scale"), None, "a number is not a string");
+        assert_eq!(
+            str_at(&doc, "display", "scale"),
+            None,
+            "a number is not a string"
+        );
         assert_eq!(bool_at(&doc, "display", "hidpi"), Some(true));
         assert_eq!(bool_at(&doc, "display", "mode"), None);
     }
@@ -302,7 +319,10 @@ mod tests {
         assert_eq!(doc.get("version"), Some(&json!(1)), "unknown keys survive");
         assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.5);
         assert_eq!(str_at(&doc, "region", "units"), Some("imperial"));
-        assert_eq!(doc.get("power").unwrap().get("idle_suspend"), Some(&json!(600)));
+        assert_eq!(
+            doc.get("power").unwrap().get("idle_suspend"),
+            Some(&json!(600))
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -317,7 +337,11 @@ mod tests {
         update_section_at(&path, "region", vals).unwrap();
 
         let doc = load_at(&path);
-        assert_eq!(str_at(&doc, "region", "units"), Some("imperial"), "the write lands");
+        assert_eq!(
+            str_at(&doc, "region", "units"),
+            Some("imperial"),
+            "the write lands"
+        );
         assert_eq!(
             str_at(&doc, "region", "first_day"),
             Some("mon"),
@@ -333,7 +357,10 @@ mod tests {
         let mut vals = Map::new();
         vals.insert("scale".into(), json!(2.0));
         update_section_at(&path, "display", vals).unwrap();
-        assert_eq!(f64_in(&load_at(&path), "display", "scale", 0.0..=9.0, 0.0), 2.0);
+        assert_eq!(
+            f64_in(&load_at(&path), "display", "scale", 0.0..=9.0, 0.0),
+            2.0
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -364,7 +391,11 @@ mod tests {
 
         let doc = load_at(&path);
         assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.0);
-        assert_eq!(doc.get("keep"), Some(&json!(1)), "other sections still survive");
+        assert_eq!(
+            doc.get("keep"),
+            Some(&json!(1)),
+            "other sections still survive"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

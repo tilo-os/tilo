@@ -261,7 +261,10 @@ pub fn init(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind, home: &str) 
     if str_at(doc, &m, "home").is_none() {
         let _ = doc.put(&m, "home", home);
     }
-    if !matches!(doc.get(&m, "refs"), Ok(Some((Value::Object(ObjType::List), _)))) {
+    if !matches!(
+        doc.get(&m, "refs"),
+        Ok(Some((Value::Object(ObjType::List), _)))
+    ) {
         let _ = doc.put_object(&m, "refs", ObjType::List);
     }
 }
@@ -483,7 +486,9 @@ impl PartialOrd for RecordCheckout {
 
 impl Ord for RecordCheckout {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.id.cmp(&other.id).then_with(|| self.kind.cmp(&other.kind))
+        self.id
+            .cmp(&other.id)
+            .then_with(|| self.kind.cmp(&other.kind))
     }
 }
 
@@ -531,7 +536,11 @@ impl RecordSet {
         let home = std::env::var("QOS_WORKSPACE_ID")
             .ok()
             .filter(|s| !s.is_empty())
-            .or_else(|| std::env::var("QUICK_CLUSTER_ID").ok().filter(|s| !s.is_empty()))
+            .or_else(|| {
+                std::env::var("QUICK_CLUSTER_ID")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or_default();
         Self {
             package_id,
@@ -730,8 +739,7 @@ impl RecordSet {
                 None
             }
         };
-        let mut autosave =
-            crate::persist::Autosave::spawn(store, crate::persist::DEFAULT_DEBOUNCE);
+        let mut autosave = crate::persist::Autosave::spawn(store, crate::persist::DEFAULT_DEBOUNCE);
         if let Some(mut stored) = stored {
             autosave.seed(&mut stored);
             if let Err(e) = doc.merge(&mut stored) {
@@ -759,7 +767,10 @@ impl RecordSet {
             let (mut doc, autosave) = self.load(&want.id);
             init(&mut doc, &want.id, &want.kind, &self.home);
             for (target, relation) in &want.references {
-                add_reference(&mut doc, &RecordRef::new(target.id.clone(), relation.clone()));
+                add_reference(
+                    &mut doc,
+                    &RecordRef::new(target.id.clone(), relation.clone()),
+                );
             }
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(
@@ -980,7 +991,10 @@ mod tests {
     fn storage_keys_are_stable_safe_and_distinct() {
         let a = RecordId::for_file("/work/report.odt");
         let b = RecordId::for_file("/work/other.odt");
-        assert_eq!(a.storage_key(), RecordId::for_file("/work/report.odt").storage_key());
+        assert_eq!(
+            a.storage_key(),
+            RecordId::for_file("/work/report.odt").storage_key()
+        );
         assert_ne!(a.storage_key(), b.storage_key());
         // A traversal in the identity must not survive into the key.
         let key = RecordId::for_file("/work/../../etc/shadow").storage_key();
@@ -989,12 +1003,10 @@ mod tests {
 
         // Paths that agree past the readable part of the key are still
         // two documents — a sanitise-only key would collide them.
-        let deep_a = RecordId::for_file(
-            "/work/clients/northwind/2026/contracts/final/appendix-a.odt",
-        );
-        let deep_b = RecordId::for_file(
-            "/work/clients/northwind/2026/contracts/final/appendix-b.odt",
-        );
+        let deep_a =
+            RecordId::for_file("/work/clients/northwind/2026/contracts/final/appendix-a.odt");
+        let deep_b =
+            RecordId::for_file("/work/clients/northwind/2026/contracts/final/appendix-b.odt");
         assert_ne!(
             deep_a.storage_key(),
             deep_b.storage_key(),
@@ -1032,10 +1044,21 @@ mod tests {
     fn annotations_reference_the_document_rather_than_living_in_it() {
         let mut markup = AutoCommit::new();
         let book = RecordId::for_file("/work/book.pdf");
-        init(&mut markup, &RecordId::minted(), &RecordKind::new("annotation-set"), "room-1");
-        assert!(add_reference(&mut markup, &RecordRef::new(book.clone(), "marks-up")));
+        init(
+            &mut markup,
+            &RecordId::minted(),
+            &RecordKind::new("annotation-set"),
+            "room-1",
+        );
+        assert!(add_reference(
+            &mut markup,
+            &RecordRef::new(book.clone(), "marks-up")
+        ));
         // Asserting the same reference twice is not two references.
-        assert!(!add_reference(&mut markup, &RecordRef::new(book.clone(), "marks-up")));
+        assert!(!add_reference(
+            &mut markup,
+            &RecordRef::new(book.clone(), "marks-up")
+        ));
         let refs = references(&markup);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].target, book);
@@ -1049,13 +1072,19 @@ mod tests {
         let b = RecordId::for_file("/work/b.odt");
         let kind = RecordKind::new("document");
         assert!(room::reference(&mut room_doc, &a, &kind));
-        assert!(!room::reference(&mut room_doc, &a, &kind), "referencing twice adds nothing");
+        assert!(
+            !room::reference(&mut room_doc, &a, &kind),
+            "referencing twice adds nothing"
+        );
         assert!(room::reference(&mut room_doc, &b, &kind));
         assert!(room::holds(&room_doc, &a) && room::holds(&room_doc, &b));
         assert_eq!(room::references(&room_doc).len(), 2);
 
         assert!(room::unreference(&mut room_doc, &a));
-        assert!(!room::holds(&room_doc, &a), "dropping the reference removes the access");
+        assert!(
+            !room::holds(&room_doc, &a),
+            "dropping the reference removes the access"
+        );
         assert!(room::holds(&room_doc, &b), "and touches nothing else");
     }
 

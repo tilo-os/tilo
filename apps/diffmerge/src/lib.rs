@@ -23,7 +23,7 @@ pub mod model;
 pub mod portal;
 pub mod samples;
 
-pub use actions::{DiffmergeAction, HunkChoice, DIFFMERGE_ACTION_TYPE};
+pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, HunkChoice};
 pub use app::{DiffMergeApp, Mode};
 pub use model::{DiffModel, MergeModel, Resolution};
 

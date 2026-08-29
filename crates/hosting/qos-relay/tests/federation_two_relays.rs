@@ -100,12 +100,20 @@ async fn op_on_relay1_reaches_device_on_relay2() {
             .await
             .expect("federation delta timeout")
             .expect("closed");
-        if let Envelope::Delta { delta, workspace_id: 3, .. } = env {
+        if let Envelope::Delta {
+            delta,
+            workspace_id: 3,
+            ..
+        } = env
+        {
             assert_eq!(delta, payload);
             got = true;
             break;
         }
         // Ignore stray Ready envelopes.
     }
-    assert!(got, "p2 must receive the delta via the federated peer relay");
+    assert!(
+        got,
+        "p2 must receive the delta via the federated peer relay"
+    );
 }

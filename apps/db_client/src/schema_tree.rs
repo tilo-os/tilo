@@ -5,9 +5,9 @@
 
 use std::collections::HashSet;
 
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 
 use crate::model::RelationKind;
 use crate::session::Session;
@@ -30,9 +30,17 @@ pub enum TreeClick {
 /// click y-coordinate back to an action.
 #[derive(Clone)]
 enum Row {
-    Schema { name: String },
-    Table { name: String },
-    Column { table: String, text: String, icon: String },
+    Schema {
+        name: String,
+    },
+    Table {
+        name: String,
+    },
+    Column {
+        table: String,
+        text: String,
+        icon: String,
+    },
 }
 
 pub struct SchemaTree {
@@ -118,7 +126,11 @@ impl SchemaTree {
                 if self.expanded_tables.contains(&table.name) {
                     for col in &table.columns {
                         let pk = if col.primary_key { "  PK" } else { "" };
-                        let nn = if col.not_null && !col.primary_key { " ·" } else { "" };
+                        let nn = if col.not_null && !col.primary_key {
+                            " ·"
+                        } else {
+                            ""
+                        };
                         let text = format!("{}{}{}  {}", col.name, pk, nn, col.decl_type);
                         rows.push(Row::Column {
                             table: table.name.clone(),
@@ -231,15 +243,26 @@ impl SchemaTree {
                 Row::Table { name } => {
                     let selected = self.selected.as_deref() == Some(name.as_str());
                     if selected {
-                        scene.fill(Fill::NonZero, t, p.selection, None, &row_rect.to_rounded_rect(5.0));
+                        scene.fill(
+                            Fill::NonZero,
+                            t,
+                            p.selection,
+                            None,
+                            &row_rect.to_rounded_rect(5.0),
+                        );
                     } else if hover {
-                        scene.fill(Fill::NonZero, t, p.hover, None, &row_rect.to_rounded_rect(5.0));
+                        scene.fill(
+                            Fill::NonZero,
+                            t,
+                            p.hover,
+                            None,
+                            &row_rect.to_rounded_rect(5.0),
+                        );
                     }
                     let open = self.expanded_tables.contains(name);
                     let tri = if open { "▾" } else { "▸" };
                     let info = session.schema.find_table(name);
-                    let is_view =
-                        info.map(|t| t.kind == RelationKind::View).unwrap_or(false);
+                    let is_view = info.map(|t| t.kind == RelationKind::View).unwrap_or(false);
                     tr.draw_text(
                         scene,
                         tri,
@@ -287,9 +310,17 @@ impl SchemaTree {
                         }
                     }
                 }
-                Row::Column { table, text, icon, .. } => {
+                Row::Column {
+                    table, text, icon, ..
+                } => {
                     if hover {
-                        scene.fill(Fill::NonZero, t, p.hover, None, &row_rect.to_rounded_rect(5.0));
+                        scene.fill(
+                            Fill::NonZero,
+                            t,
+                            p.hover,
+                            None,
+                            &row_rect.to_rounded_rect(5.0),
+                        );
                     }
                     // Resolve the type colour from the live schema so it
                     // tracks the theme (avoids storing a stale colour).

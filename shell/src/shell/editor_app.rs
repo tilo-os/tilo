@@ -18,8 +18,8 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::text_selection::line_boundaries;
+use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
@@ -111,7 +111,6 @@ impl EditorApp {
     fn line_end(&self, pos: usize) -> usize {
         line_boundaries(&self.body.text, pos).1
     }
-
 }
 
 impl Default for EditorApp {
@@ -508,7 +507,9 @@ impl Widget for EditorApp {
                     let y1 = y0 + LINE_HEIGHT as f64;
                     line_rects.push(Rect::new(x0, y0, x1, y1));
                     byte_cursor = line_end_byte;
-                    if byte_cursor < self.body.text.len() && self.body.text.as_bytes()[byte_cursor] == b'\n' {
+                    if byte_cursor < self.body.text.len()
+                        && self.body.text.as_bytes()[byte_cursor] == b'\n'
+                    {
                         byte_cursor += 1;
                         row += 1;
                     } else {

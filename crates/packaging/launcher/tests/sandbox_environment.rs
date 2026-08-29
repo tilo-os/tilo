@@ -266,7 +266,11 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
         "LD_PRELOAD".to_string(),
         "GLIBC_TUNABLES".to_string(),
     ];
-    allowed.extend(launcher::sandbox::INHERITED_ENV.iter().map(|s| s.to_string()));
+    allowed.extend(
+        launcher::sandbox::INHERITED_ENV
+            .iter()
+            .map(|s| s.to_string()),
+    );
 
     let inside = env_names_inside(payload.path());
     assert!(

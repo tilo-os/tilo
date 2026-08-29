@@ -1,14 +1,14 @@
-use automerge::{AutoCommit, ObjId};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, RoundedRect, Rect};
-use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style};
-use taffy::style_helpers::{length, percent};
-use crate::widget::Widget;
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId};
+use taffy::style_helpers::{length, percent};
+use taffy::{NodeId, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use winit::event::WindowEvent;
 
 pub struct Container {
     child: Option<Box<dyn Widget>>,
@@ -139,10 +139,22 @@ impl Widget for Container {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let child_node = self.child.as_mut().map(|c| c.build_layout(taffy, theme, node_map));
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let child_node = self
+            .child
+            .as_mut()
+            .map(|c| c.build_layout(taffy, theme, node_map));
 
-        let pad = if self.no_padding { 0.0 } else { theme.padding_standard };
+        let pad = if self.no_padding {
+            0.0
+        } else {
+            theme.padding_standard
+        };
         let width = match self.fixed_width {
             Some(px) => length(px),
             // `auto` so the basis is zero (the wrap decision ignores it);
@@ -193,19 +205,32 @@ impl Widget for Container {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        
+
         if let Some(child) = &mut self.child {
             let child_node = taffy.children(node).unwrap()[0];
             child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
         if self.has_background {
             let fill = self.fill_color.unwrap_or(theme.bg_primary);
             let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
             scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_standard, None, &shape);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &shape,
+            );
         }
 
         if let Some(child) = &mut self.child {
@@ -213,36 +238,77 @@ impl Widget for Container {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
         if let Some(child) = &mut self.child {
             let child_node = taffy.children(node_id).unwrap()[0];
-            child.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
+            child.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
         }
     }
 
     /// So an outer container's event-routing short-circuit honours an
     /// active drag deeper in the tree.
     fn wants_pointer_capture(&self) -> bool {
-        self.child.as_ref().is_some_and(|c| c.wants_pointer_capture())
+        self.child
+            .as_ref()
+            .is_some_and(|c| c.wants_pointer_capture())
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.child.as_ref().map(|c| c.as_ref() as &dyn Widget).into_iter().collect()
+        self.child
+            .as_ref()
+            .map(|c| c.as_ref() as &dyn Widget)
+            .into_iter()
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.child.as_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).into_iter().collect()
+        self.child
+            .as_mut()
+            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
 
-    fn name(&self) -> &str { "Container" }
+    fn name(&self) -> &str {
+        "Container"
+    }
 
-    fn is_focused(&self) -> bool { false }
-    fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
-    fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
+    fn is_focused(&self) -> bool {
+        false
+    }
+    fn needs_commit(&self) -> bool {
+        self.children().iter().any(|c| c.needs_commit())
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            child.on_commit();
+        }
+    }
 
     fn take_structure_dirty(&mut self) -> bool {
         self.child
@@ -255,7 +321,9 @@ impl Widget for Container {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -272,23 +340,44 @@ impl Widget for Container {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         if self.has_background {
             let fill = self.fill_color.unwrap_or(theme.bg_primary);
             let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
             scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_standard, None, &shape);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &shape,
+            );
         }
 
         if let Some(child) = &mut self.child {
-            child.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            child.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
 
         if let Some(scope) = self.permission_scope()
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
         if let Some(key) = self.presence_key()
@@ -304,8 +393,8 @@ impl Widget for Container {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use vello_encoding::DrawTag;
     use vello::peniko::Color;
+    use vello_encoding::DrawTag;
 
     /// 800×600 viewport. Drives the real five-pass path so the taffy width
     /// pin is exercised end-to-end.

@@ -54,8 +54,18 @@ pub fn month_title(anchor: NaiveDate) -> String {
 /// Full English month name.
 pub fn month_name(m: u32) -> &'static str {
     const NAMES: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June", "July",
-        "August", "September", "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
     NAMES[(m as usize - 1).min(11)]
 }

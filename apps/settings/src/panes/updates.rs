@@ -32,17 +32,17 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Dropdown, Row, Spacer, Text, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::prefs::{SystemPrefs, UpdatePrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row, value_row, El};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
 
 pub const CHECK_KEY: &str = "updates.check";
 pub const RESTART_KEY: &str = "updates.restart";
@@ -164,8 +164,7 @@ const ROLLBACK_CARD_TITLE: &str = "Go back to the previous image";
 const NO_ROLLBACK_CAPTION: &str = "One appears after the first update. Until then the only way back is a \
      reinstall, which is why this says so instead of showing a control that \
      would fail.";
-const ROLLBACK_INTRO_CAPTION: &str =
-    "Rolling back makes the previous image the one this machine boots. Nothing \
+const ROLLBACK_INTRO_CAPTION: &str = "Rolling back makes the previous image the one this machine boots. Nothing \
      is deleted \u{2014} the image you are on now stays on the disk and in the \
      boot menu.";
 /// What a rollback does not undo. Shown before the button that performs it, in
@@ -689,7 +688,11 @@ impl Widget for UpdatesPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.needs_seed {
             let _ = state.put(root, CHANNEL_KEY, self.prefs.channel.as_str());
-            let _ = state.put(root, AUTO_KEY, automerge::ScalarValue::Boolean(self.prefs.auto));
+            let _ = state.put(
+                root,
+                AUTO_KEY,
+                automerge::ScalarValue::Boolean(self.prefs.auto),
+            );
             let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
             let _ = state.put(root, RESTART_KEY, automerge::ScalarValue::Boolean(false));
             let _ = state.put(root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(false));
@@ -766,11 +769,7 @@ impl Widget for UpdatesPane {
                     let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
                     self.prefs.auto = effective;
                     self.last_prefs.auto = effective;
-                    let _ = state.put(
-                        root,
-                        AUTO_KEY,
-                        automerge::ScalarValue::Boolean(effective),
-                    );
+                    let _ = state.put(root, AUTO_KEY, automerge::ScalarValue::Boolean(effective));
                 }
             }
             self.structure_dirty = true;
@@ -974,10 +973,7 @@ mod tests {
         }
     }
 
-    fn pane_with(
-        staged: Option<&str>,
-        rebooter: Arc<RecordingRebooter>,
-    ) -> UpdatesPane {
+    fn pane_with(staged: Option<&str>, rebooter: Arc<RecordingRebooter>) -> UpdatesPane {
         let status = UpdateStatus {
             current_version: "qOS 2026.06".into(),
             staged_version: staged.map(|s| s.to_string()),
@@ -1005,13 +1001,15 @@ mod tests {
 
     #[test]
     fn parse_bootc_staged_detects_and_ignores() {
-        let staged = r#"{"status":{"staged":{"version":"qOS 2026.07"},"booted":{"version":"qOS 2026.06"}}}"#;
+        let staged =
+            r#"{"status":{"staged":{"version":"qOS 2026.07"},"booted":{"version":"qOS 2026.06"}}}"#;
         assert_eq!(parse_bootc_staged(staged).as_deref(), Some("qOS 2026.07"));
 
         let none = r#"{"status":{"staged":null,"booted":{"version":"qOS 2026.06"}}}"#;
         assert_eq!(parse_bootc_staged(none), None);
 
-        let image = r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/qos/qos:latest"}}}}}"#;
+        let image =
+            r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/qos/qos:latest"}}}}}"#;
         assert_eq!(
             parse_bootc_staged(image).as_deref(),
             Some("quay.io/qos/qos:latest")
@@ -1033,7 +1031,11 @@ mod tests {
         // Press Check.
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
-        assert_eq!(pane.prefs().last_checked, "CHECKED-NOW", "timestamp updated");
+        assert_eq!(
+            pane.prefs().last_checked,
+            "CHECKED-NOW",
+            "timestamp updated"
+        );
         assert_eq!(
             pane.status().staged_version.as_deref(),
             Some("qOS 2026.07"),
@@ -1207,7 +1209,10 @@ mod tests {
             "and the timer must actually be off afterwards"
         );
         assert_eq!(pane.timer_enabled(), Some(false));
-        assert!(pane.notice().is_none(), "nothing went wrong, so say nothing");
+        assert!(
+            pane.notice().is_none(),
+            "nothing went wrong, so say nothing"
+        );
     }
 
     /// When the system refuses, the switch goes back and the pane says so on

@@ -48,8 +48,8 @@ use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 use frame_link::{FrameLink, LinkConfig, LinkStats};
 use shell::network::decoder::H264Decoder;
 use shell::network::encoder::H264Encoder;
-use tracing::{Level, span, Subscriber};
-use tracing_subscriber::{layer::Context, prelude::*, registry::LookupSpan, Layer};
+use tracing::{Level, Subscriber, span};
+use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
 
 /// Command-line surface. `Default` picks numbers matching the task spec
 /// so `flatpak-share-demo` with no flags produces a working demo.
@@ -148,14 +148,16 @@ fn parse_args() -> Result<Args, String> {
                     .ok_or_else(|| "--throughput-kbps expects <n>".to_string())?
             }
             "--out" => {
-                args.out = it.next().map(PathBuf::from).ok_or_else(|| {
-                    "--out expects <path.mp4>".to_string()
-                })?
+                args.out = it
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "--out expects <path.mp4>".to_string())?
             }
             "--profile" => {
-                args.profile = it.next().map(PathBuf::from).ok_or_else(|| {
-                    "--profile expects <path.txt>".to_string()
-                })?
+                args.profile = it
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "--profile expects <path.txt>".to_string())?
             }
             "--source" => {
                 let v = it
@@ -168,9 +170,10 @@ fn parse_args() -> Result<Args, String> {
                 }
             }
             "--source-video" => {
-                let v = it.next().map(PathBuf::from).ok_or_else(|| {
-                    "--source-video expects <path.mp4>".to_string()
-                })?;
+                let v = it
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "--source-video expects <path.mp4>".to_string())?;
                 args.source = Source::Video(v);
             }
             "-h" | "--help" => {
@@ -223,7 +226,11 @@ struct SpanStats {
 impl ProfileLayer {
     fn snapshot(&self) -> Vec<(String, SpanStats)> {
         let inner = self.inner.lock().expect("profile lock");
-        inner.per_span.iter().map(|(k, v)| (k.clone(), *v)).collect()
+        inner
+            .per_span
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect()
     }
 }
 
@@ -282,14 +289,8 @@ impl SourceRenderer {
         let bytes = font_paths
             .iter()
             .find_map(|p| fs::read(p).ok())
-            .ok_or_else(|| {
-                format!(
-                    "no font found — tried {:?}",
-                    font_paths
-                )
-            })?;
-        let font = FontVec::try_from_vec(bytes)
-            .map_err(|e| format!("font parse failed: {e:?}"))?;
+            .ok_or_else(|| format!("no font found — tried {:?}", font_paths))?;
+        let font = FontVec::try_from_vec(bytes).map_err(|e| format!("font parse failed: {e:?}"))?;
         let rgba = vec![0u8; (width as usize) * (height as usize) * 4];
         Ok(Self {
             width,
@@ -381,15 +382,10 @@ impl SourceRenderer {
                 outlined.draw(|dx, dy, cov| {
                     let px = ox as i32 + dx as i32;
                     let py = oy as i32 + dy as i32;
-                    if px < 0
-                        || py < 0
-                        || px >= self.width as i32
-                        || py >= self.height as i32
-                    {
+                    if px < 0 || py < 0 || px >= self.width as i32 || py >= self.height as i32 {
                         return;
                     }
-                    let i =
-                        ((py as usize) * (self.width as usize) + px as usize) * 4;
+                    let i = ((py as usize) * (self.width as usize) + px as usize) * 4;
                     let a = cov.min(1.0);
                     self.rgba[i] = blend(self.rgba[i], color.0, a);
                     self.rgba[i + 1] = blend(self.rgba[i + 1], color.1, a);
@@ -473,8 +469,7 @@ impl CompositeRenderer {
             .iter()
             .find_map(|p| fs::read(p).ok())
             .ok_or_else(|| "no font found for composite text".to_string())?;
-        let font = FontVec::try_from_vec(bytes)
-            .map_err(|e| format!("font parse failed: {e:?}"))?;
+        let font = FontVec::try_from_vec(bytes).map_err(|e| format!("font parse failed: {e:?}"))?;
         let header_left = "SOURCE".to_string();
         let header_right = format!(
             "STREAMED · {}ms latency · {} kbps throttle",
@@ -513,7 +508,8 @@ impl CompositeRenderer {
         // Left half — source.
         let y0 = self.header_h as usize;
         for y in 0..self.src_h as usize {
-            let src_row = &src_rgba[y * (self.src_w as usize) * 4..(y + 1) * (self.src_w as usize) * 4];
+            let src_row =
+                &src_rgba[y * (self.src_w as usize) * 4..(y + 1) * (self.src_w as usize) * 4];
             let dst_row_start = (y + y0) * (self.canvas_w as usize) * 4;
             let dst_row_end = dst_row_start + (self.src_w as usize) * 4;
             self.out[dst_row_start..dst_row_end].copy_from_slice(src_row);
@@ -522,9 +518,9 @@ impl CompositeRenderer {
         let x0 = self.src_w as usize;
         if let Some(dec) = decoded_rgba {
             for y in 0..self.src_h as usize {
-                let src_row = &dec[y * (self.src_w as usize) * 4..(y + 1) * (self.src_w as usize) * 4];
-                let dst_row_start =
-                    (y + y0) * (self.canvas_w as usize) * 4 + x0 * 4;
+                let src_row =
+                    &dec[y * (self.src_w as usize) * 4..(y + 1) * (self.src_w as usize) * 4];
+                let dst_row_start = (y + y0) * (self.canvas_w as usize) * 4 + x0 * 4;
                 let dst_row_end = dst_row_start + (self.src_w as usize) * 4;
                 self.out[dst_row_start..dst_row_end].copy_from_slice(src_row);
             }
@@ -591,15 +587,11 @@ impl CompositeRenderer {
                 outlined.draw(|dx, dy, cov| {
                     let px = ox as i32 + dx as i32;
                     let py = oy as i32 + dy as i32;
-                    if px < 0
-                        || py < 0
-                        || px >= self.canvas_w as i32
-                        || py >= self.canvas_h as i32
+                    if px < 0 || py < 0 || px >= self.canvas_w as i32 || py >= self.canvas_h as i32
                     {
                         return;
                     }
-                    let i =
-                        ((py as usize) * (self.canvas_w as usize) + px as usize) * 4;
+                    let i = ((py as usize) * (self.canvas_w as usize) + px as usize) * 4;
                     let a = cov.min(1.0);
                     self.out[i] = blend(self.out[i], color.0, a);
                     self.out[i + 1] = blend(self.out[i + 1], color.1, a);
@@ -619,11 +611,15 @@ fn round_even(v: u32) -> u32 {
 /// Spawn `ffmpeg` to mux the raw H.264 Annex-B stream we're writing to
 /// its stdin into a playable MP4, which the user's default video player
 /// then opens.
-fn spawn_muxer(out: &Path, fps: u32, _width: u32, _height: u32) -> Result<std::process::Child, String> {
+fn spawn_muxer(
+    out: &Path,
+    fps: u32,
+    _width: u32,
+    _height: u32,
+) -> Result<std::process::Child, String> {
     // Ensure the destination directory exists.
     if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
     let child = Command::new("ffmpeg")
         .arg("-y")
@@ -670,10 +666,12 @@ fn write_profile_report(
         total_wall.as_secs_f64()
     ));
     lines.push(
-        "span                                            calls      total_ms     mean_us   %wall\n".to_string(),
+        "span                                            calls      total_ms     mean_us   %wall\n"
+            .to_string(),
     );
     lines.push(
-        "---------------------------------------------- ------  ------------  ----------  ------\n".to_string(),
+        "---------------------------------------------- ------  ------------  ----------  ------\n"
+            .to_string(),
     );
     let mut rows = layer.snapshot();
     rows.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns));
@@ -707,7 +705,13 @@ fn write_profile_report(
     Ok(())
 }
 
-fn format_footer(stats: &LinkStats, elapsed: Duration, sent: u64, decoded: u64, dropped: u64) -> String {
+fn format_footer(
+    stats: &LinkStats,
+    elapsed: Duration,
+    sent: u64,
+    decoded: u64,
+    dropped: u64,
+) -> String {
     let bps = stats.effective_bps(elapsed);
     let mbps = bps / 1_000_000.0;
     let mean_delay = stats.mean_delay_ms();
@@ -772,7 +776,8 @@ fn find_start_codes(bytes: &[u8]) -> Vec<usize> {
 fn main() -> Result<(), String> {
     // Install the tracing subscriber early so every span from the shell
     // encoder/decoder/shim is captured.
-    let profile_layer: Arc<Mutex<Option<ProfileLayer>>> = Arc::new(Mutex::new(Some(ProfileLayer::default())));
+    let profile_layer: Arc<Mutex<Option<ProfileLayer>>> =
+        Arc::new(Mutex::new(Some(ProfileLayer::default())));
     let inner = {
         let slot = profile_layer.lock().unwrap();
         slot.as_ref().unwrap().inner.clone()
@@ -784,9 +789,10 @@ fn main() -> Result<(), String> {
     };
     tracing_subscriber::registry()
         .with(shared_layer)
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-            |_| tracing_subscriber::EnvFilter::new("trace"),
-        ))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace")),
+        )
         .init();
     let args = parse_args().map_err(|e| {
         print_usage();
@@ -845,7 +851,10 @@ fn main() -> Result<(), String> {
 
     // Spawn ffmpeg for muxing.
     let mut muxer = spawn_muxer(&args.out, args.fps, canvas_w, canvas_h)?;
-    let mut mux_stdin = muxer.stdin.take().ok_or_else(|| "ffmpeg stdin missing".to_string())?;
+    let mut mux_stdin = muxer
+        .stdin
+        .take()
+        .ok_or_else(|| "ffmpeg stdin missing".to_string())?;
 
     // Source video path (--source-video) — decode via ffmpeg piping raw
     // RGBA into a channel. `--source pattern` is the default; video-in
@@ -893,7 +902,11 @@ fn main() -> Result<(), String> {
         // buffering SPS/PPS metadata — expected; the counter only advances
         // on Some(frame).
         for nal_blob in shim.drain_ready(now) {
-            let span = span!(Level::TRACE, "recv.decoder.decode", nal_bytes = nal_blob.len());
+            let span = span!(
+                Level::TRACE,
+                "recv.decoder.decode",
+                nal_bytes = nal_blob.len()
+            );
             let _entered = span.enter();
             if let Some(frame) = recv_decoder.decode(&nal_blob) {
                 // Post-HDR decoder now returns typed DecodedPixels; the
@@ -957,9 +970,7 @@ fn main() -> Result<(), String> {
 
     // Close ffmpeg stdin so it flushes + finalises the MP4.
     drop(mux_stdin);
-    let status = muxer
-        .wait()
-        .map_err(|e| format!("wait ffmpeg: {e}"))?;
+    let status = muxer.wait().map_err(|e| format!("wait ffmpeg: {e}"))?;
     if !status.success() {
         return Err(format!("ffmpeg exited non-zero: {status}"));
     }

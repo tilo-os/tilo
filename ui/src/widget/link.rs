@@ -142,7 +142,10 @@ impl Widget for Link {
     ) -> NodeId {
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: Dimension::auto(), height: Dimension::auto() },
+                size: Size {
+                    width: Dimension::auto(),
+                    height: Dimension::auto(),
+                },
                 flex_shrink: 0.0,
                 flex_grow: 0.0,
                 ..Default::default()
@@ -159,7 +162,10 @@ impl Widget for Link {
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let (w, h) = text_renderer.measure(&self.label, self.font_size, None);
-        taffy::Size { width: w + 0.1, height: h }
+        taffy::Size {
+            width: w + 0.1,
+            height: h,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -217,7 +223,13 @@ impl Widget for Link {
                 Rect::new(x0 - pad, y0 - pad, x0 + tw + pad, y0 + th + pad),
                 4.0,
             );
-            scene.stroke(&Stroke::new(1.5), transform, theme.border_focus, None, &ring);
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                theme.border_focus,
+                None,
+                &ring,
+            );
         }
     }
 
@@ -257,7 +269,11 @@ impl Widget for Link {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if self.is_hovered {
                     let pressed = *element_state == ElementState::Pressed;
                     if pressed != self.is_pressed {
@@ -379,7 +395,8 @@ mod tests {
         let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let mut link = {
             let opened = opened.clone();
-            Link::new("https://example.com/page").on_open(move |u| opened.borrow_mut().push(u.to_string()))
+            Link::new("https://example.com/page")
+                .on_open(move |u| opened.borrow_mut().push(u.to_string()))
         };
         let (tree, node) = laid_out(&mut link);
 
@@ -390,15 +407,49 @@ mod tests {
         let mut dispatch = |link: &mut Link, ev: WindowEvent| {
             let mut handled = false;
             let mut focus = None;
-            link.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree);
+            link.handle_event(
+                &ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
+            );
         };
 
-        dispatch(&mut link, WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() });
-        dispatch(&mut link, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
+        dispatch(
+            &mut link,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (10.0, 10.0).into(),
+            },
+        );
+        dispatch(
+            &mut link,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
         assert!(opened.borrow().is_empty(), "does not open until release");
-        dispatch(&mut link, WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left });
+        dispatch(
+            &mut link,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
 
-        assert_eq!(opened.borrow().as_slice(), &["https://example.com/page".to_string()], "opened exactly the link's URL on release");
+        assert_eq!(
+            opened.borrow().as_slice(),
+            &["https://example.com/page".to_string()],
+            "opened exactly the link's URL on release"
+        );
         assert_eq!(link.last_activated(), Some("https://example.com/page"));
     }
 
@@ -410,7 +461,8 @@ mod tests {
             Link::new("https://w3.org").on_open(move |u| opened.borrow_mut().push(u.to_string()))
         };
         let mut doc = AutoCommit::new();
-        let handled = link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT);
+        let handled =
+            link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT);
         assert!(handled, "Activate is handled");
         assert_eq!(opened.borrow().as_slice(), &["https://w3.org".to_string()]);
     }
@@ -421,8 +473,16 @@ mod tests {
         let link = Link::new("https://turing.org.uk").with_label("Turing");
         let node = Widget::accessibility(&link).expect("a link is not presentational");
         assert_eq!(node.role, Role::Link);
-        assert_eq!(node.name.as_deref(), Some("Turing"), "the visible label is the accessible name");
-        assert_eq!(node.value.as_deref(), Some("https://turing.org.uk"), "the URL is the accessible value");
+        assert_eq!(
+            node.name.as_deref(),
+            Some("Turing"),
+            "the visible label is the accessible name"
+        );
+        assert_eq!(
+            node.value.as_deref(),
+            Some("https://turing.org.uk"),
+            "the URL is the accessible value"
+        );
         assert!(node.state.focusable, "a link is keyboard-focusable");
     }
 
