@@ -17,6 +17,22 @@ use uuid::Uuid;
 const APP: &str = "dev.qos.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 
+/// The capability an inviter issues an agent for the app it was invited
+/// to. The agent holds no role, so this grant is the whole of what it may
+/// enumerate and perform.
+fn granted(name: &str) -> ui::permissions::PermissionContext {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    PermissionContext::from_capabilities(
+        Actor::agent(name),
+        vec![CapOverride::grant(
+            Subject::agent(name),
+            Scope::App("word-processor".to_string()),
+            Verb::Write,
+        )
+        .with_id("invited")],
+    )
+}
+
 /// A document with a heading, three bullets, and an instruction to Scribe.
 fn seed_document() -> AutoCommit {
     seed_document_as("quinten")
@@ -45,6 +61,43 @@ fn seed_document_as(actor: &str) -> AutoCommit {
         }
         let p = dm.insert_block(Some(&after), "paragraph");
         dm.splice_text(&p, 0, 0, "Scribe: turn the bullets into a table");
+    }
+    doc.commit();
+    doc
+}
+
+/// A document with a title paragraph and an image, and one instruction
+/// written as two things to do.
+fn seed_sequence_document() -> AutoCommit {
+    let mut doc = AutoCommit::new();
+    doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
+    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    {
+        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let title = dm.insert_block(None, "paragraph");
+        dm.splice_text(&title, 0, 0, "Launch plan");
+        let img = dm.insert_block(Some(&title), "image");
+        let p = dm.insert_block(Some(&img), "paragraph");
+        dm.splice_text(&p, 0, 0, "Scribe: give this a title, then caption the image");
+    }
+    doc.commit();
+    doc
+}
+
+/// As [`seed_sequence_document`], but the second thing asked for is
+/// something nothing in the room can do.
+fn seed_unanswerable_sequence_document() -> AutoCommit {
+    let mut doc = AutoCommit::new();
+    doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
+    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    {
+        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let title = dm.insert_block(None, "paragraph");
+        dm.splice_text(&title, 0, 0, "Launch plan");
+        let p = dm.insert_block(Some(&title), "paragraph");
+        dm.splice_text(&p, 0, 0, "Scribe: give this a title and then juggle three plates");
     }
     doc.commit();
     doc
@@ -139,6 +192,9 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         // `run_until` bounds this test; the wait-for-a-document deadline
         // belongs to `run`, and is exercised on its own below.
         await_document: Duration::ZERO,
+        settle: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
@@ -327,6 +383,9 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
         model: false,
         model_timeout: Duration::from_secs(1),
         await_document: Duration::ZERO,
+        settle: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
@@ -475,6 +534,9 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
         model: false,
         model_timeout: Duration::from_secs(1),
         await_document: Duration::from_millis(1500),
+        settle: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
     };
     let mut session = Session::connect(cfg).expect("agent connects");
 
@@ -496,5 +558,211 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
     assert!(
         msg.contains("--record"),
         "the diagnosis must name the flag that fixes it: {msg}"
+    );
+}
+
+/// One request, two things to do: each step runs in order against the
+/// document the step before it left, and the instruction paragraph goes
+/// away only once every step in it is done.
+#[test]
+fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("collab.sock");
+    {
+        let sock = sock.clone();
+        std::thread::spawn(move || {
+            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
+        });
+    }
+    let started = Instant::now();
+    while !sock.exists() {
+        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let room = Uuid::new_v4();
+
+    let mut peer = UnixStream::connect(&sock).expect("peer connects");
+    let hello = serde_json::to_vec(&CollabRequest::Hello {
+        app_id: APP.into(),
+        cluster_id: room,
+        record: Some(RECORD.into()),
+        handle: Some("quinten".into()),
+    })
+    .unwrap();
+    write_frame(&mut peer, &hello).unwrap();
+    let mut replica = seed_sequence_document();
+    std::thread::sleep(Duration::from_millis(100));
+
+    let cfg = Config {
+        socket: Some(sock.clone()),
+        app_id: APP.into(),
+        cluster: room,
+        record: Some(RECORD.into()),
+        name: "Scribe".into(),
+        pace: Duration::from_millis(10),
+        once: true,
+        // Two clauses joined by "then" — the deterministic floor's job to
+        // split, never the model's; see `Session::decide`.
+        model: false,
+        model_timeout: Duration::from_secs(1),
+        await_document: Duration::ZERO,
+        settle: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
+    };
+    let agent = std::thread::spawn(move || {
+        let mut s = Session::connect(cfg).expect("agent connects");
+        s.run_until(Instant::now() + Duration::from_secs(15))
+            .expect("agent session")
+    });
+
+    peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut done = false;
+    while Instant::now() < deadline && !done {
+        let Some(frame) = read_frame(&mut peer) else {
+            continue;
+        };
+        let event: CollabEvent = serde_json::from_slice(&frame).expect("decode");
+        match event {
+            CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Arrived, ..
+            } => {
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT { data: replica.save() }).unwrap();
+                write_frame(&mut peer, &snap).unwrap();
+            }
+            CollabEvent::CRDTIncremental { data } => {
+                replica.load_incremental(&data).expect("apply the agent's change");
+                let b = blocks(&replica);
+                let has_heading = b.iter().any(|x| x.kind == "heading" && x.text == "Launch plan");
+                let has_caption = b.iter().any(|x| x.text == "Figure 1");
+                let has_instruction = b.iter().any(|x| x.text.starts_with("Scribe:"));
+                if has_heading && has_caption && !has_instruction {
+                    done = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        done,
+        "the sequence never finished both steps; blocks: {:?}",
+        blocks(&replica).iter().map(|b| (b.kind.clone(), b.text.clone())).collect::<Vec<_>>()
+    );
+    assert!(agent.join().unwrap(), "the agent reports having acted");
+
+    // Both steps really ran, in the order asked, and only one of the two
+    // ever removes the instruction.
+    let b = blocks(&replica);
+    assert_eq!(b[0].kind, "heading", "the title step ran");
+    assert_eq!(b[0].text, "Launch plan");
+    assert!(
+        b.iter().any(|x| x.kind == "image"),
+        "the image the caption belongs to is still there"
+    );
+    assert_eq!(
+        b.iter().filter(|x| x.text.starts_with("Scribe:")).count(),
+        0,
+        "the instruction is answered once, not once per step"
+    );
+}
+
+/// A sequence naming something nothing in the room can do is refused
+/// *whole*, before either step is touched — never the first step applied
+/// and the second one silently dropped.
+#[test]
+fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("collab.sock");
+    {
+        let sock = sock.clone();
+        std::thread::spawn(move || {
+            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
+        });
+    }
+    let started = Instant::now();
+    while !sock.exists() {
+        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let room = Uuid::new_v4();
+
+    let mut peer = UnixStream::connect(&sock).expect("peer connects");
+    let hello = serde_json::to_vec(&CollabRequest::Hello {
+        app_id: APP.into(),
+        cluster_id: room,
+        record: Some(RECORD.into()),
+        handle: Some("quinten".into()),
+    })
+    .unwrap();
+    write_frame(&mut peer, &hello).unwrap();
+    let mut replica = seed_unanswerable_sequence_document();
+    std::thread::sleep(Duration::from_millis(100));
+
+    let cfg = Config {
+        socket: Some(sock.clone()),
+        app_id: APP.into(),
+        cluster: room,
+        record: Some(RECORD.into()),
+        name: "Scribe".into(),
+        pace: Duration::from_millis(10),
+        once: true,
+        model: false,
+        model_timeout: Duration::from_secs(1),
+        await_document: Duration::ZERO,
+        settle: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
+    };
+    let agent = std::thread::spawn(move || {
+        let mut s = Session::connect(cfg).expect("agent connects");
+        s.run_until(Instant::now() + Duration::from_secs(15))
+            .expect("agent session")
+    });
+
+    peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut done = false;
+    while Instant::now() < deadline && !done {
+        let Some(frame) = read_frame(&mut peer) else {
+            continue;
+        };
+        let event: CollabEvent = serde_json::from_slice(&frame).expect("decode");
+        match event {
+            CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Arrived, ..
+            } => {
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT { data: replica.save() }).unwrap();
+                write_frame(&mut peer, &snap).unwrap();
+            }
+            CollabEvent::CRDTIncremental { data } => {
+                replica.load_incremental(&data).expect("apply the agent's change");
+                let b = blocks(&replica);
+                if b.iter().any(|x| x.text.contains("juggle three plates")) {
+                    done = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        done,
+        "the agent never answered the sequence; blocks: {:?}",
+        blocks(&replica).iter().map(|b| (b.kind.clone(), b.text.clone())).collect::<Vec<_>>()
+    );
+    assert!(agent.join().unwrap(), "the agent reports having acted");
+
+    // Nothing was touched: the title is still a plain paragraph, and the
+    // refusal was written in place of the instruction rather than after
+    // half the request had already been carried out.
+    let b = blocks(&replica);
+    assert_eq!(b[0].kind, "paragraph", "the title step never ran: the whole sequence was refused first");
+    assert_eq!(b[0].text, "Launch plan");
+    assert!(
+        b.iter().any(|x| x.text.starts_with("Scribe: I can't")),
+        "the refusal names what could not be done: {:?}",
+        b.iter().map(|x| x.text.clone()).collect::<Vec<_>>()
     );
 }

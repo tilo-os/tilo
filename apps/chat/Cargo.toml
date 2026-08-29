@@ -49,6 +49,10 @@ ui = { path = "../../ui" }
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
 # framework's `ui::ActionHost`.
 qos-actions = { path = "../../crates/collab/actions" }
+# The address a message carries when it was authored by selecting something —
+# `Message::reference` — and the vocabulary an agent's own progress on a
+# summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
+qos-reference = { path = "../../crates/collab/reference" }
 # The qOS runtime user-identity loader (QOS_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.

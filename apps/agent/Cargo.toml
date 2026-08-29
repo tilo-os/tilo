@@ -32,6 +32,10 @@ chat = { path = "../chat", default-features = false }
 # cropped photograph" means what the app means by it.
 photos = { path = "../photos" }
 qos-actions = { path = "../../crates/collab/actions" }
+# The address a chat message carries when it was authored by selecting
+# something — what `listen`'s `Subject::Carried` reads, so the agent never
+# has to work out what "this" meant on its own.
+qos-reference = { path = "../../crates/collab/reference" }
 qdoc = { path = "../../crates/doc/qdoc" }
 # The decision — which exported action answers an instruction — is a model
 # call. Blocking, because the agent's loop is a plain blocking loop; rustls so

@@ -73,6 +73,15 @@ pub struct NewMessage {
     /// authoring time by [`crate::mention::resolve`] and carried into the
     /// document, so a reader never has to re-parse the text.
     pub mentions: Vec<crate::mention::Mention>,
+    /// The address of the thing this message is about, when it was written
+    /// by selecting something. Minted by the publishing app at authoring
+    /// time and carried verbatim, so it survives into the document instead
+    /// of being lost at the composer.
+    pub reference: Option<qos_reference::ResourceRef>,
+    /// An agent's record of what it is doing with the message this one
+    /// replies to. Written by the agent at the moment it takes a summons, so
+    /// the reply exists — and says so — before there is an outcome.
+    pub work: Option<crate::model::AgentWork>,
 }
 
 pub struct ChatDoc;
@@ -566,6 +575,31 @@ impl ChatDoc {
             let _ = doc.put(&e, "start", m.start as i64);
             let _ = doc.put(&e, "len", m.len as i64);
             let _ = doc.put(&e, "agent", m.is_agent);
+        }
+
+        // reference — the address of what this message is about.
+        //
+        // One JSON scalar rather than a map of its parts, because a reference
+        // is authored once and never co-edited: nothing merges two peers'
+        // idea of which block was selected, so splitting it into fields would
+        // buy convergence nobody needs and risk a half-written address that
+        // still parses. Absent for an ordinary message, which is what keeps
+        // `Message::reference` honest as "written about something".
+        if let Some(r) = &nm.reference
+            && let Ok(json) = serde_json::to_string(r)
+        {
+            let _ = doc.put(&block, "reference", json.as_str());
+        }
+
+        // work — an agent's record of what it did with the message this one
+        // replies to. One JSON scalar for the same reason `reference` is
+        // one: the agent that took the summons is the only thing that ever
+        // sets it, so a later state simply supersedes an earlier one and
+        // there is nothing for a merge to reconcile.
+        if let Some(w) = &nm.work
+            && let Ok(json) = serde_json::to_string(w)
+        {
+            let _ = doc.put(&block, "work", json.as_str());
         }
 
         // history
@@ -1284,7 +1318,9 @@ impl ChatDoc {
                 parent: if parent.is_empty() { None } else { Some(parent) },
                 reactions: Self::read_reactions(doc, &m),
                 mentions: Self::read_mentions(doc, &m),
+                reference: Self::read_reference(doc, &m),
                 attachment: Self::read_attachment(doc, &m),
+                work: Self::read_work(doc, &m),
                 pinned: get_bool(doc, &m, "pinned"),
             });
         }
@@ -1386,6 +1422,69 @@ impl ChatDoc {
             _ => None,
         }
     }
+
+    /// The address of what a message is about, or `None` for an ordinary
+    /// message — and also for one whose stored address will not parse, which
+    /// is deliberately not the same as a nearby address that does. A
+    /// reference that cannot be read is no reference at all.
+    fn read_reference(doc: &AutoCommit, msg: &ObjId) -> Option<qos_reference::ResourceRef> {
+        let raw = get_str(doc, msg, "reference");
+        if raw.is_empty() {
+            return None;
+        }
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// The agent record stored on a message, or `None` for an ordinary one —
+    /// and also for a record that will not parse, which is deliberately not
+    /// read as some nearby state that does. A state that cannot be read is
+    /// no claim about the agent at all, and inventing one would be exactly
+    /// the fabrication this field exists to avoid.
+    fn read_work(doc: &AutoCommit, msg: &ObjId) -> Option<crate::model::AgentWork> {
+        let raw = get_str(doc, msg, "work");
+        if raw.is_empty() {
+            return None;
+        }
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// Record what an agent is doing with the message `msg` replies to, and
+    /// optionally give `msg` the words it did not have when it was posted.
+    ///
+    /// `say` splices into a body that is still **empty**. That is an
+    /// authoring completion, not an edit: nothing is archived into the
+    /// message's history and it is never flagged `edited`, because nobody
+    /// reworded anything — the agent posted the reply before it had an
+    /// answer and is now supplying the answer. A body that already has text
+    /// is left alone rather than silently rewritten.
+    ///
+    /// Returns whether the document changed.
+    pub fn set_message_work(
+        doc: &mut AutoCommit,
+        channel: &str,
+        msg: &str,
+        work: &crate::model::AgentWork,
+        say: Option<&str>,
+    ) -> bool {
+        let Some(block) = Self::find_message_obj(doc, channel, msg) else {
+            return false;
+        };
+        let mut changed = false;
+        if let Ok(json) = serde_json::to_string(work)
+            && get_str(doc, &block, "work") != json
+        {
+            let _ = doc.put(&block, "work", json.as_str());
+            changed = true;
+        }
+        if let Some(text) = say.filter(|t| !t.is_empty())
+            && let Ok(Some((Value::Object(ObjType::Text), t))) = doc.get(&block, "text")
+            && doc.text(&t).map(|s| s.is_empty()).unwrap_or(false)
+        {
+            let _ = doc.splice_text(&t, 0, 0, text);
+            changed = true;
+        }
+        changed
+    }
 }
 
 #[cfg(test)]
@@ -1397,6 +1496,34 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_if_empty(&mut doc);
         doc
+    }
+
+    /// A message's `reference` — the address of the thing it is about —
+    /// survives being written and read back, and an ordinary message carries
+    /// none. Read through [`ChatDoc::list_messages`], the same path every
+    /// consumer uses, not a lower-level accessor that could drift from it.
+    #[test]
+    fn a_messages_reference_round_trips_and_an_ordinary_message_carries_none() {
+        let mut doc = seeded();
+        let about =
+            qos_reference::ResourceRef::whole("files.entry", "files.entry:/var/workspace/harbour.png", "harbour.png");
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            "c_general",
+            "m_about",
+            NewMessage { author: model::ME.into(), ts: 1000, text: "look at this".into(), reference: Some(about.clone()), ..Default::default() },
+        );
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            "c_general",
+            "m_plain",
+            NewMessage { author: model::ME.into(), ts: 1001, text: "hi".into(), ..Default::default() },
+        );
+        let msgs = ChatDoc::list_messages(&doc, "c_general");
+        let with_ref = msgs.iter().find(|m| m.id == "m_about").unwrap();
+        assert_eq!(with_ref.reference, Some(about));
+        let plain = msgs.iter().find(|m| m.id == "m_plain").unwrap();
+        assert_eq!(plain.reference, None, "an ordinary message must carry no reference");
     }
 
     #[test]
