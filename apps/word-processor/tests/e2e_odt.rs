@@ -139,7 +139,7 @@ fn table_created_in_editor_survives_odt_save_reload() {
 
 #[test]
 fn custom_named_style_survives_odt_save_reload() {
-    use word_processor::{StyleProps, WordProcessor};
+    use word_processor::StyleProps;
 
     let path = temp_path("styled.odt");
 
