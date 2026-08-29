@@ -394,8 +394,9 @@ impl LinParser {
                     // advance self by what sub consumed past `name(`
                     let consumed = sub.pos.saturating_sub(name.chars().count() + 1);
                     self.pos += consumed;
-                    nodes.truncate(1.max(nodes.len().min(1)));
-                    // Keep exactly the single produced call node.
+                    // Keep exactly the single produced call node. `next()`
+                    // already yields only the first; the truncate that used to
+                    // stand here computed 1.max(len.min(1)), which is always 1.
                     if let Some(first) = nodes.into_iter().next() {
                         vec![first]
                     } else {
