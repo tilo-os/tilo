@@ -1,26 +1,17 @@
 //! Fluent-based localization for the word processor's user-facing strings.
 //!
 //! The project mandates i18n via [Fluent](https://projectfluent.org/): UI code
-//! passes **translation keys**, never literal display strings, to the chrome.
-//! This module is the editor's small, self-contained loader for that — it owns
-//! the bundled `.ftl` catalogs (embedded with `include_str!`, so there is no
-//! build script and no runtime file I/O), picks a locale from the environment,
-//! and resolves keys through [`t`] / [`t_args`].
+//! passes **translation keys**, never literal strings. This module is the
+//! editor's small, self-contained loader: bundled `.ftl` catalogs (embedded via
+//! `include_str!`, no build script, no runtime file I/O), a locale picked from
+//! the environment, resolved through [`t`]/[`t_args`].
 //!
-//! Design goals:
-//! - **Dependency-light**: only `fluent` + `unic-langid` (already in the
-//!   workspace lockfile via `ui`). No `fluent-fallback`, no loader crates.
-//! - **Panic-free**: a missing key, a missing locale, or a malformed pattern
-//!   never panics — it degrades to the English string, and ultimately to the
-//!   key itself, so the UI always renders *something* legible.
-//! - **Self-contained**: the editor does not depend on global i18n state set up
-//!   elsewhere (e.g. `ui::i18n`), so a headless `--shots` render or a unit test
-//!   gets correct strings without any wiring.
-//!
-//! Locale selection (first hit wins): `LC_ALL`, then `LANGUAGE`, then `LANG`.
-//! The value is read as a POSIX locale (`de_DE.UTF-8`), of which only the
-//! language/region part (`de-DE`) is used. If no catalog matches the requested
-//! language, `en-US` (the source locale) is used.
+//! Panic-free: a missing key/locale/pattern degrades to the English string,
+//! then the key itself, never panics. Self-contained: no dependency on global
+//! i18n state (`ui::i18n`), so `--shots`/unit tests get correct strings
+//! unwired. Locale selection (first hit wins): `LC_ALL`, `LANGUAGE`, `LANG`,
+//! read as POSIX (`de_DE.UTF-8`, only the `de-DE` language/region used);
+//! falls back to `en-US` if nothing matches.
 
 use std::sync::{OnceLock, RwLock};
 
@@ -328,15 +319,12 @@ mod tests {
         assert_eq!(parse_posix_locale("de:en_US").map(|l| l.to_string()), Some("de".to_string()));
     }
 
-    /// One word is a word, not "1 words". The counter is often the only
-    /// text on a fresh page, so the grammar of the count is the grammar of
-    /// the whole screen.
-    ///
-    /// Also a parse guard: `make_bundle` keeps the entries that parsed and
-    /// drops the ones that did not, so a slip inside a multi-line select
-    /// expression costs the message rather than the build. Asserting on
-    /// the rendered plural catches that — a dropped message renders as the
-    /// bare key.
+    /// One word is a word, not "1 words" — the counter is often the only text
+    /// on a fresh page, so its grammar is the whole screen's grammar. Also a
+    /// parse guard: `make_bundle` drops entries that fail to parse, so a slip
+    /// in a multi-line select expression costs the message, not the build —
+    /// asserting the rendered plural catches a dropped message (which renders
+    /// as the bare key).
     #[test]
     fn counts_take_the_singular_at_one() {
         let _g = lock_locale();

@@ -20,15 +20,14 @@ pub fn color_to_hex(c: [u8; 3]) -> String {
 /// `#rrggbb` (or `rrggbb`) → `[r,g,b]`; non-hex falls back to black.
 pub fn hex_to_color(s: &str) -> [u8; 3] {
     let h = s.trim().trim_start_matches('#');
-    if h.len() == 6 {
-        if let (Ok(r), Ok(g), Ok(b)) = (
+    if h.len() == 6
+        && let (Ok(r), Ok(g), Ok(b)) = (
             u8::from_str_radix(&h[0..2], 16),
             u8::from_str_radix(&h[2..4], 16),
             u8::from_str_radix(&h[4..6], 16),
         ) {
             return [r, g, b];
         }
-    }
     [0, 0, 0]
 }
 
@@ -214,13 +213,10 @@ impl StyleSheet {
     }
 }
 
-/// The localized, user-facing display name for a style.
-///
-/// Built-in styles (`body`, `heading1`…) carry an English name in the document
-/// so exports stay interoperable, but the panel and pickers must show them in
-/// the active locale — under German, "Body" reads as "Fließtext". This resolves
-/// a Fluent key per built-in id; **custom** styles keep their stored,
-/// user-editable name verbatim.
+/// The localized, user-facing display name for a style. Built-in styles carry
+/// an English name in the document so exports stay interoperable, but the
+/// panel/pickers show the active locale (German "Body" → "Fließtext") via a
+/// Fluent key per built-in id; custom styles keep their stored name verbatim.
 pub fn style_display_name(id: &str, props: &StyleProps) -> String {
     let key = match id {
         "body" => "style-body",
@@ -255,11 +251,10 @@ pub fn structural_kind_for(style_id: &str) -> Option<(&'static str, Option<i64>,
 /// derived from the block kind (+ heading level). This keeps existing documents
 /// working while letting blocks opt into custom styles.
 pub fn style_key_for(kind: &str, level: Option<i64>, explicit: Option<&str>) -> String {
-    if let Some(s) = explicit {
-        if !s.is_empty() {
+    if let Some(s) = explicit
+        && !s.is_empty() {
             return s.to_string();
         }
-    }
     match kind {
         "heading" => format!("heading{}", level.unwrap_or(1).clamp(1, 3)),
         "list_item" => "list".to_string(),

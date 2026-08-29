@@ -51,10 +51,8 @@ fn texts(state: &mut ui::State, wp: &mut WordProcessorWidget) -> Vec<String> {
 }
 
 /// Two sessions, two files, one room. Neither side's paragraphs may disappear,
-/// and the outcome may not depend on which actor id sorted higher.
-///
-/// Repeated because the losing side used to be picked by comparing two random
-/// actor ids — a single run proves nothing when the failure is a coin flip.
+/// and the outcome may not depend on which actor id sorted higher — repeated
+/// because that's a coin-flip failure a single run would rarely catch.
 #[test]
 fn two_sessions_that_each_opened_a_file_keep_both_documents() {
     const ROUNDS: usize = 24;

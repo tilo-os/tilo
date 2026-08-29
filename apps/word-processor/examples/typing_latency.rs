@@ -1,25 +1,18 @@
 //! What one keystroke costs, measured on the path a person's keystroke takes.
 //!
-//! A character typed into a document runs the app's whole frame: `handle_event`
-//! mutates the CRDT, then `sync` → `build_layout` → `apply_layout` → `draw`
-//! rebuild what is on screen. If that round trip is slower than the gap between
-//! keystrokes, characters queue in the compositor and land in bursts — which is
-//! what "no typing, then a whole bunch of letters at once" looks like from the
-//! keyboard.
-//!
-//! So this measures per-character cost, not per-frame average, and prints the
-//! distribution: a burst is a tail, and a mean hides it. It also types into
-//! documents of different sizes, because the failure mode worth ruling in or
-//! out is cost that grows with the document — a CRDT write that rewrites the
-//! whole text on every press is O(n) per key and O(n²) over a paragraph.
+//! A character typed runs the app's whole frame: `handle_event` mutates the
+//! CRDT, then `sync` → `build_layout` → `apply_layout` → `draw`. A round trip
+//! slower than the gap between keystrokes queues characters in the compositor,
+//! landing in bursts. So this measures per-character cost (a burst is a tail; a
+//! mean hides it), across document sizes, to rule in/out cost that grows with
+//! the document (an O(n)-per-key CRDT write is O(n²) over a paragraph).
 //!
 //! ```text
 //! cargo run -p word-processor --release --example typing_latency
 //! cargo run -p word-processor --release --example typing_latency -- --chars 400
 //! ```
 //!
-//! Release only. A debug build of this tree is slow enough to make every
-//! reading meaningless.
+//! Release only — a debug build is slow enough to make every reading meaningless.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -214,19 +207,16 @@ fn report(label: &str, per_char: &[u64]) {
 /// Type at a fixed real-time cadence — a person's hands do not wait for the
 /// app — and record when each character actually finished being processed.
 ///
-/// Keys go in on a schedule taken from a clock started before the first one, so
-/// when the editor overruns its slot the following keys are already due and go
-/// straight through with no pause. That is what a keyboard queue does, and it
-/// is what turns a slow character into a visible burst: several characters
-/// complete inside one display frame and land on screen together.
+/// Keys go in on a schedule from a clock started before the first one, so an
+/// overrun slot's due keys go straight through with no pause — a keyboard
+/// queue, and what turns a slow character into a visible burst (several land
+/// on screen in one display frame).
 ///
 /// Returns, per 60 Hz display frame, how many characters became visible in it.
-///
-/// Only the key-down is sent. The driver runs a frame per event, and the live
-/// app runs one per *character* — winit coalesces the redraws the press and
-/// release both ask for. Sending the press alone gives one frame per character,
-/// which is the real cadence; the release costs the word processor nothing,
-/// since only a press carries text.
+/// Only the key-down is sent: the driver runs a frame per event but the live
+/// app runs one per *character* (winit coalesces the press/release redraws),
+/// so press-alone gives the real one-frame-per-character cadence; the release
+/// costs nothing since only a press carries text.
 fn paced_burst_profile(paragraphs: usize, chars: usize, per_second: f64) -> Vec<usize> {
     let path = document_with(paragraphs);
     let (state, wp, _fmt) = open_document(&path).expect("the document opens");
