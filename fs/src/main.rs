@@ -20,32 +20,18 @@ struct Cli {
 }
 
 /// How the mount enforces per-identity file access.
-///
-/// Shared by both subcommands: whether you host a workspace or join
-/// someone else's, the file-access question is the same one.
 #[derive(Args, Debug, Clone, Default)]
 struct AclArgs {
-    /// Enforce this capability list — a JSON file holding an array of
-    /// `collab_types::CapOverride` records. Without this flag the mount
-    /// keeps the Unix-veneer-only behaviour; with it, the file must load,
-    /// or the mount aborts rather than silently serving unenforced.
+    /// Enforce this capability list (JSON array of `collab_types::CapOverride`); a load failure aborts the mount.
     #[arg(long, value_name = "FILE")]
     acl: Option<PathBuf>,
-    /// The identity this mount acts as: 64 hex characters (a 32-byte
-    /// Ed25519 public key). Defaults to this node's own key.
+    /// The identity this mount acts as: 64 hex chars (Ed25519 public key). Defaults to this node's own key.
     #[arg(long, value_name = "HEX")]
     identity: Option<String>,
-    /// A principal this mount can prove it is, beyond its own person id —
-    /// `room:<id>`, `app:<id>`, `agent:<id>`, `token:<id>` or
-    /// `person:<id>`. Repeatable.
+    /// A principal this mount can prove beyond its own person id (`room:<id>`, `app:<id>`, `agent:<id>`, `token:<id>`, `person:<id>`); repeatable.
     #[arg(long = "principal", value_name = "KIND:ID")]
     principals: Vec<String>,
-    /// How often to re-read `--acl`, in seconds. `0` reads it once at
-    /// mount and never again. `/var/workspace` stays mounted for the whole
-    /// session, so a list read only at mount time could never express a
-    /// grant made an hour later. Defaults to a second: an unchanged file
-    /// costs one `stat`, and a permission change shouldn't be something
-    /// the user waits on.
+    /// How often to re-read `--acl`, in seconds (`0` = once, at mount time; default 1).
     #[arg(long, value_name = "SECONDS", default_value_t = 1)]
     acl_reload_secs: u64,
 }
@@ -63,8 +49,7 @@ enum Command {
         /// Seed the workspace from this directory's current contents.
         #[arg(short, long)]
         seed: Option<PathBuf>,
-        /// Serve the document control socket here (apps fine-grained-edit
-        /// documents collaboratively).
+        /// Serve the document control socket here.
         #[arg(long)]
         control_sock: Option<PathBuf>,
         #[command(flatten)]
@@ -110,7 +95,6 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Parse a 64-character hex identity into the 32-byte key it names.
 fn parse_identity(hex_str: &str) -> Result<IdentityKey> {
     let raw = hex::decode(hex_str.trim())
         .with_context(|| format!("identity {hex_str:?} is not hex"))?;
@@ -121,7 +105,6 @@ fn parse_identity(hex_str: &str) -> Result<IdentityKey> {
     Ok(key)
 }
 
-/// Parse a `kind:id` principal argument.
 fn parse_principal(spec: &str) -> Result<Principal> {
     let (kind, id) = spec
         .split_once(':')
@@ -137,17 +120,9 @@ fn parse_principal(spec: &str) -> Result<Principal> {
     })
 }
 
-/// Resolve `--acl`/`--identity`/`--principal` into the ACL the mount
-/// enforces, or `None` when no capability list was requested.
-///
-/// Fail-closed on every error path: if enforcement was asked for and
-/// anything about it does not resolve — missing file, malformed JSON, a
-/// bad identity — the mount is refused rather than silently falling back
-/// to unenforced, which would turn a systemd unit typo into a wide-open
-/// workspace. Omitting `--acl` entirely is the documented opt-out.
-///
-/// `device_key` is the default subject: this machine's device public key,
-/// stable across reboots, so a grant written against it survives a restart.
+/// Resolve `--acl`/`--identity`/`--principal` into the ACL the mount enforces
+/// (`None` if none requested). Fail-closed: any resolution failure refuses
+/// the mount rather than falling back to unenforced; `device_key` is the default subject.
 fn resolve_acl(args: &AclArgs, device_key: IdentityKey) -> Result<Option<Arc<CapabilityFile>>> {
     let Some(path) = &args.acl else {
         if args.identity.is_some() || !args.principals.is_empty() {
@@ -176,12 +151,7 @@ fn resolve_acl(args: &AclArgs, device_key: IdentityKey) -> Result<Option<Arc<Cap
     Ok(Some(Arc::new(file)))
 }
 
-/// Re-read the capability list every `every` seconds, swapping the
-/// result into the live mount.
-///
-/// The reload is the whole point of the handle: without it a grant made
-/// after boot never reaches `/var/workspace`. `0` disables it, for a
-/// caller that wants the mount pinned to the list it started with.
+/// Re-read the capability list every `every` seconds and swap it into the live mount (`0` disables reload).
 fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task::JoinHandle<()>> {
     if every == 0 {
         println!(
@@ -213,11 +183,7 @@ fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task
     }))
 }
 
-/// Bind and serve the document control socket (best-effort).
-///
-/// `enforcement` is the same ACL and identity the mount is bound to. The
-/// socket reaches the same documents by a shorter route, so it has to reach
-/// them under the same policy — see [`fs::control`].
+/// Bind and serve the document control socket (best-effort), using the same ACL/identity as the mount.
 fn spawn_control(
     sock: PathBuf,
     namespace: Arc<Mutex<Namespace>>,
@@ -379,10 +345,7 @@ fn namespace_path(cache_dir: &Option<PathBuf>) -> Option<PathBuf> {
     cache_dir.as_ref().map(|d| d.join("namespace.bin"))
 }
 
-/// Where host-generated thumbnails are cached — a `thumbs/` subdir of the
-/// content cache, so previews survive a remount and the read-only root stays
-/// read-only. `None` for an in-memory mount (no persistent cache), which then
-/// serves no thumbnails.
+/// Where host-generated thumbnails are cached (`thumbs/` under the content cache); `None` for an in-memory mount.
 fn thumb_path(cache_dir: &Option<PathBuf>) -> Option<PathBuf> {
     cache_dir.as_ref().map(|d| d.join("thumbs"))
 }
@@ -407,9 +370,7 @@ fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task
     })
 }
 
-/// Open a joiner's namespace: load any persisted copy (offline-capable), then
-/// merge the host's current document if reachable. Fails only if there's
-/// neither a persisted copy nor a reachable host.
+/// Open a joiner's namespace: load any persisted copy, then merge the host's doc if reachable.
 async fn open_namespace_mount(
     author: String,
     np: &Option<PathBuf>,
@@ -455,15 +416,12 @@ async fn run_mount(
 
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
     let fs = QuickFS::new(namespace, hydrator, heuristics).with_sync(sync);
-    // Bind the capability list, if one was given, before the mount is
-    // live — every open/read/write on this mount is then checked as the
-    // bound identity.
+    // Bind the capability list, if given, before the mount goes live, so every op is checked from the start.
     let fs = match acl {
         Some((acl, identity)) => fs.with_acl(acl, identity),
         None => fs,
     };
-    // Host-side thumbnails: when the mount has a persistent cache dir, generate
-    // previews as metadata and serve them through the `user.qos.thumb` xattr.
+    // Host-side thumbnails: generate previews as metadata, served via the `user.qos.thumb` xattr.
     let fs = match thumb_dir {
         Some(dir) => match fs::ThumbProvider::open(&dir) {
             Ok(provider) => fs.with_thumbs(provider),
@@ -486,8 +444,7 @@ async fn run_mount(
     let mount_task = tokio::task::spawn_blocking(move || fuser::mount2(fs, &mp, &config));
     println!("Mounted QuickFS at {mount_point:?}");
 
-    // Exit cleanly on Ctrl-C or if the mount terminates on its own (don't hang
-    // a crash-looping service forever on a failed mount).
+    // Exit cleanly on Ctrl-C or mount exit (don't hang a crash-looping service forever).
     tokio::select! {
         res = mount_task => match res {
             Ok(Ok(())) => println!("Filesystem unmounted."),
@@ -566,12 +523,7 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(rel)
     }
 
-    /// The `ExecStart=` argv from the shipped unit, line continuations
-    /// folded, ready for clap.
-    ///
-    /// Read from the unit itself rather than retyped here: a copy in a
-    /// test asserts that a string parses, not that the shipped image
-    /// runs it.
+    /// The `ExecStart=` argv from the shipped unit, so the test proves the shipped image runs, not a copy.
     fn service_exec_start() -> Vec<String> {
         let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
             .expect("the shipped fs.service must exist");
@@ -616,8 +568,7 @@ mod tests {
         }
     }
 
-    // An enforcement point that ships switched off is not an enforcement
-    // point, so the unit is asserted on directly.
+    // An enforcement point shipped switched off is not an enforcement point, so the unit is asserted on directly.
     #[test]
     fn the_shipped_service_enforces_a_capability_list() {
         let argv = service_exec_start();
@@ -645,8 +596,7 @@ mod tests {
         );
     }
 
-    // The unit names a file; tmpfiles.d has to put one there or the mount
-    // is refused on every fresh boot — fail-closed, but a broken image.
+    // tmpfiles.d must place the file the unit names, or the mount is fail-closed-refused on every fresh boot.
     #[test]
     fn tmpfiles_seeds_the_capability_list_the_service_names() {
         let conf = std::fs::read_to_string(os_file("os/usr/lib/tmpfiles.d/qos.conf"))
@@ -662,9 +612,7 @@ mod tests {
             "the seed must come from the shipped default: {seeding}"
         );
 
-        // …and the image must actually contain the file tmpfiles copies
-        // from, or the seed silently does nothing and the mount is
-        // refused on every boot.
+        // ...and the image must contain the file tmpfiles copies from, or the seed does nothing and the mount is refused on every boot.
         let containerfile = std::fs::read_to_string(os_file("os/Containerfile"))
             .expect("the production Containerfile must exist");
         assert!(
@@ -676,9 +624,7 @@ mod tests {
         );
     }
 
-    // …and the default it seeds from must be a capability list this
-    // binary can actually parse and act on. A malformed default would
-    // refuse the mount on every first boot.
+    // ...and the seeded default must be a capability list this binary can parse, or the mount is refused on first boot.
     #[test]
     fn the_shipped_default_list_grants_the_local_session_its_workspace() {
         use fs::Access;
@@ -702,9 +648,7 @@ mod tests {
             "the shipped default must let the local session write its own workspace"
         );
 
-        // And the grant is the principal's, not the mount's: a mount
-        // that does not present `person:local` gets nothing from this
-        // list. That is what makes a peer-joined mount narrowable.
+        // The grant is the principal's, not the mount's — a mount not presenting `person:local` gets nothing, which narrows a peer-joined mount.
         let outsider = CapabilityFile::load(&path, identity, Vec::new())
             .expect("loads")
             .handle();
@@ -742,9 +686,7 @@ mod tests {
         }
     }
 
-    // No `--acl` ⇒ no capability list ⇒ the mount keeps the
-    // Unix-veneer-only behaviour. This is the documented opt-out and the
-    // reason the shipped fs.service line still works unchanged.
+    // No `--acl` means Unix-veneer-only behaviour — the documented opt-out, and why fs.service still works unchanged.
     #[test]
     fn without_the_acl_flag_no_capability_list_is_bound() {
         let resolved = resolve_acl(&acl_args_from(&[]), NODE_KEY).expect("no ACL is not an error");
@@ -780,8 +722,7 @@ mod tests {
         );
     }
 
-    // An empty capability list is a valid, total denial — not an error,
-    // and emphatically not a fallback to the unenforced mount.
+    // An empty capability list is a valid, total denial — not an error, and not a fallback to unenforced.
     #[test]
     fn an_empty_capability_file_binds_a_denying_acl() {
         use fs::Access;
@@ -829,8 +770,7 @@ mod tests {
         assert!(!acl.permits(&who, "/w/other", Access::Read));
     }
 
-    // `--identity` alone enforces nothing; accepting it silently would
-    // read as "this mount is now identity-scoped" when it is not.
+    // `--identity` alone enforces nothing; accepting it silently would read as identity-scoped when it isn't.
     #[test]
     fn identity_without_a_capability_list_is_rejected() {
         let args = acl_args_from(&["--identity", &hex::encode([0x0A; 32])]);

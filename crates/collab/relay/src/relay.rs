@@ -1,21 +1,13 @@
 //! The relay's libp2p swarm + event loop.
 //!
-//! ## What the loop does
-//!
-//! - Listens on every multiaddr in `RelayConfig.listen`.
-//! - Dials every `bootstrap` multiaddr at startup and feeds its
-//!   `/p2p/<peerid>` suffix into the Kademlia routing table.
-//! - On a freshly-discovered peer (gossipsub `Subscribed`, mdns
-//!   `Discovered`, identify `Received`), adds it as an explicit
-//!   gossipsub peer if it advertised any topic on our allowlist.
-//! - Forwards gossipsub messages by virtue of being a mesh
-//!   participant — gossipsub itself does the forwarding once a
-//!   peer subscribes to a topic we already see traffic on. The
-//!   relay's role is to *stay subscribed*, persistently, to every
-//!   matching topic.
-//! - Tracks metrics if `metrics_listen` is set.
-//! - Handles SIGTERM/SIGINT by breaking out of the loop and
-//!   returning from `run()`.
+//! Listens on every `RelayConfig.listen` multiaddr, dials `bootstrap`
+//! peers at startup (feeding their `/p2p/<peerid>` into Kademlia), and
+//! adds a freshly-discovered peer (gossipsub `Subscribed`, mdns
+//! `Discovered`, identify `Received`) as an explicit gossipsub peer if it
+//! advertised an allowlisted topic. Forwarding itself is just gossipsub
+//! mesh participation — the relay's job is to *stay subscribed*,
+//! persistently, to every matching topic. Tracks metrics if
+//! `metrics_listen` is set, and exits cleanly on SIGTERM/SIGINT.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -32,10 +24,8 @@ use crate::config::RelayConfig;
 use crate::identity::load_or_create_keypair;
 use crate::metrics::{RelayMetrics, TopicLabels};
 
-/// Per (topic, peer) sliding-window rate limiter.
-///
-/// Tracks the count of messages seen in the current minute. When the
-/// minute rolls, the counter resets. Cheap: a `HashMap<(String,
+/// Per (topic, peer) sliding-window rate limiter: counts messages in the
+/// current minute, resetting when it rolls. Cheap — a `HashMap<(String,
 /// PeerId), (Instant, u32)>` checked once per inbound message.
 #[derive(Default)]
 struct RateLimiter {
@@ -64,8 +54,7 @@ impl RateLimiter {
 }
 
 /// The relay's public handle. After [`Relay::build`] the swarm is
-/// listening on every configured multiaddr; [`Relay::run`] takes
-/// ownership and drives the event loop until shutdown.
+/// listening; [`Relay::run`] takes ownership and drives the event loop.
 pub struct Relay {
     swarm: Swarm<RelayBehaviour>,
     config: RelayConfig,
@@ -74,18 +63,16 @@ pub struct Relay {
     metrics: Arc<RelayMetrics>,
     metrics_handle: Option<tokio::task::JoinHandle<()>>,
     rate_limiter: RateLimiter,
-    /// Subscribed gossipsub topics (those that matched the allowlist
-    /// after some peer announced them). We subscribe on first sight
-    /// and never unsubscribe — a relay's whole job is to stay
-    /// available.
+    /// Topics matching the allowlist once some peer announced them. We
+    /// subscribe on first sight and never unsubscribe — staying available is the job.
     subscribed_topics: HashSet<String>,
     connected_peers: HashSet<PeerId>,
 }
 
 impl Relay {
-    /// Build a relay from `config`. Loads / generates the keypair,
-    /// constructs the swarm, starts listening, dials bootstrap
-    /// peers, and (optionally) starts the metrics HTTP server.
+    /// Builds a relay from `config`: loads/generates the keypair, constructs
+    /// the swarm, starts listening, dials bootstrap peers, and optionally
+    /// starts the metrics server.
     pub async fn build(config: RelayConfig) -> anyhow::Result<Self> {
         config.validate()?;
         let topic_matcher = config.compile_topic_matcher()?;
@@ -118,8 +105,7 @@ impl Relay {
             }
         }
 
-        // Seed Kademlia with bootstrap multiaddrs. Each must carry a
-        // `/p2p/<peerid>` suffix so we can authenticate the dial.
+        // Seed Kademlia with bootstrap multiaddrs; each needs a `/p2p/<peerid>` suffix to authenticate the dial.
         for addr in &config.bootstrap {
             if let Some(peer_id) = extract_peer_id(addr) {
                 swarm
@@ -138,9 +124,8 @@ impl Relay {
                 tracing::warn!(%addr, ?err, "bootstrap dial failed");
             }
         }
-        // Kick off a Kademlia bootstrap query so we populate our
-        // routing table from the configured peers. Failures here are
-        // non-fatal (e.g. zero bootstrap peers on the seed relay).
+        // Kick off a Kademlia bootstrap query to populate the routing table.
+        // Failures are non-fatal (e.g. zero bootstrap peers on the seed relay).
         if !config.bootstrap.is_empty()
             && let Err(err) = swarm.behaviour_mut().kademlia.bootstrap()
         {
@@ -176,27 +161,22 @@ impl Relay {
         })
     }
 
-    /// Local peer id — operators publish `<listen>/p2p/<local_peer_id>`
-    /// as the bootstrap addr for other relays.
+    /// Local peer id; operators publish `<listen>/p2p/<local_peer_id>` as the bootstrap addr for other relays.
     pub fn local_peer_id(&self) -> PeerId {
         self.keypair.public().to_peer_id()
     }
 
-    /// Reference to the keypair. The relay binary uses this once at
-    /// startup to log the public addr; not exposed for re-signing.
+    /// Reference to the keypair, used once at startup to log the public addr; not exposed for re-signing.
     pub fn keypair(&self) -> &identity::Keypair {
         &self.keypair
     }
 
-    /// Snapshot of the metrics struct. Integration tests assert on
-    /// counters via this handle.
+    /// Snapshot of the metrics struct; integration tests assert on counters via this handle.
     pub fn metrics(&self) -> Arc<RelayMetrics> {
         self.metrics.clone()
     }
 
-    /// Drive the swarm until SIGTERM/SIGINT. Returns `Ok(())` on
-    /// graceful shutdown, `Err` only if the signal handlers fail to
-    /// install.
+    /// Drives the swarm until SIGTERM/SIGINT. Returns `Ok(())` on graceful shutdown, `Err` only if the signal handlers fail to install.
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut sigterm = signal(SignalKind::terminate())
             .context("installing SIGTERM handler")?;
@@ -225,9 +205,7 @@ impl Relay {
         Ok(())
     }
 
-    /// Drive the swarm until `predicate` returns `Some(value)`.
-    /// Intended for integration tests that need to wait for a
-    /// specific swarm event without racing the loop.
+    /// Drives the swarm until `predicate` returns `Some`; for integration tests that need to wait for a specific event without racing the loop.
     pub async fn run_until<F, T>(&mut self, mut predicate: F) -> Option<T>
     where
         F: FnMut(&SwarmEvent<RelayBehaviourEvent>) -> Option<T>,
@@ -235,10 +213,8 @@ impl Relay {
         loop {
             let event = self.swarm.select_next_some().await;
             let outcome = predicate(&event);
-            // Process the event *after* the predicate so the test
-            // can observe raw events without our handler having
-            // mutated state first. The handler still runs for state
-            // bookkeeping.
+            // Process the event after the predicate so tests can observe raw events
+            // before our handler mutates state; the handler still runs for bookkeeping.
             self.handle_swarm_event(event).await;
             if outcome.is_some() {
                 return outcome;
@@ -246,9 +222,7 @@ impl Relay {
         }
     }
 
-    /// Single swarm-event tick — exposed for the in-process
-    /// integration tests that want to interleave their own logic
-    /// with the relay's reactions.
+    /// Single swarm-event tick, exposed for in-process integration tests that interleave their own logic with the relay's reactions.
     pub async fn step(&mut self) {
         let event = self.swarm.select_next_some().await;
         self.handle_swarm_event(event).await;
@@ -286,8 +260,7 @@ impl Relay {
                 self.handle_mdns(ev);
             }
             SwarmEvent::Behaviour(RelayBehaviourEvent::Ping(_)) => {
-                // Pings are bookkeeping only; the connection-closed
-                // path handles real failures.
+                // Pings are bookkeeping only; connection-closed handles real failures.
             }
             _ => {}
         }
@@ -360,10 +333,8 @@ impl Relay {
                 protocol = %info.protocol_version,
                 "identify",
             );
-            // Feed the peer's listen addrs into Kademlia so DHT
-            // queries can find them later. Without this, the relay
-            // only knows the dialled addr, not the peer's other
-            // listening sockets.
+            // Feed the peer's listen addrs into Kademlia so DHT queries can find them
+            // later — without this the relay only knows the dialled addr.
             for addr in info.listen_addrs {
                 self.swarm
                     .behaviour_mut()
@@ -400,8 +371,7 @@ impl Relay {
     }
 }
 
-/// Extract the `PeerId` from a `/p2p/<id>` component of a multiaddr.
-/// Returns `None` if the multiaddr lacks the `p2p` protocol tail.
+/// Extracts the `PeerId` from a `/p2p/<id>` multiaddr component, or `None` if absent.
 fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
     use libp2p::multiaddr::Protocol;
     addr.iter().find_map(|p| match p {

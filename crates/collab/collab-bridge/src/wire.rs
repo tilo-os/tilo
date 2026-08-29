@@ -1,18 +1,13 @@
 //! Local mirror of the legacy `ui::collaboration` wire types
-//! (`CollabRequest` / `CollabEvent` / `PresencePayload` /
-//! `PresenceKey` / `Collaborator`).
+//! (`CollabRequest` / `CollabEvent` / `PresencePayload` / `PresenceKey` /
+//! `Collaborator`).
 //!
-//! We intentionally do **not** depend on the `ui` crate, which drags
-//! in wgpu / vello / cosmic-text and would balloon the bridge daemon
-//! into a windowing dep tree. Instead we redefine the enums here with
-//! the same serde-JSON-compatible layout so the wire round-trips
-//! identically. If `ui::collaboration` ever changes shape, this
-//! module needs to move in lockstep — the round-trip test in
-//! `tests/roundtrip.rs` guards the JSON representation.
-//!
-//! The `PresenceKey` enum is repeated verbatim so `keyBytes` postcard
-//! round-trips end-to-end (SDK-side `postcard::to_stdvec(&PresenceKey)`
-//! → wire → shell broker → wire → SDK-side `postcard::from_bytes()`).
+//! We intentionally do **not** depend on the `ui` crate — that would drag
+//! in wgpu/vello/cosmic-text and balloon the bridge daemon into a
+//! windowing dep tree. These enums are redefined here with the same
+//! serde-JSON layout so the wire round-trips identically; `tests/roundtrip.rs`
+//! guards that. `PresenceKey` is repeated verbatim so `keyBytes` postcard
+//! round-trips end-to-end through the shell broker.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -25,15 +20,10 @@ pub enum CollabRequest {
         app_id: String,
         cluster_id: Uuid,
         /// Which record this connection carries, mirroring
-        /// `ui::collaboration::CollabRequest::Hello`. A bridged SDK
-        /// client has no record of its own, so `hello_from_join` sends
-        /// `None` — but the field has to exist here or the mirror is no
-        /// longer a mirror and the JSON the broker parses differs from
-        /// the JSON this crate emits.
-        ///
-        /// `#[serde(default)]` for the same reason as upstream: a frame
-        /// from a peer predating records parses as `None` instead of
-        /// being dropped as malformed.
+        /// `ui::collaboration::CollabRequest::Hello`; must exist here even though
+        /// `hello_from_join` always sends `None`, to keep the mirrored JSON shape
+        /// identical. `#[serde(default)]` so an older peer's frame parses as
+        /// `None` instead of being rejected.
         #[serde(default)]
         record: Option<String>,
         /// Presence handle (see `ui::collaboration::CollabRequest::Hello`).
@@ -109,38 +99,24 @@ pub struct Collaborator {
     pub color: [f32; 3],
     /// Whether this member is an agent rather than a person.
     ///
-    /// The room already knows — an agent is admitted as one, and
-    /// `RosterRow::is_agent` records it. This projection dropped it, so
-    /// anything downstream that needed to tell an agent from a person
-    /// had to read the id and hope.
-    ///
-    /// Defaulted on the wire so an older peer that omits the field reads
-    /// as a person: a peer wrongly shown as a person is a smaller lie
-    /// than a roster that will not load.
+    /// Defaulted on the wire so an older peer that omits the field reads as a
+    /// person — a peer wrongly shown as human is a smaller lie than a roster
+    /// that fails to load.
     #[serde(default)]
     pub is_agent: bool,
     /// Whether this row is the receiving machine's own participant.
     ///
-    /// An application cannot work it out for itself. `id` is the address
-    /// *other* machines use for a participant, and a machine never
-    /// announces its own participant to its own applications — so the
-    /// only local identity available was a different string for the same
-    /// person, and anything asking "am I the one addressed here"
-    /// compared two ids that were never going to match.
-    ///
-    /// Defaulted on the wire, so a peer that predates it reads as
-    /// somebody else — which is what every row was before this existed.
+    /// Not derivable from `id` — a machine never gets its own participant
+    /// announced to itself, so `id` alone can't identify "the local one".
+    /// Defaulted on the wire so a peer predating this field reads as somebody else.
     #[serde(default)]
     pub is_self: bool,
 }
 
-// ---- PresenceKey mirror -------------------------------------------------
-//
-// The SDK-side `keyBytes` is a postcard-encoded `ui::PresenceKey`. The
-// bridge decodes it into this local mirror so a `Presence` request can
-// be shipped upstream as a full JSON `CollabRequest::Presence`. The
-// shape must match `ui::presence::PresenceKey` byte-for-byte under
-// postcard.
+// PresenceKey mirror: SDK-side `keyBytes` is postcard-encoded
+// `ui::PresenceKey`; the bridge decodes into this local mirror to ship a
+// `Presence` request upstream. Shape must match
+// `ui::presence::PresenceKey` byte-for-byte under postcard.
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PathSegment {
@@ -154,25 +130,22 @@ pub enum PresenceKey {
     Tab { id: String },
     Workspace { id: String },
     App { app: AppKind, sub: String },
-    /// A participant's broadcast view subset, as its postcard encoding.
-    /// Opaque here — the bridge only routes it.
+    /// A participant's broadcast view subset, as its postcard encoding — opaque here, the bridge only routes it.
     View { data: Vec<u8> },
     /// A pointer position together with the space it was measured in.
     Pointer { space: PointerSpace },
 }
 
-/// Postcard mirror of `ui::presence::PointerSpace`. Same ordinal rule as
-/// [`AppKind`]: variant order must match upstream byte-for-byte.
+/// Postcard mirror of `ui::presence::PointerSpace`; variant order must match upstream byte-for-byte (same rule as [`AppKind`]).
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PointerSpace {
     Desktop { room: String },
     Surface { surface: String },
 }
 
-/// Postcard mirror of `ui::permissions::AppKind`. Postcard tags enum
-/// variants by ordinal, so the variant order below MUST match
-/// `ui::permissions::AppKind` byte-for-byte. If upstream grows a
-/// variant, the bridge must grow one at the same ordinal.
+/// Postcard mirror of `ui::permissions::AppKind`. Postcard tags variants
+/// by ordinal, so this order MUST match `ui::permissions::AppKind`
+/// byte-for-byte — a new upstream variant needs one here at the same ordinal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum AppKind {
     Terminal,

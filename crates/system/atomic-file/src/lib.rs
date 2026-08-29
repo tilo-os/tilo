@@ -2,43 +2,36 @@
 //!
 //! # Why one crate
 //!
-//! Twenty-two places in this tree wrote a file by the same three-step dance —
-//! write a temp file, rename it over the target — and eighteen of them left
-//! out the step that makes the dance work.
+//! Twenty-two places in this tree wrote a file by the same three-step dance — write a temp
+//! file, rename it over the target — and eighteen omitted the step that makes it work.
 //!
-//! `rename(2)` is atomic with respect to the *directory entry*: a reader sees
-//! either the old file or the new one, never a half-written one. It says
-//! nothing about whether the new file's **contents** have reached the disk.
-//! Without an `fsync` on the temp file before the rename, a power loss can
-//! leave the directory entry pointing at a file whose data blocks were never
-//! written — which is exactly the empty-or-garbage file the temp dance was
-//! adopted to prevent, now reached by a narrower but still real window. The
-//! copies that omitted it were not saving a syscall; they were not getting the
-//! guarantee they were written for.
+//! `rename(2)` is atomic with respect to the *directory entry*: a reader sees either the old
+//! file or the new one, never a half-written one — but it says nothing about whether the new
+//! file's **contents** reached disk. Without an `fsync` on the temp file before the rename, a
+//! power loss can leave the directory entry pointing at a file whose data blocks were never
+//! written: the empty-or-garbage file the temp dance was meant to prevent, reached through a
+//! narrower but still real window.
 //!
-//! [`write`] does all four steps: write the temp file, `fsync` it, rename, and
-//! `fsync` the containing directory so the rename itself is durable.
+//! [`write`] does all four steps: write the temp file, `fsync` it, rename, and `fsync` the
+//! containing directory so the rename itself is durable.
 //!
 //! # What it does not do
 //!
-//! It does not create the parent directory — callers know whether a missing
-//! parent is normal (first run) or a bug, and silently creating one hides the
-//! second case. Use [`write_creating_parent`] when it is the first.
+//! It does not create the parent directory — callers know whether a missing parent is
+//! normal (first run) or a bug, and silently creating one hides the second case. Use
+//! [`write_creating_parent`] when it is the first.
 //!
-//! The temp file is created beside the target, never in `/tmp`, so the rename
-//! is always within one filesystem. A cross-device rename fails with `EXDEV`
-//! and would leave the original untouched and the write silently lost by any
-//! caller that ignored the error.
+//! The temp file is created beside the target, never in `/tmp`, so the rename is always
+//! within one filesystem — a cross-device rename fails with `EXDEV` and would leave the
+//! original untouched and the write silently lost by any caller that ignored the error.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// Replace `path`'s contents with `bytes`, durably.
-///
-/// On success the file at `path` holds exactly `bytes`, and a crash at any
-/// point leaves either the previous contents or the new ones. The parent
-/// directory must already exist — see [`write_creating_parent`].
+/// Replace `path`'s contents with `bytes`, durably. On success the file holds exactly
+/// `bytes`, and a crash at any point leaves either the previous contents or the new ones.
+/// The parent directory must already exist — see [`write_creating_parent`].
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_inner(path, bytes, None)
 }
@@ -53,12 +46,10 @@ pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_inner(path, bytes, None)
 }
 
-/// [`write`], with unix permission bits applied to the temp file **before** it
-/// is renamed into place, so the file is never visible at its final path with
-/// wider permissions than intended.
-///
-/// This is what a secret needs: creating the file and then `chmod`ing it
-/// leaves a window in which another user can open it.
+/// [`write`], with unix permission bits applied to the temp file **before** it is renamed
+/// into place, so the file is never visible at its final path with wider permissions than
+/// intended — what a secret needs, since creating then `chmod`ing leaves a window where
+/// another user can open it.
 pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     write_inner(path, bytes, Some(mode))
 }
@@ -77,8 +68,8 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
         #[cfg(not(unix))]
         let _ = mode;
         f.write_all(bytes)?;
-        // The step the copies of this pattern kept omitting: without it the
-        // rename below can be durable while these bytes are not.
+        // The step the copies of this pattern kept omitting: without it the rename below can be
+        // durable while these bytes are not.
         f.sync_all()?;
     }
 
@@ -88,9 +79,8 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
         return Err(e);
     }
 
-    // Make the rename itself durable. Failure here is not fatal — the data is
-    // already fsync'd and the entry is visible — and some filesystems refuse
-    // to open a directory for this, so it is best-effort by design.
+    // Make the rename itself durable. Failure here isn't fatal (data is already fsync'd, entry
+    // visible), and some filesystems refuse to open a directory for this, so it's best-effort.
     if let Some(dir) = path.parent() {
         let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
         if let Ok(d) = File::open(dir) {
@@ -100,12 +90,10 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
     Ok(())
 }
 
-/// The temp file's path: beside the target, so the rename never crosses a
-/// filesystem boundary, and prefixed with a dot so a directory listing (or a
-/// `pages/*.md` glob) does not treat it as real content.
-///
-/// The process id keeps two processes writing the same file from clobbering
-/// each other's temp file and renaming a half-written one into place.
+/// The temp file's path: beside the target so the rename never crosses a filesystem
+/// boundary, dot-prefixed so a directory listing (or a `pages/*.md` glob) doesn't treat it
+/// as real content, and process-id-suffixed so two processes writing the same file don't
+/// clobber each other's temp file.
 fn temp_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
@@ -133,8 +121,7 @@ mod tests {
 
     #[test]
     fn replaces_existing_contents_completely() {
-        // Not a truncate-in-place: a shorter write must not leave a tail of
-        // the previous contents behind.
+        // Not a truncate-in-place: a shorter write must not leave a tail of the previous contents behind.
         let d = TempDir::new().unwrap();
         let p = d.path().join("a.json");
         write(&p, b"a very long previous document").unwrap();
@@ -157,8 +144,8 @@ mod tests {
 
     #[test]
     fn the_temp_file_sits_beside_the_target() {
-        // A temp file in /tmp would make the rename cross a filesystem and
-        // fail with EXDEV on any machine where /tmp is a separate mount.
+        // A temp file in /tmp would make the rename cross a filesystem and fail with EXDEV on any
+        // machine where /tmp is a separate mount.
         let t = temp_path(Path::new("/var/lib/qos/state.automerge"));
         assert_eq!(t.parent(), Some(Path::new("/var/lib/qos")));
         assert!(
@@ -207,8 +194,7 @@ mod tests {
 
     #[test]
     fn an_existing_file_survives_a_failed_write() {
-        // The point of the whole dance: a write that cannot complete must
-        // leave the previous contents readable.
+        // The point of the whole dance: a write that cannot complete must leave the previous contents readable.
         let d = TempDir::new().unwrap();
         let p = d.path().join("a.json");
         write(&p, b"original").unwrap();

@@ -1,25 +1,16 @@
 //! Prometheus metrics + a single-endpoint exposition server.
 //!
-//! Kept deliberately tiny: a hand-rolled TCP/HTTP/1.1 handler that
-//! responds to `GET /metrics` and 404s everything else. Avoids
-//! pulling hyper-v1 + hyper-util through the dep graph for a single
-//! GET handler that produces text.
+//! Kept deliberately tiny: a hand-rolled TCP/HTTP/1.1 handler answering
+//! `GET /metrics` (404 otherwise), avoiding hyper-v1/hyper-util for a
+//! single text GET.
 //!
-//! ## Counters surfaced
-//!
-//! - `qos_relay_connected_peers` — gauge of currently-connected peers.
-//! - `qos_relay_messages_forwarded_total{topic}` — counter, per-topic
-//!   gossipsub messages observed (effectively "forwarded" since the
-//!   relay's job is mesh participation, not filtering).
-//! - `qos_relay_bytes_in_total` / `qos_relay_bytes_out_total` —
-//!   approximate transport bytes seen by gossipsub (the metric
-//!   reflects payload bytes; libp2p wire framing isn't counted).
-//! - `qos_relay_kademlia_queries_total` — counter of Kademlia
-//!   query-completed events.
-//!
-//! The libp2p `metrics` feature also exposes its own internal
-//! counters into the same registry — they appear under
-//! `libp2p_*`.
+//! Counters: `qos_relay_connected_peers` (gauge),
+//! `qos_relay_messages_forwarded_total{topic}` (per-topic gossipsub
+//! messages observed — "forwarded" since the relay's job is mesh
+//! participation, not filtering), `qos_relay_bytes_in_total` /
+//! `_bytes_out_total` (approximate — payload bytes only, not libp2p wire
+//! framing), `qos_relay_kademlia_queries_total`. The libp2p `metrics`
+//! feature also registers its own `libp2p_*` counters into the same registry.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -38,8 +29,7 @@ pub struct TopicLabels {
     pub topic: String,
 }
 
-/// Bundle of relay-owned counters. Shared across the swarm task and
-/// the metrics HTTP server via `Arc`.
+/// Bundle of relay-owned counters, shared across the swarm task and the metrics HTTP server via `Arc`.
 #[derive(Debug)]
 pub struct RelayMetrics {
     pub registry: Registry,
@@ -106,10 +96,9 @@ impl Default for RelayMetrics {
     }
 }
 
-/// Spawn the metrics HTTP server on `addr`. Returns the bound
-/// [`SocketAddr`] (useful when `addr.port() == 0` for tests) and a
-/// `JoinHandle` for the listener task. The server stays alive until
-/// the handle is dropped or aborted.
+/// Spawns the metrics HTTP server on `addr`, returning the bound
+/// [`SocketAddr`] (useful for tests using port 0) and a `JoinHandle` that
+/// keeps the server alive until dropped or aborted.
 pub async fn spawn_server(
     addr: SocketAddr,
     metrics: Arc<RelayMetrics>,
@@ -129,8 +118,7 @@ pub async fn spawn_server(
                 }
                 Err(err) => {
                     tracing::warn!(?err, "metrics listener accept failed");
-                    // Brief back-off so a torrent of accept errors doesn't
-                    // pin a CPU.
+                    // Brief back-off so a torrent of accept errors doesn't pin a CPU.
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
@@ -139,14 +127,12 @@ pub async fn spawn_server(
     Ok((bound, handle))
 }
 
-/// Minimal HTTP/1.1 request handler. Reads bytes until the
-/// double-CRLF, parses the request line, dispatches.
+/// Minimal HTTP/1.1 request handler: reads until the double-CRLF, parses the request line, dispatches.
 async fn handle_request(
     mut stream: tokio::net::TcpStream,
     metrics: Arc<RelayMetrics>,
 ) -> std::io::Result<()> {
-    // Read up to 4 KiB looking for the request line + headers. That's
-    // ample for a GET with no body.
+    // Read up to 4 KiB looking for the request line + headers — ample for a bodyless GET.
     let mut buf = [0u8; 4096];
     let mut filled = 0;
     loop {
@@ -196,14 +182,12 @@ async fn handle_request(
     Ok(())
 }
 
-/// Extract the request path from a "GET /path HTTP/1.1" line. Returns
-/// `None` if the line is malformed; callers respond `404`.
+/// Extracts the path from a "GET /path HTTP/1.1" line, or `None` (→ 404) if malformed.
 fn parse_request_path(request_line: &str) -> Option<&str> {
     let mut parts = request_line.split_whitespace();
     let method = parts.next()?;
     let path = parts.next()?;
-    // Only handle GET; everything else is a 404. This is exposition,
-    // not a REST API.
+    // Only GET is handled; everything else 404s — this is exposition, not a REST API.
     if method != "GET" {
         return None;
     }
@@ -235,8 +219,7 @@ mod tests {
         m.bytes_in.inc_by(1024);
         m.bytes_out.inc_by(512);
         m.kademlia_queries.inc();
-        // Round-trip through the encoder so we know the families are
-        // wired correctly.
+        // Round-trip through the encoder to confirm the families are wired correctly.
         let mut buf = String::new();
         encode(&mut buf, &m.registry).unwrap();
         assert!(buf.contains("qos_relay_connected_peers"));

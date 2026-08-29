@@ -1,28 +1,24 @@
 //! Persistent ed25519 keypair for the relay's libp2p identity.
 //!
-//! Mirrors `shell/src/network/behaviour.rs::load_or_create_keypair`
-//! so a relay reads the same on-disk format the compositor does.
-//!
-//! The keypair survives restarts so the relay's `PeerId` is stable
-//! — operators can publish a permanent multiaddr in deployment
-//! docs and not have to update it after every relay reboot.
+//! Mirrors `shell/src/network/behaviour.rs::load_or_create_keypair` so a
+//! relay reads the same on-disk format the compositor does. The keypair
+//! survives restarts so the relay's `PeerId` stays stable — operators can
+//! publish a permanent multiaddr without updating it after every reboot.
 
 use std::path::Path;
 
 use libp2p::identity::Keypair;
 
-/// Load (or create) the persistent ed25519 keypair at `path`.
+/// Loads (or creates) the persistent ed25519 keypair at `path`.
 ///
-/// On first call (or if the file is corrupted past recovery) a fresh
-/// keypair is generated, written with mode `0600`, and returned.
-/// Subsequent calls return the same keypair so the relay's `PeerId`
-/// is stable across restarts.
+/// First call (or an unrecoverable file) generates a fresh keypair,
+/// written with mode `0600`; later calls return the same one, keeping
+/// `PeerId` stable across restarts.
 ///
-/// **Failure semantics**: if the file exists but does not parse as a
-/// protobuf-encoded keypair we return an `Err` rather than silently
-/// overwriting it — production data must not be discarded on a
-/// transient read fault. (The shell's variant overwrites; for a
-/// public-facing relay we prefer to alert the operator instead.)
+/// If the file exists but doesn't parse as a protobuf keypair, this
+/// returns `Err` rather than silently overwriting it — unlike the
+/// shell's variant, since a public-facing relay should alert the
+/// operator rather than discard data on a transient read fault.
 pub fn load_or_create_keypair(path: &Path) -> std::io::Result<Keypair> {
     use std::io::Read;
     if let Ok(mut f) = std::fs::File::open(path) {

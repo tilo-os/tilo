@@ -1,11 +1,10 @@
 //! 2-of-3 DKG end-to-end tests.
 //!
-//! Three participants run FROST DKG, after which any 2 of them
-//! can produce a threshold signature verifiable through
-//! `collab_types::verify_event`. Covers the "add a third
-//! device" enrolment step and the recovery scenario where the
-//! third "device" is a paper share that returns into the quorum
-//! when one physical device is unavailable.
+//! Three participants run FROST DKG, after which any 2 can produce a
+//! threshold signature verifiable through `collab_types::verify_event`.
+//! Covers "add a third device" enrolment and the recovery scenario
+//! where a paper share returns to the quorum when a physical device is
+//! unavailable.
 
 use std::collections::BTreeMap;
 

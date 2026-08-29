@@ -27,7 +27,7 @@ use runtime_collab::{
 };
 use runtime_portal::UnixCapnpClient;
 
-// --- shared capture state ------------------------------------------------
+// shared capture state
 
 /// Everything the fake broker saw, in arrival order.
 #[derive(Default)]
@@ -65,7 +65,7 @@ enum PublishedInput {
 
 type SharedCaptures = Rc<RefCell<Captures>>;
 
-// --- fake streams --------------------------------------------------------
+// fake streams
 
 struct FakeBlobStream {
     backlog: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
@@ -157,7 +157,7 @@ impl invocation_stream::Server for FakeInvocationStream {
     }
 }
 
-// --- fake channel --------------------------------------------------------
+// fake channel
 
 struct FakeChannel {
     captures: SharedCaptures,
@@ -316,7 +316,7 @@ impl channel_handle::Server for FakeChannel {
     }
 }
 
-// --- fake broker ---------------------------------------------------------
+// fake broker
 
 #[derive(Default)]
 struct FakeBroker {
@@ -367,7 +367,7 @@ async fn stand_up_client(broker: FakeBroker) -> CollabClient {
     CollabClient::from_raw(client)
 }
 
-// --- tests ---------------------------------------------------------------
+// tests
 
 #[tokio::test(flavor = "current_thread")]
 async fn offer_and_want_blob_reach_the_broker_verbatim() {
@@ -587,9 +587,8 @@ async fn invocation_distinguishes_an_empty_argument_from_no_argument() {
             assert_eq!(first.actor, "alice");
             assert_eq!(first.argument, None, "an action that takes nothing");
 
-            // The pair of fields exists for exactly this case: an action
-            // that legitimately takes `""` must not read as one that was
-            // given no argument at all.
+            // The pair of fields exists for exactly this case: an action legitimately
+            // given `""` must not read as one given no argument at all.
             let second = stream.read().await.unwrap();
             assert_eq!(second.id, 2);
             assert_eq!(second.argument, Some(String::new()));

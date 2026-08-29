@@ -1,43 +1,34 @@
 //! SDR H.264 decoder — the receive-side half of the streaming stack.
 //!
-//! Wraps openh264 and yields plain 8-bit RGBA. This is the same
-//! Annex-B→RGBA path the compositor's `network::decoder::H264Decoder`
-//! runs for its SDR streams; kept here as a standalone, colorimetry-free
-//! type so a receiver (a chat call tile) can blit the bytes into a
-//! `peniko::ImageData` directly.
-//!
-//! The HDR / HEVC Main10 path stays in the compositor (it pulls
-//! `ffmpeg-next` behind a cargo feature and yields P010 planes for a
-//! tone-map compute shader) — a call tile does not need it.
+//! Wraps openh264 into plain 8-bit RGBA, the same Annex-B→RGBA path the
+//! compositor's `network::decoder::H264Decoder` runs for SDR streams —
+//! kept standalone and colorimetry-free so a receiver (a chat call tile)
+//! can blit straight into a `peniko::ImageData`. HDR/HEVC Main10 stays in
+//! the compositor (ffmpeg-next behind a feature flag, P010 for a
+//! tone-map shader); a call tile doesn't need it.
 
 use openh264::decoder::{Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 
-/// One decoded picture: tightly-packed 8-bit RGBA plus its dimensions.
-///
-/// `rgba` is row-major with no padding (`width * height * 4` bytes) — the
-/// shape a caller uploads straight into a GPU image / `peniko` blob.
+/// One decoded picture: tightly-packed 8-bit RGBA plus dimensions.
+/// `rgba` is row-major with no padding — ready to upload straight into a
+/// GPU image / `peniko` blob.
 #[derive(Clone, Debug)]
 pub struct DecodedFrame {
-    /// Pixel width.
     pub width: u32,
-    /// Pixel height.
     pub height: u32,
-    /// Row-major RGBA8 pixels, `width * height * 4` bytes.
     pub rgba: Vec<u8>,
 }
 
-/// Streaming H.264 decoder — the SDR path.
-///
-/// openh264 clamps colorimetry to BT.709 + limited range internally, so
-/// the RGBA it hands back is already display-ready sRGB-ish.
+/// Streaming H.264 decoder, SDR path. openh264 clamps colorimetry to
+/// BT.709 + limited range internally, so the RGBA returned is already
+/// display-ready sRGB-ish.
 pub struct H264Decoder {
     inner: Decoder,
     rgba_scratch: Vec<u8>,
 }
 
 impl H264Decoder {
-    /// Build a new decoder with default openh264 settings.
     pub fn new() -> Self {
         let inner =
             Decoder::with_api_config(openh264::OpenH264API::from_source(), DecoderConfig::new())
@@ -48,10 +39,9 @@ impl H264Decoder {
         }
     }
 
-    /// Push an Annex-B access unit and try to extract a decoded frame.
-    /// Returns `None` when the decoder needs more data or the bitstream is
-    /// invalid — a caller logs the packet as dropped without
-    /// distinguishing "buffered, waiting on keyframe" from "corrupt".
+    /// Pushes an Annex-B access unit and tries to extract a decoded frame.
+    /// `None` means "need more data" or "invalid bitstream" —
+    /// indistinguishable to the caller, which just logs the packet as dropped.
     pub fn decode(&mut self, nalus: &[u8]) -> Option<DecodedFrame> {
         if nalus.is_empty() {
             return None;

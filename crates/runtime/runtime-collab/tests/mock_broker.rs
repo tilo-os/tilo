@@ -1,21 +1,15 @@
-//! Integration test: end-to-end RPC round-trip over a real Unix
-//! socket against a hand-rolled fake `CollabService` server.
+//! Integration test: end-to-end RPC round-trip over a real Unix socket
+//! against a hand-rolled fake `CollabService` server.
 //!
-//! What this exercises:
-//! - The `UnixCapnpClient` plumbing through `runtime-portal`.
-//! - The generated `CollabService` schema (params, results,
-//!   capability returns).
-//! - The idiomatic `CollabClient::join_channel`,
-//!   `ChannelHandle::send`, `subscribe`, `OpStream::read` wrappers.
+//! Exercises the `UnixCapnpClient` plumbing through `runtime-portal`, the
+//! generated `CollabService` schema, and the idiomatic
+//! `CollabClient::join_channel` / `ChannelHandle::send` / `subscribe` /
+//! `OpStream::read` wrappers.
 //!
-//! The fake broker is a minimal impl that:
-//! - Echoes the join request: any channel_id succeeds, hands back
-//!   a single ChannelHandle.
-//! - On `send`, stores the op in a `Vec<Vec<u8>>`.
-//! - On `subscribe`, returns a stream that yields the stored ops
-//!   in order; further `read` calls after exhaustion block on a
-//!   never-resolving promise (the test does not exercise that
-//!   path).
+//! The fake broker: any `channel_id` joins and gets one `ChannelHandle`;
+//! `send` stores the op in a `Vec<Vec<u8>>`; `subscribe` yields the stored
+//! ops in order, and further reads after exhaustion block forever
+//! (unexercised here).
 
 use std::cell::RefCell;
 use std::os::fd::IntoRawFd;
@@ -31,7 +25,7 @@ use runtime_collab::raw::{channel_handle, collab_service, presence_handle, strea
 use runtime_collab::{CollabClient, CollabServiceClient};
 use runtime_portal::UnixCapnpClient;
 
-// --- Server impls --------------------------------------------------------
+// server impls
 
 struct FakeStream {
     backlog: Rc<RefCell<Vec<Vec<u8>>>>,
@@ -45,8 +39,7 @@ impl stream::Server for FakeStream {
     ) -> Promise<(), capnp::Error> {
         let mut backlog = self.backlog.borrow_mut();
         if backlog.is_empty() {
-            // Never resolve. Real broker would suspend here; this
-            // test never exhausts the backlog so the path is
+            // Never resolves — the test never exhausts the backlog, so this path is
             // unreachable in practice.
             return Promise::err(capnp::Error::failed("backlog exhausted".into()));
         }
@@ -164,17 +157,15 @@ impl collab_service::Server for FakeBroker {
     }
 }
 
-// --- The test itself -----------------------------------------------------
+// the test itself
 
 #[tokio::test(flavor = "current_thread")]
 async fn round_trip_join_send_subscribe_read() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            // 1. Create a connected socket pair. One end becomes
-            //    the "server" half (we run the RPC system on it
-            //    locally), the other gets handed to the client via
-            //    UnixCapnpClient.
+            // 1. A connected socket pair: one end runs the server RPC system locally,
+            //    the other is handed to the client via UnixCapnpClient.
             let (server_side, client_side) = UnixStream::pair().unwrap();
 
             // 2. Stand up the server RPC system.
@@ -202,8 +193,7 @@ async fn round_trip_join_send_subscribe_read() {
                 let _ = server_rpc.await;
             });
 
-            // 3. Stand up the client via UnixCapnpClient (the same
-            //    code-path real apps take).
+            // 3. Stand up the client via UnixCapnpClient — the same path real apps take.
             let client_fd = client_side.into_std().unwrap().into_raw_fd();
             let unix =
                 UnixCapnpClient::from_connected_fd(client_fd, rpc_twoparty_capnp::Side::Client)

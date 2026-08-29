@@ -1,15 +1,15 @@
 //! Stacking several actions onto one document in a single turn.
 //!
-//! An adopter that applies a handful of actions to a document before the host
-//! next drains the CRDT (renders a frame, replicates, diffs) is doing something
-//! completely ordinary — a multi-step edit, a paste that fans out to several
-//! mutations, a batch command. Every one of those actions pins a *fresh* actor
-//! id, and the pinned ids sort into arbitrary positions in the document's actor
-//! table. These tests stack many dispatches back-to-back on one `AutoCommit`,
-//! with nothing draining the document in between, and assert the run is
-//! deterministic: all actions apply, and a peer that replays the envelopes lands
-//! on the byte-identical document. The loop count is there to smoke out the
-//! order-dependent flake — a single unlucky actor-sort must not panic or diverge.
+//! An adopter applying a handful of actions before the host next drains
+//! the CRDT (renders, replicates, diffs) is doing something ordinary —
+//! a multi-step edit, a paste fanning to several mutations, a batch
+//! command. Every action pins a *fresh* actor id, sorting into
+//! arbitrary positions in the document's actor table. These tests stack
+//! many dispatches back-to-back on one `AutoCommit` with nothing
+//! draining between, asserting the run is deterministic: all actions
+//! apply, and a replaying peer lands on the byte-identical document.
+//! The loop count smokes out the order-dependent flake — an unlucky
+//! actor-sort must not panic or diverge.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ReadDoc, ScalarValue, ROOT};
@@ -19,22 +19,22 @@ use qos_actions::{
 };
 use serde::{Deserialize, Serialize};
 
-/// A real action: set a scalar under a key, or append to a list. Pure function
-/// of `(self, doc)` — no wall-clock, no RNG — so replay is deterministic.
+/// A real action: set a scalar under a key, or append to a list. Pure
+/// function of `(self, doc)` — no wall-clock, no RNG — so replay is deterministic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Counter {
     Put { key: String, value: i64 },
     Append { key: String, value: String },
-    /// A well-behaved action that legitimately performs no mutation this turn —
-    /// a "toggle" whose precondition is already satisfied, a "delete selection"
-    /// with an empty selection. Its `apply` opens no transaction and writes no op.
+    /// A well-behaved action that legitimately performs no mutation this
+    /// turn (a toggle whose precondition already holds). Its `apply` opens
+    /// no transaction and writes no op.
     Noop,
-    /// A mutating call that turns out to have no effect: a zero-length splice.
-    /// Unlike [`Counter::Noop`] this *opens* a transaction but writes no op, the
+    /// A mutating call with no effect (a zero-length splice): unlike
+    /// [`Counter::Noop`] this *opens* a transaction but writes no op — the
     /// pathological shape of a no-op that still touched the document API.
     EmptySplice,
-    /// An action that writes an op and *then* fails, exercising the mid-apply
-    /// error/rollback path (an `apply` that mutates before hitting an error).
+    /// An action that writes an op and *then* fails, exercising the
+    /// mid-apply error/rollback path.
     WriteThenError,
 }
 
@@ -56,8 +56,8 @@ impl Action for Counter {
             }
             Counter::Noop => {}
             Counter::EmptySplice => {
-                // Ensure a list exists, then splice nothing into it: a mutating
-                // API call that opens a transaction yet produces zero ops.
+                // Ensure a list exists, then splice nothing into it: a mutating API
+                // call that opens a transaction yet produces zero ops.
                 let list = match doc.get(&ROOT, "spliced")? {
                     Some((automerge::Value::Object(automerge::ObjType::List), id)) => id,
                     _ => doc.put_object(&ROOT, "spliced", automerge::ObjType::List)?,
@@ -103,10 +103,10 @@ fn two_replicas() -> (AutoCommit, AutoCommit) {
     (a, b)
 }
 
-/// Stack `n` `dispatch` calls of mixed loci onto one `AutoCommit` with nothing
-/// draining it in between, then replay the resulting envelopes onto a fresh peer
-/// and require byte-identical convergence. Repeated `iterations` times so the
-/// random actor-id sort order that used to make this flake is actually exercised.
+/// Stack `n` `dispatch` calls of mixed loci onto one `AutoCommit` with
+/// nothing draining between, then replay onto a fresh peer and require
+/// byte-identical convergence. Repeated `iterations` times to exercise
+/// the random actor-id sort order that used to make this flake.
 fn stacked_dispatch_converges(n: usize, iterations: usize) {
     for iter in 0..iterations {
         let (mut a, mut b) = two_replicas();
@@ -114,8 +114,8 @@ fn stacked_dispatch_converges(n: usize, iterations: usize) {
         let mut envelopes = Vec::new();
 
         for i in 0..n {
-            // Alternate loci so both the ClientLocal and the ServerPreferred
-            // (no-host fallback) apply paths get stacked on the same doc.
+            // Alternate loci so both ClientLocal and ServerPreferred (no-host
+            // fallback) apply paths get stacked on the same doc.
             let action = if i % 2 == 0 {
                 Counter::Put {
                     key: format!("k{i}"),
@@ -148,8 +148,8 @@ fn stacked_dispatch_converges(n: usize, iterations: usize) {
             assert_eq!(a.length(&list), appended, "iter {iter}: append count");
         }
 
-        // A peer that replays the stacked envelopes from the shared base lands on
-        // the byte-identical document — same head hashes, not merely same values.
+        // A peer that replays the stacked envelopes from the shared base
+        // lands on the byte-identical document — same head hashes, not just values.
         for env in &envelopes {
             replay(&mut b, env, &registry())
                 .unwrap_or_else(|e| panic!("iter {iter}: replay failed: {e}"));
@@ -172,16 +172,16 @@ fn ten_stacked_dispatches_are_deterministic() {
     stacked_dispatch_converges(10, 100);
 }
 
-/// The same stack via `apply_local` directly (the origin path `dispatch` uses for
-/// `ClientLocal`), with no transport in the loop at all.
-/// A zero-op action in the middle of a stack must not corrupt the executor.
+/// The same stack via `apply_local` directly (the `ClientLocal` origin
+/// path), no transport in the loop. A zero-op action in the middle must
+/// not corrupt the executor.
 ///
-/// This is the sharp edge of the flake: `commit_with` always opens a transaction
-/// ("even no changes triggers a change"), so a zero-op action still pins its
-/// fresh actor into the document's actor table — and then, being empty, that
-/// actor is pruned on commit. Any later dispatch that reconciles the automerge
-/// patch log used to panic (`PatchLogMismatch`) on the pruned "ghost" actor. A
-/// well-behaved no-op action is ordinary; stacking it must stay deterministic.
+/// The sharp edge: `commit_with` always opens a transaction, so a
+/// zero-op action still pins its fresh actor into the document's actor
+/// table — then, being empty, that actor is pruned on commit. Any later
+/// dispatch reconciling the automerge patch log used to panic
+/// (`PatchLogMismatch`) on the pruned "ghost" actor. Stacking a
+/// well-behaved no-op must stay deterministic.
 #[test]
 fn noop_action_in_a_stack_does_not_corrupt_the_executor() {
     for iter in 0..200 {
@@ -220,9 +220,9 @@ fn noop_action_in_a_stack_does_not_corrupt_the_executor() {
     }
 }
 
-/// The same stacking on a document whose patch log is *active* and never drained
-/// between dispatches — exactly the state a rendering host leaves the CRDT in
-/// (`update_diff_cursor` armed, no frame drawn in between).
+/// The same stacking on a document whose patch log is *active* and never
+/// drained between dispatches — the state a rendering host leaves the
+/// CRDT in (`update_diff_cursor` armed, no frame drawn in between).
 #[test]
 fn stacked_dispatch_with_active_patch_log_is_deterministic() {
     for iter in 0..200 {
@@ -258,8 +258,8 @@ fn stacked_dispatch_with_active_patch_log_is_deterministic() {
     }
 }
 
-/// A mutating-but-empty action (a zero-length splice: opens a transaction, writes
-/// no op) stacked between real ones must not strand a ghost actor either.
+/// A mutating-but-empty action stacked between real ones must not
+/// strand a ghost actor either.
 #[test]
 fn empty_mutation_in_a_stack_does_not_corrupt_the_executor() {
     for iter in 0..200 {
@@ -290,9 +290,9 @@ fn empty_mutation_in_a_stack_does_not_corrupt_the_executor() {
     }
 }
 
-/// An action that writes an op and then errors must roll back cleanly and leave
-/// the executor usable: later dispatches on the same document must not panic, and
-/// the failed action must leave no trace in the document.
+/// An action that writes an op and then errors must roll back cleanly:
+/// later dispatches must not panic, and the failed action must leave no
+/// trace in the document.
 #[test]
 fn erroring_action_rolls_back_without_corrupting_the_executor() {
     for iter in 0..200 {

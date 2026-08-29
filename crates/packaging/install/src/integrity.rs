@@ -1,17 +1,11 @@
-//! Proving an installed package is still the package that was
-//! installed.
+//! Proving an installed package is still the package that was installed.
 //!
-//! Verification at install time answers "were these bytes signed by
-//! someone we trust?". It says nothing about the bytes a week later.
-//! The payload is an ordinary directory under `$XDG_DATA_HOME`, which
-//! the user, another program, or a half-finished write can change; a
-//! package manager that verifies once and never again cannot tell a
-//! working install from a corrupted one.
-//!
-//! So the install records the three verified artefacts it already held
-//! — the signed root, the manifest bytes, and the encoded payload
-//! collection — and [`verify`] replays the whole chain against what is
-//! on disk:
+//! Install-time verification only proves the bytes were signed by
+//! someone trusted — not what they look like a week later, since the
+//! payload is an ordinary directory an app, user, or half-finished
+//! write can change. So the install records the three verified
+//! artefacts it already held (signed root, manifest bytes, encoded
+//! payload collection), and [`verify`] replays the chain against disk:
 //!
 //! ```text
 //! blake3(signed-root)      == the package id            (identity)
@@ -20,11 +14,10 @@
 //! blake3(<each payload file>) == its collection entry   (contents)
 //! ```
 //!
-//! Every link is checked, so a mismatch anywhere is reported at the
-//! link that broke rather than as a single opaque "corrupt". The record
-//! is kept **outside** the payload directory: the payload is
-//! bind-mounted into the app's sandbox, and an app has no business
-//! reading the evidence used to check it.
+//! Every link is checked, so a mismatch is reported at the link that
+//! broke, not as one opaque "corrupt". The record is kept **outside**
+//! the payload directory: the payload is bind-mounted into the app's
+//! sandbox, and an app has no business reading the evidence used to check it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -95,9 +88,9 @@ pub struct Report {
     pub files_checked: usize,
     pub faults: Vec<FileFault>,
     /// Files present in the payload directory that the collection does
-    /// not name. Reported, not failed: the launcher only ever executes
-    /// what the manifest names, and a stray file is a strong signal
-    /// without being proof of tampering.
+    /// not name. Reported, not failed: the launcher only executes what
+    /// the manifest names, and a stray file is a strong signal without
+    /// being proof of tampering.
     pub unexpected: Vec<String>,
 }
 
@@ -132,12 +125,11 @@ fn sanitise(raw: &str) -> String {
     mapped
 }
 
-/// Write the record for a package that has just been verified and
-/// unpacked.
+/// Write the record for a package that has just been verified and unpacked.
 ///
-/// The three blobs are the *verified* ones the installer already held,
-/// not a re-derivation from disk: recording what was checked is what
-/// makes a later check meaningful.
+/// The three blobs are the *verified* ones the installer already
+/// held, not a re-derivation from disk — recording what was checked
+/// is what makes a later check meaningful.
 pub fn record(
     data_root: &Path,
     package_id: &str,
@@ -164,8 +156,7 @@ pub fn record(
     Ok(dir)
 }
 
-/// Remove a package's record. Best-effort: a missing record is the
-/// state we were heading for.
+/// Remove a package's record. Best-effort: a missing record is the state we were heading for.
 pub fn forget(data_root: &Path, package_id: &str) {
     let _ = std::fs::remove_dir_all(record_dir(data_root, package_id));
 }
@@ -175,8 +166,7 @@ pub fn has_record(data_root: &Path, package_id: &str) -> bool {
     record_dir(data_root, package_id).join(SIGNED_ROOT).exists()
 }
 
-/// Replay the whole chain: recorded root → recorded manifest and
-/// collection → every payload file on disk.
+/// Replay the whole chain: recorded root → recorded manifest and collection → every payload file on disk.
 pub fn verify(
     data_root: &Path,
     package_id: &str,
@@ -195,9 +185,8 @@ pub fn verify(
     let manifest_bytes = read(MANIFEST)?;
     let collection_bytes = read(COLLECTION)?;
 
-    // 1. The record names the package it claims to. Without this the
-    //    record is just a file, and swapping it for another package's
-    //    record would make any payload "verify".
+    // 1. The record names the package it claims to — without this,
+    //    swapping it for another package's record would make any payload "verify".
     if hex::encode(BlobHash::of(&signed_bytes).0) != package_id_hex.to_ascii_lowercase() {
         return Err(IntegrityError::RootIdMismatch);
     }
@@ -248,9 +237,8 @@ pub fn verify(
 }
 
 /// Everything under the payload root the collection does not name.
-///
 /// `manifest.toml` is written by the installer rather than carried in
-/// the payload, so it is expected to be there and is not reported.
+/// the payload, so it's expected and not reported.
 fn collect_unexpected(
     root: &Path,
     dir: &Path,
@@ -283,8 +271,7 @@ fn collect_unexpected(
 mod tests {
     use super::*;
 
-    /// Build a payload directory plus the record that describes it,
-    /// exactly as the installer would.
+    /// Build a payload directory plus the record that describes it, exactly as the installer would.
     fn fixture(root: &Path) -> (PathBuf, String) {
         let payload = root.join("payloads/dev.qos.example");
         std::fs::create_dir_all(payload.join("bin")).unwrap();

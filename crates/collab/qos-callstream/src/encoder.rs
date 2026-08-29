@@ -1,47 +1,33 @@
 //! H.264 software encoder.
 //!
-//! Wraps the [`openh264`] crate so a caller can hand it RGBA frames (the
-//! pixel format vello/wgpu reads back into, and the format GStreamer's
-//! `videoconvert` hands a `pipewiresrc` ScreenCast capture) and receive a
-//! tagged-Annex-B NALU byte blob ready to ship as a
-//! [`crate::stream::SurfaceFrame`] payload.
+//! Wraps the [`openh264`] crate: takes RGBA frames (the format vello/wgpu
+//! reads back into, and what GStreamer's `videoconvert` hands a
+//! `pipewiresrc` ScreenCast capture) and returns a tagged-Annex-B NALU byte
+//! blob ready to ship as a [`crate::stream::SurfaceFrame`] payload. The
+//! wrapper is thin — bitrate/GOP/threading are fixed at construction.
 //!
-//! The wrapper is intentionally thin — encoder configuration (bitrate, GOP,
-//! threading) is fixed at construction time.
-//!
-//! ## Ownership and threading
-//!
-//! [`H264Encoder`] is `Send`-but-not-`Sync`: the underlying `SVCEncoder` is
-//! safe to ship to another thread but holds internal state that mutates per
-//! [`encode`](H264Encoder::encode) call. Own one encoder per shared source.
-//!
-//! ## Memory bound
-//!
-//! The encoder owns exactly one frame-sized RGBA scratch buffer plus the
-//! openh264 SVC encoder's own reference picture pool (bounded internally).
-//! Callers must not queue frames behind the encoder — encode synchronously
-//! and ship the NALU bytes, or drop the frame.
+//! [`H264Encoder`] is `Send`-but-not-`Sync`: the underlying `SVCEncoder`
+//! mutates per [`encode`](H264Encoder::encode) call, so own one encoder per
+//! shared source. It holds exactly one frame-sized RGBA scratch buffer plus
+//! openh264's own (internally bounded) reference picture pool — callers
+//! must not queue frames behind it; encode synchronously and ship the
+//! bytes, or drop the frame.
 //!
 //! Round-trip quality is asserted by
-//! [`tests::gradient_round_trip_psnr_at_least_35_db`], which feeds a known
-//! RGBA gradient through encode + decode and checks the PSNR against the
-//! 35.0 dB floor.
+//! [`tests::gradient_round_trip_psnr_at_least_35_db`] against a 35.0 dB
+//! PSNR floor.
 
 use openh264::Error as OpenH264Error;
 use openh264::Timestamp;
 use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate};
 use openh264::formats::{RgbaSliceU8, YUVBuffer};
 
-/// Error variants for the encoder wrapper.
-///
-/// Wraps the underlying openh264 error so callers don't have to depend on
-/// the openh264 crate at their call-site.
+/// Error variants for the encoder wrapper, wrapping the underlying openh264 error so callers don't depend on that crate directly.
 #[derive(Debug)]
 pub enum EncodeError {
     /// Underlying openh264 backend returned an error.
     Backend(String),
-    /// Caller passed a buffer that does not match the encoder's configured
-    /// `width * height * 4` size.
+    /// Caller passed a buffer that doesn't match the encoder's configured `width * height * 4` size.
     BufferSize { expected: usize, got: usize },
 }
 
@@ -65,45 +51,37 @@ impl From<OpenH264Error> for EncodeError {
     }
 }
 
-/// Streaming H.264 encoder.
-///
-/// Construct once per shared source; call [`encode`](Self::encode) per
-/// frame. The encoder converts RGBA → I420 internally (openh264 only
-/// consumes YUV420). The returned `Vec<u8>` is the full Annex-B NAL unit
-/// payload for one encoded frame; on the first call it includes the SPS /
-/// PPS metadata NALs.
+/// Streaming H.264 encoder. Construct once per shared source; call
+/// [`encode`](Self::encode) per frame. Converts RGBA → I420 internally
+/// (openh264 only consumes YUV420); the returned bytes are the full
+/// Annex-B NAL payload, including SPS/PPS metadata on the first call.
 pub struct H264Encoder {
     encoder: Encoder,
     width: u32,
     height: u32,
-    /// Configured frame rate. Used by `encode` to synthesise a
-    /// monotonically-increasing timestamp for openh264's rate control.
+    /// Configured frame rate; used to synthesise the encode timestamp (see `frame_idx`).
     fps: u32,
-    /// Monotonic frame index. Every `encode` call bumps this by one;
-    /// the derived timestamp is `frame_idx / fps` seconds. Without a
-    /// forward-moving timestamp, openh264 assumes every frame arrived
-    /// at t=0 and skips all but the first (empty-NAL output).
+    /// Monotonic frame index; each `encode` call bumps it by one, giving a
+    /// timestamp of `frame_idx / fps` seconds. openh264 needs a forward-moving
+    /// timestamp — without it, it assumes every frame arrived at t=0 and skips
+    /// all but the first (empty-NAL output).
     frame_idx: u64,
 }
 
 impl H264Encoder {
-    /// Build a new encoder targeting `width × height` at `fps` frames per
-    /// second.
-    ///
-    /// `fps` is advisory — the encoder uses it for rate-control bookkeeping;
-    /// the caller enforces the real cadence via wall-clock throttling in
-    /// [`crate::throttle`].
+    /// Builds an encoder targeting `width × height` at `fps` frames per second.
+    /// `fps` is advisory (rate-control bookkeeping); real cadence is enforced
+    /// by the caller via wall-clock throttling in [`crate::throttle`].
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
         Self::new_with_bitrate_bps(width, height, fps, 4_000_000)
     }
 
-    /// Construct with an explicit target bitrate (bits per second).
+    /// Constructs with an explicit target bitrate (bits per second).
     ///
-    /// `enable_skip_frame = false` (openh264 defaults `true`) keeps the
-    /// frame budget honest: with skip-frames on, a low-bitrate high-fps
-    /// loop drops most frames and ships empty NAL blobs the receiver's
-    /// decoder produces no output for. The drop policy lives in the
-    /// transport substrate ([`crate::stream`]), not the encoder.
+    /// `enable_skip_frame = false` (openh264 defaults `true`) keeps the frame
+    /// budget honest — skip-frames on would drop frames under low-bitrate,
+    /// high-fps load and ship empty NALs the receiver can't decode. Drop
+    /// policy belongs to the transport substrate ([`crate::stream`]).
     pub fn new_with_bitrate_bps(
         width: u32,
         height: u32,
@@ -135,19 +113,10 @@ impl H264Encoder {
         self.height
     }
 
-    /// Encode one RGBA frame to a NALU byte payload.
-    ///
-    /// `rgba` must be row-major with no padding (`width * height * 4`
-    /// bytes). On the first call the returned bytes include SPS + PPS
-    /// metadata NALs; subsequent calls return P-frames (or IDR-frames
-    /// when the encoder decides to refresh the GOP).
-    ///
-    /// The frame timestamp is synthesised from an internal counter at
-    /// the configured `fps` — openh264 uses the frame timestamp for rate
-    /// control, and its default shim stamps `t=0` on every frame, which
-    /// makes a pumped loop emit empty NALs for every frame after the
-    /// first. Advancing by `1/fps` per call gives it the monotonic time
-    /// it needs.
+    /// Encodes one RGBA frame (row-major, no padding, `width * height * 4`
+    /// bytes) to a NALU byte payload — SPS/PPS on the first call, P/IDR frames
+    /// after. The timestamp comes from the internal frame counter; see the
+    /// `frame_idx` field for why it must be monotonic.
     #[tracing::instrument(level = "trace", skip(self, rgba), fields(width = self.width, height = self.height))]
     pub fn encode(&mut self, rgba: &[u8]) -> Result<Vec<u8>, EncodeError> {
         let ts_ms = self.frame_idx.saturating_mul(1000) / self.fps as u64;
@@ -155,11 +124,9 @@ impl H264Encoder {
         self.encode_at_ms(rgba, ts_ms)
     }
 
-    /// Encode one RGBA frame with a caller-supplied millisecond
-    /// timestamp. See [`Self::encode`] for why the timestamp matters. The
-    /// `frame_idx` counter is *not* advanced, so mixing `encode` and
-    /// `encode_at_ms` on the same encoder is safe as long as the caller
-    /// keeps the timestamps monotonic.
+    /// Encodes one RGBA frame with a caller-supplied millisecond timestamp
+    /// (see [`Self::encode`]). Does not advance `frame_idx`, so mixing the two
+    /// calls on one encoder is safe as long as timestamps stay monotonic.
     #[tracing::instrument(level = "trace", skip(self, rgba), fields(width = self.width, height = self.height, ts_ms))]
     pub fn encode_at_ms(&mut self, rgba: &[u8], ts_ms: u64) -> Result<Vec<u8>, EncodeError> {
         let expected = self.width as usize * self.height as usize * 4;
@@ -170,8 +137,7 @@ impl H264Encoder {
             });
         }
         let rgba_source = RgbaSliceU8::new(rgba, (self.width as usize, self.height as usize));
-        // openh264's `YUVBuffer::from_rgb_source` accepts any `RGBSource`
-        // and writes into an owned I420 buffer — the 4:2:0 conversion path.
+        // Converts RGBA to an owned I420 (4:2:0) buffer via `RGBSource`.
         let yuv = YUVBuffer::from_rgb_source(rgba_source);
         let ts = Timestamp::from_millis(ts_ms);
         let stream = self.encoder.encode_at(&yuv, ts)?;
@@ -199,9 +165,8 @@ mod tests {
         20.0 * (255.0_f64).log10() - 10.0 * mse.log10()
     }
 
-    /// Deterministic RGBA gradient: red ramps across width, green across
-    /// height, blue mid-grey, alpha full — smooth in both axes so H.264's
-    /// intra prediction has a fair shot at <35 dB loss.
+    /// Deterministic RGBA gradient (red across width, green across height,
+    /// blue mid-grey) — smooth in both axes for a fair intra-prediction test.
     fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
         let mut out = Vec::with_capacity((width * height * 4) as usize);
         for y in 0..height {

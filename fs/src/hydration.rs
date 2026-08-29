@@ -19,25 +19,18 @@ use crate::content::Manifest;
 use crate::store::ContentStore;
 use crate::syncstate::SyncState;
 
-/// Fetches content for the FUSE read path, hydrating from peers as needed.
 pub struct Hydrator {
     pub endpoint: Endpoint,
     pub store: Arc<ContentStore>,
     /// Peers we may hydrate missing blobs from (populated by the sync layer).
     peers: Arc<RwLock<Vec<EndpointAddr>>>,
-    /// Blob hashes with a hydration fetch in flight right now. A blob is
-    /// inserted for the lifetime of its [`fetch_from`](Hydrator::fetch_from) and
-    /// removed (via [`FetchGuard`]) when the fetch finishes or fails, so
-    /// [`sync_state`](Hydrator::sync_state) can report `downloading` without
-    /// racing the fetch. Both the manifest blob and each chunk blob pass
-    /// through here, so an in-flight fetch of any part marks the file busy.
+    /// Blob hashes with a hydration fetch in flight — inserted for the lifetime
+    /// of [`fetch_from`](Hydrator::fetch_from), removed via [`FetchGuard`], so [`sync_state`](Hydrator::sync_state) doesn't race the fetch.
     in_flight: Arc<Mutex<HashSet<Hash>>>,
     pub runtime_handle: tokio::runtime::Handle,
 }
 
-/// Removes a hash from the in-flight set when a fetch ends (success or error).
-/// Returned by [`Hydrator::mark_fetching`]; hold it for the duration of a
-/// hydration so [`Hydrator::sync_state`] reports the blob as `downloading`.
+/// Clears a hash from the in-flight set on drop; hold it for the duration of a hydration so `sync_state` reports `downloading`.
 pub struct FetchGuard {
     set: Arc<Mutex<HashSet<Hash>>>,
     hash: Hash,
@@ -65,30 +58,21 @@ impl Hydrator {
         self.in_flight.lock().unwrap().contains(&hash)
     }
 
-    /// Mark `hash` as being fetched; the returned guard clears the mark on drop.
-    /// Idempotent — a second concurrent fetch of the same blob shares the mark.
-    /// [`fetch_from`](Hydrator::fetch_from) calls this for the lifetime of every
-    /// hydration; it is public so a caller can surface an equivalent
-    /// out-of-band fetch to [`sync_state`](Hydrator::sync_state).
+    /// Mark `hash` as being fetched; the returned guard clears it on drop.
+    /// Idempotent — a concurrent fetch of the same blob shares the mark.
     pub fn mark_fetching(&self, hash: Hash) -> FetchGuard {
         self.in_flight.lock().unwrap().insert(hash);
         FetchGuard { set: self.in_flight.clone(), hash }
     }
 
-    /// The hydration state of the file whose content is the manifest `manifest_hash`.
-    ///
-    /// `downloading` if a fetch of the manifest or any of its chunks is in
-    /// flight; `projected` if the manifest (and therefore the chunk list) is not
-    /// local yet, or the manifest is local but some chunk is still missing;
-    /// `local` only when the manifest and every chunk are present in the store.
+    /// The hydration state of the file whose content is `manifest_hash`:
+    /// `downloading` if a fetch is in flight, `projected` if the manifest or a chunk is still missing, `local` only when all are present.
     pub async fn sync_state(&self, manifest_hash: Hash) -> SyncState {
         // A fetch of the manifest blob itself is under way.
         if self.is_fetching(manifest_hash) {
             return SyncState::Downloading;
         }
-        // Without the manifest we don't even have the chunk list — purely
-        // projected (this is the state a freshly-joined peer sees for every
-        // file until it reads one).
+        // Without the manifest we don't have the chunk list — purely projected, as a freshly-joined peer sees every file until it reads one.
         let Some(mbytes) = self.store.local(manifest_hash).await else {
             return SyncState::Projected;
         };
@@ -125,7 +109,6 @@ impl Hydrator {
         self.peers.read().unwrap().clone()
     }
 
-    /// Read a byte range of a raw blob `hash`, hydrating from a peer if needed.
     pub async fn read_blob(&self, hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
         if let Some(bytes) = self.store.local(hash).await {
             return Ok(slice(&bytes, offset, size));
@@ -144,8 +127,7 @@ impl Hydrator {
         Err(last_err)
     }
 
-    /// Read a byte range of a file given its **manifest** hash: fetch the
-    /// manifest, then only the chunks overlapping `[offset, offset+size)`.
+    /// Read a byte range of a file given its manifest hash: fetch the manifest, then only the chunks overlapping `[offset, offset+size)`.
     pub async fn read(&self, manifest_hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
         let manifest = self.load_manifest(manifest_hash).await?;
         let end = offset.saturating_add(size);
@@ -182,12 +164,9 @@ impl Hydrator {
     }
 
     /// Fetch a whole blob from a specific peer, verify, persist, and return it.
-    ///
-    /// `get_blob` streams bao-verified content, so the returned bytes are
-    /// guaranteed to hash to `hash`; a corrupt/wrong blob fails the stream.
+    /// `get_blob` streams bao-verified content, so a corrupt/wrong blob fails the stream rather than returning bad bytes.
     pub async fn fetch_from(&self, hash: Hash, peer: EndpointAddr) -> Result<Bytes> {
-        // Publish that this blob is downloading so `sync_state` reports it; the
-        // guard clears the mark when the fetch completes or fails.
+        // Publish that this blob is downloading so `sync_state` reports it; the guard clears on completion or failure.
         let _guard = self.mark_fetching(hash);
         // Bounded so an unreachable/stalled peer can't hang a read forever.
         tokio::time::timeout(Duration::from_secs(20), async {
@@ -225,7 +204,6 @@ mod tests {
         let got = hydrator.read(hash, 0, 11).await.unwrap();
         assert_eq!(&got, b"hello local");
 
-        // ranged read (across the manifest)
         let mid = hydrator.read(hash, 6, 5).await.unwrap();
         assert_eq!(&mid, b"local");
     }
@@ -244,7 +222,6 @@ mod tests {
         let hyd = Hydrator::new(endpoint, store);
         assert_eq!(hyd.content_len(mh).await.unwrap(), data.len() as u64);
 
-        // whole file
         assert_eq!(hyd.read(mh, 0, data.len() as u64).await.unwrap(), data);
 
         // ranges that cross chunk boundaries
@@ -280,16 +257,14 @@ mod tests {
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hyd = Hydrator::new(endpoint, store);
-        // A manifest hash the store never ingested: exactly what a freshly-joined
-        // peer holds — projected metadata, no content.
+        // A manifest hash the store never ingested: exactly what a freshly-joined peer holds — projected metadata, no content.
         let absent = Hash::from([7u8; 32]);
         assert_eq!(hyd.sync_state(absent).await, SyncState::Projected, "unknown manifest is projected");
     }
 
     #[tokio::test]
     async fn sync_state_is_projected_when_a_chunk_is_missing() {
-        // Manifest present locally, but one referenced chunk was never stored:
-        // the file is partially projected (the state after a torn/partial fetch).
+        // Manifest present locally but one referenced chunk was never stored: partially projected (the state after a torn/partial fetch).
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let present = store.ingest(Bytes::from_static(b"chunk that exists")).await.unwrap();
@@ -319,8 +294,7 @@ mod tests {
         let hyd = Hydrator::new(endpoint, store);
         assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
 
-        // Hold the exact in-flight marker `fetch_from` publishes for the manifest
-        // blob: `sync_state` must now report the file as downloading.
+        // Hold the exact in-flight marker `fetch_from` publishes for the manifest blob: `sync_state` must report downloading.
         let guard = hyd.mark_fetching(mh);
         assert!(hyd.is_fetching(mh));
         assert_eq!(
@@ -334,8 +308,7 @@ mod tests {
         assert_eq!(hyd.sync_state(mh).await, SyncState::Local, "cleared after the fetch");
     }
 
-    /// The crux of Phase 3: a blob ingested only on node A is read on node B by
-    /// fetching it over a real iroh connection (bao-verified), then cached.
+    // A blob ingested only on node A is read on node B by fetching it over a real iroh connection (bao-verified), then cached.
     #[tokio::test]
     async fn hydrates_real_bytes_from_a_peer() {
         // --- node A: serve a blob over iroh-blobs ---
