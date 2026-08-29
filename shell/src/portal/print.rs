@@ -2,27 +2,18 @@
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.Print.xml`.
 //! `PreparePrint` is the dialog half — a token in its `results` ties a
-//! later `Print` to what the user configured; `Print` is the
-//! submission half, with `fd` naming the document.
+//! later `Print` to what the user configured; `Print` is the submission
+//! half, with `fd` naming the document.
 //!
-//! ## Why the portal exists at all
-//!
-//! The naive implementation hands an untrusted app a bidirectional
-//! socket to CUPS — an IPP endpoint that enumerates destinations and
-//! can create or cancel *other users'* jobs, not just "a printer".
-//! Binding it into a sandbox to let an app print a PDF trades the
-//! entire sandbox for one feature.
-//!
-//! So the app gets only a file descriptor for bytes and a prompt
-//! asking the user where to send them; everything else — which
-//! printer, whether to submit at all — is decided on this side.
+//! The naive implementation hands an untrusted app a bidirectional socket
+//! to CUPS — an IPP endpoint that enumerates destinations and can create
+//! or cancel *other users'* jobs — trading the whole sandbox for one
+//! feature. So the app gets only a file descriptor for bytes and a
+//! prompt asking where to send them; everything else is decided here.
 //! [`Capability::Print`] has **no arm** in `SandboxProfile::apply_grants`
-//! for the same reason: granting it adds no bind mount, so nothing
-//! ever puts the CUPS socket inside the sandbox (enforced by
-//! construction — see `print_grant_never_binds_the_cups_socket` in
-//! `tests/portal_test.rs`).
-//!
-//! ## Consent
+//! for the same reason: granting it adds no bind mount, so nothing ever
+//! puts the CUPS socket inside the sandbox (enforced by construction —
+//! see `print_grant_never_binds_the_cups_socket` in `tests/portal_test.rs`).
 //!
 //! **Both** methods go through [`flow::resolve`], including
 //! `PreparePrint`: the printer list is itself the disclosure an app
@@ -44,64 +35,42 @@ use crate::shell::state::{Capability, GRANT_ONCE};
 
 use super::{CapabilityKind, PortalCaller, PortalContext, file_chooser::FileChooserBackend, flow};
 
-/// Interface version we advertise.
-///
-/// `1` is the method set implemented here — `PreparePrint` + `Print` in
-/// their base signatures. Named lowercase to match the spec's `version`
-/// property (zbus would otherwise PascalCase it to `Version`), same as
-/// [`super::remote_desktop`].
+/// Interface version we advertise: `1`, the method set implemented here.
+/// Named lowercase to match the spec's `version` property (zbus would otherwise PascalCase it to `Version`), same as [`super::remote_desktop`].
 pub const PRINT_VERSION: u32 = 1;
 
 /// Hard ceiling on the bytes we will read off the app's descriptor.
 ///
-/// 64 MiB. A 500-page text PDF is under 10 MB and a 100-page
-/// photo-heavy one lands around 50 MB, so this clears any plausible
-/// single desktop print job while still bounding what one D-Bus call
-/// can make the compositor allocate. The descriptor is
+/// 64 MiB clears any plausible desktop print job (a 500-page text PDF is
+/// under 10 MB, a 100-page photo-heavy one ~50 MB) while bounding what
+/// one D-Bus call can make the compositor allocate. The descriptor is
 /// attacker-controlled and its `st_size` is not a promise, so the limit
-/// is enforced on the read itself and not only on the stat.
+/// is enforced on the read itself, not only the stat.
 ///
 /// Exceeding it is an **error**, never a truncation: a print job
-/// silently cut to 64 MiB is a corrupted document that reaches paper,
-/// which is worse than a refusal the app can report.
+/// silently cut to 64 MiB is a corrupted document that reaches paper.
 pub const MAX_SPOOL_BYTES: usize = 64 * 1024 * 1024;
 
-/// Job-title ceiling in bytes. RFC 8011 types IPP's `job-name` as
-/// `name(MAX)`, i.e. 255 octets; anything longer is going to be
-/// truncated by something further down the chain anyway, so we do it
-/// here where we can do it on a character boundary.
+/// Job-title ceiling in bytes: RFC 8011 types IPP's `job-name` as `name(MAX)` (255 octets); truncated here on a character boundary.
 pub const MAX_TITLE_BYTES: usize = 255;
 
-/// Copies ceiling. An untrusted app that can ask for `u32::MAX` copies
-/// has a physical-resource denial of service — paper and toner — that
-/// no amount of consent granularity fixes, because the user consented
-/// to "print", not to "print forty thousand times".
+/// Copies ceiling — an app asking for `u32::MAX` copies is a
+/// physical-resource DoS (paper, toner) no consent granularity fixes.
 pub const MAX_COPIES: u32 = 100;
 
 /// Title used when the app's own title sanitises down to nothing.
 pub const FALLBACK_TITLE: &str = "Document";
 
-/// How long a `PreparePrint` token stays redeemable. A print dialog
-/// that the user configured and then walked away from should not leave
-/// a live capability behind for the rest of the session.
+/// How long a `PreparePrint` token stays redeemable — a dialog the user configured and walked away from shouldn't leave a live capability behind.
 const TOKEN_TTL: Duration = Duration::from_secs(300);
 
-/// Outstanding tokens we will hold at once. Bounds the memory an app
-/// can pin by calling `PreparePrint` in a loop and never printing;
-/// past this the oldest entry is evicted.
+/// Outstanding tokens held at once — bounds memory an app can pin by looping `PreparePrint` without ever printing; oldest is evicted past this.
 const MAX_OUTSTANDING_TOKENS: usize = 32;
 
-// ---------------------------------------------------------------------------
 // Spooler abstraction
-// ---------------------------------------------------------------------------
 
-/// One job, fully decided, on its way to CUPS.
-///
-/// Every field here has already been validated or replaced: `title` has
-/// been through [`sanitise_title`], `destination` came out of the
-/// spooler's own destination list (never out of the app's request
-/// verbatim), `copies` is clamped, and `document` is the bytes actually
-/// read off the descriptor.
+/// One job, fully decided, on its way to CUPS: `title` sanitised,
+/// `destination` from the spooler's own list (never the app's request verbatim), `copies` clamped, `document` the bytes actually read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrintJobRequest {
     /// Which sandboxed app this is on behalf of.
@@ -116,25 +85,17 @@ pub struct PrintJobRequest {
     pub document: Vec<u8>,
 }
 
-/// Side-effect interface for talking to the print system. Production
-/// shells out to `lp` ([`LpSpooler`]); tests inject a
-/// [`RecordingSpooler`]. Mirrors the `JobCanceller` shape the settings
-/// app's printers pane uses for `cancel`.
+/// Side-effect interface for talking to the print system; production shells out to `lp` ([`LpSpooler`]), tests inject a [`RecordingSpooler`].
 pub trait PrintSpooler: Send + Sync {
-    /// Destinations this machine can print to, **system default first**.
-    ///
-    /// This is the disclosure `PreparePrint` gates: the names alone
-    /// routinely leak an employer, a building and a floor. Returning an
-    /// empty list is the honest answer for a machine with no CUPS — we
-    /// never invent a printer.
+    /// Destinations this machine can print to, **system default first** —
+    /// this is the disclosure `PreparePrint` gates, since names alone routinely leak an employer, a building and a floor.
     fn destinations(&self) -> Vec<String>;
 
     /// Submit `job`. `Ok` carries the spooler's job id for the log.
     fn submit(&self, job: PrintJobRequest) -> Result<String, String>;
 }
 
-/// Cheap-clone handle around `Arc<dyn PrintSpooler>`, matching
-/// [`super::RemoteInputInjectorHandle`].
+/// Cheap-clone handle around `Arc<dyn PrintSpooler>`, matching [`super::RemoteInputInjectorHandle`].
 #[derive(Clone)]
 pub struct PrintSpoolerHandle {
     inner: Arc<dyn PrintSpooler>,
@@ -152,9 +113,7 @@ impl PrintSpoolerHandle {
         }
     }
 
-    /// A handle with no print system behind it. Every submission fails
-    /// and the destination list is empty — which surfaces to the app as
-    /// "no printers", not as a fabricated one.
+    /// A handle with no print system behind it — every submission fails and the destination list is empty, surfacing as "no printers".
     pub fn null() -> Self {
         Self {
             inner: Arc::new(NullPrintSpooler),
@@ -170,18 +129,14 @@ impl PrintSpoolerHandle {
     }
 }
 
-/// Production spooler. Reads destinations with `lpstat` and submits
-/// with `lp`, always as **argv** — there is no shell in this path, so
-/// there is nothing for an untrusted string to be interpolated into.
+/// Production spooler: reads destinations with `lpstat`, submits with `lp`, always as **argv** — no shell in this path to interpolate into.
 pub struct LpSpooler;
 
 impl PrintSpooler for LpSpooler {
     fn destinations(&self) -> Vec<String> {
         // `lpstat -a` prints one line per destination, name first.
         let Ok(out) = std::process::Command::new("lpstat").arg("-a").output() else {
-            // No CUPS on this machine. An empty list is the truthful
-            // answer; `PreparePrint` turns it into an error rather than
-            // offering a printer that isn't there.
+            // No CUPS on this machine — an empty list is the truthful answer; `PreparePrint` turns it into an error rather than inventing a printer.
             return Vec::new();
         };
         if !out.status.success() {
@@ -195,8 +150,7 @@ impl PrintSpooler for LpSpooler {
             .collect();
         names.dedup();
 
-        // Hoist the system default so `destinations()[0]` is the one an
-        // unprepared job should land on.
+        // Hoist the system default so `destinations()[0]` is the one an unprepared job should land on.
         if let Some(default) = lpstat_default()
             && let Some(pos) = names.iter().position(|n| *n == default)
         {
@@ -209,10 +163,7 @@ impl PrintSpooler for LpSpooler {
         use std::io::Write;
         use std::process::{Command, Stdio};
 
-        // Re-check the destination even though `PreparePrint` already
-        // matched it against this list: this is the last point before
-        // the string becomes argv, and it is the only check that is
-        // still true if someone later reorders the call chain.
+        // Re-checked even though `PreparePrint` already matched it — this is the last point before the string becomes argv.
         if !valid_destination(&job.destination) {
             return Err(format!("refusing unsafe destination {:?}", job.destination));
         }
@@ -220,16 +171,9 @@ impl PrintSpooler for LpSpooler {
             return Err("refusing to spool an empty document".to_string());
         }
 
-        // Argv, not a shell string. `-t <title>` consumes its value
-        // unconditionally in CUPS' own option walker, so even a title
-        // that looks like a flag cannot become one — and `sanitise_title`
-        // has already removed the shapes that make that worth trying.
-        //
-        // We deliberately pass **no** document-format option. The app
-        // told us a content type; we did not believe it and did not
-        // forward it. CUPS runs its own type detection over the bytes,
-        // with its own parsers, which is the only opinion in this
-        // pipeline that was formed by looking at the actual data.
+        // Argv, not a shell string: `-t <title>` consumes its value
+        // unconditionally, so even a title shaped like a flag can't become one.
+        // No document-format option is passed either — CUPS runs its own type detection over the actual bytes instead of trusting the app's claim.
         let mut child = Command::new("lp")
             .arg("-d")
             .arg(&job.destination)
@@ -288,8 +232,7 @@ impl PrintSpooler for NullPrintSpooler {
     }
 }
 
-/// Records every submission instead of performing one — for tests that
-/// need to assert what actually reached the spooler.
+/// Records every submission instead of performing one — for tests that need to assert what actually reached the spooler.
 pub struct RecordingSpooler {
     destinations: Vec<String>,
     jobs: Mutex<Vec<PrintJobRequest>>,
@@ -306,8 +249,7 @@ impl RecordingSpooler {
         }
     }
 
-    /// A spooler that accepts jobs and then reports failure — for
-    /// asserting the "spooler said no" response code.
+    /// A spooler that accepts jobs and then reports failure — for asserting the "spooler said no" response code.
     pub fn failing(destinations: Vec<String>) -> Self {
         Self {
             destinations,
@@ -339,20 +281,13 @@ impl PrintSpooler for RecordingSpooler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tokens
-// ---------------------------------------------------------------------------
 
-/// What a `PreparePrint` token redeems to.
-///
-/// Note what is *not* here: the app's settings and page-setup dicts.
-/// They are echoed straight back to the app that sent them and then
-/// dropped. Retaining an attacker-supplied blob across calls buys
-/// nothing and is one more thing to get wrong.
+/// What a `PreparePrint` token redeems to. Note what is *not* here: the
+/// app's settings/page-setup dicts, echoed back to the app and dropped rather than retained.
 #[derive(Clone, Debug)]
 struct PreparedJob {
-    /// The app the token was minted for. A token is worthless to
-    /// anybody else — this is the field that makes it so.
+    /// The app the token was minted for — worthless to anybody else, which is what makes it so.
     caller: PortalCaller,
     /// Destination the user's configuration resolved to.
     destination: String,
@@ -360,14 +295,10 @@ struct PreparedJob {
     issued: Instant,
 }
 
-/// D-Bus interface impl. One instance per [`super::serve`] call; held
-/// by the zbus `ObjectServer` for the lifetime of the connection, which
-/// is also the lifetime of the token table.
+/// D-Bus interface impl, one instance per [`super::serve`] call, held by the zbus `ObjectServer` for the connection's lifetime, same as the token table.
 pub struct PrintBackend {
     ctx: PortalContext,
-    /// Live `PreparePrint` tokens. In-memory on purpose: a token is
-    /// meaningful only inside the session that issued it, so it must
-    /// not survive a restart.
+    /// Live `PreparePrint` tokens, in-memory on purpose — meaningful only inside the session that issued it.
     prepared: Arc<Mutex<HashMap<u32, PreparedJob>>>,
 }
 
@@ -379,22 +310,12 @@ impl PrintBackend {
         }
     }
 
-    /// Mint a token for `job` and return it.
+    /// Mint a token for `job` and return it, from `OsRng` — never a counter,
+    /// hash, or clock. The portal spec types it as a `u`, so 32 bits is the
+    /// whole budget; [`Self::redeem_token`] also requires the redeemer to be
+    /// the app it was minted for, and single use plus a TTL keep the guessing window small.
     ///
-    /// The value comes from `OsRng` — the OS CSPRNG — never from a
-    /// counter, a hash of the caller, or the clock. The portal spec
-    /// types the token as a `u`, so 32 bits is the whole budget
-    /// available; that is thin on its own, which is exactly why
-    /// unguessability is *not* the only thing standing between an app
-    /// and someone else's prepared job. [`Self::redeem_token`] also
-    /// requires the redeemer to be the app the token was minted for, so
-    /// a guessed value is still refused, and single use plus a TTL keep
-    /// the window a guess would have to land in small.
-    ///
-    /// Zero is never issued: the portal's own `options` dict uses a
-    /// missing key and a zero token interchangeably to mean "no token",
-    /// so a zero-valued token would be a token that authorises by being
-    /// absent.
+    /// Zero is never issued: the portal's `options` dict uses a missing key and zero interchangeably for "no token".
     fn mint_token(&self, job: PreparedJob) -> u32 {
         let Ok(mut table) = self.prepared.lock() else {
             return 0;
@@ -418,17 +339,12 @@ impl PrintBackend {
         token
     }
 
-    /// Redeem `token` on behalf of `caller`.
+    /// Redeem `token` on behalf of `caller`. Two properties, both pinned by tests:
     ///
-    /// Two properties this has to hold, both of which the tests pin:
-    ///
-    /// - **Single use.** A successful redemption removes the entry, so
-    ///   a replay finds nothing. The user consented to one job.
-    /// - **Caller-bound, without collateral.** A token presented by the
-    ///   wrong app is refused *and left in place*. Removing it would
-    ///   let any co-resident app destroy another's prepared job by
-    ///   guessing at it — trading a confidentiality hole for an
-    ///   availability one.
+    /// - **Single use**: a successful redemption removes the entry, so a replay finds nothing.
+    /// - **Caller-bound, without collateral**: a token presented by the
+    ///   wrong app is refused *and left in place* — removing it would let a
+    ///   co-resident app destroy another's prepared job by guessing at it.
     fn redeem_token(&self, token: u32, caller: &PortalCaller) -> Option<PreparedJob> {
         let mut table = self.prepared.lock().ok()?;
         table.retain(|_, j| j.issued.elapsed() < TOKEN_TTL);
@@ -443,8 +359,7 @@ impl PrintBackend {
         table.remove(&token)
     }
 
-    /// Outstanding token count — lets a test observe that a rejected
-    /// redemption did not consume somebody else's token.
+    /// Outstanding token count — lets a test observe that a rejected redemption didn't consume somebody else's token.
     pub fn outstanding_tokens(&self) -> usize {
         self.prepared.lock().map(|t| t.len()).unwrap_or(0)
     }
@@ -456,14 +371,11 @@ fn random_token() -> u32 {
     u32::from_le_bytes(bytes)
 }
 
-// ---------------------------------------------------------------------------
 // D-Bus surface
-// ---------------------------------------------------------------------------
 
 #[interface(name = "org.freedesktop.impl.portal.Print")]
 impl PrintBackend {
-    /// Interface version. Named lowercase to match the spec's `version`
-    /// property (zbus would otherwise PascalCase it to `Version`).
+    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise PascalCase it to `Version`).
     #[zbus(property, name = "version")]
     async fn version(&self) -> u32 {
         PRINT_VERSION
@@ -471,24 +383,12 @@ impl PrintBackend {
 
     /// `PreparePrint` — the print dialog, minus the dialog.
     ///
-    /// **This prompts.** The tempting alternative is to let discovery
-    /// through silently and gate only the submission, on the theory
-    /// that nothing has been printed yet. That is wrong twice over.
-    ///
-    /// The reply *is* the sensitive thing. Printer names are not
-    /// opaque handles; in practice they read `ACME-3F-Reception` and
-    /// `Legal-Dept-Colour`, so the list discloses an employer, a site,
-    /// a floor plan and a rough org chart, and its shape fingerprints
-    /// the network the machine is on. Second, an app that only ever
-    /// calls `PreparePrint` would collect all of that without a single
-    /// prompt ever firing — the later gate never runs, because the app
-    /// never intended to print.
-    ///
-    /// It costs the honest app nothing: `flow::resolve` fast-paths any
-    /// standing `Always` grant, so a user who has already said "this
-    /// app may print" sees no prompt here or at `Print`. The prompt is
-    /// for apps with no print grant at all, which is the population
-    /// this is about.
+    /// **This prompts**, even though nothing has been printed yet: the reply
+    /// itself is sensitive — printer names read like `ACME-3F-Reception`,
+    /// disclosing an employer, site and floor plan, and fingerprinting the
+    /// network. An app that only ever calls `PreparePrint` would collect all
+    /// of that without a prompt firing if submission were the only gate.
+    /// Costs the honest app nothing: `flow::resolve` fast-paths a standing `Always` grant.
     async fn prepare_print(
         &self,
         #[zbus(signal_context)] _sig: SignalContext<'_>,
@@ -519,10 +419,7 @@ impl PrintBackend {
         let available = self.ctx.print_spooler.destinations();
         let requested = opt_string(&settings, "printer");
         let Some(destination) = choose_destination(&available, requested.as_deref()) else {
-            // Either there are no printers, or the app named one this
-            // machine does not have. Both are "other error" rather than
-            // a silent substitution: printing to a different printer
-            // than the one asked for is a physical, unrecallable act.
+            // No printers, or the app named one this machine doesn't have — both "other error" rather than a silent substitution.
             tracing::debug!(
                 "Print.PreparePrint: no usable destination (requested {requested:?}, \
                  {} available)",
@@ -545,11 +442,8 @@ impl PrintBackend {
         (0, prepare_results(&destination, copies, token, &page_setup))
     }
 
-    /// `Print` — hand over the bytes.
-    ///
-    /// `fd` is a descriptor the app chose; treat every property of it as
-    /// a claim. It is read only after consent, only if it is a regular
-    /// file, and only up to [`MAX_SPOOL_BYTES`].
+    /// `Print` — hand over the bytes. `fd` is a descriptor the app chose;
+    /// treat every property as a claim: read only after consent, only if a regular file, only up to [`MAX_SPOOL_BYTES`].
     async fn print(
         &self,
         #[zbus(signal_context)] _sig: SignalContext<'_>,
@@ -565,8 +459,7 @@ impl PrintBackend {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
 
-        // Consent first — before we read a byte, so a denial costs the
-        // compositor nothing and touches nothing.
+        // Consent first — before we read a byte, so a denial costs the compositor nothing and touches nothing.
         let outcome = flow::resolve(
             &self.ctx,
             caller.clone(),
@@ -578,11 +471,8 @@ impl PrintBackend {
             return (1, HashMap::new());
         }
 
-        // A token, if present, must redeem. An unknown, expired,
-        // replayed or foreign token is refused outright rather than
-        // quietly downgraded to "no token": falling back to the default
-        // destination would mean a replayed token still prints, which is
-        // the exact outcome single use exists to prevent.
+        // A token, if present, must redeem — unknown/expired/replayed/foreign
+        // is refused outright, not downgraded to "no token", since falling back to the default destination would let a replayed token still print.
         let prepared = match opt_u32(&options, "token") {
             None | Some(0) => None,
             Some(token) => match self.redeem_token(token, &caller) {
@@ -643,23 +533,13 @@ impl PrintBackend {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers — every one of these is on the production path above.
-// ---------------------------------------------------------------------------
+// Pure helpers — every one on the production path above.
 
-/// Read the document off the app's descriptor, defensively.
-///
-/// The descriptor is attacker-controlled, so:
-///
-/// - **Regular files only.** A FIFO or socket with no writer blocks
-///   forever, and a character device can be infinite; requiring
-///   `S_IFREG` removes that whole class instead of trying to time it
-///   out. It costs nothing in practice — the portal's real clients pass
-///   a `memfd` or an ordinary file, both of which stat as regular.
-/// - **Seek to the start.** The app may have left the offset at EOF,
-///   deliberately or not.
-/// - **Read one byte past the cap** so an oversize document is
-///   *detected* rather than silently truncated.
+/// Read the document off the app's descriptor, defensively: the
+/// descriptor is attacker-controlled, so regular files only (a FIFO or
+/// socket with no writer blocks forever; a character device can be
+/// infinite), seek to the start (the app may have left the offset at
+/// EOF), and read one byte past the cap so an oversize document is *detected*, not silently truncated.
 pub(super) fn spool_from_fd(fd: zbus::zvariant::OwnedFd) -> Result<Vec<u8>, String> {
     let std_fd: std::os::fd::OwnedFd = fd.into();
     let mut file = std::fs::File::from(std_fd);
@@ -670,8 +550,7 @@ pub(super) fn spool_from_fd(fd: zbus::zvariant::OwnedFd) -> Result<Vec<u8>, Stri
     if !meta.is_file() {
         return Err("document fd is not a regular file".to_string());
     }
-    // Cheap pre-check. Not a substitute for the bounded read below —
-    // `st_size` is a claim too, and the file can grow after the stat.
+    // Cheap pre-check, not a substitute for the bounded read below — `st_size` is a claim too, and the file can grow after the stat.
     if meta.len() > MAX_SPOOL_BYTES as u64 {
         return Err(format!(
             "document is {} bytes, over the {MAX_SPOOL_BYTES}-byte print limit",
@@ -697,23 +576,17 @@ pub(super) fn spool_from_fd(fd: zbus::zvariant::OwnedFd) -> Result<Vec<u8>, Stri
 }
 
 /// Make an app-supplied job title safe to put in an argv, a CUPS queue
-/// listing and a log line.
+/// listing and a log line — the one attacker-controlled string that
+/// reaches a process argument, so it gets the full treatment:
 ///
-/// The title is the one attacker-controlled string that reaches a
-/// process argument, so it gets the full treatment:
-///
-/// - Control characters become spaces. A newline forges a log line, ESC
-///   drives whatever terminal renders the queue, and NUL truncates on
-///   the far side of any C string. They are *replaced* rather than
-///   dropped so `"a\nb"` cannot collapse into the single token `"ab"`.
-/// - Bidi overrides go too. `U+202E` reverses the rendering of
-///   everything after it, which is how a job called `fdp.exe` shows up
-///   in a queue as `exe.pdf`.
-/// - Leading dashes are stripped, so the value can never read as a flag
-///   even if the argv order around it changes.
+/// - Control characters become spaces (not dropped, so `"a\nb"` can't
+///   collapse into `"ab"`): a newline forges a log line, ESC drives
+///   whatever terminal renders the queue, NUL truncates a C string.
+/// - Bidi overrides go too — `U+202E` reverses rendering, which is how
+///   `fdp.exe` shows up in a queue as `exe.pdf`.
+/// - Leading dashes are stripped, so the value can never read as a flag.
 /// - Truncated to [`MAX_TITLE_BYTES`] on a character boundary.
-/// - Empty after all that falls back to [`FALLBACK_TITLE`], because a
-///   nameless job is worse to find in a queue than a generic one.
+/// - Empty after all that falls back to [`FALLBACK_TITLE`].
 pub fn sanitise_title(raw: &str) -> String {
     let mut out = String::new();
     for ch in raw.chars() {
@@ -750,13 +623,9 @@ fn is_unsafe_title_char(ch: char) -> bool {
         )
 }
 
-/// A CUPS destination name we are willing to put in an argv.
-///
-/// CUPS itself rejects space, `/` and `#` in destination names and caps
-/// them at 127 characters; we go narrower and allow only
-/// `[A-Za-z0-9._-]`, non-empty, not leading with `-`. The narrowing is
-/// free — no real queue name needs more — and it means the value cannot
-/// be read as an option no matter where it lands.
+/// A CUPS destination name we're willing to put in an argv. CUPS itself
+/// rejects space, `/` and `#` and caps at 127 characters; we go narrower
+/// — only `[A-Za-z0-9._-]`, non-empty, not leading with `-` — so the value can never be read as an option.
 pub fn valid_destination(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 127
@@ -766,13 +635,8 @@ pub fn valid_destination(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-/// Resolve the destination for a prepared job.
-///
-/// An app may *ask* for a printer, but the answer is only ever an entry
-/// the machine already has: membership in `available` is the validation
-/// that keeps an app-authored string out of the argv. A request naming
-/// something absent returns `None` — printing to a substitute would
-/// produce paper the user did not ask for, somewhere they may not be.
+/// Resolve the destination for a prepared job: an app may *ask* for a
+/// printer, but membership in `available` is what keeps an app-authored string out of the argv; an absent name returns `None`, never a substitute.
 pub fn choose_destination(available: &[String], requested: Option<&str>) -> Option<String> {
     match requested {
         Some(want) if !want.is_empty() => available
@@ -788,8 +652,7 @@ pub fn clamp_copies(requested: Option<u32>) -> u32 {
     requested.unwrap_or(1).clamp(1, MAX_COPIES)
 }
 
-/// `PreparePrint` results: the settings and page setup the user's side
-/// agreed to, plus the token that ties a later `Print` to them.
+/// `PreparePrint` results: the settings and page setup the user's side agreed to, plus the token that ties a later `Print` to them.
 fn prepare_results(
     destination: &str,
     copies: u32,
@@ -798,9 +661,7 @@ fn prepare_results(
 ) -> HashMap<String, OwnedValue> {
     let mut results: HashMap<String, OwnedValue> = HashMap::new();
 
-    // `settings` is normalised, not echoed: it reports what we actually
-    // resolved, so an app that asked for 5000 copies of a printer that
-    // does not exist can see what it is really going to get.
+    // `settings` is normalised, not echoed — it reports what was actually resolved, not the app's original ask.
     let mut settings: HashMap<String, Value<'static>> = HashMap::new();
     settings.insert("printer".to_string(), Value::new(destination.to_string()));
     settings.insert("n-copies".to_string(), Value::new(copies.to_string()));
@@ -808,9 +669,7 @@ fn prepare_results(
         results.insert("settings".to_string(), v);
     }
 
-    // `page-setup` goes back untouched. It is the app's own geometry
-    // returning to the app that sent it; we have no opinion on it and
-    // do not retain it.
+    // `page-setup` goes back untouched — the app's own geometry returning to the app that sent it; we have no opinion on it and don't retain it.
     let echoed: HashMap<String, Value<'static>> = page_setup
         .iter()
         .filter_map(|(k, v)| v.try_clone().ok().map(|c| (k.clone(), Value::from(c))))
@@ -835,9 +694,7 @@ fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String
     String::try_from(v).ok()
 }
 
-/// Copy count out of a `GtkPrintSettings`-shaped dict. GTK stores every
-/// setting as a string, so `n-copies` arrives as `"3"`; accept a real
-/// `u` too rather than caring which client we are talking to.
+/// Copy count out of a `GtkPrintSettings`-shaped dict; GTK stores every setting as a string (`n-copies` arrives as `"3"`), but a real `u` is accepted too.
 fn opt_copies(settings: &HashMap<String, OwnedValue>) -> Option<u32> {
     if let Some(n) = opt_u32(settings, "n-copies") {
         return Some(n);
@@ -879,12 +736,11 @@ mod tests {
             .unwrap()
     }
 
-    // -- title sanitisation ------------------------------------------------
+    // Title sanitisation
 
     #[test]
     fn sanitise_title_replaces_control_characters_with_spaces() {
-        // Replaced, not dropped: the two halves must stay separated so a
-        // forged second line cannot fuse onto the first.
+        // Replaced, not dropped: the two halves must stay separated so a forged second line can't fuse onto the first.
         assert_eq!(sanitise_title("quarterly\nreport"), "quarterly report");
         assert_eq!(sanitise_title("a\u{1b}[31mb"), "a [31mb");
         assert_eq!(sanitise_title("nul\0byte"), "nul byte");
@@ -915,8 +771,7 @@ mod tests {
 
     #[test]
     fn sanitise_title_truncates_multibyte_on_a_char_boundary() {
-        // 'é' is two bytes; 255 is odd, so a naive byte slice would split
-        // the last one and panic.
+        // 'é' is two bytes; 255 is odd, so a naive byte slice would split the last one and panic.
         let long = "é".repeat(4096);
         let out = sanitise_title(&long);
         assert!(out.len() <= MAX_TITLE_BYTES);
@@ -930,7 +785,7 @@ mod tests {
         assert_eq!(sanitise_title("---"), FALLBACK_TITLE);
     }
 
-    // -- destination validation -------------------------------------------
+    // Destination validation
 
     #[test]
     fn valid_destination_rejects_argv_and_path_shapes() {
@@ -972,7 +827,7 @@ mod tests {
         assert_eq!(clamp_copies(Some(u32::MAX)), MAX_COPIES);
     }
 
-    // -- fd handling -------------------------------------------------------
+    // Fd handling
 
     #[test]
     fn spool_from_fd_reads_a_regular_file_from_the_start() {
@@ -989,8 +844,7 @@ mod tests {
 
     #[test]
     fn spool_from_fd_rejects_a_non_regular_descriptor() {
-        // A socket (or a FIFO) with no writer blocks forever; requiring a
-        // regular file is what removes that as a hang vector.
+        // A socket (or FIFO) with no writer blocks forever; requiring a regular file removes that as a hang vector.
         let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
         let owned: std::os::fd::OwnedFd = a.into();
         let err = spool_from_fd(zbus::zvariant::OwnedFd::from(owned))
@@ -1018,7 +872,7 @@ mod tests {
         assert!(spool_from_fd(zbus::zvariant::OwnedFd::from(owned)).is_err());
     }
 
-    // -- tokens ------------------------------------------------------------
+    // Tokens
 
     fn prepared_for(caller: &PortalCaller) -> PreparedJob {
         PreparedJob {
@@ -1041,8 +895,7 @@ mod tests {
         let backend = PrintBackend::new(ctx);
         let caller = PortalCaller::new(ws, "org.example.print");
         let mut seen = std::collections::HashSet::new();
-        // MAX_OUTSTANDING_TOKENS mints fit without eviction, so every
-        // value has to be distinct *and* live at the same time.
+        // MAX_OUTSTANDING_TOKENS mints fit without eviction, so every value has to be distinct *and* live at the same time.
         for _ in 0..MAX_OUTSTANDING_TOKENS {
             let t = backend.mint_token(prepared_for(&caller));
             assert_ne!(t, 0, "zero is the 'no token' sentinel and must never issue");
@@ -1114,7 +967,7 @@ mod tests {
         );
     }
 
-    // -- results shape -----------------------------------------------------
+    // Results shape
 
     #[test]
     fn prepare_results_carry_settings_page_setup_and_token() {
@@ -1185,8 +1038,7 @@ mod tests {
 
     #[test]
     fn lp_spooler_refuses_an_unsafe_destination_before_spawning() {
-        // Reaching `lp` at all with this would be the bug; the guard is
-        // the last check before the string becomes argv.
+        // Reaching `lp` at all with this would be the bug; the guard is the last check before the string becomes argv.
         let err = LpSpooler
             .submit(PrintJobRequest {
                 caller: PortalCaller::new(WorkspaceId(1), "app"),
@@ -1217,8 +1069,7 @@ mod tests {
     #[test]
     fn ctx_default_spooler_is_replaceable() {
         // The backend reads the spooler off the context, so a test that
-        // injects one must actually see it — guards against a future
-        // refactor hard-wiring `LpSpooler` inside the backend.
+        // injects one must actually see it — guards against a future refactor hard-wiring `LpSpooler` inside the backend.
         let rec = Arc::new(RecordingSpooler::with_destinations(vec![
             "Injected".to_string()
         ]));

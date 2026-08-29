@@ -110,7 +110,13 @@ pub struct LayoutKey {
 }
 
 impl LayoutKey {
-    pub fn new(chapter: usize, content_w: f32, content_h: f32, s: &Settings, font_sig: u64) -> Self {
+    pub fn new(
+        chapter: usize,
+        content_w: f32,
+        content_h: f32,
+        s: &Settings,
+        font_sig: u64,
+    ) -> Self {
         Self {
             chapter,
             width_q: content_w.round() as i32,
@@ -208,13 +214,19 @@ struct Word {
 }
 
 fn weight(bold: bool) -> TextWeight {
-    if bold { TextWeight::Bold } else { TextWeight::Regular }
+    if bold {
+        TextWeight::Bold
+    } else {
+        TextWeight::Regular
+    }
 }
 
 /// Lay out one chapter into positioned lines + page breaks. `base_family` is
 /// the reader's chosen body face (serif / a named installed family / sans);
 /// `font_mult` scales the nominal body size for that face; `font_sig` feeds the
 /// layout cache key so a font change relays out.
+// Layout entry point: chapter/text-renderer/box/typography params are the
+// natural, minimal parameter set for the pagination engine.
 #[allow(clippy::too_many_arguments)]
 pub fn layout_chapter(
     tr: &mut TextRenderer,
@@ -271,10 +283,13 @@ pub fn layout_chapter(
             let bold = span.bold || st.force_bold;
             let italic = span.italic || st.force_italic;
             let mono = span.code || base_mono;
-            let word_family = if mono { &FontChoice::Monospace } else { base_family };
+            let word_family = if mono {
+                &FontChoice::Monospace
+            } else {
+                base_family
+            };
             for (wi, w) in span.text.split_whitespace().enumerate() {
-                let (ww, _h) =
-                    tr.measure_font(w, st.size, None, weight(bold), italic, word_family);
+                let (ww, _h) = tr.measure_font(w, st.size, None, weight(bold), italic, word_family);
                 let space_before = if wi == 0 { span.space_before } else { true };
                 // A separating space is one canonical char between words.
                 if !canon.is_empty() && space_before {
@@ -306,7 +321,11 @@ pub fn layout_chapter(
         let block_top = y;
         let mut line_idx = 0usize;
         for word in &words {
-            let gap = if !cur.is_empty() && word.space_before { space_w } else { 0.0 };
+            let gap = if !cur.is_empty() && word.space_before {
+                space_w
+            } else {
+                0.0
+            };
             if !cur.is_empty() && cur_w + gap + word.w > text_width {
                 lines.push(LaidLine {
                     y: block_top + line_idx as f32 * line_height,
@@ -336,7 +355,11 @@ pub fn layout_chapter(
         }
 
         let bullet = match block {
-            Block::ListItem { ordered: true, index: n, .. } => Some(format!("{n}.")),
+            Block::ListItem {
+                ordered: true,
+                index: n,
+                ..
+            } => Some(format!("{n}.")),
             Block::ListItem { ordered: false, .. } => Some("•".to_string()),
             _ => None,
         };
@@ -361,7 +384,12 @@ pub fn layout_chapter(
     let total_height = y;
     let pages = paginate(&laid, content_h);
 
-    ChapterLayout { blocks: laid, total_height, pages, key }
+    ChapterLayout {
+        blocks: laid,
+        total_height,
+        pages,
+        key,
+    }
 }
 
 /// Slice the flow into page-start offsets at line boundaries.
@@ -395,8 +423,12 @@ fn paginate(blocks: &[LaidBlock], page_h: f32) -> Vec<f32> {
 
 /// Width of a single space at `size` in `family`, derived by differencing.
 fn measure_space(tr: &mut TextRenderer, size: f32, family: &FontChoice) -> f32 {
-    let w2 = tr.measure_font("m m", size, None, TextWeight::Regular, false, family).0;
-    let w1 = tr.measure_font("mm", size, None, TextWeight::Regular, false, family).0;
+    let w2 = tr
+        .measure_font("m m", size, None, TextWeight::Regular, false, family)
+        .0;
+    let w1 = tr
+        .measure_font("mm", size, None, TextWeight::Regular, false, family)
+        .0;
     (w2 - w1).max(size * 0.22)
 }
 
@@ -406,20 +438,29 @@ mod tests {
     use crate::model::{Block, Span};
 
     fn para(text: &str) -> Block {
-        Block::Paragraph { spans: vec![Span::plain(text)] }
+        Block::Paragraph {
+            spans: vec![Span::plain(text)],
+        }
     }
 
     #[test]
     fn layout_produces_pages_and_lines() {
         let mut tr = TextRenderer::new();
         let blocks = vec![
-            Block::Heading { level: 1, spans: vec![Span::plain("A Chapter")] },
-            para("This is a reasonably long paragraph that should wrap across \
+            Block::Heading {
+                level: 1,
+                spans: vec![Span::plain("A Chapter")],
+            },
+            para(
+                "This is a reasonably long paragraph that should wrap across \
                   several lines when laid out into a narrow content column so \
-                  that pagination has something real to slice into pages here."),
+                  that pagination has something real to slice into pages here.",
+            ),
             Block::Separator,
-            para("Another paragraph after the rule, also long enough to wrap a \
-                  couple of times within the narrow measure we hand the engine."),
+            para(
+                "Another paragraph after the rule, also long enough to wrap a \
+                  couple of times within the narrow measure we hand the engine.",
+            ),
         ];
         let layout = layout_chapter(
             &mut tr,
@@ -491,13 +532,15 @@ mod tests {
             0,
         );
         let b = &layout.blocks[0];
-        assert_eq!(b.text, "alpha beta gamma", "canonical text joins words with spaces");
+        assert_eq!(
+            b.text, "alpha beta gamma",
+            "canonical text joins words with spaces"
+        );
         // Each run carries a char range that indexes into the canonical text.
         let runs: Vec<&LineRun> = b.lines.iter().flat_map(|l| l.runs.iter()).collect();
         assert_eq!(runs.len(), 3);
         for r in &runs {
-            let slice: String =
-                b.text.chars().skip(r.char_start).take(r.char_len).collect();
+            let slice: String = b.text.chars().skip(r.char_start).take(r.char_len).collect();
             assert_eq!(slice, r.text, "run char range slices back to its text");
         }
     }

@@ -1,9 +1,8 @@
 //! `qos-collab-bridge` — daemon entry point.
 //!
-//! Binds the SDK-facing Cap'n Proto socket, accepts one connection
-//! per SDK client, and spawns a bridge task that shuttles requests
-//! and events between the SDK's capnp calls and the legacy shell
-//! broker's serde-JSON dialect.
+//! Binds the SDK-facing Cap'n Proto socket, accepts one connection per SDK
+//! client, and spawns a bridge task shuttling requests/events between the
+//! SDK's capnp calls and the legacy shell broker's serde-JSON dialect.
 //!
 //! ```text
 //!  SDK (runtime-collab)      qos-collab-bridge                shell broker
@@ -27,12 +26,10 @@ use tokio::signal::unix::{SignalKind, signal};
     about = "SDK Cap'n Proto <-> shell serde-JSON broker bridge"
 )]
 struct Cli {
-    /// SDK-facing Cap'n Proto socket to bind. Default:
-    /// `$XDG_RUNTIME_DIR/qos/services/collab.sock`.
+    /// SDK-facing Cap'n Proto socket to bind (default `$XDG_RUNTIME_DIR/qos/services/collab.sock`).
     #[arg(long)]
     listen: Option<PathBuf>,
-    /// Upstream shell-broker Unix socket path. Default:
-    /// `$XDG_RUNTIME_DIR/qos-shell-collab.sock`.
+    /// Upstream shell-broker Unix socket path (default `$XDG_RUNTIME_DIR/qos-shell-collab.sock`).
     #[arg(long)]
     upstream: Option<PathBuf>,
 }

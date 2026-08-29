@@ -1,18 +1,13 @@
-//! The namespace plane: an Automerge-backed **move-tree CRDT**.
+//! The namespace plane: an Automerge-backed move-tree CRDT (Kleppmann model).
+//! Nodes are keyed by a stable `NodeId`, not path, with an explicit `parent`
+//! register, so rename/move/delete are real move ops: no duplicate parents,
+//! delete reparents to the `TRASH` sentinel (a concurrently-created child ends
+//! up trashed, never dangling), and a concurrent cross-move cycle is
+//! deterministically broken by [`Namespace::resolve`] (lowest-id node in the
+//! cycle reverts to `prev_parent`/`ROOT`), so every peer converges identically.
 //!
-//! Nodes are keyed by a stable `NodeId` (not by path) and carry an explicit
-//! `parent` pointer, turning rename/move/delete into real *move operations*
-//! (the Kleppmann model), which eliminates a path-keyed flat map's failure
-//! modes: `parent` is one Automerge register so no duplicate parents;
-//! delete moves a node to the `TRASH` sentinel, so a child created under a
-//! concurrently-deleted dir ends up consistently trashed, never a dangling
-//! orphan; and a concurrent cross-move that would cycle is deterministically
-//! broken by [`Namespace::resolve`] (lowest-id node in the cycle reverts to
-//! its `prev_parent` or `ROOT`) — a pure function of the converged document,
-//! so every peer computes the same repair and converges.
-//!
-//! Inode numbers are a LOCAL `NodeId`↔`u64` index; a rename keeps the node's
-//! id, so the inode is preserved for free.
+//! Inode numbers are a local `NodeId`<->`u64` index; renames keep the node id,
+//! so the inode stays stable across renames.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
@@ -53,7 +48,6 @@ impl NodeKind {
     }
 }
 
-/// A resolved view of one node.
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub id: String,
@@ -76,7 +70,6 @@ pub struct Namespace {
     next_id: u64,
 }
 
-// ---- hash hex helpers ------------------------------------------------------
 
 fn hash_to_hex(h: &Hash) -> String {
     hex::encode(h.as_bytes())
@@ -87,7 +80,6 @@ fn hash_from_hex(s: &str) -> Option<Hash> {
     Some(Hash::from(arr))
 }
 
-// ---- scalar readers --------------------------------------------------------
 
 fn read_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     match doc.get(obj, key) {
@@ -139,8 +131,7 @@ impl Namespace {
             _ => doc.put_object(&ROOT, "nodes", ObjType::Map)?,
         };
         let author = author.into();
-        // Resume the local id counter past any ids we authored before, so a
-        // restart with the same author can't reuse a node id.
+        // Resume the id counter past ids we authored before, so a restart can't reuse a node id.
         let prefix = format!("{author}/");
         let mut max_local = 0u64;
         for id in doc.keys(&nodes) {
@@ -168,7 +159,6 @@ impl Namespace {
         &self.author
     }
 
-    // ---- CRDT sync surface -------------------------------------------------
 
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
@@ -176,12 +166,10 @@ impl Namespace {
     /// Changes since the last `save_incremental`/load/merge, advancing the shared
     /// automerge watermark.
     ///
-    /// INVARIANT: pair every mutation with the `save_incremental` that broadcasts
-    /// it inside the **same** `Namespace` lock scope. The watermark is one shared
-    /// cursor, and a concurrent remote-apply discards whatever the next
-    /// `save_incremental` returns (the resolve paths below rely on that). A
-    /// mutation whose `save_incremental` runs in a *separate* lock acquisition can
-    /// therefore have its delta silently swallowed. Keep mutate + save atomic.
+    /// INVARIANT: pair every mutation with its `save_incremental` inside the same
+    /// `Namespace` lock scope — the watermark is one shared cursor, so a mutation
+    /// saved outside that scope can have its delta silently swallowed by a
+    /// concurrent remote-apply.
     pub fn save_incremental(&mut self) -> Vec<u8> {
         self.doc.save_incremental()
     }
@@ -197,20 +185,17 @@ impl Namespace {
         Ok(())
     }
 
-    /// Apply a remote delta, advance the watermark, run structural resolution,
-    /// and return the resolution delta to broadcast (empty if nothing changed).
+    /// Apply a remote delta: advance the watermark, resolve, and return the resolution delta to broadcast (empty if none).
     pub fn apply_remote_and_resolve(
         &mut self,
         data: &[u8],
     ) -> Result<Vec<u8>, automerge::AutomergeError> {
         self.doc.load_incremental(data)?;
-        let _ = self.doc.save_incremental(); // discard the remote delta from the watermark
+        let _ = self.doc.save_incremental();
         self.resolve();
         Ok(self.doc.save_incremental())
     }
 
-    /// Merge a full remote snapshot (anti-entropy) + resolve; returns the
-    /// resolution delta to broadcast.
     pub fn merge_remote_and_resolve(
         &mut self,
         data: &[u8],
@@ -222,14 +207,11 @@ impl Namespace {
         Ok(self.doc.save_incremental())
     }
 
-    // ---- incremental sync protocol (anti-entropy) --------------------------
 
-    /// Produce the next Automerge sync message for `state` (encoded), if any.
     pub fn sync_generate(&mut self, state: &mut automerge::sync::State) -> Option<Vec<u8>> {
         self.doc.sync().generate_sync_message(state).map(|m| m.encode())
     }
 
-    /// Apply a received Automerge sync message.
     pub fn sync_receive(
         &mut self,
         state: &mut automerge::sync::State,
@@ -240,16 +222,13 @@ impl Namespace {
         Ok(())
     }
 
-    /// After an incremental sync exchange: discard the pulled changes from the
-    /// local-delta watermark (peers already have them), run structural
-    /// resolution, and return only the resolution delta to broadcast.
+    /// Discard the pulled changes from the watermark (peers already have them), resolve, and return only the resolution delta.
     pub fn post_sync_resolve(&mut self) -> Vec<u8> {
         let _ = self.doc.save_incremental();
         self.resolve();
         self.doc.save_incremental()
     }
 
-    // ---- node field access -------------------------------------------------
 
     fn node(&self, id: &str) -> Option<ObjId> {
         match self.doc.get(&self.nodes, id) {
@@ -290,11 +269,11 @@ impl Namespace {
                 return false;
             }
             if !seen.insert(cur.clone()) {
-                return false; // cycle
+                return false;
             }
             match self.parent_of(&cur) {
                 Some(p) => cur = p,
-                None => return false, // missing node
+                None => return false,
             }
         }
     }
@@ -313,7 +292,6 @@ impl Namespace {
         })
     }
 
-    /// All node ids whose parent is `parent_id`.
     fn children(&self, parent_id: &str) -> Vec<String> {
         self.doc
             .keys(&self.nodes)
@@ -321,7 +299,7 @@ impl Namespace {
             .collect()
     }
 
-    /// The live child of `parent_id` named `name` (smallest id wins on a tie).
+    /// The live child of `parent_id` named `name` — smallest id wins on a tie.
     fn child_named(&self, parent_id: &str, name: &str) -> Option<String> {
         let mut matches: Vec<String> = self
             .children(parent_id)
@@ -332,7 +310,6 @@ impl Namespace {
         matches.into_iter().next()
     }
 
-    /// Is `maybe_ancestor` an ancestor of (or equal to) `id`?
     fn is_ancestor(&self, maybe_ancestor: &str, id: &str) -> bool {
         let mut cur = id.to_string();
         let mut seen = HashSet::new();
@@ -350,7 +327,6 @@ impl Namespace {
         }
     }
 
-    // ---- inode index -------------------------------------------------------
 
     fn ino_for_id(&mut self, id: &str) -> u64 {
         if let Some(&ino) = self.id_to_ino.get(id) {
@@ -367,13 +343,12 @@ impl Namespace {
         self.ino_to_id.get(&ino).map(|s| s.as_str())
     }
 
-    /// Absolute path of `ino` within the mount — `"/"` for the root,
-    /// `"/a/b/c"` otherwise. Returns `None` if the inode is unknown or
-    /// its parent chain does not reach ROOT (trashed / cyclic).
+    /// Absolute path of `ino` within the mount — `"/"` for the root, `"/a/b/c"`
+    /// otherwise; `None` if unknown or its parent chain doesn't reach ROOT
+    /// (trashed / cyclic).
     ///
-    /// This is what the FUSE layer's per-identity ACL enforcement keys
-    /// on: the real check is "may this identity read/write *this path*",
-    /// so the enforcement point needs the path an inode resolves to.
+    /// This is what FUSE's per-identity ACL enforcement keys on: the check is
+    /// "may this identity read/write *this path*", so it needs the resolved path.
     pub fn path_for(&self, ino: u64) -> Option<String> {
         if ino == ROOT_INO {
             return Some("/".to_string());
@@ -386,7 +361,7 @@ impl Namespace {
                 break;
             }
             if cur == TRASH_ID || !seen.insert(cur.clone()) {
-                return None; // trashed or cyclic → not a visible path
+                return None;
             }
             parts.push(self.name_of(&cur)?);
             cur = self.parent_of(&cur)?;
@@ -428,7 +403,6 @@ impl Namespace {
         }
     }
 
-    // ---- FUSE-facing reads -------------------------------------------------
 
     pub fn getattr(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?.clone();
@@ -492,7 +466,6 @@ impl Namespace {
         self.entry(id)?.hash
     }
 
-    // ---- mutations ---------------------------------------------------------
 
     fn create_node(
         &mut self,
@@ -540,11 +513,10 @@ impl Namespace {
         Some(self.ino_for_id(&id))
     }
 
-    // ---- rich-text document files (content lives as a CRDT, not opaque bytes) ----
+    // Document files: content lives as a CRDT, not opaque bytes.
 
-    /// Create a file whose content is a structured rich-text document, stored
-    /// in-tree as a CRDT (so concurrent edits merge instead of conflicting).
-    /// `codec` is the format key (e.g. `odt`, `docx`, `md`).
+    /// Create a file whose content is a structured rich-text document stored as a
+    /// CRDT (concurrent edits merge). `codec` is the format key (e.g. `odt`, `md`).
     pub fn create_document(
         &mut self,
         parent_ino: u64,
@@ -564,7 +536,6 @@ impl Namespace {
         Some(self.ino_for_id(&id))
     }
 
-    /// The format key if `ino` is a document file, else `None`.
     pub fn document_codec(&self, ino: u64) -> Option<String> {
         let id = self.ino_to_id.get(&ino)?;
         read_str(&self.doc, &self.node(id)?, "codec")
@@ -577,7 +548,6 @@ impl Namespace {
         }
     }
 
-    /// Serialize the document at `ino` to its on-wire bytes (e.g. an `.odt`).
     pub fn export_document(&self, ino: u64, registry: &qdoc::Registry) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let codec = read_str(&self.doc, &self.node(&id)?, "codec")?;
@@ -592,9 +562,8 @@ impl Namespace {
             .ok()
     }
 
-    /// Replace a document's content by importing `bytes` (a whole-file write
-    /// from an app). Resets the embedded CRDT — fine-grained merge needs the
-    /// in-place edit ops below, not a whole-file rewrite.
+    /// Replace a document's content by importing `bytes` (whole-file write).
+    /// Resets the embedded CRDT; use the in-place edits below to preserve merge history.
     pub fn import_document(
         &mut self,
         ino: u64,
@@ -614,13 +583,11 @@ impl Namespace {
         let Some(provider) = registry.provider_for_ext(&codec) else {
             return false;
         };
-        // Parse into a throwaway document FIRST. A malformed input (bad zip/XML,
-        // invalid UTF-8) must never destroy the existing content.
+        // Parse into a throwaway document first — a malformed input must never destroy existing content.
         let mut probe = qdoc::Document::new();
         if provider.import(bytes, &mut probe.as_mut()).is_err() {
             return false;
         }
-        // The input is valid — now it's safe to replace the embedded document.
         let _ = self.doc.delete(&node, "doc");
         let root = self
             .doc
@@ -635,19 +602,18 @@ impl Namespace {
                 c: &containers,
                 ids: &mut ids,
             };
-            let _ = provider.import(bytes, &mut dmut); // already validated above
+            let _ = provider.import(bytes, &mut dmut);
         }
         self.set_field(&id, "mtime", mtime);
         true
     }
 
-    /// Current heads of the underlying document — used as a cheap change token
-    /// (e.g. to invalidate a derived export cache).
+    /// Current heads of the document — a cheap change token (e.g. to invalidate a derived export cache).
     pub fn heads(&mut self) -> Vec<automerge::ChangeHash> {
         self.doc.get_heads()
     }
 
-    // ---- fine-grained document edits (the path that merges semantically) ----
+    // Fine-grained document edits: the path that merges semantically.
 
     fn with_doc_mut<R>(&mut self, ino: u64, f: impl FnOnce(&mut qdoc::DocMut) -> R) -> Option<R> {
         let id = self.ino_to_id.get(&ino)?.clone();
@@ -694,7 +660,6 @@ impl Namespace {
         self.with_doc_mut(ino, |d| d.remove_block(block_id)).is_some()
     }
 
-    /// A rendered snapshot of the document for an app to display.
     pub fn document_snapshot(&self, ino: u64) -> Option<qdoc::DocSnapshot> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;
@@ -723,8 +688,7 @@ impl Namespace {
                 }
             }
         }
-        // The content changed, so any recorded thumbnail is stale — drop the
-        // pointer (the cache is content-addressed and will regenerate lazily).
+        // Content changed, so any recorded thumbnail is stale — drop the pointer (regenerates lazily).
         if let Some(obj) = self.node(&id) {
             let _ = self.doc.delete(&obj, "thumb");
         }
@@ -735,15 +699,9 @@ impl Namespace {
         true
     }
 
-    // ---- thumbnail metadata (a preview that projects ahead of content) -----
 
-    /// Attach the content hash of a generated thumbnail blob to `ino`. The
-    /// thumbnail is a small content-addressed blob (in the same
-    /// [`crate::ContentStore`] as file content); recording its hash **on
-    /// the namespace node** means the pointer rides the namespace gossip
-    /// and a peer sees it *projected*, before it has fetched the file
-    /// itself, and can hydrate the tiny blob to show a preview ahead of
-    /// the large content.
+    /// Attach the content hash of a generated thumbnail blob to `ino`, so the
+    /// pointer rides namespace gossip and a peer can preview before fetching the full content.
     pub fn set_thumb(&mut self, ino: u64, thumb: &Hash) -> bool {
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
@@ -755,9 +713,6 @@ impl Namespace {
         true
     }
 
-    /// The content hash of `ino`'s thumbnail blob, if one has been recorded
-    /// (locally generated or projected from a peer). `None` when no thumbnail is
-    /// known yet.
     pub fn thumb_hash(&self, ino: u64) -> Option<Hash> {
         let id = self.ino_to_id.get(&ino)?;
         read_str(&self.doc, &self.node(id)?, "thumb").and_then(|h| hash_from_hex(&h))
@@ -771,8 +726,7 @@ impl Namespace {
         if self.node(&id).is_none() || !self.reaches_root(&id) {
             return false;
         }
-        // Record the content at deletion time, so a *concurrent* edit (which
-        // changes `hash` but not `deleted_hash`) can be detected and resurrected.
+        // Record the content hash at deletion time, so a concurrent edit can be detected and resurrected.
         match self.node_hash(&id) {
             Some(h) => self.set_field(&id, "deleted_hash", hash_to_hex(&h)),
             None => {
@@ -787,7 +741,6 @@ impl Namespace {
         true
     }
 
-    /// Nodes whose parent is the TRASH sentinel directly (explicitly deleted).
     pub fn directly_trashed(&self) -> Vec<String> {
         self.doc
             .keys(&self.nodes)
@@ -795,23 +748,19 @@ impl Namespace {
             .collect()
     }
 
-    /// The content hash a node had when it was deleted (for modify/delete detection).
     pub fn deleted_hash(&self, id: &str) -> Option<Hash> {
         read_str(&self.doc, &self.node(id)?, "deleted_hash").and_then(|h| hash_from_hex(&h))
     }
 
-    /// A node's parent before its most recent move (its pre-deletion location).
     pub fn prev_parent(&self, id: &str) -> Option<String> {
         read_str(&self.doc, &self.node(id)?, "prev_parent")
     }
 
-    /// Whether `id` (or the ROOT sentinel) is reachable from the root.
     pub fn is_visible(&self, id: &str) -> bool {
         self.reaches_root(id)
     }
 
-    /// Rename / move: a single reparent (the node keeps its id → inode stable).
-    /// Rejects moving a directory into its own descendant (would self-cycle).
+    /// Rename / move: a single reparent (node keeps its id, so inode stays stable). Rejects moving a directory into its own descendant.
     pub fn rename(
         &mut self,
         parent_ino: u64,
@@ -829,12 +778,10 @@ impl Namespace {
         let Some(id) = self.child_named(&parent_id, name) else {
             return false;
         };
-        // Disallow moving a node into itself or its own subtree.
         if new_parent_id == id || self.is_ancestor(&id, &new_parent_id) {
             return false;
         }
-        // If a node already occupies the destination name, trash it (POSIX
-        // rename replaces the target).
+        // POSIX rename replaces the target: if the destination name is occupied, trash it.
         if let Some(existing) = self.child_named(&new_parent_id, new_name) {
             if existing != id {
                 if let Some(h) = self.node_hash(&existing) {
@@ -853,10 +800,9 @@ impl Namespace {
         true
     }
 
-    // ---- structural resolution (cycle breaking) ----------------------------
+    // Structural resolution (cycle breaking).
 
-    /// Find one cycle in the parent graph (a chain that never reaches ROOT or
-    /// TRASH), returned as the list of node ids forming the loop.
+    /// Find one cycle in the parent graph (never reaching ROOT/TRASH), as the node ids forming the loop.
     fn find_cycle(&self) -> Option<Vec<String>> {
         let ids: Vec<String> = self.doc.keys(&self.nodes).collect();
         for start in &ids {
@@ -883,9 +829,8 @@ impl Namespace {
         None
     }
 
-    /// Break every move-cycle deterministically: the lowest-id node in each
-    /// cycle is reverted to its `prev_parent` (or ROOT if that re-cycles).
-    /// Pure function of the converged document → identical on every peer.
+    /// Break every move-cycle deterministically: the lowest-id node in each cycle
+    /// reverts to `prev_parent` (or ROOT). Pure function of the doc, so every peer computes the same repair.
     pub fn resolve(&mut self) -> bool {
         let mut changed = false;
         let guard = self.doc.keys(&self.nodes).count() + 2;
@@ -911,10 +856,9 @@ impl Namespace {
         changed
     }
 
-    // ---- path + conflict helpers (tests + conflict.rs) ---------------------
+    // Path + conflict helpers (used by tests and conflict.rs).
 
-    /// Resolve a `/`-style path (root-relative, no leading slash) to a live
-    /// entry.
+    /// Resolve a `/`-style path (root-relative, no leading slash) to a live entry.
     pub fn entry_at(&self, path: &str) -> Option<Entry> {
         let mut cur = ROOT_ID.to_string();
         if !path.is_empty() {
@@ -956,7 +900,6 @@ impl Namespace {
         self.child_named(parent_id, name)
     }
 
-    /// Conflicting values of a node's `hash` register (concurrent writers).
     pub fn content_conflicts(&self, id: &str) -> Vec<(String, String)> {
         let Some(obj) = self.node(id) else {
             return Vec::new();
@@ -976,8 +919,7 @@ impl Namespace {
         }
     }
 
-    /// Create a conflict-copy sibling node under `parent_id`, unless one with
-    /// `name` already exists.
+    /// Create a conflict-copy sibling node under `parent_id`, unless one named `name` already exists.
     pub fn create_conflict_copy(
         &mut self,
         parent_id: &str,
@@ -1071,11 +1013,9 @@ mod tests {
         assert!(a.lookup(ROOT_INO, "from_b").is_some());
     }
 
-    // ---- the headline properties of the move-tree CRDT ----
 
     #[test]
     fn concurrent_cross_move_resolves_acyclically_and_converges() {
-        // Shared doc with two dirs X and Y.
         let mut a = Namespace::new("a");
         let xino = a.create_dir(ROOT_INO, "X", 1).unwrap();
         let yino = a.create_dir(ROOT_INO, "Y", 1).unwrap();
@@ -1089,24 +1029,20 @@ mod tests {
         b.rename(ROOT_INO, "Y", b_x, "Y", 5);
         let _ = (xino, yino);
 
-        // Merge both ways + resolve on each — must converge to the same acyclic tree.
         let mut a2 = Namespace::from_bytes("a", &a.save()).unwrap();
         let mut b2 = Namespace::from_bytes("b", &b.save()).unwrap();
-        let _ = a2.merge_doc(&mut b2.clone_doc()); // a2 = a ∪ b
-        let _ = b2.merge_doc(&mut a.clone_doc()); // b2 = b ∪ a
+        let _ = a2.merge_doc(&mut b2.clone_doc());
+        let _ = b2.merge_doc(&mut a.clone_doc());
         a2.resolve();
         b2.resolve();
 
-        // No cycle remains anywhere.
         assert!(a2.find_cycle().is_none(), "a side must be acyclic after resolve");
         assert!(b2.find_cycle().is_none(), "b side must be acyclic after resolve");
 
-        // Both X and Y remain reachable (no data lost to the trash).
         let xid = a2.live_node_ids().into_iter().find(|i| a2.name_of(i).as_deref() == Some("X"));
         let yid = a2.live_node_ids().into_iter().find(|i| a2.name_of(i).as_deref() == Some("Y"));
         assert!(xid.is_some() && yid.is_some(), "both dirs survive resolution");
 
-        // Convergence: the two peers agree on every node's parent.
         for id in a2.live_node_ids() {
             assert_eq!(
                 a2.parent_of(&id),
@@ -1118,7 +1054,6 @@ mod tests {
 
     #[test]
     fn delete_dir_vs_create_child_converges_to_deleted() {
-        // A deletes /d while B creates /d/new concurrently.
         let mut a = Namespace::new("a");
         let dino = a.create_dir(ROOT_INO, "d", 1).unwrap();
         let snap = a.save();
@@ -1131,8 +1066,6 @@ mod tests {
         let _ = a.merge_doc(&mut b);
         a.resolve();
 
-        // d is deleted, and the concurrently-created child is consistently
-        // deleted with it (in the trash subtree) — NOT a dangling orphan.
         assert!(a.lookup(ROOT_INO, "d").is_none(), "d stays deleted");
         let new_id = a
             .doc
@@ -1147,7 +1080,6 @@ mod tests {
 
     #[test]
     fn tree_survives_save_and_reload() {
-        // Persistence: save() bytes must reconstruct the whole tree + content.
         let mut a = Namespace::new("a");
         let dir = a.create_dir(ROOT_INO, "docs", 1).unwrap();
         a.create_file(dir, "f.txt", Some(&h(5)), 5, 1).unwrap();
@@ -1173,8 +1105,7 @@ mod tests {
 
     #[test]
     fn sync_protocol_converges_two_namespaces() {
-        // Both share a base doc, then diverge; the incremental sync protocol
-        // (generate/receive ping-pong) must converge them.
+        // Diverge from a shared base doc; the incremental sync ping-pong must converge them.
         let mut a = Namespace::new("a");
         a.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1).unwrap();
         let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
@@ -1217,7 +1148,6 @@ mod tests {
 
     #[test]
     fn failed_import_preserves_existing_document() {
-        // A malformed write must NOT destroy the existing content (validate-first).
         let reg = qdoc::builtin_registry();
         let mut ns = Namespace::new("a");
         let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
@@ -1235,8 +1165,7 @@ mod tests {
 
     #[test]
     fn document_concurrent_edits_merge_semantically() {
-        // The whole point of model B: two peers editing the same document merge
-        // at the text level — NOT a conflict copy.
+        // The point of model B: concurrent edits to the same document merge at the text level, not a conflict copy.
         let mut a = Namespace::new("a");
         let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
         let bid = a.document_insert_block(ino, None, "paragraph").unwrap();
@@ -1247,8 +1176,8 @@ mod tests {
         let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
 
         // concurrent in-place edits to the same paragraph
-        a.document_splice(ino, &bid, 5, 0, " dear"); // "Hello dear world"
-        b.document_splice(bino, &bid, 11, 0, " (B)"); // append after "world"
+        a.document_splice(ino, &bid, 5, 0, " dear");
+        b.document_splice(bino, &bid, 11, 0, " (B)");
 
         a.merge_doc(&mut b).unwrap();
         let text = a.document_block_text(ino, &bid).unwrap();

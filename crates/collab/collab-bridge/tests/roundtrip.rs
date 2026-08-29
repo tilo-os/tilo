@@ -1,20 +1,13 @@
 //! End-to-end round-trip tests for `collab-bridge`.
 //!
-//! Each test stands up:
-//!
-//! - a *fake upstream broker* — a tokio task on the local set that
-//!   speaks the shell's serde-JSON `CollabRequest` / `CollabEvent`
-//!   dialect on one side of a `UnixStream::pair()`.
-//! - the bridge's [`BridgeCollabService`] wired to open its
-//!   "upstream" against the fake-broker end.
-//! - a real capnp-rpc client (via `runtime-collab::CollabClient`)
-//!   speaking to the bridge over another `UnixStream::pair()`.
-//!
-//! This exercises the full translation surface (capnp method call →
-//! JSON frame upstream, JSON event upstream → capnp Reader on the
-//! stream). No shell process is booted; the tests explicitly do NOT
-//! prove the shell broker itself works — they prove the bridge's
-//! translation is correct against a mocked upstream.
+//! Each test stands up a fake upstream broker (a tokio task speaking the
+//! shell's serde-JSON `CollabRequest`/`CollabEvent` dialect over a
+//! `UnixStream::pair()`), the bridge's [`BridgeCollabService`] wired to
+//! that fake upstream, and a real capnp-rpc client
+//! (`runtime-collab::CollabClient`) talking to the bridge over a second
+//! pair. This exercises the full translation surface (capnp call → JSON
+//! upstream, JSON event → capnp Reader) without booting a shell process —
+//! it proves the bridge's translation, not the shell broker itself.
 
 use std::cell::RefCell;
 use std::os::fd::IntoRawFd;
@@ -38,37 +31,29 @@ use runtime_collab::raw::collab_service;
 use runtime_collab::{CollabClient, CollabServiceClient, PresencePayload as SdkPresencePayload};
 use runtime_portal::UnixCapnpClient;
 
-/// Capture buffer for a fake upstream broker. Every request the
-/// bridge sends gets pushed here so tests can assert on it.
+/// Capture buffer for a fake upstream broker: every request the bridge sends lands here for assertions.
 type Captured = Rc<RefCell<Vec<CollabRequest>>>;
 
-/// Fake broker glue for a single UpstreamHandle. Returns:
-/// - The [`UpstreamHandle`] the bridge uses.
-/// - The `Captured` list to inspect what the bridge sent upstream.
-/// - A [`FakeBrokerControl`] the test can push events through.
+/// Fake broker glue for a single UpstreamHandle: returns the handle the
+/// bridge uses, the capture list, and a control to push events through.
 struct FakeUpstream {
     handle: UpstreamHandle,
     captured: Captured,
-    /// Push a `CollabEvent` in as if it arrived from the shell
-    /// broker. The bridge's reader task will decode + route it.
+    /// Pushes a `CollabEvent` as if it arrived from the shell broker; the bridge's reader task decodes and routes it.
     inject: Rc<dyn Fn(CollabEvent)>,
 }
 
-/// Build a fake upstream: a UnixStream pair with a tokio task on
-/// one end that (1) decodes every CollabRequest the bridge writes
-/// and (2) exposes a channel to inject CollabEvents that the
-/// bridge should receive.
+/// Builds a fake upstream: a `UnixStream` pair with a tokio task on one
+/// end capturing bridge requests and exposing a channel to inject events.
 async fn stand_up_fake_upstream() -> FakeUpstream {
     let (bridge_side, fake_side) = UnixStream::pair().unwrap();
 
-    // The bridge speaks to `bridge_side` — feed it into the same
-    // `connect_from_stream` code path as production. We inline
-    // that path here so we don't need the real filesystem.
+    // Feed `bridge_side` through the same `connect_from_stream` path as
+    // production, inlined so we avoid the real filesystem.
     let handle = handle_from_stream(bridge_side);
 
-    // Fake broker task: pull the writer side of `fake_side` and
-    // capture every request; the reader side is used to inject
-    // events (writing into fake_side from the outside).
+    // Fake broker task: capture every request written to `fake_side`; inject
+    // events by writing into it from the outside.
     let (mut fake_reader, fake_writer) = tokio::io::split(fake_side);
     let fake_writer = Arc::new(tokio::sync::Mutex::new(fake_writer));
     let captured: Captured = Rc::new(RefCell::new(Vec::new()));
@@ -113,10 +98,8 @@ async fn stand_up_fake_upstream() -> FakeUpstream {
     }
 }
 
-/// Replicates [`collab_bridge::upstream::connect`] but takes an
-/// already-connected `UnixStream` (from `UnixStream::pair`) so
-/// tests don't need to bind a real Unix socket. Not exposed in the
-/// library because the production path always dials a path.
+/// Replicates [`collab_bridge::upstream::connect`] for an already-connected
+/// stream so tests avoid a real Unix socket; not exposed in the library.
 fn handle_from_stream(stream: UnixStream) -> UpstreamHandle {
     use tokio::sync::mpsc;
     let (mut reader, writer) = tokio::io::split(stream);
@@ -186,11 +169,8 @@ fn handle_from_stream(stream: UnixStream) -> UpstreamHandle {
         }
     });
 
-    // We can't construct `UpstreamHandle` directly because its
-    // fields are private. Route through a helper constructor. In
-    // production this is done inside `connect`. For tests we use
-    // `UpstreamHandle::new_for_test` (added below via a public
-    // constructor).
+    // `UpstreamHandle`'s fields are private, so tests construct one through
+    // `UpstreamHandle::new_for_test` rather than directly.
     UpstreamHandle::new_for_test(
         writer,
         op_rx,
@@ -200,17 +180,13 @@ fn handle_from_stream(stream: UnixStream) -> UpstreamHandle {
     )
 }
 
-/// Stand up the bridge in front of a fake upstream.
-///
-/// Returns:
-/// - the [`CollabClient`] SDK-side handle the test drives.
-/// - the fake-broker capture list.
-/// - the fake-broker inject closure.
+/// Stands up the bridge in front of a fake upstream. Returns the
+/// [`CollabClient`] the test drives, the fake-broker capture list, and its
+/// inject closure.
 async fn stand_up_bridge() -> (CollabClient, Captured, Rc<dyn Fn(CollabEvent)>) {
     let fake = stand_up_fake_upstream().await;
 
-    // Bridge service with an opener that hands back the pre-built
-    // upstream handle every time joinChannel is called.
+    // Bridge service whose opener hands back the pre-built upstream handle on every joinChannel.
     let handle_cell: Rc<RefCell<Option<UpstreamHandle>>> =
         Rc::new(RefCell::new(Some(fake.handle.clone())));
     let opener: collab_bridge::service::UpstreamOpener = Rc::new(move || {
@@ -225,8 +201,7 @@ async fn stand_up_bridge() -> (CollabClient, Captured, Rc<dyn Fn(CollabEvent)>) 
     });
     let service = BridgeCollabService::new(opener);
 
-    // Wire an SDK-side capnp client to the bridge service in
-    // memory (no filesystem).
+    // Wire an SDK-side capnp client to the bridge service in memory.
     let (sdk_side, bridge_side) = UnixStream::pair().unwrap();
 
     // Bridge side: run capnp-rpc as Server.
@@ -255,7 +230,6 @@ async fn stand_up_bridge() -> (CollabClient, Captured, Rc<dyn Fn(CollabEvent)>) 
     (collab, fake.captured, fake.inject)
 }
 
-// --- tests --------------------------------------------------------------
 
 #[test]
 fn publish_cursor_arrives_upstream_as_pointer_presence() {
@@ -267,9 +241,8 @@ fn publish_cursor_arrives_upstream_as_pointer_presence() {
         let presence = channel.presence().await.unwrap();
         presence.publish_cursor(1.0, 2.0).await.unwrap();
 
-        // Give the fake broker's reader task a chance to see the
-        // frame — it runs on the same LocalSet so a `yield` chain
-        // is enough.
+        // Give the fake broker's reader task a chance to see the frame (same
+        // LocalSet, so a yield chain suffices).
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
@@ -317,9 +290,9 @@ fn publish_pointer_carries_the_publishers_own_coordinate_space() {
             })
             .expect("bridge emitted a Pointer Presence upstream");
         assert_eq!(pos, (1.0, 2.0));
-        // The publisher's own key, not the placeholder `publish_cursor`
-        // has to synthesize: the key is the coordinate space, so a
-        // re-keyed frame is a position measured somewhere else.
+        // Use the publisher's own key rather than the placeholder `publish_cursor`
+        // synthesizes: the key is the coordinate space, so a re-keyed frame reads
+        // as a position from elsewhere.
         assert_eq!(sent_key, key);
     });
 }
@@ -351,8 +324,7 @@ fn keyed_pointer_reaches_the_sdk_as_pointer_not_cursor() {
             .expect("pointer presence arrives")
             .unwrap();
         assert_eq!(ev.user_id, "alice");
-        // `Pointer`, not `Cursor`: a receiver has to be able to tell a
-        // position that knows its space from one that does not.
+        // `Pointer`, not `Cursor`: a receiver must tell apart a position that knows its space from one that doesn't.
         assert_eq!(ev.payload, SdkPresencePayload::Pointer { x: 230.0, y: 34.0 });
         let decoded: PresenceKey = postcard::from_bytes(&ev.key_bytes).unwrap();
         assert_eq!(decoded, key);
@@ -403,9 +375,8 @@ fn subscribe_context_delivers_upstream_context_events() {
         assert_eq!(snap.collaborators[0].display_name, "Alice");
         assert_eq!(snap.collaborators[0].color, 0x00_ff_00_00);
         assert_eq!(snap.collaborators[1].user_id, "bob");
-        // Both facts have to survive the projection: dropping either one
-        // is what left a client unable to tell an agent from a person,
-        // or to find itself in the roster at all.
+        // Both facts must survive the projection: losing either leaves a client
+        // unable to tell an agent from a person, or to find itself in the roster.
         assert!(snap.collaborators[0].is_self, "alice is this machine's own row");
         assert!(!snap.collaborators[0].is_agent, "alice is a person");
         assert!(!snap.collaborators[1].is_self, "bob is somebody else");
@@ -471,9 +442,8 @@ fn signed_ops_are_never_dropped_even_under_presence_flood() {
             tokio::task::yield_now().await;
         }
 
-        // Flood the upstream with far more presence events than the
-        // presence queue can hold (capacity is 128), interleaved
-        // with 3 signed ops. Signed ops MUST all survive.
+        // Flood the upstream with far more presence events than the queue holds
+        // (capacity 128), interleaved with 3 signed ops that must all survive.
         let key = PresenceKey::Tab { id: "flood".into() };
         for i in 0..600u32 {
             (inject)(CollabEvent::RemoteCursorMoved {
@@ -488,7 +458,6 @@ fn signed_ops_are_never_dropped_even_under_presence_flood() {
                 from_user_id: format!("author-{i}"),
             });
         }
-        // Interleave more presence noise after the ops.
         for i in 0..600u32 {
             (inject)(CollabEvent::RemotePresenceUpdate {
                 user_id: "flooder".into(),
@@ -497,14 +466,12 @@ fn signed_ops_are_never_dropped_even_under_presence_flood() {
             });
         }
 
-        // Give the reader task time to see everything (yield in
-        // bulk instead of a real sleep to keep the test fast).
+        // Give the reader task time to see everything (yield in bulk, not a real sleep, to keep the test fast).
         for _ in 0..64 {
             tokio::task::yield_now().await;
         }
-        // Small real sleep so the reader task drains — with the
-        // current-thread runtime yield alone isn't quite enough
-        // when the reader task is on the same executor.
+        // A small real sleep, since yield alone isn't enough for the reader task
+        // to drain on the current-thread runtime.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Drain the signed-op stream: all three must land.
@@ -514,14 +481,12 @@ fn signed_ops_are_never_dropped_even_under_presence_flood() {
                 .expect("signed op arrives")
                 .unwrap();
             assert_eq!(ev.from_user_id, format!("author-{i}"), "op {i} attribution preserved");
-            // The op body is postcard(SignedOp). We just check it's
-            // non-empty; per-field assertions belong in collab-types.
+            // Op body is postcard(SignedOp); we only check non-empty since per-field assertions belong in collab-types.
             assert!(!ev.op.is_empty(), "op {i} not empty");
         }
 
-        // Presence stream now yields whatever survived — should be
-        // capped by capacity, proving drop-oldest is in force.
-        // Read one event to confirm the stream is still live.
+        // Presence stream now yields whatever survived — capped by capacity,
+        // proving drop-oldest is in force; read one to confirm the stream is live.
         let _ = tokio::time::timeout(Duration::from_millis(200), presence_stream.read()).await;
     });
 }
@@ -531,10 +496,8 @@ fn upstream_close_surfaces_as_error_on_next_op_read() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
-        // Stand up a bridge where the upstream opener returns an
-        // Err. The SDK's next call should fail with a capnp error
-        // (surfaced as NotAvailable / disconnect on the client
-        // side).
+        // Stand up a bridge whose upstream opener returns Err; the SDK's next call
+        // should fail as a capnp error (NotAvailable / disconnect client-side).
         let opener: collab_bridge::service::UpstreamOpener = Rc::new(|| {
             Box::pin(async {
                 Err(std::io::Error::new(
@@ -568,8 +531,7 @@ fn upstream_close_surfaces_as_error_on_next_op_read() {
         let collab = CollabClient::from_raw(client);
 
         let res = collab.join_channel("c", b"i").await;
-        // `ChannelHandle` doesn't implement `Debug`, so we can't
-        // `unwrap_err`. Match by hand.
+        // `ChannelHandle` has no `Debug`, so match the error by hand instead of `unwrap_err`.
         let err = match res {
             Ok(_) => panic!("expected upstream-refused error but joinChannel returned Ok"),
             Err(e) => e,
@@ -582,9 +544,8 @@ fn upstream_close_surfaces_as_error_on_next_op_read() {
     });
 }
 
-/// Minimal SignedOp for tests. Every field that's part of the
-/// canonical bytes is set to a stable placeholder; the bridge
-/// doesn't introspect the op so this is enough.
+/// Minimal SignedOp for tests: every canonical-bytes field is a stable
+/// placeholder, since the bridge doesn't introspect the op.
 fn mk_signed_op(seq: u64) -> collab_types::SignedOp {
     use collab_types::{ArtifactId, Ed25519PublicKey, OpClass, SignedOp};
     let op = SignedOp::new_unsigned(
@@ -596,7 +557,6 @@ fn mk_signed_op(seq: u64) -> collab_types::SignedOp {
         std::time::UNIX_EPOCH + std::time::Duration::from_secs(seq),
         seq,
     );
-    // The zero-filled signature written by `new_unsigned` is fine —
-    // the bridge doesn't verify signatures.
+    // The zero-filled signature from `new_unsigned` is fine since the bridge doesn't verify signatures.
     op
 }

@@ -2,18 +2,17 @@
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.ScreenCast.xml`.
 //!
-//! `xdg-desktop-portal` drives a per-session state machine on behalf of a
-//! sandboxed app: `CreateSession` allocates it; `SelectSources` records
-//! what to capture and is where the consent prompt fires (a valid
-//! `restore_token` pre-approves the session and skips it); `Start`
-//! re-checks consent (unless restored), provisions a real PipeWire node
-//! per selected source, and — when the session asked to persist — returns
-//! a fresh `restore_token` so the next share can skip the prompt.
+//! `xdg-desktop-portal` drives a per-session state machine on behalf of
+//! a sandboxed app: `CreateSession` allocates it; `SelectSources`
+//! records what to capture and is where the consent prompt fires (a
+//! valid `restore_token` pre-approves the session and skips it);
+//! `Start` re-checks consent (unless restored), provisions a real
+//! PipeWire node per selected source, and — when the session asked to
+//! persist — returns a fresh `restore_token` so the next share can skip the prompt.
 //!
 //! `OpenPipeWireRemote` is a frontend-interface method in the reference
-//! architecture; we expose it on the backend too so a qOS-native frontend
-//! (and the test harness) can get a real, scoped remote fd directly from
-//! the compositor's provisioner.
+//! architecture; exposed here too so a qOS-native frontend (and the test
+//! harness) can get a real, scoped remote fd directly from the compositor's provisioner.
 //!
 //! [`ScreenCastStreamProvisioner`] lets tests substitute a
 //! [`MockScreenCastProvisioner`] for the real PipeWire connection.
@@ -51,12 +50,10 @@ pub mod cursor_mode {
     pub const ALL: u32 = HIDDEN | EMBEDDED | METADATA;
 }
 
-/// The interface version we advertise. v4 is the first that defines
-/// `persist_mode` + `restore_token`, which we implement.
+/// The interface version we advertise. v4 is the first that defines `persist_mode` + `restore_token`, which we implement.
 pub const SCREENCAST_VERSION: u32 = 4;
 
-/// Per-session negotiated selection, keyed by the frontend's
-/// `session_handle` object path.
+/// Per-session negotiated selection, keyed by the frontend's `session_handle` object path.
 #[derive(Clone, Debug, Default)]
 struct ScreenCastSession {
     app_id: String,
@@ -68,13 +65,11 @@ struct ScreenCastSession {
     multiple: bool,
     /// Requested persistence: 0 none, 1 while-running, 2 until-revoked.
     persist_mode: u32,
-    /// True once a valid `restore_token` pre-approved this session, so
-    /// `Start` skips the consent prompt (the persisted-share fast path).
+    /// True once a valid `restore_token` pre-approved this session, so `Start` skips the consent prompt (persisted-share fast path).
     restored: bool,
 }
 
-/// What a `restore_token` maps back to. Issued at `Start` when the app
-/// asked to persist; consumed at a later `SelectSources`.
+/// What a `restore_token` maps back to. Issued at `Start` when the app asked to persist; consumed at a later `SelectSources`.
 #[derive(Clone, Debug)]
 struct RestoreData {
     app_id: String,
@@ -89,9 +84,8 @@ pub struct ScreenCastBackend {
     /// Live sessions keyed by `session_handle` path.
     sessions: Arc<Mutex<HashMap<String, ScreenCastSession>>>,
     /// Issued restore tokens → the selection they restore. In-memory for
-    /// the compositor session's lifetime, which satisfies `persist_mode`
-    /// 1 (while-running); durable-until-revoked (mode 2) persistence to
-    /// disk is a documented follow-up.
+    /// the compositor session's lifetime, satisfying `persist_mode` 1
+    /// (while-running); durable-until-revoked (mode 2) is a documented follow-up.
     restore: Arc<Mutex<HashMap<String, RestoreData>>>,
 }
 
@@ -119,16 +113,14 @@ impl ScreenCastBackend {
         cursor_mode::ALL
     }
 
-    /// Interface version. Named lowercase to match the spec's `version`
-    /// property (zbus would otherwise PascalCase it to `Version`).
+    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise PascalCase it to `Version`).
     #[zbus(property, name = "version")]
     async fn version(&self) -> u32 {
         SCREENCAST_VERSION
     }
 
-    /// `CreateSession` — register the session so `SelectSources`/`Start`
-    /// can carry the negotiated selection. Consent-neutral: returns
-    /// response=0 with empty results.
+    /// `CreateSession` — register the session so `SelectSources`/`Start` can
+    /// carry the negotiated selection. Consent-neutral: response=0, empty results.
     async fn create_session(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -151,9 +143,8 @@ impl ScreenCastBackend {
     }
 
     /// `SelectSources` — record what the app wants to capture and surface
-    /// the consent prompt. A valid `restore_token` pre-approves the
-    /// session (no prompt), which is how a persisted share re-attaches
-    /// without re-asking.
+    /// the consent prompt. A valid `restore_token` pre-approves the session
+    /// (no prompt) — how a persisted share re-attaches without re-asking.
     async fn select_sources(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -180,9 +171,8 @@ impl ScreenCastBackend {
         let mut multiple = opt_bool(&options, "multiple").unwrap_or(false);
         let mut persist_mode = opt_u32(&options, "persist_mode").unwrap_or(0);
 
-        // A restore token that matches this app pre-approves the session
-        // and restores its previous selection (source types, cursor mode,
-        // multiple, and persist mode).
+        // A restore token that matches this app pre-approves the session and
+        // restores its previous selection (source types, cursor mode, multiple, persist mode).
         let restored = if let Some(token) = opt_string(&options, "restore_token") {
             let stored = self
                 .restore
@@ -203,8 +193,7 @@ impl ScreenCastBackend {
             false
         };
 
-        // Consent: an active `Always` grant, or a valid restore token,
-        // skips the prompt. Otherwise ask.
+        // Consent: an active `Always` grant, or a valid restore token, skips the prompt. Otherwise ask.
         let allowed = if restored {
             true
         } else {
@@ -236,8 +225,7 @@ impl ScreenCastBackend {
     }
 
     /// `Start` — provision a real PipeWire node per selected source and
-    /// return the streams. Issues a fresh `restore_token` when the session
-    /// asked to persist.
+    /// return the streams. Issues a fresh `restore_token` when the session asked to persist.
     async fn start(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -251,8 +239,7 @@ impl ScreenCastBackend {
         tracing::debug!("ScreenCast.Start: app={app_id}");
         let key = session_handle.to_string();
 
-        // Pull the selection recorded at SelectSources (defaults if the
-        // frontend somehow skipped it).
+        // Pull the selection recorded at SelectSources (defaults if the frontend somehow skipped it).
         let session = self
             .sessions
             .lock()
@@ -330,8 +317,7 @@ impl ScreenCastBackend {
     }
 
     /// `OpenPipeWireRemote` — hand back the fd of a PipeWire remote the app
-    /// attaches the provisioned nodes to. See the module docs on where this
-    /// sits relative to the reference frontend.
+    /// attaches the provisioned nodes to. See the module docs for where this sits relative to the reference frontend.
     async fn open_pipe_wire_remote(
         &self,
         session_handle: ObjectPath<'_>,
@@ -369,8 +355,7 @@ fn size_from_options(options: &HashMap<String, OwnedValue>) -> (u32, u32) {
 }
 
 /// Expand a source-type bitmask into the concrete streams to provision.
-/// Always yields at least one (monitor). When `multiple` is false, only
-/// the first (preferring monitor > window > virtual) is kept.
+/// Always yields at least one (monitor); when `multiple` is false, only the first (monitor > window > virtual preference) is kept.
 fn selected_source_types(mask: u32, multiple: bool) -> Vec<u32> {
     let mut out = Vec::new();
     for bit in [source_type::MONITOR, source_type::WINDOW, source_type::VIRTUAL] {
@@ -402,8 +387,7 @@ fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String
     String::try_from(v).ok()
 }
 
-/// Build `Start`'s `(response, results)` from the provisioned streams and
-/// optional restore token. The `streams` field is `a(ua{sv})`.
+/// Build `Start`'s `(response, results)` from the provisioned streams and optional restore token. The `streams` field is `a(ua{sv})`.
 fn start_response(
     infos: Vec<PipewireStreamInfo>,
     restore_token: Option<String>,
@@ -433,8 +417,7 @@ fn start_response_with_stream(
     start_response(vec![info], None, 0)
 }
 
-/// Test-only: the outcome→response helper, kept so the "deny path returns
-/// response=1" assertion can be exercised without a provisioner.
+/// Test-only: the outcome→response helper, kept so the "deny path returns response=1" assertion can be exercised without a provisioner.
 #[cfg(test)]
 fn outcome_to_start_response_for_tests(
     outcome: PromptOutcome,
@@ -561,8 +544,7 @@ mod tests {
         assert_eq!(cursor_mode::ALL, 1 | 2 | 4);
     }
 
-    /// The provisioner records the request the Start path forwards,
-    /// including the selected source type + size.
+    /// The provisioner records the request the Start path forwards, including the selected source type + size.
     #[test]
     fn screencast_provisioner_records_source_type_and_size() {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(40));

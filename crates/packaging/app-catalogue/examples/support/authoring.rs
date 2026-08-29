@@ -1,75 +1,52 @@
 //! Authoring the `.qpkg` a local test registry serves.
 //!
-//! Shared by the `serve-test-registry` example and by the test that
-//! holds it to its contract. It lives under `examples/support/` rather
-//! than in the crate's `src/` because it is development tooling and
-//! because everything it needs (`pkg`, `app-registry`, `ed25519-dalek`,
-//! `tempfile`) is a dev-dependency — putting it in the library would
-//! pull the packer into the shipped `qos-catalogue` binary.
+//! Shared by the `serve-test-registry` example and the test that holds
+//! it to its contract. Lives under `examples/support/` (a dev-only
+//! dependency set) so the packer doesn't ship inside `qos-catalogue`.
 //!
-//! ## Why the manifest is not a fixture
+//! The manifest decides real launch behaviour — `[sandbox.services]`
+//! (which service descriptors the launcher hands the app; no `collab`
+//! entry means collaboration silently doesn't work), the runtime
+//! bundle, sandbox namespaces, the entrypoint binary. A registry
+//! serving a *synthesised* manifest therefore serves a different app
+//! than the one it points at, with no visible symptom beyond a peer's
+//! caret never arriving.
 //!
-//! A package's manifest is not decoration around a binary. It is what
-//! decides, at launch:
-//!
-//! - `[sandbox.services]` — which service sockets the launcher opens
-//!   and hands the app as descriptors. No `collab` entry, no
-//!   `QOS_SVC_COLLAB_FD`, and the app runs with collaboration switched
-//!   off.
-//! - `[package] runtime` — which runtime bundle is mounted.
-//! - `[sandbox] namespaces` — what the sandbox unshares.
-//! - `[entrypoint]` — which binary is exec'd.
-//!
-//! A registry that publishes a *synthesised* manifest therefore serves
-//! a different app than the one it was pointed at: it installs, it
-//! starts, it paints, and it cannot collaborate. Nothing says so,
-//! because every service an app declares is optional and an absent
-//! declaration is not even a warning. The only visible symptom is a
-//! peer's caret arriving on a document that never does.
-//!
-//! So the rule here is: **publish the manifest the payload was built
-//! with.** When the payload comes out of an installed package — a
-//! payload root with a `manifest.toml` beside its `bin/`, which is what
-//! `qos-install` writes and what every harness points `--payload` into
-//! — that manifest is what gets packed. The synthesised minimum is the
-//! fallback for a payload that has no manifest at all (`--payload
-//! /bin/true`), not the default.
+//! So the rule: **publish the manifest the payload was built with**
+//! (a payload root with `manifest.toml` beside `bin/`, as
+//! `qos-install` writes). Synthesising a minimal manifest is the
+//! fallback for a payload with none at all, not the default.
 
 use std::path::{Path, PathBuf};
 
 use pkg::pack::{SigningIdentity, pack};
 use pkg::{Manifest, MemoryBlobStore};
 
-/// Where the manifest that got packed came from. Printed by the
-/// example so a log says which app was actually published.
+/// Where the manifest that got packed came from, printed so a log says which app was actually published.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestSource {
     /// Taken from the package the payload belongs to.
     Package(PathBuf),
-    /// No manifest was found next to the payload; a minimal one was
-    /// synthesised. The app can install and start; it declares no
-    /// services, so it cannot collaborate.
+    /// No manifest found next to the payload; a minimal one was
+    /// synthesised — the app can install and start, but declares no
+    /// services so it cannot collaborate.
     Synthesised,
 }
 
-/// One authored package: the bytes to serve, plus what they say about
-/// themselves.
+/// One authored package: the bytes to serve, plus what they say about themselves.
 pub struct Authored {
     pub qpkg: Vec<u8>,
-    /// The version to advertise. Read off the manifest rather than
-    /// chosen, so the registry entry and the package agree.
+    /// The version to advertise, read off the manifest rather than chosen, so the registry entry and package agree.
     pub version: String,
     pub source: ManifestSource,
 }
 
-/// The `manifest.toml` belonging to `payload_bin`, if it is part of an
-/// installed package.
+/// The `manifest.toml` belonging to `payload_bin`, if part of an installed package.
 ///
-/// `qos-install` unpacks a package as `<payload-root>/manifest.toml`
-/// beside `<payload-root>/bin/<binary>`, so the manifest is the
-/// binary's grandparent's `manifest.toml`. Two levels up is also
-/// checked, which covers a nested entrypoint path like
-/// `libexec/helpers/thing`.
+/// `qos-install` unpacks as `<payload-root>/manifest.toml` beside
+/// `<payload-root>/bin/<binary>`, so the manifest is the binary's
+/// grandparent's `manifest.toml`; two levels up is also checked, for
+/// a nested entrypoint like `libexec/helpers/thing`.
 pub fn manifest_beside(payload_bin: &Path) -> Option<PathBuf> {
     let mut dir = payload_bin.parent();
     for _ in 0..3 {
@@ -86,15 +63,13 @@ pub fn manifest_beside(payload_bin: &Path) -> Option<PathBuf> {
 /// Pack `payload_bin` into a real, signed `.qpkg`.
 ///
 /// `manifest_path` overrides the search; `None` looks beside the
-/// payload via [`manifest_beside`] and synthesises only if that finds
-/// nothing.
+/// payload via [`manifest_beside`] and synthesises only if that finds nothing.
 ///
-/// Whatever manifest is used is re-stamped with `identity` as its
-/// publisher, because this package is signed here and now — a manifest
-/// naming the publisher who signed the *original* build would fail
-/// `pack`'s own identity check. Third-party attestations are dropped
-/// for the same reason: a local test registry cannot mint one, and a
-/// row with an empty signature only produces a warning at install.
+/// Whatever manifest is used is re-stamped with `identity` as
+/// publisher, since it's signed here and now — the original build's
+/// publisher would fail `pack`'s own identity check. Third-party
+/// attestations are dropped too: a local test registry can't mint
+/// one, and an empty-signature row only warns at install.
 pub fn author(
     package_id: &str,
     name: &str,
@@ -122,10 +97,9 @@ pub fn author(
         ),
     };
 
-    // The registry advertises this package under the id and name the
-    // caller named, so the manifest has to agree with the entry or the
-    // installed app answers to a different name than the row that
-    // installed it.
+    // The registry advertises this package under the id/name the caller
+    // gave, so the manifest must agree or the installed app answers to a
+    // different name than the row that installed it.
     manifest.package.id = package_id.to_string();
     manifest.package.name = Some(name.to_string());
     manifest.publisher.identity = format!("ed25519:{pubhex}");
@@ -133,8 +107,7 @@ pub fn author(
     manifest.trust.attested_by.clear();
 
     // The entrypoint the manifest declares is where the payload has to
-    // land — a manifest kept intact but a binary put somewhere else is
-    // a package that installs and then fails to exec.
+    // land — otherwise the package installs and then fails to exec.
     let entry_rel: PathBuf = manifest
         .entrypoint
         .as_ref()
@@ -167,10 +140,9 @@ pub fn author(
     }
 }
 
-/// The minimum that installs and starts, for a payload that is not part
-/// of a package. It declares no services on purpose: an app published
-/// this way genuinely has none, and pretending otherwise would hand the
-/// launcher a descriptor the app was never built to read.
+/// The minimum that installs and starts, for a payload with no
+/// package. Declares no services on purpose — pretending otherwise
+/// would hand the launcher a descriptor the app was never built to read.
 fn synthesised_toml(package_id: &str, name: &str, pubhex: &str) -> String {
     format!(
         r#"

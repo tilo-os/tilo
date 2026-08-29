@@ -1,9 +1,8 @@
 //! The supervisor: one session, from `ush` to the shell exiting.
 //!
-//! It runs on the host, in the user's session, outside every app sandbox. It is
-//! the only thing here that holds `unshare` and `mount` — it needs them because
-//! it is what builds the confinement — and it hands none of that to the guest;
-//! see the trust boundary in [`crate::lib`](crate).
+//! Runs on the host, in the user's session, outside every app sandbox — the
+//! only thing here that holds `unshare` and `mount`, and it hands none of
+//! that to the guest; see the trust boundary in [`crate::lib`](crate).
 //!
 //! ```text
 //! ush
@@ -20,16 +19,13 @@
 //!
 //! # `serve` — how an app reaches a guest
 //!
-//! A qOS app cannot build a namespace: its seccomp filter denies the syscalls
-//! and its sandbox contains no path to this binary. So `apps/terminal` does not
-//! start a guest, it asks for one. `qos-ush serve` listens on
-//! `$XDG_RUNTIME_DIR/qos/services/ush.sock`, which `qos-launcher` opens and
-//! passes to the app as a connected descriptor (`QOS_SVC_USH_FD`) exactly as it
-//! does for every other qOS service. The app sends one line of JSON and gets
-//! back a pty master over `SCM_RIGHTS`. What crosses the boundary is a file
-//! descriptor for a terminal — not a namespace, not a capability, and never a
-//! `dsh` session: [`crate::profile::Profile::reachable_from_app_launch`] is
-//! checked on every request.
+//! A qOS app cannot build a namespace (its seccomp filter denies the
+//! syscalls and its sandbox has no path to this binary), so `apps/terminal`
+//! asks for a guest instead of starting one: `qos-ush serve` listens on a
+//! socket `qos-launcher` passes every app as a connected descriptor, and one
+//! line of JSON gets back a pty master over `SCM_RIGHTS` — a terminal, never
+//! a namespace, a capability, or a `dsh` session
+//! ([`crate::profile::Profile::reachable_from_app_launch`] gates every request).
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, RawFd};
@@ -72,10 +68,8 @@ impl Default for SessionOptions {
 }
 
 /// Where the runtime's own binary is, as the supervisor sees it.
-///
-/// `current_exe` rather than a constant: the guest must run the *same* build
-/// that built its confinement, and in a development tree that is a path in
-/// `target/`, not `/usr/libexec`.
+/// `current_exe` rather than a constant: the guest must run the same build
+/// that built its confinement, which in a dev tree is under `target/`.
 pub fn runtime_binary() -> std::io::Result<PathBuf> {
     if let Some(explicit) = std::env::var_os("QOS_USH_BIN") {
         return Ok(PathBuf::from(explicit));
@@ -83,12 +77,9 @@ pub fn runtime_binary() -> std::io::Result<PathBuf> {
     std::env::current_exe()
 }
 
-/// The shell a guest hosts.
-///
-/// The *host's* `$SHELL` is a hint about taste, not a path that has to exist in
-/// the guest — though it usually does, because the base is the host's `/usr`.
-/// A shell that is not in the guest falls back to `/usr/bin/bash` and then
-/// `/bin/sh`, so a session never fails to start over a preference.
+/// The shell a guest hosts. The host's `$SHELL` is a hint, not guaranteed to
+/// exist in the guest — a shell that isn't falls back to `/usr/bin/bash`
+/// then `/bin/sh`, so a session never fails to start over a preference.
 pub fn guest_shell(base_visible: &Path) -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(s) = std::env::var_os("SHELL") {
@@ -139,18 +130,14 @@ impl Session {
         Vec::new()
     }
 
-    /// Build the plan for this session. Everything the guest will be is
-    /// decided here, from the store and the policy — never from anything the
-    /// guest said.
+    /// Build the plan for this session: everything the guest will be is decided
+    /// here, from the store and the policy — never from anything the guest said.
     pub fn plan(&self, broker_socket: PathBuf, seccomp_blob: PathBuf) -> std::io::Result<GuestPlan> {
         let policy = Policy::load(&self.store.policy_path());
         let now = Some(crate::audit::now_unix());
-        // Resolved, not as `$HOME` spells it. On an ostree system `/home` is a
-        // symlink to `var/home`, and `bwrap` refuses to create a mount point
-        // through a symlink — mounting `/home/you` fails with "can't mkdir"
-        // even though the guest root has the link. `/var/home/you` is a real
-        // path, the link the base ships still points at it, so both spellings
-        // work inside.
+        // Resolved, not as `$HOME` spells it: on an ostree system `/home` is a
+        // symlink to `var/home`, and `bwrap` refuses to mount through a symlink.
+        // `/var/home/you` is real, and the base's link still resolves to it too.
         let home_mountpoint = dirs::home_dir()
             .map(|h| h.canonicalize().unwrap_or(h))
             .unwrap_or_else(|| PathBuf::from("/root"));
@@ -175,12 +162,10 @@ impl Session {
         })
     }
 
-    /// May a restart request rebuild this session, or is it a one-shot?
-    ///
-    /// Only an interactive session restarts. `ush -c "…"` has a command with
-    /// side effects, and rebuilding would run it again: `pkg burn` asks for a
-    /// restart, so `ush -c 'pkg burn'` would burn, rebuild, burn, forever. It
-    /// did, and the audit log is where that showed up.
+    /// May a restart request rebuild this session, or is it a one-shot? Only an
+    /// interactive session restarts: `ush -c "…"` has a command with side
+    /// effects, and rebuilding would re-run it — `pkg burn` asking for a restart
+    /// would burn, rebuild, burn, forever.
     pub fn restarts_in_place(&self) -> bool {
         self.opts.command.is_empty()
     }
@@ -196,9 +181,8 @@ impl Session {
                 code = exit;
                 break;
             }
-            // A restart is a new namespace, so it is a new session directory
-            // and a new broker socket. Reusing the old ids would leave a stale
-            // overlay workdir behind and the next mount would refuse it.
+            // A restart is a new namespace: a new session directory and broker socket.
+            // Reusing the old ids would leave a stale overlay workdir the next mount refuses.
             self.session_id = uuid::Uuid::new_v4().simple().to_string();
         }
         Ok(code)
@@ -206,9 +190,8 @@ impl Session {
 
     fn run_once(&self) -> anyhow::Result<(i32, bool)> {
         let layer = self.layer();
-        // Before anything is written: a store on tmpfs mounts every bind and
-        // then dies at the overlay with nothing but `Invalid argument`, which
-        // is a long way from the store location that caused it.
+        // Before anything is written: a store on tmpfs mounts every bind and then
+        // dies at the overlay with only `Invalid argument`, far from the cause.
         crate::layer::upper_filesystem_supported(layer.path())?;
         layer.create(&self.opts.base)?;
         seed_guest_home(&self.store.guest_home())?;
@@ -250,9 +233,8 @@ impl Session {
             );
         }
 
-        // The guest's first process is this binary again, so it can install
-        // Landlock inside the namespace — where the paths of the rules are the
-        // paths the guest will use — before the shell exists.
+        // The guest's first process is this binary again, so it can install Landlock
+        // inside the namespace — using the paths the guest itself will use.
         let mut plan = plan;
         let shell = plan.shell.clone();
         let user_command = std::mem::take(&mut plan.command);
@@ -293,12 +275,9 @@ impl Session {
         Ok((code, restart))
     }
 
-    /// Remove the packages a `--one-time` install put in the layer.
-    ///
-    /// Done by starting a throwaway non-interactive guest against the same
-    /// layer, because removing an rpm means running rpm, and rpm has to see the
-    /// base to run its scriptlets. It is the same mechanism as the install,
-    /// pointed the other way.
+    /// Remove the packages a `--one-time` install put in the layer, by starting
+    /// a throwaway non-interactive guest against the same layer — removing an
+    /// rpm means running rpm, which needs the base to run its scriptlets.
     fn undo_one_time(&self, packages: &[String]) -> anyhow::Result<()> {
         let releasever = crate::pkg::releasever();
         let argv = crate::pkg::remove_argv(packages, &releasever);
@@ -311,9 +290,8 @@ impl Session {
             opts,
             session_id: format!("{}-cleanup", self.session_id),
         };
-        // A failure here leaves the package in the layer, which is visible in
-        // `pkg list` and removable by hand. It is not a reason to fail the
-        // session the user has already finished.
+        // A failure here leaves the package in the layer (visible in `pkg list`,
+        // removable by hand) — not a reason to fail a session already finished.
         if let Err(e) = cleanup.run_once() {
             tracing::warn!(error = %e, "could not undo the session's one-time installs");
         }
@@ -331,10 +309,8 @@ impl Session {
 }
 
 /// Give a fresh guest home the dotfiles that make a shell usable.
-///
-/// Deliberately minimal, and deliberately *not* a copy of the user's own: the
-/// home directory is write-isolated by default, and seeding it from the real
-/// one would quietly undo that on the first session.
+/// Deliberately minimal and not a copy of the user's own: the home is
+/// write-isolated by default, and seeding from the real one would undo that.
 fn seed_guest_home(home: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(home)?;
     let bashrc = home.join(".bashrc");
@@ -350,9 +326,7 @@ fn seed_guest_home(home: &Path) -> std::io::Result<()> {
     )
 }
 
-// ---------------------------------------------------------------------------
 // serve — handing a guest to an app
-// ---------------------------------------------------------------------------
 
 /// What an app asks for over the service socket.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -471,13 +445,10 @@ fn serve_one(stream: UnixStream, store: Store, base: PathBuf) -> anyhow::Result<
         &crate::audit::AuditRecord::new(&id, profile.as_str(), "open-session", true),
     );
 
-    // The guest gets the slave as its stdio; the app gets the master.
-    //
-    // A *child process*, not a thread. Attaching a pty means `dup2` onto file
-    // descriptors 0, 1 and 2 and `setsid` — both are process-wide, so doing it
-    // on a thread would take the supervisor's own stdio and controlling
-    // terminal with it. That is not a subtle failure: under a test harness it
-    // hijacks the harness.
+    // The guest gets the slave as its stdio; the app gets the master. A *child
+    // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
+    // `setsid`, both process-wide — on a thread that would steal the
+    // supervisor's own stdio and controlling terminal (and under a test harness, the harness's).
     let child = spawn_attached(&session, slave)?;
     let audit = AuditLog::at(store.audit_dir());
     let done_id = id.clone();
@@ -728,9 +699,8 @@ mod tests {
         assert_eq!(ephemeral.layer().kind(), LayerKind::Ephemeral);
     }
 
-    /// `pkg burn` asks for a restart so the guest comes back on a fresh layer.
-    /// Under `ush -c` that would re-run the command that asked, which burns
-    /// again — an unbounded loop, and one that really happened.
+    /// `pkg burn` asks for a restart so the guest comes back on a fresh layer;
+    /// under `ush -c` that would re-run the command that asked, looping forever.
     #[test]
     fn a_one_shot_command_never_restarts_in_place() {
         let dir = tempfile::tempdir().unwrap();

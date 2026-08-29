@@ -13,7 +13,6 @@ mod tests {
         let mut config = Config::default();
         config.mount_options = options;
         
-        // This simulates the check the user requested to catch crashes.
         // If AutoUnmount is present, ACL must not be Owner.
         config.acl = SessionACL::All; 
 
