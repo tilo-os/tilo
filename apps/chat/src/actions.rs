@@ -105,6 +105,16 @@ pub enum ChatAction {
         /// a frame from a release that predates mentions still decodes.
         #[serde(default)]
         mentions: Vec<crate::mention::Mention>,
+        /// The address of the thing this message is about, when it was
+        /// written by selecting something rather than typed from scratch.
+        ///
+        /// Part of the payload for the same reason `mentions` is: it is
+        /// resolved once, by the app that owns the selection, and replaying
+        /// it elsewhere must not depend on that app being open there.
+        /// `#[serde(default)]` so a frame from a release that predates
+        /// references still decodes.
+        #[serde(default)]
+        reference: Option<qos_reference::ResourceRef>,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -160,6 +170,27 @@ pub enum ChatAction {
         channel: String,
         user: String,
         count: i64,
+    },
+    /// Record what an agent is doing with the message `msg` replies to, and
+    /// optionally supply the words `msg` did not have when it was posted.
+    ///
+    /// Deliberately not [`ChatAction::EditMessage`]. An agent that took a
+    /// summons posts its reply *before* it has an answer, and the states it
+    /// then passes through are not revisions of a sentence: routing them
+    /// through `EditMessage` would archive each one into the message's edit
+    /// history, flag the reply `edited`, and hang an "(edited) · view
+    /// history" affordance off an outcome nobody had rewritten. The body is
+    /// written once, when there is one; the state is a separate fact with a
+    /// separate field.
+    SetAgentWork {
+        channel: String,
+        msg: String,
+        work: crate::model::AgentWork,
+        /// The agent's words, when it finally has them. Applied only to a
+        /// body that is still empty, so this can never overwrite something
+        /// somebody would want back.
+        #[serde(default)]
+        say: Option<String>,
     },
 
     // --- the call, as it appears in the document ---------------------------
@@ -226,6 +257,7 @@ impl Action for ChatAction {
                 parent,
                 attachment,
                 mentions,
+                reference,
             } => {
                 ChatDoc::push_message_with_id(
                     doc,
@@ -238,6 +270,7 @@ impl Action for ChatAction {
                         parent: parent.clone(),
                         attachment: attachment.clone(),
                         mentions: mentions.clone(),
+                        reference: reference.clone(),
                         ..Default::default()
                     },
                 );
@@ -300,6 +333,14 @@ impl Action for ChatAction {
                 count,
             } => {
                 ChatDoc::set_read_watermark(doc, channel, user, *count);
+            }
+            ChatAction::SetAgentWork {
+                channel,
+                msg,
+                work,
+                say,
+            } => {
+                ChatDoc::set_message_work(doc, channel, msg, work, say.as_deref());
             }
             ChatAction::JoinCall { channel, user } => {
                 ChatDoc::voice_join(doc, channel, user);
@@ -380,6 +421,7 @@ pub fn send_message_action(
         parent,
         attachment,
         mentions,
+        reference: None,
     }
 }
 
@@ -464,6 +506,18 @@ pub fn mark_read_action(channel: &str, user: &str, count: i64) -> ChatAction {
         channel: channel.to_string(),
         user: user.to_string(),
         count,
+    }
+}
+
+/// Record an agent's progress on the message `msg` replies to. `say` is the
+/// agent's words, and is `None` until it has any — the ordinary case for
+/// every state before the last one.
+pub fn set_agent_work_action(channel: &str, msg: &str, work: crate::model::AgentWork, say: Option<&str>) -> ChatAction {
+    ChatAction::SetAgentWork {
+        channel: channel.to_string(),
+        msg: msg.to_string(),
+        work,
+        say: say.map(str::to_string),
     }
 }
 
@@ -880,6 +934,39 @@ mod tests {
         let m = msgs.iter().find(|m| m.id == "m_test1").unwrap();
         assert_eq!(m.text, "hello");
         assert_eq!(m.author, model::ME);
+    }
+
+    /// An agent's progress on a summons, through the same action/doc path a
+    /// real dispatch takes: posted as an empty reply, taken, then finished
+    /// with words — and a body that already has words is never overwritten.
+    #[test]
+    fn set_agent_work_action_records_progress_and_only_ever_supplies_empty_words() {
+        use crate::model::{AgentReasoning, AgentRoute, AgentWork, AgentWorkState};
+
+        let mut doc = seeded();
+        dispatch(
+            &mut doc,
+            &send_message_action("c_crit", "m_reply", "agent_claude", TS, "", Some("m_me1".into()), None, Vec::new()),
+        );
+        let taken = AgentWork::new(AgentWorkState::Taken, TS);
+        dispatch(&mut doc, &set_agent_work_action("c_crit", "m_reply", taken.clone(), None));
+        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_reply").unwrap();
+        assert_eq!(m.work, Some(taken), "the taken record was not stored");
+        assert_eq!(m.text, "", "no words yet — the body must stay empty");
+
+        let done = AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, TS + 5)
+            .because(AgentReasoning { route: AgentRoute::Floor, why: "matched the word processor".into() });
+        dispatch(&mut doc, &set_agent_work_action("c_crit", "m_reply", done.clone(), Some("Cropped it.")));
+        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_reply").unwrap();
+        assert_eq!(m.work, Some(done.clone()), "the finished record was not stored");
+        assert_eq!(m.text, "Cropped it.", "the agent's words were not supplied");
+
+        // A later state must not restate the body — it is authored once.
+        let refused = AgentWork::new(AgentWorkState::Refused, TS + 9);
+        dispatch(&mut doc, &set_agent_work_action("c_crit", "m_reply", refused.clone(), Some("never mind")));
+        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_reply").unwrap();
+        assert_eq!(m.work, Some(refused), "the last state must still win");
+        assert_eq!(m.text, "Cropped it.", "an already-written body must never be overwritten");
     }
 
     /// Add then remove a reaction through the action path (both mutating), and

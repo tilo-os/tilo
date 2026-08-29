@@ -1,18 +1,20 @@
 //! One agent session: join the room, hold the replica, act on instructions.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use ui::permissions::PermissionContext;
 use ui::presence::{PathSegment, PresenceKey};
 use uuid::Uuid;
 use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 
 use crate::apply::Editor;
 use crate::model::{Chooser, Decision, Route};
-use crate::plan::{self, Block, Instruction};
+use crate::plan::{self, Block, Instruction, Plan};
+use crate::surface::{self, AppContract, Offer, View};
 use crate::wire::Link;
 
 #[derive(Clone, Debug)]
@@ -47,15 +49,47 @@ pub struct Config {
     /// wrong for a scripted run, where it turns a mismatched route into
     /// a hang that names no cause.
     pub await_document: Duration,
+    /// How long a paragraph's text must stop changing before it is read as
+    /// a finished request. `Duration::ZERO` acts on the first sight of it —
+    /// right for a page seeded before the agent joins, wrong for one a
+    /// person is actively typing into, where every keystroke would else
+    /// race the agent's own read.
+    pub settle: Duration,
+    /// The directory the agent is browsing, for an app whose subject is
+    /// the filesystem rather than a document.
+    pub directory: Option<PathBuf>,
+    /// What the agent may enumerate and perform. A denied operation is
+    /// absent from what it discovers, never merely refused — see
+    /// [`crate::surface::offers`].
+    pub permissions: PermissionContext,
 }
 
 pub struct Session {
     cfg: Config,
     link: Link,
     editor: Option<Editor>,
+    /// Every other application's document that has turned up in this room,
+    /// keyed by namespace. The room is not one document — a peer that
+    /// announced no app id reaches every subscriber — so what an app other
+    /// than [`Self::editor`]'s exports has to live somewhere before
+    /// [`Self::offers`] can survey it or [`Self::perform`] can act on it.
+    peers: BTreeMap<&'static str, Editor>,
     /// Instruction blocks already acted on, so a slow peer re-sending the
     /// same state does not make the agent do the work twice.
     handled: HashSet<String>,
+    /// A paragraph currently addressed to the agent, and the text it held
+    /// the last time this was checked — the [`Config::settle`] debounce.
+    /// Cleared once the paragraph is handled or stops naming the agent.
+    watching: HashMap<String, (String, Instant)>,
+    /// Addresses already performed in the plan currently running.
+    ///
+    /// A stalled clause can be asked again and come back as a whole plan of
+    /// its own, and that plan can re-name a step this turn already
+    /// dispatched — nothing upstream of dispatch is what stops that
+    /// happening twice. Cleared at the start of every [`Session::run_plan`],
+    /// never across turns: a later turn re-performing the same address is
+    /// an ordinary repeat instruction, not re-entrancy.
+    dispatched_this_turn: HashSet<String>,
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
     /// When the agent last asked the room for the document. It asks again
@@ -145,7 +179,10 @@ impl Session {
             cfg,
             link,
             editor: None,
+            peers: BTreeMap::new(),
             handled: HashSet::new(),
+            watching: HashMap::new(),
+            dispatched_this_turn: HashSet::new(),
             chooser,
             last_route: None,
             asked_at: Instant::now(),
@@ -154,6 +191,10 @@ impl Session {
 
     /// How the last instruction was decided, for a test or an operator
     /// checking after the fact whether a run was live.
+    ///
+    /// `None` after a request that read as several things to do: no single
+    /// model call decided a sequence, so there is no one [`Route`] to name
+    /// without claiming a call happened that did not.
     pub fn last_route(&self) -> Option<&Route> {
         self.last_route.as_ref()
     }
@@ -239,21 +280,24 @@ impl Session {
                 changed = self.absorb_snapshot(&data)?;
             }
             Some(CollabEvent::CRDTIncremental { data }) => {
-                if let Some(ed) = self.editor.as_mut() {
-                    changed = ed.merge_incremental(&data)?;
-                }
+                changed = self.merge_incremental_anywhere(&data)?;
             }
             Some(CollabEvent::RemotePresenceUpdate {
                 user_id,
                 payload: PresencePayload::Arrived,
                 ..
             }) => {
-                // A participant arriving after us deserves what we hold.
+                // A participant arriving after us deserves what we hold —
+                // every document, not only the one we were invited to.
                 if let Some(ed) = self.editor.as_mut() {
                     let full = ed.full();
                     self.link.send(&CollabRequest::SyncCRDT { data: full })?;
-                    tracing::debug!(%user_id, "sent our document to a new participant");
                 }
+                for peer in self.peers.values_mut() {
+                    let full = peer.full();
+                    self.link.send(&CollabRequest::SyncCRDT { data: full })?;
+                }
+                tracing::debug!(%user_id, peers = self.peers.len(), "sent our documents to a new participant");
             }
             Some(_) | None => {}
         }
@@ -283,11 +327,10 @@ impl Session {
     fn absorb_snapshot(&mut self, data: &[u8]) -> Result<bool> {
         let Some(ed) = self.editor.as_mut() else {
             if !crate::apply::looks_like_a_document(data) {
-                tracing::debug!(
-                    bytes = data.len(),
-                    "ignored a peer's state: it is not a document"
-                );
-                return Ok(false);
+                // Not a page this agent authors into — but it may still be
+                // another application's room state, which belongs in
+                // `peers` rather than being dropped outright.
+                return self.absorb_peer(data);
             }
             self.editor = Some(Editor::from_snapshot(data, &self.cfg.name)?);
             tracing::info!(bytes = data.len(), "received the document");
@@ -311,11 +354,127 @@ impl Session {
             );
             return Ok(true);
         }
-        tracing::debug!(
+        // Not the page we were invited to and not addressed to us — but
+        // the room holds more than the document we were invited to, and an
+        // instruction may name an operation that belongs to whatever else
+        // is here.
+        self.absorb_peer(data)
+    }
+
+    /// Take a peer's whole-document frame as a *second* application's
+    /// state — one this session was not invited to, but whose operations
+    /// [`Self::offers`] can still discover and [`Self::perform`] can still
+    /// dispatch, once its own contract recognises it.
+    fn absorb_peer(&mut self, data: &[u8]) -> Result<bool> {
+        let Some(contract) = crate::apply::attribute(data) else {
+            tracing::debug!(bytes = data.len(), "ignored a peer's state: no app here claims it");
+            return Ok(false);
+        };
+        if let Some(peer) = self.peers.get_mut(contract.namespace) {
+            return peer.merge_full_any(data);
+        }
+        let peer = Editor::peer_from_snapshot(contract, data, &self.cfg.name)?;
+        tracing::info!(
+            app = contract.namespace,
             bytes = data.len(),
-            "ignored another document in this room"
+            "a second application's document joined the room"
         );
+        self.peers.insert(contract.namespace, peer);
+        Ok(true)
+    }
+
+    /// Apply a peer's incremental change to whichever replica it belongs
+    /// to — the primary document first, since that is the common case,
+    /// then each held peer. A delta belonging to a document this session
+    /// holds neither of is silently not this agent's business.
+    fn merge_incremental_anywhere(&mut self, data: &[u8]) -> Result<bool> {
+        if let Some(ed) = self.editor.as_mut()
+            && ed.merge_incremental(data)?
+        {
+            return Ok(true);
+        }
+        for peer in self.peers.values_mut() {
+            if peer.merge_incremental(data)? {
+                return Ok(true);
+            }
+        }
         Ok(false)
+    }
+
+    /// Every document this session holds, primary first, as the pairs
+    /// [`surface::offers`] and [`surface::facts`] are built from.
+    fn held(&self) -> Vec<(&'static AppContract, &automerge::AutoCommit)> {
+        let mut out = Vec::new();
+        if let Some(ed) = self.editor.as_ref() {
+            out.push((ed.contract(), &ed.doc));
+        }
+        for peer in self.peers.values() {
+            out.push((peer.contract(), &peer.doc));
+        }
+        out
+    }
+
+    /// Where the agent is looking: `focus` on a document, and the
+    /// directory it was configured to browse, when it has one.
+    fn view(&self, focus: Option<String>) -> View {
+        View {
+            focus_block: focus.clone(),
+            focus_offset: 0,
+            target_blocks: focus.into_iter().collect(),
+            subject: None,
+            directory: self.cfg.directory.clone(),
+        }
+    }
+
+    /// Every operation the room's applications currently export and the
+    /// agent's capabilities allow — a denied one is absent, never merely
+    /// refused. Rebuilt on every call: the whole point of a survey is that
+    /// it answers for the room as it stands right now.
+    fn offers(&self, focus: Option<String>) -> Vec<Offer> {
+        let held = self.held();
+        let view = self.view(focus);
+        surface::offers(&held, &view, &self.cfg.permissions)
+    }
+
+    /// Perform the discovered operation `id` names, against whichever
+    /// document holds it. `Ok(Err(_))` is a refusal in words a person
+    /// reads; `Err(_)` is this session's own I/O failing.
+    ///
+    /// Resolved against a tree rebuilt from the document **right now**,
+    /// through [`Editor::invoke`] — never against the survey `id` was
+    /// chosen from. An operation that has gone away since is a refusal
+    /// here, not a substitution.
+    fn perform(&mut self, id: &str, argument: Option<&str>) -> Result<Result<(), String>> {
+        let Some(address) = surface::decode_address(id) else {
+            return Ok(Err("that no longer names anything I can find".to_string()));
+        };
+        let namespace = surface::app_of(&address.resource).to_string();
+        let view = self.view(None);
+        let registry = surface::registry();
+        let held = if self.editor.as_ref().is_some_and(|e| e.contract().namespace == namespace) {
+            self.editor.as_mut()
+        } else {
+            self.peers.get_mut(namespace.as_str())
+        };
+        let Some(ed) = held else {
+            return Ok(Err("that isn't open here, so I can't act on it".to_string()));
+        };
+        match ed.invoke(&view, &address, argument, &registry) {
+            Ok(Some(delta)) => {
+                self.link.send(&CollabRequest::SyncIncremental { data: delta })?;
+                tracing::info!(%id, "performed a discovered operation");
+                std::thread::sleep(self.cfg.pace);
+                Ok(Ok(()))
+            }
+            Ok(None) => {
+                tracing::warn!(%id, "the operation changed nothing");
+                Ok(Err("that didn't change anything".to_string()))
+            }
+            Err(e) => {
+                tracing::warn!(%id, "refused: {e}");
+                Ok(Err(format!("I couldn't do that - {e}")))
+            }
+        }
     }
 
     /// Look for an instruction and carry it out.
@@ -333,59 +492,188 @@ impl Session {
         if self.handled.contains(&ins_id) {
             return Ok(false);
         }
+        if !Self::settled(self.watching.get(&ins_id), &blocks[at].text, Instant::now(), self.cfg.settle) {
+            self.watching.insert(ins_id, (blocks[at].text.clone(), Instant::now()));
+            return Ok(false);
+        }
+        self.watching.remove(&ins_id);
         self.handled.insert(ins_id.clone());
 
-        let Decision { instruction, route } = self.chooser.choose(&asked, &blocks);
+        let plan = self.decide(&ins_id, &asked, &blocks);
+        self.run_plan(&ins_id, plan)
+    }
+
+    /// Whether a paragraph's text has stopped changing for long enough to
+    /// be read as a finished request, rather than a line still being
+    /// typed.
+    ///
+    /// A pure function of what was seen last time and what is seen now, so
+    /// the debounce is checkable against an injected clock rather than a
+    /// real wait — the same reason [`crate::model::while_busy`] takes its
+    /// clock as an argument. `watched` is `None` the first time this text
+    /// is seen at all, which is never settled: there is nothing yet to
+    /// compare it against.
+    fn settled(watched: Option<&(String, Instant)>, text: &str, now: Instant, settle: Duration) -> bool {
+        if settle.is_zero() {
+            return true;
+        }
+        match watched {
+            Some((seen, since)) if seen == text => now.saturating_duration_since(*since) >= settle,
+            _ => false,
+        }
+    }
+
+    /// Decide what `asked` asks for.
+    ///
+    /// A request written as one thing goes through the model exactly as
+    /// before — the model answers one catalogue id for one instruction, and
+    /// is not yet asked about a sequence. When that lands on nothing in the
+    /// fixed catalogue, or the request is written as several things
+    /// ([`plan::clauses`] finds an ordering word outside any quotation),
+    /// the deterministic floor gets a turn against whatever the room's
+    /// applications currently export — the model has no say in either of
+    /// those, only in the single catalogue request that never needed it.
+    fn decide(&mut self, ins_id: &str, asked: &str, blocks: &[Block]) -> Plan {
+        let offers = self.offers(Some(ins_id.to_string()));
+        if plan::clauses(asked).len() < 2 {
+            let Decision { instruction, route } = self.chooser.choose(asked, blocks);
+            let instruction = match instruction {
+                Instruction::Unknown(_) if !offers.is_empty() => {
+                    tracing::debug!("the catalogue found nothing; trying what the room discovers");
+                    Instruction::from_floor(asked, &offers)
+                }
+                other => other,
+            };
+            tracing::info!(
+                block = %ins_id,
+                asked = %asked,
+                decided_by = route.label(),
+                live = route.is_live(),
+                ?instruction,
+                "{}",
+                route.detail()
+            );
+            self.last_route = Some(route);
+            return Plan::of(instruction);
+        }
+        let plan = Plan::from_floor(asked, &offers);
         tracing::info!(
             block = %ins_id,
             asked = %asked,
-            decided_by = route.label(),
-            live = route.is_live(),
-            ?instruction,
-            "{}",
-            route.detail()
+            steps = plan.len(),
+            offers = offers.len(),
+            "read as a sequence of {} steps",
+            plan.len()
         );
-        self.last_route = Some(route);
+        self.last_route = None;
+        plan
+    }
 
-        match instruction {
-            Instruction::Table => self.make_table(&blocks, at)?,
-            Instruction::Caption => self.caption_image(&blocks, at)?,
-            Instruction::Heading => self.make_heading(&blocks, at)?,
-            // Naming a surveyed operation by address: dispatching it needs
-            // the per-app editors and registry a multi-app session brings,
-            // which this single-document one does not have yet.
-            Instruction::Perform { id, .. } => {
-                let reply = format!("{}: I can't perform {id} from here yet.", self.cfg.name);
-                let ins = &blocks[at];
-                self.edit(
-                    &ins.id,
-                    wp::splice_text_action(RegionKind::Body, &ins.id, 0, ins.text.chars().count(), &reply),
-                )?;
+    /// Carry out `plan`'s steps in order, against the instruction paragraph
+    /// `ins_id`.
+    ///
+    /// A plan that cannot be finished is refused whole, before anything is
+    /// touched — [`Plan::unanswered`] is the check, and the paragraph is
+    /// left holding the refusal rather than a half-finished document.
+    /// Otherwise each step reads a fresh snapshot, because the step before
+    /// it may have changed the document; the instruction paragraph itself
+    /// is removed once, at the end, so a step that needs to see it (`table`
+    /// reads the bullets *above* it) can still do so wherever it falls in
+    /// the sequence.
+    fn run_plan(&mut self, ins_id: &str, plan: Plan) -> Result<bool> {
+        self.dispatched_this_turn.clear();
+        let blocks = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
+        if let Some(what) = plan.unanswered() {
+            tracing::warn!(%what, steps = plan.len(), "refused a sequence whole; nothing was touched");
+            self.splice_reply(&blocks, ins_id, &format!(
+                "{}: I can't \"{what}\", so I haven't done any of it.",
+                self.cfg.name
+            ))?;
+            return Ok(true);
+        }
+        for step in &plan.steps {
+            let blocks = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
+            let Some(at) = blocks.iter().position(|b| b.id == ins_id) else {
+                // A step earlier in this very plan already answered the
+                // instruction and took the paragraph with it.
+                break;
+            };
+            let applied = match &step.instruction {
+                Instruction::Table => self.make_table(&blocks, at)?,
+                Instruction::Caption => self.caption_image(&blocks, at)?,
+                Instruction::Heading => {
+                    self.make_heading(&blocks, at)?;
+                    true
+                }
+                // A surveyed operation, named by address. Guarded by
+                // `dispatched_this_turn`: a clause asked again mid-plan can
+                // come back naming a step this turn already performed, and
+                // without the guard "put it in the open document" placed
+                // the same image twice.
+                Instruction::Perform { id, argument } => {
+                    if self.dispatched_this_turn.contains(id) {
+                        true
+                    } else {
+                        let id = id.clone();
+                        match self.perform(&id, argument.as_deref())? {
+                            Ok(()) => {
+                                self.dispatched_this_turn.insert(id);
+                                true
+                            }
+                            Err(why) => {
+                                let blocks =
+                                    plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
+                                self.splice_reply(
+                                    &blocks,
+                                    ins_id,
+                                    &format!("{}: {why}", self.cfg.name),
+                                )?;
+                                false
+                            }
+                        }
+                    }
+                }
+                Instruction::Unknown(what) => {
+                    self.splice_reply(&blocks, ins_id, &format!("{}: I can't \"{what}\".", self.cfg.name))?;
+                    false
+                }
+            };
+            if !applied {
+                return Ok(true);
             }
-            Instruction::Unknown(what) => {
-                let reply = format!(
-                    "{}: I can't \"{what}\" yet. I can: table, caption, heading.",
-                    self.cfg.name
-                );
-                let ins = &blocks[at];
-                self.edit(
-                    &ins.id,
-                    wp::splice_text_action(RegionKind::Body, &ins.id, 0, ins.text.chars().count(), &reply),
-                )?;
-            }
+        }
+        // Every step ran clean, so the instruction is answered in full and
+        // the paragraph that asked for it goes away. Idempotent against a
+        // step that already removed it (a plan of one, as before).
+        if plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?)
+            .iter()
+            .any(|b| b.id == ins_id)
+        {
+            self.edit(ins_id, wp::remove_blocks_action(vec![ins_id.to_string()]))?;
         }
         Ok(true)
     }
 
-    /// Bullets above the instruction become a table; the bullets and the
-    /// instruction go away.
-    fn make_table(&mut self, blocks: &[Block], at: usize) -> Result<()> {
+    /// Replace the instruction paragraph's current text with `reply` — an
+    /// answer left for somebody to read, not a further action.
+    fn splice_reply(&mut self, blocks: &[Block], ins_id: &str, reply: &str) -> Result<()> {
+        let n = blocks
+            .iter()
+            .find(|b| b.id == ins_id)
+            .map(|b| b.text.chars().count())
+            .unwrap_or(0);
+        self.edit(ins_id, wp::splice_text_action(RegionKind::Body, ins_id, 0, n, reply))
+    }
+
+    /// Bullets above the instruction become a table. Returns whether it did
+    /// — `false` when there were none to work with, in which case a reply
+    /// saying so was written in place of doing anything.
+    fn make_table(&mut self, blocks: &[Block], at: usize) -> Result<bool> {
         let bullets = plan::bullets_above(blocks, at);
-        let ins_id = blocks[at].id.clone();
         if bullets.is_empty() {
             let reply = format!("{}: I looked for bullets above this line and found none.", self.cfg.name);
-            let n = blocks[at].text.chars().count();
-            return self.edit(&ins_id, wp::splice_text_action(RegionKind::Body, &ins_id, 0, n, &reply));
+            self.splice_reply(blocks, &blocks[at].id, &reply)?;
+            return Ok(false);
         }
         let lines: Vec<&str> = bullets.iter().map(|&i| blocks[i].text.as_str()).collect();
         let rows = plan::table_cells(&lines);
@@ -413,36 +701,35 @@ impl Session {
             }
             self.edit(&cell_id, wp::splice_text_action(RegionKind::Body, &cell_id, 0, 0, &text))?;
         }
-        let mut gone: Vec<String> = bullets.iter().map(|&i| blocks[i].id.clone()).collect();
-        gone.push(ins_id);
+        let gone: Vec<String> = bullets.iter().map(|&i| blocks[i].id.clone()).collect();
         self.edit(&last_bullet, wp::remove_blocks_action(gone))?;
-        Ok(())
+        Ok(true)
     }
 
-    /// A caption paragraph under the first image; the instruction goes away.
-    fn caption_image(&mut self, blocks: &[Block], at: usize) -> Result<()> {
-        let ins_id = blocks[at].id.clone();
+    /// A caption paragraph under the first image. Returns whether there was
+    /// one — `false` when there was nothing to caption, in which case a
+    /// reply saying so was written in place of doing anything.
+    fn caption_image(&mut self, blocks: &[Block], at: usize) -> Result<bool> {
         let Some(img) = plan::first_image(blocks) else {
             let reply = format!("{}: there is no image in this document to caption.", self.cfg.name);
-            let n = blocks[at].text.chars().count();
-            return self.edit(&ins_id, wp::splice_text_action(RegionKind::Body, &ins_id, 0, n, &reply));
+            self.splice_reply(blocks, &blocks[at].id, &reply)?;
+            return Ok(false);
         };
         let img_id = blocks[img].id.clone();
-        let figure = plan::first_image(blocks).map(|_| 1).unwrap_or(1);
-        self.edit(&img_id, wp::insert_paragraph_action(&img_id, &format!("Figure {figure}")))?;
-        self.edit(&img_id, wp::remove_blocks_action(vec![ins_id]))?;
-        Ok(())
+        self.edit(&img_id, wp::insert_paragraph_action(&img_id, "Figure 1"))?;
+        Ok(true)
     }
 
     /// A structural pass over a rough draft: the first line becomes the
-    /// title, each section label under it becomes a heading, and the
-    /// instruction goes away. One `SetParagraphStyle` per level, so the
-    /// sections land together rather than one flicker at a time.
+    /// title, each section label under it becomes a heading. One
+    /// `SetParagraphStyle` per level, so the sections land together rather
+    /// than one flicker at a time. An empty draft — nothing to find a
+    /// title in — leaves the document untouched; this step always counts
+    /// as done either way.
     fn make_heading(&mut self, blocks: &[Block], at: usize) -> Result<()> {
-        let ins_id = blocks[at].id.clone();
         let found = plan::structure(blocks, at);
         let Some(title_id) = found.title else {
-            return self.edit(&ins_id, wp::remove_blocks_action(vec![ins_id.clone()]));
+            return Ok(());
         };
         self.edit(
             &title_id,
@@ -459,7 +746,6 @@ impl Session {
             sections = found.sections.len(),
             "made the draft a document"
         );
-        self.edit(&title_id, wp::remove_blocks_action(vec![ins_id]))?;
         Ok(())
     }
 
@@ -500,5 +786,58 @@ fn describe(action: &WordProcessorAction) -> String {
         WordProcessorAction::RemoveBlocks { blocks } => format!("remove {} block(s)", blocks.len()),
         WordProcessorAction::SetParagraphStyle { kind, .. } => format!("set style {kind}"),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zero_settle_never_waits() {
+        let now = Instant::now();
+        assert!(Session::settled(None, "Scribe: table", now, Duration::ZERO));
+        assert!(Session::settled(
+            Some(&("Scribe: table".to_string(), now)),
+            "Scribe: table",
+            now,
+            Duration::ZERO
+        ));
+    }
+
+    #[test]
+    fn the_first_sight_of_a_line_is_never_settled() {
+        let now = Instant::now();
+        assert!(!Session::settled(None, "Scribe: table", now, Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn a_line_that_changed_since_it_was_last_seen_is_not_settled() {
+        let now = Instant::now();
+        let watched = ("Scribe: tab".to_string(), now);
+        assert!(!Session::settled(Some(&watched), "Scribe: table", now, Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn unchanged_text_settles_once_the_wait_has_elapsed_and_not_before() {
+        let settle = Duration::from_millis(500);
+        let seen = Instant::now();
+        let watched = ("Scribe: table".to_string(), seen);
+        assert!(
+            !Session::settled(Some(&watched), "Scribe: table", seen + Duration::from_millis(499), settle),
+            "one millisecond short of the wait must not settle"
+        );
+        assert!(Session::settled(
+            Some(&watched),
+            "Scribe: table",
+            seen + Duration::from_millis(500),
+            settle
+        ));
+        assert!(Session::settled(
+            Some(&watched),
+            "Scribe: table",
+            seen + Duration::from_secs(5),
+            settle
+        ));
     }
 }

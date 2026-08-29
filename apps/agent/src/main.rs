@@ -57,6 +57,11 @@ struct Cli {
     /// wrong in a script.
     #[arg(long, default_value_t = 60_000)]
     await_document_ms: u64,
+    /// How long a paragraph must stop changing before it is read as a
+    /// finished request, in milliseconds. `0` acts on first sight, right
+    /// for a page seeded before the agent joins.
+    #[arg(long, default_value_t = 0)]
+    settle_ms: u64,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -68,6 +73,19 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    // What this run's invitation actually was: write on the app it was
+    // asked to join, and nothing else. Widening this is a deployment
+    // decision, not something a headless participant grants itself.
+    let permissions = {
+        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+        PermissionContext::from_capabilities(
+            Actor::agent(&cli.name),
+            vec![
+                CapOverride::grant(Subject::agent(&cli.name), Scope::App(cli.app.clone()), Verb::Write)
+                    .with_id("invited"),
+            ],
+        )
+    };
     let cfg = Config {
         socket: cli.socket,
         app_id: cli.app,
@@ -79,6 +97,9 @@ fn main() -> anyhow::Result<()> {
         model: !cli.no_model,
         model_timeout: Duration::from_millis(cli.model_timeout_ms),
         await_document: Duration::from_millis(cli.await_document_ms),
+        settle: Duration::from_millis(cli.settle_ms),
+        directory: None,
+        permissions,
     };
     let mut session = Session::connect(cfg)?;
     session.run()
