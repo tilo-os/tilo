@@ -35,8 +35,8 @@
 //! The editor is not a master-detail list, so there is no push navigation —
 //! the single primary sidebar simply docks or overlays per the breakpoint.
 
-use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use ui::color_compat::ColorCompat;
@@ -46,10 +46,10 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{FlapState, SplitLayout, TabBar, TabDescriptor, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::Fill;
+use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
@@ -62,11 +62,10 @@ use crate::editor_view::{EditorView, LspAsk};
 use crate::file_tree::{FileTree, TreeEvent};
 use crate::find::{FindBar, FindEvent};
 use crate::lint;
-use crate::model::{NodeId as TreeId, NodeKind, Project, Session};
+use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
 use crate::sample_project;
 use crate::search;
 use crate::status_bar::{StatusModel, StatusState};
-use crate::tab_bar::{TabBar, TabEvent, TabItem};
 
 const SIDEBAR_WIDTH: f64 = 240.0;
 const SIDEBAR_MIN: f64 = 160.0;
@@ -97,10 +96,34 @@ fn themes() -> Vec<Theme> {
     ]
 }
 
+/// A tab's accent by the language of the buffer it holds, read entirely off
+/// theme tokens so it re-tints with every theme instead of a fixed palette
+/// of its own.
+fn lang_accent(language: Language, theme: &Theme) -> Color {
+    let c = &theme.tokens.colors;
+    match language {
+        Language::Rust => c.semantic.warning,
+        Language::Python => c.semantic.info,
+        Language::JavaScript | Language::TypeScript => c.semantic.warning,
+        Language::Toml | Language::Yaml => c.accent[5],
+        Language::Json => c.semantic.success,
+        Language::Markdown => c.text_dim,
+        Language::Shell => c.semantic.success,
+        Language::Html | Language::Css => c.semantic.danger,
+        Language::C | Language::Cpp | Language::Go => c.semantic.info,
+        Language::PlainText => c.text_dim,
+    }
+}
+
 pub struct CodeApp {
     session: Session,
     sidebar: FileTree,
     tabs: TabBar,
+    /// Sweep timer for a pill's close-fade, keyed by tab id (== node id).
+    /// `TabBar::start_closing` runs the fade on its own clock; this is only
+    /// so `reconcile_tabs` knows when to call `finalize_close` and free the
+    /// widget's bookkeeping, the same job `WindowGroup::closing_hosts` does.
+    closing_since: HashMap<u64, Instant>,
     editor: EditorView,
     /// The caret / language / diagnostics readout, surfaced as a transient
     /// floating bubble (see `draw_status_bubble`) instead of a permanent bottom
@@ -445,10 +468,17 @@ impl CodeApp {
         sidebar.set_project(&session.project);
         sidebar.set_active(default);
 
+        let mut tabs = TabBar::new("code-editor", Vec::new(), 0);
+        // Tabs here are document buffers, not windows — there is nothing for
+        // a maximize chip to do, and a chip that appears under the pointer
+        // and then does nothing is worse than no chip.
+        tabs.set_show_maximize(false);
+
         CodeApp {
             session,
             sidebar,
-            tabs: TabBar::new(),
+            tabs,
+            closing_since: HashMap::new(),
             editor: EditorView::new(),
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
@@ -749,19 +779,78 @@ impl CodeApp {
         }
     }
 
-    /// Push the current tab set into the tab bar.
-    fn refresh_tabs(&mut self) {
-        let items: Vec<TabItem> = self
-            .session
-            .open
+    /// Reconcile the shared tab bar's pills against `session.open`, by node
+    /// id: insert what's new, fade out what closed by some path other than
+    /// its own pill (Ctrl+W, the file tree), and keep title + the
+    /// unsaved-changes marker in step. A pill mid close-fade is left alone —
+    /// it reappears once the fade finishes if the buffer is still open (a
+    /// cancelled close). Idempotent: safe to call more than once a frame.
+    fn reconcile_tabs(&mut self) {
+        self.sweep_closing_tabs();
+
+        let live: HashSet<u64> = self.session.open.iter().map(|b| b.node as u64).collect();
+        let stale: Vec<u64> = self
+            .tabs
+            .tabs()
             .iter()
-            .map(|b| TabItem {
-                name: b.name.clone(),
-                language: b.language,
-                dirty: b.dirty,
-            })
+            .map(|t| t.id)
+            .filter(|id| !live.contains(id) && !self.tabs.is_closing(*id))
             .collect();
-        self.tabs.set_tabs(items, self.session.active);
+        for id in stale {
+            self.tabs.start_closing(id);
+            self.closing_since.entry(id).or_insert_with(Instant::now);
+        }
+
+        for (i, buf) in self.session.open.iter().enumerate() {
+            let id = buf.node as u64;
+            if self.tabs.is_closing(id) || self.tabs.tabs().iter().any(|t| t.id == id) {
+                continue;
+            }
+            let idx = i.min(self.tabs.tabs().len());
+            self.tabs.insert_tab(idx, TabDescriptor::new(id, buf.name.clone()));
+        }
+
+        for buf in &self.session.open {
+            let id = buf.node as u64;
+            self.tabs.set_modified(id, buf.dirty);
+            if let Some(t) = self.tabs.tabs_mut().iter_mut().find(|t| t.id == id)
+                && t.title != buf.name
+            {
+                t.title.clone_from(&buf.name);
+            }
+        }
+
+        if let Some(buf) = self.session.active_buffer() {
+            self.tabs.set_active(buf.node as u64);
+        }
+    }
+
+    /// Tint each pill by its buffer's language, read off the theme in use —
+    /// only `draw` has one, so this runs there rather than from
+    /// `reconcile_tabs`.
+    fn sync_tab_accents(&mut self, theme: &Theme) {
+        for buf in &self.session.open {
+            let id = buf.node as u64;
+            self.tabs.set_accent(id, lang_accent(buf.language, theme));
+        }
+    }
+
+    /// Frees a faded pill's bookkeeping once `CLOSE_FADE_MS` has actually
+    /// elapsed — `TabBar` stops painting it on its own, but only
+    /// `finalize_close` drops the entry and lets `needs_animation_frame` go
+    /// quiet. Mirrors `WindowGroup`'s own sweep of `closing_hosts`.
+    fn sweep_closing_tabs(&mut self) {
+        let window = Duration::from_millis(ui::widget::tabs::CLOSE_FADE_MS as u64);
+        let expired: Vec<u64> = self
+            .closing_since
+            .iter()
+            .filter(|(_, t)| t.elapsed() >= window)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            self.closing_since.remove(&id);
+            self.tabs.finalize_close(id);
+        }
     }
 
     /// Recompute diagnostics over the active buffer and push to the panel +
@@ -979,7 +1068,7 @@ impl CodeApp {
                 let name = self.session.open[idx].name.clone();
                 self.session.open[idx].mark_saved(text, Some(stamp));
                 self.note(format!("Saved {name}"), false);
-                self.refresh_tabs();
+                self.reconcile_tabs();
                 // Tell the language server the file is on disk now; rustc-based
                 // diagnostics only refresh on save.
                 if let (Some(c), Some(uri)) = (self.lsp.as_mut(), self.lsp_uri.clone()) {
@@ -1057,7 +1146,7 @@ impl CodeApp {
                 self.session.open[idx].mark_saved(text, stamp);
                 self.note(format!("Reloaded {name} from disk"), false);
                 self.bound_node = None;
-                self.refresh_tabs();
+                self.reconcile_tabs();
             }
             Err(e) => {
                 let name = self.session.open[idx].name.clone();
@@ -1308,7 +1397,7 @@ impl CodeApp {
                 self.editor.unbind();
                 self.reset_language_server();
                 self.clear_search();
-                self.refresh_tabs();
+                self.reconcile_tabs();
                 self.refresh_palette_entries();
                 self.note(format!("Opened {name}"), false);
             }
@@ -1355,7 +1444,7 @@ impl CodeApp {
         self.session.open_file(node);
         self.sidebar.set_active(Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
-        self.refresh_tabs();
+        self.reconcile_tabs();
     }
 
     /// The node of the file in the active tab, if any. Lets a test observe
@@ -1405,43 +1494,85 @@ impl CodeApp {
         }
     }
 
-    /// Apply a tab event (select / close).
-    fn apply_tab_event(&mut self, ev: TabEvent) {
-        match ev {
-            TabEvent::Select(i) => {
-                self.session.active = Some(i);
-                self.bound_node = None;
-            }
-            TabEvent::Close(i) => {
-                // A buffer with unsaved edits is not closed out from under the
-                // user — closing would silently discard their work, so ask
-                // first. A clean buffer closes immediately.
-                if let Some(buf) = self.session.open.get(i) {
-                    if buf.dirty {
-                        self.close_prompt = Some(ClosePrompt {
-                            node: buf.node,
-                            name: buf.name.clone(),
-                        });
-                        return;
-                    }
-                }
-                self.session.close_tab(i);
-                self.bound_node = None;
-            }
+    /// Close the tab at session index `idx` — immediately if it is clean, or
+    /// by raising the unsaved-changes prompt if it has edits (closing would
+    /// silently discard them). The one entry point every close path funnels
+    /// through — a pill's ×, Ctrl+W, the file tree — so they all read the
+    /// same and none skips the prompt.
+    fn request_close_tab(&mut self, idx: usize) {
+        let Some(buf) = self.session.open.get(idx) else {
+            return;
+        };
+        if buf.dirty {
+            self.close_prompt = Some(ClosePrompt {
+                node: buf.node,
+                name: buf.name.clone(),
+            });
+            return;
         }
-        self.sidebar
-            .set_active(self.session.active_buffer().map(|b| b.node));
-        self.refresh_tabs();
+        let node = buf.node;
+        self.close_node_tab(node);
     }
 
-    /// Close the tab holding `node`, if it is still open.
+    /// Close the tab holding `node`, if it is still open — the low-level
+    /// removal used once a close is actually decided: already clean, a
+    /// discarded prompt, or a save that landed. Starts the pill's fade if
+    /// nothing already did — a pill's own × starts it before the app even
+    /// learns of the close; every other path has to ask here.
     fn close_node_tab(&mut self, node: TreeId) {
         if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
             self.session.close_tab(idx);
             self.bound_node = None;
+            let id = node as u64;
+            if !self.tabs.is_closing(id) {
+                self.tabs.start_closing(id);
+            }
+            self.closing_since.entry(id).or_insert_with(Instant::now);
             self.sidebar
                 .set_active(self.session.active_buffer().map(|b| b.node));
-            self.refresh_tabs();
+            self.reconcile_tabs();
+        }
+    }
+
+    /// Read back everything the shared tab bar did with the pointer this
+    /// frame: which pill is selected (the bar already moved its own
+    /// `active_id` on press — this mirrors it into the session), a
+    /// drag-reorder, a close, and the per-tab search chip — routed to Find,
+    /// this app's equivalent of "search within this tab".
+    fn drain_tab_bar(&mut self, doc: &AutoCommit) {
+        let selected = self.tabs.active_id();
+        if let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == selected)
+            && self.session.active != Some(idx)
+        {
+            self.session.active = Some(idx);
+            self.bound_node = None;
+            self.sidebar
+                .set_active(self.session.active_buffer().map(|b| b.node));
+        }
+
+        if let Some((from, to)) = self.tabs.take_reorder() {
+            self.session.reorder_tab(from, to);
+        }
+
+        if let Some(id) = self.tabs.take_close() {
+            // Always start the sweep, even if this ends up only raising a
+            // prompt: `TabBar::start_closing` has already faded the pill
+            // regardless of what the app decides, so this id must still get
+            // `finalize_close`d once the fade elapses, or a cancelled close
+            // would leave it permanently marked "closing" and never come
+            // back — see `TabBar::is_closing`.
+            self.closing_since.entry(id).or_insert_with(Instant::now);
+            if let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id) {
+                self.request_close_tab(idx);
+            }
+        }
+
+        if let Some(id) = self.tabs.take_search()
+            && let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id)
+        {
+            self.session.active = Some(idx);
+            self.bound_node = None;
+            self.open_find(false, doc);
         }
     }
 
@@ -1630,7 +1761,7 @@ impl CodeApp {
             }
             Command::CloseTab => {
                 if let Some(i) = self.session.active {
-                    self.apply_tab_event(TabEvent::Close(i));
+                    self.request_close_tab(i);
                 }
             }
             Command::ToggleBottomPanel => {
@@ -1663,10 +1794,7 @@ impl CodeApp {
         for ev in tree_events {
             self.apply_tree_event(ev);
         }
-        let tab_events = self.tabs.take_events();
-        for ev in tab_events {
-            self.apply_tab_event(ev);
-        }
+        self.drain_tab_bar(doc);
         if let Some(kind) = self.palette.take_chosen() {
             match kind {
                 PaletteKind::File(id) => self.open_node(id),
@@ -2520,7 +2648,7 @@ impl Widget for CodeApp {
 
         self.check_disk_staleness();
         self.refresh_find(state);
-        self.refresh_tabs();
+        self.reconcile_tabs();
         self.refresh_diagnostics(state);
         self.refresh_status();
     }
@@ -2729,6 +2857,8 @@ impl Widget for CodeApp {
     ) {
         let active = self.active_theme(theme);
         let theme = active.as_ref();
+        // Only `draw` has a `Theme` to read the accent colours off of.
+        self.sync_tab_accents(theme);
 
         // Advance the flap easing (frame-rate independent) before computing
         // geometry, so the slide + scrim fade animate while the host keeps
@@ -3364,6 +3494,146 @@ mod tests {
         assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
     }
 
+    /// Every open buffer's node id, cast the same way `reconcile_tabs` casts
+    /// it, so a test can compare against `app.tabs.tabs()` ids without
+    /// duplicating the cast at every call site.
+    fn open_ids(app: &CodeApp) -> Vec<u64> {
+        app.session.open.iter().map(|b| b.node as u64).collect()
+    }
+
+    #[test]
+    fn reconcile_tabs_keys_pills_to_open_buffers_by_node_id() {
+        let mut app = CodeApp::with_sample();
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|n| n.name == "prime.rs")
+            .unwrap()
+            .id;
+        app.open_node(prime); // open_node already reconciles.
+
+        let pill_ids: Vec<u64> = app.tabs.tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            pill_ids,
+            open_ids(&app),
+            "the bar's pills must be exactly the session's open buffers, in \
+             the same order, keyed by node id"
+        );
+    }
+
+    #[test]
+    fn reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark() {
+        let (mut app, mut doc) = synced_sample();
+        let id = app.session.active_buffer().unwrap().node as u64;
+        assert!(!app.tabs.is_modified(id), "a freshly-opened buffer is clean");
+
+        app.editor.insert_for_test(&mut doc, "X");
+        app.ensure_buffers(&mut doc);
+        app.reconcile_tabs();
+        assert!(
+            app.tabs.is_modified(id),
+            "an edited buffer's pill must pick up the unsaved-changes mark"
+        );
+    }
+
+    #[test]
+    fn sync_tab_accents_tints_each_pill_by_its_buffers_language() {
+        // `with_sample` opens main.rs, a Rust file.
+        let mut app = CodeApp::with_sample();
+        let theme = Theme::dark();
+        let id = app.session.active_buffer().unwrap().node as u64;
+
+        app.sync_tab_accents(&theme);
+
+        assert_eq!(
+            app.tabs.accent(id),
+            Some(lang_accent(Language::Rust, &theme)),
+            "a Rust buffer's pill must carry the theme's Rust accent"
+        );
+    }
+
+    #[test]
+    fn closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position() {
+        // The whole point of reconciling by node id rather than position: the
+        // pill the user clicked × on must be the buffer that closes — even
+        // one that is neither at index 0 nor the active tab, which is the
+        // one case "close index 0" or "close whatever's active" would also
+        // get right by accident.
+        let mut app = CodeApp::with_sample();
+        let names = ["prime.rs", "greeter.rs"];
+        let ids: Vec<crate::model::NodeId> = names
+            .iter()
+            .map(|name| {
+                app.session
+                    .project
+                    .nodes
+                    .values()
+                    .find(|n| n.name == *name)
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        for id in ids {
+            app.open_node(id);
+        }
+        // [main.rs, prime.rs, greeter.rs], active = greeter.rs (index 2).
+        assert_eq!(app.session.open.len(), 3);
+        app.session.active = Some(0); // main.rs is active; prime.rs is neither.
+
+        let prime_id = app.session.open[1].node as u64;
+        // Stand-in for the user clicking prime.rs's own × — the widget fades
+        // it and publishes the id via `take_close`, independent of position.
+        app.tabs.start_closing(prime_id);
+
+        let mut doc = AutoCommit::new();
+        app.drain_child_events(&mut doc);
+
+        let remaining: Vec<&str> = app.session.open.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(
+            remaining,
+            vec!["main.rs", "greeter.rs"],
+            "closing prime.rs's pill must close prime.rs specifically, not \
+             index 0 or whatever happens to be active"
+        );
+    }
+
+    #[test]
+    fn selecting_a_different_pill_is_read_back_via_active_id() {
+        let mut app = CodeApp::with_sample();
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|n| n.name == "prime.rs")
+            .unwrap()
+            .id;
+        app.open_node(prime); // active is now prime.rs
+        let main_node = app.session.open[0].node;
+        assert_eq!(app.session.active, Some(1));
+
+        // A press on the bar already moved its own `active_id` (see
+        // `TabBar::handle_event`); this stands in for that click landing on
+        // main.rs's pill instead.
+        app.tabs.set_active(main_node as u64);
+        app.bound_node = Some(main_node.wrapping_add(1)); // sentinel, must be cleared
+
+        let mut doc = AutoCommit::new();
+        app.drain_child_events(&mut doc);
+
+        assert_eq!(
+            app.session.active,
+            Some(0),
+            "the session must follow the bar's active_id back to main.rs"
+        );
+        assert_eq!(
+            app.bound_node, None,
+            "switching which buffer is selected must force the editor to re-bind"
+        );
+    }
+
     #[test]
     fn editing_routes_through_crdt() {
         let mut app = CodeApp::with_sample();
@@ -3911,7 +4181,7 @@ mod tests {
 
         let before = app.session.open.len();
         let active = app.session.active.unwrap();
-        app.apply_tab_event(TabEvent::Close(active));
+        app.request_close_tab(active);
         assert_eq!(
             app.session.open.len(),
             before,
@@ -3930,7 +4200,7 @@ mod tests {
         let (mut app, _doc) = synced_sample();
         let before = app.session.open.len();
         let active = app.session.active.unwrap();
-        app.apply_tab_event(TabEvent::Close(active));
+        app.request_close_tab(active);
         assert!(
             app.close_prompt.is_none(),
             "a saved tab closes without a prompt"
