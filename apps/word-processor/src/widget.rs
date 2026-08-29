@@ -93,17 +93,10 @@ enum CtxAction {
     ResolveComment(String),
 }
 
-// --- Paper-context colors (the document sheet) ----------------------------
-// The document "page" is the familiar word-processor *paper*. Document text is
-// authored with ink colours that assume a light sheet (the stylesheet's default
-// ink is near-black, e.g. `STYLE_PALETTE[0]`), so the paper stays a light tone
-// in BOTH light and dark mode — only the surrounding chrome follows the theme.
-// Keeping these as single, clearly-named constants (rather than scattering
-// `Color::WHITE`) documents the deliberate "paper is always light" convention.
-//
-// `ChromeColors::for_theme` derives `paper`/`shadow` from the theme's *lightest*
-// neutral when available so the sheet harmonises with the palette; these consts
-// are the fallback / canonical paper tones the ink colours below contrast with.
+// Paper-context colors (the document sheet): document ink assumes a light sheet
+// (`STYLE_PALETTE[0]` is near-black), so paper stays light in both themes — only
+// chrome follows the theme. `ChromeColors::for_theme` derives `paper` from the
+// theme's lightest neutral when light enough; these consts are the fallback.
 /// Canonical paper tone — a barely-warm off-white. Ink/selection/caret below are
 /// chosen to read on this in every theme.
 const PAPER_DEFAULT: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
@@ -126,11 +119,9 @@ const ACTIVE_BAND_EDGE: Color = Color::from_rgb8(0x46, 0x78, 0xe6);
 /// edited, so the body visibly recedes (like Word dimming the body in that mode).
 const BODY_DIM_VEIL: Color = Color::from_rgba8(0xfc, 0xfc, 0xfa, 0x66);
 
-/// OS-theme-driven chrome palette for the editor. Resolved once per frame from
-/// the [`Theme`] passed to `draw` (see [`ChromeColors::for_theme`]) and stashed
-/// on the widget so every chrome helper reads themed colours instead of
-/// hard-coded literals. This is what makes the toolbar / panels / bars / canvas
-/// honour light/dark mode and the OS palette. Paper-context colours (the sheet
+/// OS-theme-driven chrome palette, resolved once per frame from the [`Theme`]
+/// (see [`ChromeColors::for_theme`]) so chrome honours light/dark mode. Paper
+/// colours (the sheet + its ink) are NOT here — see the `PAPER_*` consts above.
 /// + ink on it) are deliberately *not* here — see the `PAPER_*` consts above.
 #[derive(Clone, Copy)]
 struct ChromeColors {
@@ -170,10 +161,9 @@ impl ChromeColors {
     /// available token is used for each slot — no new theme tokens are invented.
     fn for_theme(theme: &Theme) -> Self {
         let c = &theme.tokens.colors;
-        // Pick a paper tone: prefer the theme's lightest neutral when it is
-        // actually light (so light themes use their own near-white sheet), but
-        // never go dark — dark themes keep the canonical light paper so the
-        // document ink contrasts. `neutral[10]` is the lightest ramp slot.
+        // Prefer the theme's lightest neutral when actually light; dark themes
+        // keep the canonical light paper so document ink still contrasts.
+        // `neutral[10]` is the lightest ramp slot.
         let lightest = c.neutral[10];
         let paper = if luminance(lightest) >= 0.85 { lightest } else { PAPER_DEFAULT };
         Self {
@@ -289,9 +279,7 @@ const REVIEW_REJECT_INK: Color = Color::from_rgb8(0xa8, 0x24, 0x24);
 const REVIEW_BTN: f64 = 18.0;
 /// Width of a tracked-change review card in the right margin.
 const CHANGE_CARD_W: f64 = 132.0;
-// Panel + guide chrome colours are theme-driven — see `ChromeColors`. The side
-// panels read `chrome.bar`/`chrome.border`/`chrome.chip`/`chrome.text`/
-// `chrome.text_dim`/`chrome.field`; layout guides read `chrome.accent`.
+// Panel + guide chrome colours are theme-driven — see `ChromeColors`, not new consts.
 /// A small color palette for the style-colour picker.
 const STYLE_PALETTE: [[u8; 3]; 7] = [
     [0x1c, 0x1c, 0x20], // ink
@@ -311,8 +299,7 @@ const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
     [0xff, 0x9a, 0xd0], // pink
     [0xff, 0xb1, 0x4d], // orange
 ];
-// Layout guides + handles use the theme accent — see `chrome.accent` /
-// `chrome.accent_faint`.
+// Layout guides + handles use the theme accent — see `chrome.accent`/`chrome.accent_faint`.
 /// How close (px) the pointer must be to a guide line to grab it.
 const GUIDE_GRAB: f64 = 7.0;
 
@@ -390,9 +377,9 @@ enum FindAction {
 /// A clickable zoom control (the toolbar's right-aligned zoom stepper).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum StatusAction {
-    ZoomOut,
-    ZoomIn,
-    ZoomReset,
+    Out,
+    In,
+    Reset,
 }
 
 /// Zoom bounds + step for the page/content scale.
@@ -409,6 +396,7 @@ const ZOOM_SWATCH_GAP: f64 = 16.0;
 
 /// Draw a text-input box (Find/Replace fields). A trailing `_` marks the focused
 /// field's caret; an empty field shows the placeholder.
+#[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
 fn draw_field_box(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, cc: &ChromeColors, r: Rect, text: &str, placeholder: &str, focused: bool) {
     let border = if focused { cc.accent } else { cc.border };
     scene.fill(Fill::NonZero, transform, cc.field, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
@@ -663,17 +651,13 @@ fn byte_to_char(text: &str, byte_off: usize) -> usize {
     text[..b].chars().count()
 }
 
-/// Per-visual-line `(line_top, line_height)` for a shaped layout, in the layout's
-/// internal coordinate space (the same space `selection_rects`/`caret_geometry`
-/// report). Used by intra-block pagination to find the line boundary at which a
-/// too-tall block is split across a page.
+/// Per-visual-line `(line_top, line_height)` for a shaped layout (same coordinate
+/// space as `selection_rects`/`caret_geometry`). Used by intra-block pagination to
+/// find the line boundary at which a too-tall block splits across a page.
 ///
-/// `RichTextLayout` does not expose a line iterator, so the tops are recovered
-/// from the selection rectangles of the full text (one rect per wrapped line that
-/// carries glyphs). Lines with no glyphs (a wholly blank wrapped line) produce no
-/// rect; the tail is back-filled at the uniform single-line advance so the list
-/// still spans the layout's full height. The result is sorted, de-duplicated by
-/// top, and always covers `[0, layout.height())`.
+/// `RichTextLayout` has no line iterator, so tops are recovered from selection
+/// rects of the full text; blank wrapped lines (no glyphs, no rect) are back-filled
+/// at the uniform line advance. Result is sorted, deduped, and spans `[0, height())`.
 fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
     let mut tops: Vec<(f64, f64)> = layout
         .selection_rects(0, text.len().max(1))
@@ -746,13 +730,8 @@ fn block_presence_key(block_id: &str) -> PresenceKey {
 pub(crate) struct RemoteCaretOverlay {
     pub user: UserId,
     pub rect: Rect,
-    /// What to write on the pill: the name the room gave this peer, or
-    /// the peer's own id when the room has not named them.
-    ///
-    /// Resolved here rather than at paint time so it can be asserted on.
-    /// A pill that says who is editing is the visible half of the whole
-    /// collaboration claim, and "the label is right" is not something to
-    /// find out by looking at a screenshot.
+    /// The pill text: the room's name for this peer, or their id if unnamed.
+    /// Resolved here (not at paint time) so it is directly assertable.
     pub label: String,
 }
 
@@ -934,11 +913,16 @@ const LINE_SPACINGS: [f64; 4] = [1.0, 1.15, 1.5, 2.0];
 
 /// Next multiplier in the line-spacing cycle (wraps 2.0 → 1.0). The nearest
 /// preset to `cur` is the anchor, so an imported odd value still cycles cleanly.
+/// `cur` may be a non-finite value from a malformed import or a remote peer's
+/// action; `partial_cmp` returning `None` for a NaN distance falls back to
+/// `Equal` rather than panicking, so the cycle just anchors on the first preset.
 fn next_line_spacing(cur: f64) -> f64 {
     let idx = LINE_SPACINGS
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| (**a - cur).abs().partial_cmp(&(**b - cur).abs()).unwrap())
+        .min_by(|(_, a), (_, b)| {
+            (**a - cur).abs().partial_cmp(&(**b - cur).abs()).unwrap_or(std::cmp::Ordering::Equal)
+        })
         .map(|(i, _)| i)
         .unwrap_or(0);
     LINE_SPACINGS[(idx + 1) % LINE_SPACINGS.len()]
@@ -965,7 +949,7 @@ fn block_indent_attr(b: &BlockView) -> f64 {
 
 /// An image block's `anchor` attr (`inline` | `paragraph` | `page`), defaulting
 /// to `inline`. `inline` flows the image in its own full-width vertical slot;
-/// `paragraph`/`page` let it float so following text wraps beside it (Wave 9).
+/// `paragraph`/`page` let it float so following text wraps beside it.
 fn image_anchor(b: &BlockView) -> &str {
     match b.attrs.get("anchor") {
         Some(AttrVal::Str(s)) => s.as_str(),
@@ -1045,9 +1029,13 @@ fn block_style_key(b: &BlockView) -> String {
     crate::styles::style_key_for(&b.kind, level, explicit)
 }
 
+/// A block's styled runs plus its underline and strikethrough byte ranges:
+/// `(runs, underline_ranges, strike_ranges)`.
+type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
+
 /// Split a block's text into styled runs (bold/italic/size/family) + underline
 /// and strikethrough byte ranges.
-fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>) {
+fn block_runs(b: &BlockView) -> BlockRuns {
     let chars: Vec<char> = b.text.chars().collect();
     let n = chars.len();
     // Run key: f32 size as bits so the tuple is comparable. Highlight (background)
@@ -1111,13 +1099,11 @@ fn char_in_mark(i: usize, marks: &[MarkSpan], name: &str) -> bool {
     marks.iter().any(|m| m.name == name && i >= m.start && i < m.end)
 }
 
-/// Split a block's text into styled runs like [`block_runs`], but additionally
-/// tint any `ins`/`del` tracked-change run with the review colour so the glyphs
-/// themselves read as proposed-added (green) / proposed-removed (red). The
-/// underline/strike decorations for those ranges are drawn separately (in the
-/// body pass, in the matching review colour). When `show_markup` is false this
-/// is identical to [`block_runs`] — markup is hidden, text shows as plain.
-fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>) {
+/// Split a block's text into styled runs like [`block_runs`], additionally
+/// tinting `ins`/`del` tracked-change runs in the review colour (green/red).
+/// Underline/strike decorations are drawn separately in the body pass. Identical
+/// to [`block_runs`] when `show_markup` is false.
+fn block_runs_markup(b: &BlockView, show_markup: bool) -> BlockRuns {
     if !show_markup {
         return block_runs(b);
     }
@@ -1189,10 +1175,14 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(u
     (runs, underlines, strikes)
 }
 
+/// The `(ins_ranges, del_ranges)` byte ranges in a block covered by an `ins`
+/// tracked-insertion mark and a `del` tracked-deletion mark respectively.
+type ChangeDecoRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
+
 /// The `(byte_start, byte_end)` ranges in a block covered by an `ins` tracked-
 /// insertion mark and a `del` tracked-deletion mark respectively. Used by the
 /// body draw pass to paint the review underline (ins) / strike (del).
-fn block_change_decos(b: &BlockView) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+fn block_change_decos(b: &BlockView) -> ChangeDecoRanges {
     let collect = |name: &str| {
         b.marks
             .iter()
@@ -1297,11 +1287,8 @@ fn running_head_runs(b: &BlockView, page_no: usize) -> Vec<RichSpan> {
     runs
 }
 
-/// Like [`running_head_runs`] but for the band that is *currently being edited*:
-/// every character maps 1:1 to a caret offset (no multi-digit page-number
-/// substitution), so click-to-caret + caret rendering line up with the stored
-/// text model. A `page-number` field placeholder (U+FFFC) is shown as a single
-/// `#` glyph (a stable one-char field marker) rather than expanded to digits.
+/// Like [`running_head_runs`] but for the band being *edited*: every char maps
+/// 1:1 to a caret offset; a `page-number` placeholder shows as `#`, not digits.
 fn running_head_runs_editing(b: &BlockView) -> Vec<RichSpan> {
     let chars: Vec<char> = b.text.chars().collect();
     let n = chars.len();
@@ -1362,11 +1349,8 @@ fn block_note_refs(b: &BlockView) -> Vec<(usize, String)> {
         .collect()
 }
 
-/// Assign citation numbers (1, 2, 3, …) to notes in *document order* — i.e. the
-/// order their `note-ref` markers first appear across the body blocks. The
-/// snapshot's `notes` are sorted by id, so this is the authoritative ordering for
-/// rendering both the in-text superscript and the bottom-of-page list. Returns a
-/// map `note_id → number`.
+/// Assign citation numbers (1, 2, 3, …) to notes in *document order* (first
+/// `note-ref` appearance), the authoritative order for both in-text + page list.
 fn note_numbering(blocks: &[BlockView]) -> HashMap<String, usize> {
     let mut map = HashMap::new();
     let mut next = 1usize;
@@ -1426,15 +1410,12 @@ fn spell_spans(dict: &spellcheck::Dictionary, text: &str) -> Vec<(usize, usize)>
 
 /// Hash everything that feeds into `RichTextLayout::shape` into a single `u64`.
 ///
-/// This is the cache key for the per-block incremental layout cache: if two
-/// frames produce the same key for a block, `shape` would produce a
-/// byte-identical layout, so the previously-shaped `RichTextLayout` can be
-/// reused verbatim. The inputs mirror `shape`'s arguments exactly — `spans`
-/// (text + per-run bold/italic/size/family/colour), the underline/strike byte
-/// ranges, the block-level bold/size/family/alignment, and the **wrap width**
-/// (so a window or margin resize re-shapes). Block-level ink is intentionally
-/// excluded: it is applied at draw time (`Laid::ink`), not baked into the
-/// buffer, so it can change without invalidating the shaped layout.
+/// Cache key for the per-block incremental layout cache: matching keys across
+/// frames mean `shape` would reproduce a byte-identical layout, so the previous
+/// `RichTextLayout` is reused verbatim. Inputs mirror `shape`'s arguments exactly,
+/// including **wrap width** (so a resize re-shapes); block-level ink is excluded
+/// since it applies at draw time (`Laid::ink`), not baked into the shaped buffer.
+#[allow(clippy::too_many_arguments)] // mirrors `RichTextLayout::shape`'s own argument list
 fn shape_key(
     spans: &[RichSpan],
     underlines: &[(usize, usize)],
@@ -1519,7 +1500,7 @@ struct Laid {
 }
 
 /// A floated image's reserved column, live while subsequent body blocks lay out
-/// (coarse text-wrap, Wave 9). While `bottom` has not been passed, paragraphs on
+/// (coarse text-wrap). While `bottom` has not been passed, paragraphs on
 /// the same page are shaped at a reduced width and offset to the non-float side so
 /// they sit beside the image rather than under it. This is a *coarse* wrap: the
 /// whole paragraph is narrowed for its full height (not per wrapped line), because
@@ -1596,10 +1577,8 @@ pub struct WordProcessorWidget {
     focused: bool,
     dirty: bool,
     needs_commit: bool,
-    /// Framework-owned action dispatch: brackets the undo boundary, encodes and
-    /// dispatches each action through the executor, and remembers the last one so
-    /// a test can prove an affordance builds the same envelope the Ctrl+K palette
-    /// does.
+    /// Framework-owned action dispatch: brackets the undo boundary and dispatches
+    /// each action through the executor (so a test can prove parity with Ctrl+K).
     actions: ui::ActionHost,
     pointer: Point,
     drag: DragSelect,
@@ -1633,22 +1612,16 @@ pub struct WordProcessorWidget {
     /// Mirrors `header`. When empty, a subtle default "Page N" indicator is drawn.
     footer: Vec<BlockView>,
     laid: Vec<Laid>,
-    /// Per-block laid geometry of the header/footer band that is currently being
-    /// edited (the active edit context's band on the reference page). Empty when
-    /// editing the body. Stored in content space so click hit-testing and the
-    /// band caret reuse the same coordinates as the body. `(block_id, text,
-    /// origin, shaped layout)`.
+    /// Laid geometry of the header/footer band currently being edited (empty when
+    /// editing the body); content space, so hit-testing/caret reuse body coordinates.
     region_laid: Vec<RegionLaid>,
     /// The header / footer band rects of the reference (first) page in content
     /// space, cached each frame so the event handler can hit-test a click into a
     /// band and switch the edit context. `(header_band, footer_band)`.
     head_band_rect: Rect,
     foot_band_rect: Rect,
-    /// Incremental per-block shaped-text cache: block id → (shape key, shaped
-    /// layout). Reused across frames when the key (text + marks + resolved
-    /// style + wrap width) is unchanged, so only edited/resized blocks pay the
-    /// cosmic-text shaping cost instead of every block every frame. Pruned to
-    /// the live block set each frame (entries for deleted blocks are dropped).
+    /// Per-block shaped-text cache, keyed by shape key (text+marks+style+wrap
+    /// width): only edited/resized blocks pay the shaping cost. Pruned each frame.
     layout_cache: HashMap<String, (u64, RichTextLayout)>,
     /// Diagnostics for the layout cache, recomputed each `draw`: number of
     /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
@@ -1783,10 +1756,8 @@ pub struct WordProcessorWidget {
     /// hard-coded colours, so the editor honours light/dark mode + the OS
     /// palette. Initialised to the dark theme's mapping for off-frame use.
     chrome: ChromeColors,
-    // ---- autosave / crash-recovery ----------------------------------------
-    /// Document-modifying edits accumulated since the last recovery write. When
-    /// it reaches [`AUTOSAVE_EDIT_THRESHOLD`] a recovery copy is written and this
-    /// resets to 0. Drives the "every N edits" autosave debounce (no wall clock
+    /// OS-theme-driven chrome palette, resolved at the top of every `draw` so
+    /// chrome helpers honour light/dark mode instead of hard-coding colours.
     /// is available in the headless test path, so the trigger is edit-count based).
     edits_since_autosave: u32,
     /// A pending crash-recovery offer: a newer recovery copy was found on disk for
@@ -1806,10 +1777,8 @@ pub struct WordProcessorWidget {
     new_menu: ContextMenu,
     /// The [`crate::Template`] parallel to `new_menu`'s rows (selection dispatch).
     new_menu_templates: Vec<crate::Template>,
-    // ---- host file-chooser portal (open / save / image insert) ------------
-    /// An in-flight host file request. `Some(rx)` means the XDG portal's chooser
-    /// is open (or the pick is being processed) on a worker thread; the chosen
-    /// path arrives over this channel, drained each frame in
+    /// An in-flight host file request: `Some` means the XDG chooser is open on a
+    /// worker thread; the path is drained each frame in [`Self::drain_portal`].
     /// [`WordProcessorWidget::drain_portal`]. `None` = idle.
     portal_rx: Option<portal::PortalChannel>,
     /// What the in-flight [`Self::portal_rx`] request is for (open a document,
@@ -1825,10 +1794,8 @@ pub struct WordProcessorWidget {
     /// A transient confirmation message (e.g. "Table of contents updated"),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Option<String>,
-    // ---- colour picker popover --------------------------------------------
-    /// The shared [`ColorPicker`] primitive, opened as an overlay popover from the
-    /// style inspector's "Custom…" colour affordance. `Some` while it is open; a
-    /// committed colour is applied to the focused style. Mouse-driven (SV square /
+    /// The shared [`ColorPicker`] overlay popover from the style inspector's
+    /// "Custom…" affordance; a committed colour applies to the focused style.
     /// hue strip / RGB sliders); replaces hand-rolling a bespoke colour control.
     color_picker: Option<ColorPicker>,
 }
@@ -1975,14 +1942,10 @@ impl WordProcessorWidget {
 
     // ---- qOS action dispatch ------------------------------------------------
 
-    /// Dispatch one [`WordProcessorAction`](crate::actions::WordProcessorAction)
-    /// — the single CRDT-mutation path shared with the Ctrl+K palette. Applied
-    /// through the qOS action executor (a pinned actor + committed change, so it
-    /// replays byte-identically on peers). The document heads captured just
-    /// before the first action of the current event are stashed so the host
-    /// records **one** undo boundary bracketing it (see
-    /// [`Widget::take_committed_action`]); a second action in the same event
-    /// extends that one boundary rather than opening another.
+    /// Dispatch one [`WordProcessorAction`](crate::actions::WordProcessorAction) —
+    /// the single CRDT-mutation path shared with the Ctrl+K palette — through the
+    /// qOS action executor. Document heads before the event's first action are
+    /// stashed so the host records **one** undo boundary bracketing the whole event.
     fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::WordProcessorAction) {
         self.actions
             .dispatch(state, crate::actions::WORD_PROCESSOR_ACTION_TYPE, &action);
@@ -2163,11 +2126,10 @@ impl WordProcessorWidget {
     /// Misspelled byte spans for a body block, using `spell_cache` (keyed by the
     /// block's text so an edit re-checks and an unchanged block is free).
     fn block_spell_spans(&mut self, id: &str, text: &str) -> Vec<(usize, usize)> {
-        if let Some((cached_text, spans)) = self.spell_cache.get(id) {
-            if cached_text == text {
+        if let Some((cached_text, spans)) = self.spell_cache.get(id)
+            && cached_text == text {
                 return spans.clone();
             }
-        }
         let dict = self.dictionary();
         let spans = spell_spans(dict, text);
         self.spell_cache.insert(id.to_string(), (text.to_string(), spans.clone()));
@@ -2464,14 +2426,13 @@ impl WordProcessorWidget {
         self.find_open = true;
         self.find_on_replace = false;
         // Seed the query from a single-line selection, if any.
-        if let Some((bid, s, e)) = self.selection_blocks_cached().first().cloned() {
-            if let Some(b) = self.blocks.iter().find(|b| b.id == bid) {
+        if let Some((bid, s, e)) = self.selection_blocks_cached().first().cloned()
+            && let Some(b) = self.blocks.iter().find(|b| b.id == bid) {
                 let sel: String = b.text.chars().skip(s).take(e.saturating_sub(s)).collect();
                 if !sel.is_empty() && !sel.contains('\n') {
                     self.find_query = sel;
                 }
             }
-        }
         self.find_recompute(state);
     }
 
@@ -2775,8 +2736,8 @@ impl WordProcessorWidget {
                 }
             }
             _ => {
-                if let Some(t) = typed {
-                    if !t.is_empty() && !t.chars().any(|c| c.is_control()) {
+                if let Some(t) = typed
+                    && !t.is_empty() && !t.chars().any(|c| c.is_control()) {
                         if self.find_on_replace {
                             self.replace_query.push_str(t);
                         } else {
@@ -2784,7 +2745,6 @@ impl WordProcessorWidget {
                             self.find_recompute(state);
                         }
                     }
-                }
                 // Consume all other keys while the bar is open (don't leak arrow
                 // keys etc. to the document editor).
             }
@@ -2837,17 +2797,15 @@ impl WordProcessorWidget {
         // Fall back to the nearest band block (first/last) so a click anywhere in
         // the band still lands a caret.
         if hit.is_none() {
-            if let Some(rl) = self.region_laid.first() {
-                if p.y < rl.origin.y {
+            if let Some(rl) = self.region_laid.first()
+                && p.y < rl.origin.y {
                     hit = Some((rl.id.clone(), 0));
                 }
-            }
-            if hit.is_none() {
-                if let Some(rl) = self.region_laid.last() {
-                    let byte = rl.layout.hit((p.x - rl.origin.x) as f32, (rl.layout.height() - 1.0) as f32);
+            if hit.is_none()
+                && let Some(rl) = self.region_laid.last() {
+                    let byte = rl.layout.hit((p.x - rl.origin.x) as f32, rl.layout.height() - 1.0);
                     hit = Some((rl.id.clone(), byte_to_char(&rl.text, byte)));
                 }
-            }
         }
         if let Some((block, offset)) = hit {
             if extend {
@@ -2893,24 +2851,22 @@ impl WordProcessorWidget {
         }
         if hit.is_none() {
             // above first / below last
-            if let Some(l) = self.laid.first() {
-                if p.y < l.y_top {
+            if let Some(l) = self.laid.first()
+                && p.y < l.y_top {
                     hit = Some((l.id.clone(), 0));
                 }
-            }
-            if hit.is_none() {
-                if let Some(l) = self.laid.last() {
+            if hit.is_none()
+                && let Some(l) = self.laid.last() {
                     // Below the last slice → caret to the layout's final line. Hit at
                     // the layout's own bottom (not the slice band height, which for a
                     // split last slice covers only its carried-over lines).
                     let byte = self
                         .layout_cache
                         .get(&l.id)
-                        .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (lay.height() - 1.0) as f32))
+                        .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, lay.height() - 1.0))
                         .unwrap_or(0);
                     hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 }
-            }
         }
         if let Some((block, offset)) = hit {
             if extend {
@@ -2984,20 +2940,14 @@ impl WordProcessorWidget {
         self.inner.set_page_margins(state, [self.margins.top, self.margins.right, self.margins.bottom, self.margins.left]);
     }
 
-    /// Draw the page header (or footer) blocks for one page sheet inside the
-    /// given margin band. `blocks` is the materialized header/footer; `page_no`
-    /// is this sheet's 1-based page number (substituted for page-number fields).
-    /// `is_footer` anchors the stack to the band's bottom (footers) vs. its top
-    /// (headers). Drawn through `ctf` so it magnifies with the page content.
+    /// Draw the page header (or footer) blocks for one page sheet inside the given
+    /// margin band, anchored to the band's bottom (footers) or top (headers), drawn
+    /// through `ctf` so it scales with the page content.
     ///
-    /// When `editing` is set this band is the active edit context: it is shaped
-    /// with the *raw* (1 char ⇄ 1 caret offset) runs so click-to-caret + the band
-    /// caret line up with the model, and the per-block laid geometry is returned
-    /// for the caller to stash (so the event handler + caret pass can use it).
-    ///
-    /// Returns `(drew_anything, laid)` — `drew` lets the caller fall back to the
-    /// default page indicator only when no footer exists; `laid` is empty unless
-    /// `editing`.
+    /// When `editing` is set, the band is shaped with *raw* (1 char ⇄ 1 caret offset)
+    /// runs so click-to-caret lines up with the model, and per-block laid geometry is
+    /// returned for the caller to stash. Returns `(drew_anything, laid)`; `laid` is
+    /// empty unless `editing`.
     #[allow(clippy::too_many_arguments)]
     fn draw_running_band(
         &self,
@@ -3098,8 +3048,8 @@ impl WordProcessorWidget {
         }
         let caret = self.inner.caret();
         // Selection highlight (single-band, char range) when present.
-        if let Some((s, e)) = self.inner.band_selection_range() {
-            if let Some(rl) = self.region_laid.iter().find(|r| r.id == s.0) {
+        if let Some((s, e)) = self.inner.band_selection_range()
+            && let Some(rl) = self.region_laid.iter().find(|r| r.id == s.0) {
                 let sb = char_to_byte(&rl.text, s.1);
                 let eb = char_to_byte(&rl.text, e.1);
                 for (rx0, ry0, rx1, ry1) in rl.layout.selection_rects(sb, eb) {
@@ -3107,7 +3057,6 @@ impl WordProcessorWidget {
                     scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &r);
                 }
             }
-        }
         if let Some(rl) = self.region_laid.iter().find(|r| r.id == caret.block) {
             let byte = char_to_byte(&rl.text, caret.offset);
             let (cx, cy, ch) = rl.layout.caret_geometry(byte);
@@ -3180,13 +3129,11 @@ impl WordProcessorWidget {
             }
             return best.map(|(s, _)| s);
         }
-        if self.layout_mode == LayoutMode::Spacing {
-            if let Some((_, hy)) = self.spacing_handle() {
-                if (p.y - hy).abs() <= GUIDE_GRAB + 4.0 && p.x >= page.x0 && p.x <= page.x1 {
+        if self.layout_mode == LayoutMode::Spacing
+            && let Some((_, hy)) = self.spacing_handle()
+                && (p.y - hy).abs() <= GUIDE_GRAB + 4.0 && p.x >= page.x0 && p.x <= page.x1 {
                     return Some(Side::Bottom); // side unused for spacing
                 }
-            }
-        }
         None
     }
 
@@ -3296,6 +3243,7 @@ impl WordProcessorWidget {
     /// Draw the horizontal ruler band: a fixed-height strip with inch ticks +
     /// labels aligned to the page, a tinted "text region" between the margins, and
     /// the draggable margin / indent / tab markers.
+    #[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
     fn draw_ruler(
         &mut self,
         scene: &mut Scene,
@@ -3489,15 +3437,11 @@ impl WordProcessorWidget {
         let px = self.pointer.x;
         let py = self.pointer.y;
         let band = self.ruler_rect;
-        // Nearest marker within the grab radius. Markers often coincide on screen
-        // (e.g. a 0-indent paragraph stacks the indent markers on the left
-        // margin), so ties are broken by (a) the pointer's vertical zone — the
-        // first-line wedge lives in the top third, the hanging wedge in the bottom
-        // third — and (b) a type priority so the small indent/tab handles win over
-        // the full-height margin bar when genuinely ambiguous.
-        // Vertical zones: the first-line wedge is drawn at the TOP, the hanging
-        // wedge at the BOTTOM, and the full-height margin bar owns the MIDDLE. The
-        // zone the pointer is in decides which coincident marker wins.
+        // Nearest marker within the grab radius, ties broken first by the
+        // pointer's vertical zone (first-line wedge in the top third, hanging
+        // wedge in the bottom third, margin bar owns the middle) and then by a
+        // type priority so small indent/tab handles win over the full-height
+        // margin bar when still ambiguous.
         let top_zone = py < band.y0 + (band.y1 - band.y0) / 3.0;
         let bot_zone = py > band.y1 - (band.y1 - band.y0) / 3.0;
         let priority = |m: RulerMarker| -> i32 {
@@ -3617,11 +3561,10 @@ impl WordProcessorWidget {
             }
             RulerMarker::Tab(i) => {
                 let mut stops = self.caret_block_tab_stops();
-                if drag.drop_off {
-                    if i < stops.len() {
+                if drag.drop_off
+                    && i < stops.len() {
                         stops.remove(i);
                     }
-                }
                 let block = self.inner.caret.block.clone();
                 self.inner.set_block_tab_stops(state, &block, &stops);
             }
@@ -3693,14 +3636,13 @@ impl WordProcessorWidget {
                 let (lx, ly) = if vert { (c + 6.0, page.y0 + 16.0) } else { (page.x0 + 10.0, c + 5.0) };
                 tr.draw_text(scene, &label, 12.0, accent, transform * Affine::translate((lx, ly)), None);
             }
-        } else if self.layout_mode == LayoutMode::Spacing {
-            if let Some((hx, hy)) = self.spacing_handle() {
+        } else if self.layout_mode == LayoutMode::Spacing
+            && let Some((hx, hy)) = self.spacing_handle() {
                 let pill = Rect::new(hx - 20.0, hy - 3.0, hx + 20.0, hy + 3.0);
                 scene.fill(Fill::NonZero, transform, accent, None, &vello::kurbo::RoundedRect::from_rect(pill, 3.0));
                 let label = format!("{} px", self.focused_space_after().round() as i64);
                 tr.draw_text(scene, &label, 12.0, accent, transform * Affine::translate((hx + 30.0, hy - 7.0)), None);
             }
-        }
     }
 
     /// The bottom layout bar: mode chips + a live readout / hint.
@@ -3749,31 +3691,19 @@ impl WordProcessorWidget {
         tr.draw_text(scene, &readout, 12.5, cc.text_dim, transform * Affine::translate((x + 12.0, cy - 8.0)), None);
     }
 
-    /// The contextual paragraph panel, in two clearly-labelled halves so the
-    /// direct-vs-preset distinction is legible:
-    ///
-    /// * **This paragraph** — direct formatting on the current paragraph(s):
-    ///   alignment + line spacing (instance attrs). These moved off the toolbar
-    ///   so per-paragraph controls have one home.
-    /// * **Paragraph style** — the named-style editor: a style picker plus
-    ///   property rows that mutate the *style* (every block of that style
-    ///   updates live). Distinct from the toolbar's direct character formatting.
-    /// Whether the styles panel is actually reserved and drawn this frame.
-    ///
-    /// The panel is a contextual aid to the document, so it yields when the
-    /// window is too narrow for it to stay the minority: below twice its own
-    /// width it would take half the window or more, leaving the document —
-    /// the thing the app exists to show — as the smaller half. A 1280-wide
-    /// display split three ways gives each app ~426px, where a fixed 250px
-    /// panel is 59% of the window.
-    ///
-    /// `styles_panel_open` stays the user's preference and is what the
-    /// toolbar toggle reflects; this is whether the layout can honour it.
-    /// Widening the window brings the panel straight back.
+    /// Whether the styles panel is reserved and drawn this frame: it yields when
+    /// the window is too narrow to stay the minority (below twice its own width
+    /// it would take half the window or more). `styles_panel_open` is the user's
+    /// preference reflected by the toolbar toggle; this is whether the layout can
+    /// honour it — widening the window brings the panel straight back.
     fn styles_panel_visible(&self) -> bool {
         self.styles_panel_open && self.rect.width() > 2.0 * STYLES_PANEL_W
     }
 
+    /// The contextual paragraph panel, in two clearly-labelled sections: **This
+    /// paragraph** (direct formatting — alignment + line spacing instance attrs)
+    /// and **Paragraph style** (the named-style editor: a picker + property rows
+    /// that mutate the *style*, so every block of that style updates live).
     fn draw_styles_panel(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
         let cc = self.chrome;
         self.panel_rect = panel;
@@ -4023,6 +3953,7 @@ impl WordProcessorWidget {
 
     /// One numeric property row: `Label    [−] [ value ] [+]`. The value box is
     /// click-to-type / drag-to-scrub; the steppers nudge by `field.step()`.
+    #[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
     fn draw_num_row(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, field: NumField, value: f32, x0: f64, right: f64, y: f64) {
         let cc = self.chrome;
         tr.draw_text(scene, &field.label(), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
@@ -4167,8 +4098,7 @@ impl WordProcessorWidget {
             })
             .collect();
         if entries.is_empty() {
-            // Nothing to build a TOC from — tell the user *why* nothing happened
-            // (previously the button was silent whether or not it did anything).
+            // Nothing to build a TOC from — tell the user *why* nothing happened.
             self.toast = Some(t("toast-toc-empty"));
             self.dirty = true;
             return;
@@ -4212,6 +4142,7 @@ fn panel_divider(scene: &mut Scene, transform: Affine, cc: &ChromeColors, x0: f6
 
 /// A panel chip / button: rounded rect + label. `center` centers the label
 /// (approximate), else left-pads it.
+#[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
 fn draw_btn(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, cc: &ChromeColors, r: Rect, label: &str, active: bool, center: bool) {
     let bg = if active { cc.accent } else { cc.chip };
     let fg = if active { cc.on_accent } else { cc.text };
@@ -4222,17 +4153,15 @@ fn draw_btn(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, cc: &Ch
     tr.draw_text(scene, label, 12.5, fg, transform * Affine::translate((tx, ty)), Some((r.width() - 6.0) as f32));
 }
 
-/// One node of the word processor's accessibility tree: a [`ui::a11y::AccessNode`]
+/// One node of the word processor's accessibility tree: an [`ui::a11y::AccessNode`]
 /// plus its accessible children.
 ///
-/// The `ui` toolkit's [`Widget::accessibility`] returns a single *local*
-/// [`AccessNode`](ui::a11y::AccessNode) and the host normally assembles the
-/// global tree from [`Widget::children`]. The word processor renders its blocks
-/// directly (they are materialized [`BlockView`]s, not child widgets), so it has
-/// no child widgets to walk. Instead it builds the whole document + chrome node
-/// tree itself via [`WordProcessorWidget::accessibility_tree`], with this struct
-/// as the carrier. The trait [`Widget::accessibility`] returns this tree's root
-/// node so the standard host path still sees a focusable `Document`.
+/// The word processor renders its blocks directly (materialized [`BlockView`]s,
+/// not child widgets), so [`Widget::accessibility`]'s usual "single local node +
+/// `Widget::children`" path doesn't apply. Instead it builds the whole tree itself
+/// via [`WordProcessorWidget::accessibility_tree`], with this struct as the carrier;
+/// `accessibility` returns this tree's root so the host still sees a focusable
+/// `Document`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A11yTreeNode {
     /// The local semantics of this element.
@@ -4369,15 +4298,11 @@ impl WordProcessorWidget {
         })
     }
 
-    /// Assemble the full accessibility node tree for the word processor: a
-    /// [`Role::Document`] root holding one node per document block (headings with
-    /// their level, paragraphs / list items carrying their text, images with
-    /// their alt text, tables as a [`Role::Table`] with [`Role::Cell`] children),
-    /// followed by a [`Role::Toolbar`] group of formatting buttons.
-    ///
-    /// This is the production path consumed by the future a11y export (W4) and
-    /// the built-in screen reader; [`Widget::accessibility`] returns this tree's
-    /// root so the host's standard per-widget path still surfaces the document.
+    /// Assemble the full accessibility node tree: a [`Role::Document`] root holding
+    /// one node per block (headings with level, paragraphs/list items with text,
+    /// images with alt text, tables as [`Role::Table`]/[`Role::Cell`]), followed by
+    /// a [`Role::Toolbar`] group of formatting buttons. [`Widget::accessibility`]
+    /// returns this tree's root so the host's per-widget path surfaces the document.
     pub fn accessibility_tree(&self) -> A11yTreeNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -4429,16 +4354,12 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
-    /// The document being edited is a record, and its identity is its path.
+    /// The document being edited is a record; its identity is its path. Two
+    /// editors on two different files in one room announce two different
+    /// records, so they are never handed each other's text — "share this
+    /// document" means the record, not merely "share this app instance".
     ///
-    /// That is the whole of the file/record unification here: two editors on
-    /// two different files in one room now announce two different records, so
-    /// they stop being handed each other's text, and "share this document"
-    /// means the record — not "share the word processor in this room", which
-    /// is all the old addressing could say.
-    ///
-    /// An untitled document names no record and behaves exactly as before,
-    /// until it is saved and has a path to be identified by.
+    /// An untitled document names no record until it is saved and has a path.
     fn record_intent(&self) -> Option<ui::RecordCheckout> {
         self.path.as_ref().map(|p| {
             ui::RecordCheckout::new(ui::RecordId::for_file(p), ui::RecordKind::new("document"))
@@ -4460,11 +4381,10 @@ impl Widget for WordProcessorWidget {
         // Reload the persisted page margins (document-level page setup) unless a
         // guide drag is mid-flight (which would clobber the live preview). Absent
         // from the document → keep the current/default margins.
-        if self.guide_drag.is_none() {
-            if let Some([t, r, b, l]) = self.inner.page_margins(state) {
+        if self.guide_drag.is_none()
+            && let Some([t, r, b, l]) = self.inner.page_margins(state) {
                 self.margins = Edges { top: t, right: r, bottom: b, left: l };
             }
-        }
         // Re-derive the version-history track when the change graph has moved.
         // Cheap when it hasn't: `refresh` compares heads first.
         if self.history.is_open() {
@@ -4642,13 +4562,11 @@ impl Widget for WordProcessorWidget {
             // push the cursor below the active float and retire it — they stack under
             // the image as a full-width block rather than overlapping it.
             let next_is_paragraph = !b.kind.eq("image") && cell_table(b).is_none();
-            if !next_is_paragraph {
-                if let Some(f) = active_float.take() {
-                    if f.page == cur_page {
+            if !next_is_paragraph
+                && let Some(f) = active_float.take()
+                    && f.page == cur_page {
                         y = y.max(f.bottom + self.sheet.get("body").space_after as f64);
                     }
-                }
-            }
             if let Some(tid) = cell_table(b) {
                 ol_counts.clear();
                 let start = bi;
@@ -4661,7 +4579,10 @@ impl Widget for WordProcessorWidget {
                 let col_w = content_w as f64 / ncols as f64;
                 // Measure every row first so the whole table can paginate as one
                 // unit (it is never split mid-row across a page boundary).
-                let mut rows: Vec<(f64, Vec<(usize, f64, &BlockView)>)> = Vec::with_capacity(nrows);
+                // A measured table row: `(row_height, cells)`, each cell as
+                // `(col, cell_height, block)`.
+                type TableRow<'a> = (f64, Vec<(usize, f64, &'a BlockView)>);
+                let mut rows: Vec<TableRow> = Vec::with_capacity(nrows);
                 for r in 0..nrows {
                     let mut row_items: Vec<(usize, f64, &BlockView)> = Vec::new();
                     let mut row_h = 26.0f64;
@@ -5248,11 +5169,10 @@ impl Widget for WordProcessorWidget {
                     ctf
                 };
                 if let Some(hash) = &l.image_hash {
-                    if let Some(slot) = self.image_cache.get_mut(hash) {
-                        if let Some(img) = slot {
+                    if let Some(slot) = self.image_cache.get_mut(hash)
+                        && let Some(img) = slot {
                             img.paint_at(scene, itf, rect);
                         }
-                    }
                 } else {
                     // Missing or undecodable (e.g. non-PNG) image — placeholder.
                     scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
@@ -5349,8 +5269,8 @@ impl Widget for WordProcessorWidget {
             // `selection_rects` geometry as the selection highlight, so it tracks
             // wrapping. The comment's start line is recorded for the right-margin
             // indicator/card rendered after the loop. Only when markup is shown.
-            if self.show_markup {
-                if let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
+            if self.show_markup
+                && let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
                     for (bs, be, cid) in block_comment_ranges(b) {
                         let rects = layout.selection_rects(bs, be);
                         for &(rx0, ry0, rx1, ry1) in &rects {
@@ -5365,7 +5285,6 @@ impl Widget for WordProcessorWidget {
                         }
                     }
                 }
-            }
 
             text_renderer.draw_rich(scene, layout, ctf * Affine::translate((l.text_x, ly)), l.ink);
 
@@ -5375,8 +5294,8 @@ impl Widget for WordProcessorWidget {
             // here — rather than via the shaped layout's underline/strike lists —
             // so the decoration colour matches the review-tinted glyphs (the
             // toolkit paints shaped decorations in the block ink). Only when shown.
-            if self.show_markup {
-                if let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
+            if self.show_markup
+                && let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
                     let (ins_ranges, del_ranges) = block_change_decos(b);
                     for &(b0, b1) in &ins_ranges {
                         for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
@@ -5402,7 +5321,6 @@ impl Widget for WordProcessorWidget {
                         }
                     }
                 }
-            }
 
             // Spell-check squiggles: a wavy red underline under each misspelled
             // span. The byte span maps to one-or-more on-screen rects via the same
@@ -5423,8 +5341,8 @@ impl Widget for WordProcessorWidget {
             // the body run shapes as near-zero-width). The number is taken from the
             // document-order numbering; the page is recorded so the footnote text
             // renders at the bottom of this page.
-            if !note_nums.is_empty() {
-                if let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
+            if !note_nums.is_empty()
+                && let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
                     for (ci, note_id) in block_note_refs(b) {
                         let Some(&num) = note_nums.get(&note_id) else { continue };
                         let bs = char_to_byte(&l.text, ci);
@@ -5458,7 +5376,6 @@ impl Widget for WordProcessorWidget {
                         page_notes.entry(l.page).or_default().push(num);
                     }
                 }
-            }
 
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
@@ -5471,20 +5388,14 @@ impl Widget for WordProcessorWidget {
             }
         }
 
-        // Review affordances (comment Resolve + tracked-change Accept/Reject
-        // buttons) live in the right-margin cards; rebuilt fresh each frame. Hit
-        // rects are stored in *content* space (the same space `pointer_to_content`
-        // maps a pointer into) since the cards draw through `ctf`.
+        // Review affordances (Resolve/Accept/Reject) live in right-margin cards,
+        // rebuilt each frame; hit rects are in *content* space, like `pointer_to_content`.
         self.review_hits.clear();
 
-        // Comment indicators + annotation cards. For each comment whose start line
-        // was laid this frame, draw a small accent tab just after the commented
-        // text (the range's right edge), and an always-visible annotation card
-        // (author + content) stacked along the right edge of the visible canvas.
-        // Anchoring the card to the *canvas* (not the page) keeps it on-screen even
-        // when the page is wider than the canvas or the styles panel is open. Cards
-        // stack top-to-bottom (sorted by anchor y) and never overlap. Inside the
-        // page clip so they scroll with the content.
+        // Comment indicators + annotation cards: a small accent tab at the comment's
+        // start line, and an always-visible card (author + content) anchored to the
+        // *canvas* (not the page, so it stays on-screen when the page is wider or the
+        // styles panel is open), stacked top-to-bottom without overlap.
         if self.show_markup && !comment_markers.is_empty() {
             comment_markers.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
             // The card column hugs the right edge of the visible canvas.
@@ -5540,10 +5451,8 @@ impl Widget for WordProcessorWidget {
             }
         }
 
-        // Tracked-change review cards. For each `ins`/`del` range laid this frame,
-        // stack a compact card (a kind/author label + Accept ✓ / Reject ✗ buttons)
-        // in a column to the LEFT of the comment column so the two don't collide.
-        // Each button registers a content-space hit rect in `review_hits`.
+        // Tracked-change review cards: a compact kind/author + Accept/Reject card
+        // per ins/del range, stacked LEFT of the comment column so they don't collide.
         if self.show_markup && !change_markers.is_empty() {
             change_markers.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
             // The change column sits just left of the comment column.
@@ -5580,22 +5489,18 @@ impl Widget for WordProcessorWidget {
             }
         }
 
-        // Footnote areas: for every page that carries a footnote marker, draw a
-        // thin separator + the footnotes (numbered, in a smaller font) stacked at
-        // the bottom of that page's text band, above the footer margin. Page
-        // assignment is approximate — a footnote renders on the page where its
-        // marker was laid. Rendered inside the page clip so it scrolls with the
-        // content and never paints over the toolbar/status bar.
+        // Footnote areas: a thin separator + numbered footnotes at the bottom of
+        // each page's text band. Page assignment is approximate (the page a marker
+        // was laid on); rendered inside the page clip so it scrolls with the content.
         if !page_notes.is_empty() {
             // number → footnote text, resolved once. Endnotes are skipped here
             // (they belong at the document end, not per page).
             let mut num_to_note: HashMap<usize, String> = HashMap::new();
             for n in &self.notes {
-                if n.kind == qdoc::schema::NOTE_KIND_FOOTNOTE {
-                    if let Some(&num) = note_nums.get(&n.id) {
+                if n.kind == qdoc::schema::NOTE_KIND_FOOTNOTE
+                    && let Some(&num) = note_nums.get(&n.id) {
                         num_to_note.insert(num, note_text(n));
                     }
-                }
             }
             for (page, nums) in &page_notes {
                 // Distinct, ascending footnote numbers on this page.
@@ -5627,8 +5532,8 @@ impl Widget for WordProcessorWidget {
         }
 
         // Empty-document placeholder.
-        if self.blocks.len() == 1 && self.blocks[0].kind == "paragraph" && self.blocks[0].text.is_empty() {
-            if let Some(l) = laid.first() {
+        if self.blocks.len() == 1 && self.blocks[0].kind == "paragraph" && self.blocks[0].text.is_empty()
+            && let Some(l) = laid.first() {
                 let placeholder = t("canvas-empty-placeholder");
                 text_renderer.draw_text(
                     scene,
@@ -5639,7 +5544,6 @@ impl Widget for WordProcessorWidget {
                     None,
                 );
             }
-        }
 
         // Layout-edit overlay: draggable guides + live value labels for the
         // active mode (drawn over the content, still inside the page clip).
@@ -5647,11 +5551,9 @@ impl Widget for WordProcessorWidget {
             self.draw_layout_overlay(scene, ctf, text_renderer, page);
         }
 
-        // Header/footer edit mode: veil the body text region of every page so the
-        // body visibly recedes (Word dims the body while editing a running head),
-        // and render the caret inside the active band. Drawn last so the veil sits
-        // over the body content but the band (in the margin) stays crisp + the
-        // band caret reads on top.
+        // Header/footer edit mode: veil the body (Word dims it while editing a
+        // running head) and draw the band caret. Drawn last so the veil covers the
+        // body but the band + its caret stay crisp on top.
         if self.inner.in_running_region() {
             for i in 0..num_pages {
                 let ptop = page_top + i as f64 * page_pitch - sy;
@@ -5680,19 +5582,14 @@ impl Widget for WordProcessorWidget {
         // for blocks that no longer exist) so the next frame can reuse it.
         self.layout_cache = new_cache;
 
-        // Remote collaborators' carets + selections (collaboration). Resolved by
-        // the single `remote_presence_overlays` pass from the just-committed
-        // `self.laid` + `self.layout_cache`, so the on-screen geometry is
-        // byte-for-byte the same the unit test asserts on. Selections paint at
-        // read-through alpha and carets paint over the text, each in the peer's
-        // colour with a name pill — mapped through the page content transform
-        // `ctf` so they track scroll/zoom exactly like the local caret. A no-op
-        // when the PresenceCtx carries no remote carets/selections (single-user,
-        // no broker), so single-user rendering is unchanged.
+        // Remote collaborators' carets + selections: resolved by the single
+        // `remote_presence_overlays` pass so on-screen geometry matches what the unit
+        // test asserts on. Selections paint under the text, carets over it, each in
+        // the peer's colour with a name pill, through `ctf` so they track scroll/zoom.
+        // A no-op with no remote presence, so single-user rendering is unchanged.
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
-        // A peer's just-typed run, glowing in their colour and fading. Drawn
-        // first so it sits under the selection and the caret: it is a
-        // property of the text, not another cursor competing with them.
+        // A peer's just-typed run glows in their colour, fading; drawn first so it
+        // sits under the selection and caret rather than competing with them.
         for (user, spans) in
             self.remote_typing_overlays(presence, std::time::Instant::now())
         {
@@ -5764,12 +5661,10 @@ impl Widget for WordProcessorWidget {
         {
             return;
         }
-        // The version-history strip captures pointer input over its own band
-        // (and keeps capturing while its handle is being dragged, so a gesture
-        // that wanders off the strip still tracks). A restore writes into the
-        // open transaction; flagging `needs_commit` hands the commit to
-        // `App::commit_action`, so it lands on the undo stack stamped and
-        // attributed exactly like a typed edit.
+        // The version-history strip captures pointer input over its own band (and
+        // keeps capturing mid-drag). A restore flags `needs_commit`, handing the
+        // commit to `App::commit_action` so it lands on the undo stack stamped and
+        // attributed like a typed edit.
         if self.history.is_open() {
             let at = match event {
                 WindowEvent::CursorMoved { position, .. } => {
@@ -5874,11 +5769,10 @@ impl Widget for WordProcessorWidget {
                             s.moved = true;
                         }
                         let v = sc.field.clamp(sc.start_val + dx as f32 * sc.field.scrub_factor());
-                        if let Some(key) = self.focused_style_key() {
-                            if let Some(st) = self.sheet.styles.get_mut(&key) {
+                        if let Some(key) = self.focused_style_key()
+                            && let Some(st) = self.sheet.styles.get_mut(&key) {
                                 sc.field.set(st, v);
                             }
-                        }
                         self.dirty = true;
                     }
                     *handled = true;
@@ -5933,7 +5827,6 @@ impl Widget for WordProcessorWidget {
                     self.open_context_menu(state, cp, pos);
                     *handled = true;
                 }
-                return;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 // While the context menu is open, route the left press to it: a
@@ -5986,8 +5879,8 @@ impl Widget for WordProcessorWidget {
                 self.focused = true;
                 // Crash-recovery banner (just under the toolbar): a click on
                 // Restore / Discard resolves the offer before any other hit-test.
-                if self.recovery.is_some() {
-                    if let Some(action) =
+                if self.recovery.is_some()
+                    && let Some(action) =
                         self.recovery_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a)
                     {
                         match action {
@@ -5998,7 +5891,6 @@ impl Widget for WordProcessorWidget {
                         *handled = true;
                         return;
                     }
-                }
                 // A press anywhere commits a pending typed numeric edit.
                 if self.editing_field.is_some() {
                     self.commit_num_edit(state);
@@ -6052,9 +5944,9 @@ impl Widget for WordProcessorWidget {
                     // the chrome toolbar buttons — check them first.
                     if let Some(action) = self.status_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a) {
                         match action {
-                            StatusAction::ZoomOut => self.zoom_by(-ZOOM_STEP),
-                            StatusAction::ZoomIn => self.zoom_by(ZOOM_STEP),
-                            StatusAction::ZoomReset => self.set_zoom(1.0),
+                            StatusAction::Out => self.zoom_by(-ZOOM_STEP),
+                            StatusAction::In => self.zoom_by(ZOOM_STEP),
+                            StatusAction::Reset => self.set_zoom(1.0),
                         };
                         self.dirty = true;
                         *handled = true;
@@ -6085,8 +5977,7 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
-                // Bottom layout bar (mode chips) now sits at the very bottom (the
-                // status strip it used to sit above is gone; its readout floats).
+                // Bottom layout bar (mode chips) sits at the very bottom; its readout floats via `status_bubble`.
                 let lbar_top = self.rect.y1 - LAYOUT_BAR_H;
                 if self.pointer.y >= lbar_top {
                     if let Some(mode) = self.layout_chips.iter().find(|(_, r)| r.contains(self.pointer)).map(|(m, _)| *m) {
@@ -6111,8 +6002,8 @@ impl Widget for WordProcessorWidget {
                 }
                 // In a layout-edit mode, grabbing a guide starts a drag instead of
                 // a text selection.
-                if self.layout_mode != LayoutMode::None {
-                    if let Some(side) = self.hit_guide(cp) {
+                if self.layout_mode != LayoutMode::None
+                    && let Some(side) = self.hit_guide(cp) {
                         let kind = if ctrl {
                             DragKind::Proportional
                         } else if shift {
@@ -6125,7 +6016,6 @@ impl Widget for WordProcessorWidget {
                         *handled = true;
                         return;
                     }
-                }
                 // Edit-context switch: a click into a page header/footer band
                 // focuses that running region (creating an empty paragraph if the
                 // region is empty); a click in the body while editing a running
@@ -6265,7 +6155,7 @@ impl Widget for WordProcessorWidget {
                 // While the Find bar is open, non-Ctrl keys edit its fields.
                 if self.find_open && !ctrl {
                     let typed = text.as_deref();
-                    if self.find_key(state, &logical_key, typed, shift) {
+                    if self.find_key(state, logical_key, typed, shift) {
                         self.dirty = true;
                         *handled = true;
                         return;
@@ -6282,8 +6172,8 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
-                if ctrl {
-                    if let Key::Character(s) = logical_key {
+                if ctrl
+                    && let Key::Character(s) = logical_key {
                         // Save is not an editing action — don't mark the doc
                         // modified again after writing it. Ctrl+Shift+S always
                         // opens the host Save-As picker; a bare Ctrl+S saves to
@@ -6402,7 +6292,6 @@ impl Widget for WordProcessorWidget {
                         *handled = true;
                         return;
                     }
-                }
 
                 let mut changed = true;
                 let mut motion = false;
@@ -6519,13 +6408,11 @@ impl Widget for WordProcessorWidget {
         self.draw_color_picker(scene, transform, text_renderer, theme, presence);
     }
 
-    /// Outbound collaboration presence: while focused, broadcast the local
-    /// caret (or, when a selection exists, its range) keyed to the block the
-    /// caret is in. The App polls this after each event and fans the diff out to
-    /// peers as `CollabEvent::RemotePresenceUpdate`, so collaborators see this
-    /// user's caret/selection move live (the inbound half is rendered in
-    /// `draw`). Offsets are emitted in **bytes** so the receiver can feed them
-    /// straight into `RichTextLayout::caret_geometry` / `selection_rects`.
+    /// Outbound collaboration presence: while focused, broadcast the local caret
+    /// (or selection range) keyed to its block. Polled by the App after each event
+    /// and fanned out as `CollabEvent::RemotePresenceUpdate`. Offsets are bytes, so
+    /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
+    /// `selection_rects`.
     fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
         if !self.focused {
             return None;
@@ -6539,21 +6426,17 @@ impl Widget for WordProcessorWidget {
         // caret. (v1 collab presence reports the caret-block portion of a
         // multi-block selection, mirroring how the caret block is what the
         // peer's caret lands in.)
-        if self.inner.has_selection() {
-            if let Some((_, s, e)) = self
+        if self.inner.has_selection()
+            && let Some((_, s, e)) = self
                 .selection_blocks_cached()
                 .into_iter()
                 .find(|(b, _, _)| b == caret_block)
-            {
-                if let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block) {
-                    if s < e {
+                && let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block)
+                    && s < e {
                         let start = char_to_byte(&block.text, s);
                         let end = char_to_byte(&block.text, e);
                         return Some((key, ui::PresencePayload::Selection { start, end }));
                     }
-                }
-            }
-        }
         // Bare caret: convert the char offset to a byte offset against the
         // caret block's text so it maps directly through the layout geometry.
         let pos = self
@@ -6570,12 +6453,9 @@ impl Widget for WordProcessorWidget {
     }
 
     /// The word processor's local accessibility semantics: the editable
-    /// [`Role::Document`] root. The blocks are rendered directly (they are
-    /// materialized [`BlockView`]s, not child widgets), so the full per-block /
-    /// toolbar subtree is exposed via the inherent
-    /// [`WordProcessorWidget::accessibility_tree`] rather than `children()`; this
-    /// trait method returns that tree's root so the standard host path still sees
-    /// a focusable, multiline document.
+    /// [`Role::Document`] root. Blocks render directly, not as child widgets, so
+    /// the full subtree comes from [`WordProcessorWidget::accessibility_tree`]
+    /// rather than `children()`; this returns that tree's root.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         Some(self.accessibility_tree().node)
     }
@@ -6711,23 +6591,18 @@ impl WordProcessorWidget {
     }
 
     /// Resolve every remote collaborator's caret + selection against this
-    /// frame's laid-out blocks, producing content-space rectangles ready to be
-    /// painted through the page content transform.
+    /// frame's laid-out blocks, into content-space rectangles ready to paint
+    /// through the page content transform.
     ///
-    /// This is the production presence-render computation, factored out of
-    /// [`Widget::draw`] so it can be asserted on directly (a populated
-    /// `PresenceCtx` yields the expected remote-caret rect; an empty one yields
-    /// nothing). For each laid block it looks up `presence.carets` /
-    /// `presence.selections` under the SAME [`block_presence_key`] the local
-    /// caret is broadcast under, then maps the peer's byte offset(s) through the
-    /// block's shaped [`RichTextLayout`] via the very same
-    /// `caret_geometry` / `selection_rects` geometry the local caret/selection
-    /// use — so a remote caret is pixel-identical to a local one, just
-    /// recoloured per peer in the draw.
+    /// Factored out of [`Widget::draw`] so it's directly assertable (a populated
+    /// `PresenceCtx` yields the expected rect; an empty one yields nothing). Looks
+    /// up presence under the same [`block_presence_key`] the local caret is
+    /// broadcast under, then maps offsets through the same `caret_geometry`/
+    /// `selection_rects` the local caret uses — so remote and local are
+    /// pixel-identical, just recoloured.
     ///
-    /// Geometry is read from `self.laid` + `self.layout_cache`, both of which
-    /// are populated by the end of a `draw` pass, so this is meaningful after at
-    /// least one frame has been rendered.
+    /// Meaningful only after `self.laid`/`self.layout_cache` are populated by a
+    /// `draw` pass.
     pub(crate) fn remote_presence_overlays(
         &self,
         presence: &PresenceCtx,
@@ -6786,28 +6661,17 @@ impl WordProcessorWidget {
         (carets, selections)
     }
 
-    /// Paint a small rounded name pill in the peer's colour, anchored just above
-    /// a remote caret at content-space `(caret_x, caret_top)`, so a user can see
-    /// *who* is editing where. Drawn through the page content transform `ctf` so
-    /// it tracks the page as it scrolls/zooms, exactly like the caret it labels.
-    #[allow(clippy::too_many_arguments)]
     /// A peer's just-typed runs, mapped onto this frame's laid-out blocks.
     ///
-    /// `PresencePayload::Typing` names the span a peer just inserted. It
-    /// decays over `TYPING_FADE`, so the glow follows them through the
-    /// document instead of accumulating — which is what makes it read as
-    /// "someone is writing here" rather than as permanent highlighting.
+    /// `PresencePayload::Typing` names the span a peer just inserted; it decays
+    /// over `TYPING_FADE` so the glow follows them through the document instead
+    /// of accumulating. Resolved from the same `self.laid` + `self.layout_cache`
+    /// the caret/selection overlays use, so all three can't drift apart.
     ///
-    /// Resolved from the same `self.laid` + `self.layout_cache` the caret
-    /// and selection overlays use, so peer geometry is derived one way for
-    /// all three and cannot drift between them.
-    ///
-    /// This is the *ephemeral* half of authorship. The durable half —
-    /// "this paragraph is hers, that one is his", still coloured an hour
-    /// later — is not drawn here: `qdoc::author_runs` can recover a per-run
-    /// author from the document now, the same way [`ui::widget::block_editor`]
-    /// already feeds [`ui::presence::PresenceCtx::draw_peer_authorship`], but
-    /// this widget does not yet call it in its own draw pass.
+    /// This is the *ephemeral* half of authorship — the durable half ("this
+    /// paragraph is hers") is `qdoc::author_runs`, already fed to
+    /// [`ui::presence::PresenceCtx::draw_peer_authorship`] by
+    /// [`ui::widget::block_editor`]; this widget doesn't call it yet.
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
@@ -6846,6 +6710,10 @@ impl WordProcessorWidget {
         out
     }
 
+    /// Paint a small rounded name pill in the peer's colour, anchored just above
+    /// a remote caret at content-space `(caret_x, caret_top)`. Drawn through the
+    /// page content transform `ctf` so it tracks the page like the caret it labels.
+    #[allow(clippy::too_many_arguments)]
     fn draw_remote_caret_label(
         &self,
         scene: &mut Scene,
@@ -7004,7 +6872,11 @@ impl WordProcessorWidget {
         let Some(field) = self.editing_field else {
             return;
         };
-        let v = field.clamp(self.edit_buf.parse::<f32>().unwrap_or(0.0));
+        // A typed "nan"/"inf"/"-inf" parses successfully as f32 but is not a usable
+        // style value (it would corrupt layout math and, if the style is ever
+        // JSON-exported, panic inside serde_json) — treat it like any other
+        // unparseable input and fall back to 0.0.
+        let v = field.clamp(self.edit_buf.parse::<f32>().ok().filter(|v| v.is_finite()).unwrap_or(0.0));
         let Some(key) = self.focused_style_key() else {
             return;
         };
@@ -7032,14 +6904,10 @@ impl WordProcessorWidget {
     fn apply_panel_hit(&mut self, state: &mut AutoCommit, hit: PanelHit) {
         match hit {
             PanelHit::Pick(id) => {
-                // A built-in style implies a structural kind — apply it too so the
-                // panel is the authoritative paragraph-style control: picking
-                // "Heading 1" yields a *real* heading (present in the outline / TOC),
-                // picking "List Item" a real list item, not merely styled body text.
-                // Custom styles are pure visual presets and leave the kind alone.
-                // One combined action: the structural kind (for a built-in) and
-                // the named style attr land together as a single replayable
-                // operation / one undo boundary.
+                // A built-in style implies a structural kind, applied together as one
+                // action/undo boundary: picking "Heading 1" yields a *real* heading
+                // (present in outline/TOC), "List Item" a real list item — not merely
+                // styled body text. Custom styles are pure visual presets; kind stays untouched.
                 self.dispatch_apply_named_style(state, &id);
                 self.refresh_blocks(state);
                 self.needs_commit = true;
@@ -7058,8 +6926,8 @@ impl WordProcessorWidget {
             }
             PanelHit::ToggleBold => self.edit_focused_style(state, true, |st| st.bold = !st.bold),
             PanelHit::ToggleItalic => self.edit_focused_style(state, true, |st| st.italic = !st.italic),
-            // Direct paragraph formatting — applies to the current paragraph(s),
-            // not the named style (the toolbar no longer carries these).
+            // Direct paragraph formatting on the current paragraph(s), not the
+            // named style — only the panel exposes these, not the toolbar.
             PanelHit::ParaAlign(a) => {
                 self.dispatch_block_attr(state, "align", crate::actions::AttrVal::Str(a.to_string()));
                 self.refresh_blocks(state);
@@ -7397,13 +7265,10 @@ impl WordProcessorWidget {
         Some(m.suggestions)
     }
 
-    /// Build + open the right-click context menu at screen `pos`.
-    ///
-    /// Selects the word under the click when nothing is selected (clicked-word
-    /// fallback), then assembles the rows: when the clicked word is flagged
-    /// misspelled, a few suggestion rows + "Add to dictionary" are prepended;
-    /// then Cut / Copy / Paste; a separator; Select All. The parallel
-    /// `context_actions` list drives left-click dispatch by row index.
+    /// Build + open the right-click context menu at screen `pos`. Selects the word
+    /// under the click when nothing is selected, then assembles rows: misspelled-word
+    /// suggestions + "Add to dictionary" (if flagged) prepended to Cut/Copy/Paste/
+    /// Select All. `context_actions` mirrors the rows for left-click dispatch by index.
     fn open_context_menu(&mut self, state: &AutoCommit, content_pt: Point, pos: [f32; 2]) {
         // Place the caret under the click; select the word when there's no
         // selection so Cut/Copy act on something.
@@ -7477,8 +7342,8 @@ impl WordProcessorWidget {
         }
 
         // Spell-check rows: only when the clicked word is currently flagged.
-        if self.spellcheck_on {
-            if let Some(suggestions) = self.suggestions_for_word(&word) {
+        if self.spellcheck_on
+            && let Some(suggestions) = self.suggestions_for_word(&word) {
                 for sug in suggestions.iter().take(3) {
                     menu.push(MenuItem::action(sug.clone(), || {}));
                     actions.push(Some(CtxAction::ApplySuggestion {
@@ -7493,7 +7358,6 @@ impl WordProcessorWidget {
                 menu.push(MenuItem::separator());
                 actions.push(None);
             }
-        }
 
         let has_sel = self.inner.has_selection();
         let can_paste = arboard::Clipboard::new()
@@ -7734,11 +7598,10 @@ impl WordProcessorWidget {
             return;
         };
         let path = self.recovery_path();
-        if let Some(parent) = path.parent() {
-            if std::fs::create_dir_all(parent).is_err() {
+        if let Some(parent) = path.parent()
+            && std::fs::create_dir_all(parent).is_err() {
                 return;
             }
-        }
         let _ = std::fs::write(&path, bytes);
     }
 
@@ -7869,11 +7732,9 @@ impl WordProcessorWidget {
     }
 
     /// Draw the transient floating status bubble at the bottom-left of the window
-    /// (just above the layout bar) — the reclaimed home of the old bottom status
-    /// strip. It shows the word/char count plus the modified dot, filename and
-    /// format, on a change or while the pointer hovers the bottom-left band, then
-    /// fades. Anchored left so it clears the right-side contextual styles panel.
-    /// All colours come from the theme (via `draw_pill`).
+    /// (just above the layout bar): word/char count, modified dot, filename and
+    /// format — on a change or while the pointer hovers the band, then fades.
+    /// Anchored left so it clears the right-side styles panel. Colours from theme.
     fn draw_status_bubble(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let now = std::time::Instant::now();
         let words: usize = self.blocks.iter().map(|b| b.text.split_whitespace().count()).sum();
@@ -7974,18 +7835,18 @@ impl WordProcessorWidget {
         };
 
         let minus = btn(scene, tr, x, "−");
-        self.status_buttons.push((StatusAction::ZoomOut, minus));
+        self.status_buttons.push((StatusAction::Out, minus));
         x += bw + 4.0;
 
         // The percentage chip doubles as a reset target (click to return to 100%).
         let vr = Rect::new(x, y0, x + val_w, y0 + bh);
         let pw = pct.chars().count() as f64 * 6.8;
         tr.draw_text(scene, &pct, 12.5, cc.text, transform * Affine::translate((x + (val_w - pw) / 2.0, cy - 8.0)), None);
-        self.status_buttons.push((StatusAction::ZoomReset, vr));
+        self.status_buttons.push((StatusAction::Reset, vr));
         x += val_w + 4.0;
 
         let plus = btn(scene, tr, x, "+");
-        self.status_buttons.push((StatusAction::ZoomIn, plus));
+        self.status_buttons.push((StatusAction::In, plus));
     }
 
     fn draw_toolbar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, tb: Rect) {
@@ -8028,14 +7889,9 @@ impl WordProcessorWidget {
         add(ToolAction::Strike, "S", 30.0, strike_a);
         add(ToolAction::Super, "x²", 34.0, super_a);
         add(ToolAction::Sub, "x₂", 34.0, sub_a);
-        // NB: paragraph-style presets (H1 / H2 / Body / List) are NOT toolbar
-        // actions — choosing a paragraph style is the side panel's job (its style
-        // picker), keeping the toolbar to direct character formatting only. Quick
-        // headings remain on Ctrl+1/2/3.
-        // Font family (cycles) + direct font-size nudges — all character
-        // formatting on the selection. Paragraph controls (alignment, line
-        // spacing) intentionally live in the side panel's "This paragraph"
-        // section, not here.
+        // Paragraph-style presets (H1/H2/Body/List) and paragraph controls
+        // (alignment, line spacing) are the side panel's job, not the toolbar —
+        // see `ToolAction`. Quick headings remain on Ctrl+1/2/3.
         add(ToolAction::FontCycle, font_label, 58.0, false);
         add(ToolAction::FontSizeDec, "A−", 34.0, false);
         add(ToolAction::FontSizeInc, "A+", 34.0, false);
@@ -8060,7 +7916,6 @@ impl WordProcessorWidget {
         add(ToolAction::ToggleOutline, &t("toolbar-outline"), 72.0, self.outline_open);
         add(ToolAction::ToggleHistory, &t("toolbar-history"), 68.0, self.history.is_open());
         add(ToolAction::InsertToc, &t("toolbar-toc"), 48.0, false);
-        drop(add);
 
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
 
@@ -8071,13 +7926,9 @@ impl WordProcessorWidget {
         // rect (its height already reserves every row — see `toolbar_height`).
         let mut widths: Vec<f64> = items.iter().map(|it| it.width).collect();
         let mut starts: Vec<bool> = items.iter().map(|it| it.group_start).collect();
-        // Reserve the right-aligned colour + highlight swatch strips as a trailing
-        // phantom item (they're drawn directly, not as chrome buttons). This keeps
-        // a full button row from extending under the swatches: on a wide window the
-        // reservation shares the last row's right edge; on a narrow one it wraps the
-        // swatches onto their own row. `toolbar_item_widths` mirrors this exactly.
-        // Reserve the swatch strips *and* the right-aligned zoom stepper (with the
-        // gap between them) so no button row extends under either.
+        // Reserve the right-aligned swatch strips + zoom stepper (drawn directly,
+        // not as chrome buttons) as a trailing phantom item so no button row
+        // extends under them; `toolbar_item_widths` mirrors this exactly.
         widths.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
         starts.push(true);
         let rows = pack_toolbar_rows(&widths, &starts, tb.width());
@@ -8306,12 +8157,9 @@ mod tests {
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
 
-    /// Two windows on two files are two records, and each record's identity
-    /// is the file's path.
-    ///
-    /// This is what the broker routes on, so it is also what stops two people
-    /// editing unrelated documents in one room from merging: the addresses
-    /// differ because the documents do.
+    /// Two windows on two files are two records, each identified by its file's
+    /// path — what the broker routes on, and what stops two people editing
+    /// unrelated documents in one room from merging.
     #[test]
     fn each_open_file_is_its_own_record() {
         let mut report = WordProcessorWidget::new();
@@ -8788,13 +8636,10 @@ mod tests {
     // ---- toolbar ⇄ panel reorganization: paragraph controls belong to the
     // side panel; the toolbar is direct character formatting only (no dupes) ----
 
-    /// The toolbar carries direct character formatting + insert/view controls
-    /// only. Paragraph-*style* presets (H1 / H2 / Body / List) moved to the side
-    /// panel's style picker, so the toolbar↔panel split is unambiguous: the
-    /// toolbar formats the selection, the panel chooses the paragraph style.
-    /// Asserted on `ToolAction` variants (locale-independent) — the paragraph-
-    /// style variants were deleted, so a regression re-adding them would fail to
-    /// compile against the exhaustive allowed-set below.
+    /// The toolbar carries only direct character formatting + insert/view
+    /// controls; paragraph-style presets live in the side panel's style picker.
+    /// Asserted on `ToolAction` variants — those variants no longer exist, so a
+    /// regression re-adding them fails to compile against the allowed-set below.
     #[test]
     fn toolbar_drops_paragraph_controls_and_keeps_character_formatting() {
         let mut state = ui::State::new();
@@ -8924,12 +8769,11 @@ mod tests {
         );
     }
 
-    /// The panel's style picker is now the authoritative paragraph-style control
-    /// (the toolbar no longer carries H1/H2/Body/List). Picking a built-in style
-    /// switches the block *kind* too — so "Heading 1" yields a real heading that
-    /// shows up in the outline, and "Body" turns it back into a paragraph. Runs on
-    /// the production `apply_panel_hit` → `Pick` dispatch, asserting the block kind
-    /// on the materialized model (not a helper).
+    /// The panel's style picker is the authoritative paragraph-style control.
+    /// Picking a built-in style switches the block *kind* too — "Heading 1"
+    /// yields a real heading that shows up in the outline, "Body" reverts to a
+    /// paragraph. Runs the production `apply_panel_hit` → `Pick` dispatch,
+    /// asserting on the materialized block kind, not a helper.
     #[test]
     fn panel_style_picker_switches_paragraph_kind() {
         let mut state = ui::State::new();
@@ -9712,10 +9556,9 @@ mod tests {
         assert!((wp.zoom - 1.0).abs() < 1e-9, "reset returns to 100%");
     }
 
-    /// The zoom stepper now lives right-aligned in the toolbar (the bottom status
-    /// strip it used to sit in is gone). Driving its buttons through the real
-    /// event handler must still zoom out / in / reset — proving the relocated
-    /// `status_buttons` hit-testing fires from the toolbar band.
+    /// The zoom stepper lives right-aligned in the toolbar. Driving its buttons
+    /// through the real event handler must zoom out/in/reset, proving
+    /// `status_buttons` hit-testing fires correctly from the toolbar band.
     #[test]
     fn toolbar_zoom_stepper_drives_zoom_from_its_new_home() {
         let mut state = ui::State::new();
@@ -9741,20 +9584,20 @@ mod tests {
         };
 
         // Click + : zoom in one step.
-        let p = center(&wp, StatusAction::ZoomIn);
+        let p = center(&wp, StatusAction::In);
         left_click(&mut wp, &mut state, p);
         assert!((wp.zoom - (1.0 + ZOOM_STEP)).abs() < 1e-6, "clicking + zooms in one step: {}", wp.zoom);
 
         // Click − : back to 100%.
         pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, StatusAction::ZoomOut);
+        let p = center(&wp, StatusAction::Out);
         left_click(&mut wp, &mut state, p);
         assert!((wp.zoom - 1.0).abs() < 1e-6, "clicking − zooms out one step: {}", wp.zoom);
 
         // Click the percentage chip: reset to 100% from any zoom.
         wp.set_zoom(1.6);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, StatusAction::ZoomReset);
+        let p = center(&wp, StatusAction::Reset);
         left_click(&mut wp, &mut state, p);
         assert!((wp.zoom - 1.0).abs() < 1e-9, "clicking the % chip resets to 100%: {}", wp.zoom);
     }
@@ -9917,13 +9760,11 @@ mod tests {
         assert!(narrow >= 2.0 * TOOLBAR_H, "760px wraps to at least two rows");
     }
 
-    /// The colour + highlight swatch strips are right-aligned on the last toolbar
-    /// row and painted outside the chrome button packer, so the packer reserves
-    /// their width as a phantom item. Prove the reservation works on the real draw
-    /// path: at a width where the buttons *would* fill a single row, the last
-    /// button (TOC) must never overlap the colour swatches — they either sit on
-    /// different rows or the button ends left of the swatch strip. Without the
-    /// reservation the swatches paint straight over the Outline/TOC buttons.
+    /// The swatch strips are right-aligned on the last toolbar row, painted
+    /// outside the chrome button packer, which reserves their width as a
+    /// phantom item. At a width where buttons alone would fill one row, the
+    /// last button (TOC) must not overlap the swatches — proving the
+    /// reservation works on the real draw path, not just in the width model.
     #[test]
     fn toolbar_swatches_never_overlap_the_buttons() {
         let mut state = ui::State::new();
@@ -10011,6 +9852,10 @@ mod tests {
 
     #[test]
     fn right_click_on_misspelled_word_offers_add_to_dictionary_and_clears_squiggle() {
+        // Assertions below are literal English menu strings; pin the locale so
+        // the test doesn't depend on the host's `LANG` (nextest runs each test
+        // in its own process, so this can't leak into a sibling test).
+        crate::i18n::set_locale("en-US");
         // Redirect the persisted user-dict to a throwaway dir so the test never
         // writes the real `~/.config/qos/userdict.txt`. (The in-memory add is
         // what the assertions below check; persistence is best-effort.)
@@ -10089,6 +9934,10 @@ mod tests {
 
     #[test]
     fn right_click_with_no_selection_selects_word_and_menu_has_copy() {
+        // Assertions below are literal English menu strings; pin the locale so
+        // the test doesn't depend on the host's `LANG` (nextest runs each test
+        // in its own process, so this can't leak into a sibling test).
+        crate::i18n::set_locale("en-US");
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
@@ -10901,12 +10750,11 @@ mod tests {
         // Draw so the banner's Restore/Discard buttons are registered, then click
         // Restore through the production handler.
         pipeline_draw(&mut wp, &mut state, 1200, 700);
-        let (_, rrect) = wp
+        let (_, rrect) = *wp
             .recovery_buttons
             .iter()
             .find(|(a, _)| *a == RecoveryAction::Restore)
-            .expect("Restore button is drawn")
-            .clone();
+            .expect("Restore button is drawn");
         left_click(&mut wp, &mut state, Point::new((rrect.x0 + rrect.x1) / 2.0, (rrect.y0 + rrect.y1) / 2.0));
 
         assert!(wp.recovery.is_none(), "the banner is dismissed after Restore");
@@ -10937,12 +10785,11 @@ mod tests {
         assert!(wp.check_for_recovery());
 
         pipeline_draw(&mut wp, &mut state, 1200, 700);
-        let (_, drect) = wp
+        let (_, drect) = *wp
             .recovery_buttons
             .iter()
             .find(|(a, _)| *a == RecoveryAction::Discard)
-            .expect("Discard button is drawn")
-            .clone();
+            .expect("Discard button is drawn");
         left_click(&mut wp, &mut state, Point::new((drect.x0 + drect.x1) / 2.0, (drect.y0 + drect.y1) / 2.0));
 
         assert!(wp.recovery.is_none(), "Discard dismisses the banner");
@@ -11339,6 +11186,10 @@ mod tests {
     /// [`Role::Toolbar`] group of button nodes with spelled-out accessible names.
     #[test]
     fn accessibility_tree_exposes_toolbar_buttons() {
+        // Assertions below are literal English button names; pin the locale so
+        // the test doesn't depend on the host's `LANG` (nextest runs each test
+        // in its own process, so this can't leak into a sibling test).
+        crate::i18n::set_locale("en-US");
         use ui::a11y::Role;
         let (mut state, mut wp) = populated();
         pipeline_draw(&mut wp, &mut state, 1100, 760);
@@ -11398,14 +11249,9 @@ mod tests {
         assert!(selections.is_empty(), "no remote selections without peers");
     }
 
-    /// The pill over a peer's caret says who is editing, not which
-    /// machine is.
-    ///
-    /// A peer reaches this app as its transport identity — the id its
-    /// caret is coloured by — and the name that belongs to that id lives
-    /// in the room, written by whoever invited them. Reading the label
-    /// off the id instead put `peer@5537458103208628978` over a caret in
-    /// somebody's document.
+    /// The pill over a peer's caret shows who is editing, not which machine —
+    /// the room's assigned name for the peer's transport id, never the raw id
+    /// itself (which reads as noise like `peer@5537458103208628978`).
     #[test]
     fn a_named_peers_caret_is_labelled_with_their_name() {
         let (_state, wp) = drawn_focused();
@@ -11709,9 +11555,8 @@ mod tests {
 
     /// A docx opened → edited → **Save As** to a new `.docx` writes a *real* Word
     /// file (an OOXML ZIP, `PK` signature) that round-trips back through the
-    /// opener with the edit intact. This is the whole point of the portal Save-As
-    /// path: it drives the qdoc docx codec at the user-chosen path — not the old
-    /// silent `~/Untitled.md` markdown fallback.
+    /// opener with the edit intact — proving the portal Save-As path drives the
+    /// qdoc docx codec at the user-chosen path.
     #[test]
     fn save_as_writes_a_real_docx_that_round_trips() {
         let dir = std::env::temp_dir();
@@ -11853,8 +11698,7 @@ mod tests {
             .blocks
             .iter()
             .position(|b| b.kind == "image")
-            .map(|i| order.get(i).cloned())
-            .flatten();
+            .and_then(|i| order.get(i).cloned());
         let target_idx = order.iter().position(|id| id == &target.id).expect("drop target in order");
         let img_pos = order.iter().position(|id| Some(id) == img_idx.as_ref()).expect("image in order");
         assert!(
@@ -12261,12 +12105,10 @@ mod history_strip_tests {
     use super::tests::pipeline_draw;
     use super::*;
 
-    /// A full left click: move, press, release.
-    ///
-    /// The release matters here. Pressing on the scrubber's track latches the
-    /// handle to the pointer, so a helper that only presses leaves the widget
-    /// mid-drag and the *next* cursor move drags the selected version out from
-    /// under the test. Real pointers come back up.
+    /// A full left click: move, press, release. The release matters — pressing
+    /// on the scrubber's track latches the handle to the pointer, so a
+    /// press-only helper leaves the widget mid-drag and the next cursor move
+    /// drags the version out from under the test.
     fn click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
         let taffy: TaffyTree<()> = TaffyTree::new();
         let node = NodeId::new(0);

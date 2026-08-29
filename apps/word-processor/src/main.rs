@@ -46,38 +46,27 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 
 /// An Automerge actor id that is actually distinct from every other replica's.
 ///
-/// `format!("{prefix}-{pid}")` was not. Every application here runs in its own
-/// PID namespace, so every instance sees itself as pid 2 and every session
-/// wrote under the *same* actor — and Automerge refuses a frame whose actor
-/// already used that sequence number:
+/// `format!("{prefix}-{pid}")` was not: every instance here runs in its own PID
+/// namespace, so every instance sees itself as pid 2, every session wrote under
+/// the *same* actor, and Automerge refuses a frame whose actor already used that
+/// sequence number — frames silently dropped in the one direction that matters,
+/// a change made on one machine never reaching another.
 ///
-///     blob_relay: a document frame did not parse; it is lost for this replica
-///     error=duplicate seq 1 found for actor 66696c65732d32     ("files-2")
-///
-/// Frames dropped, silently, in the one direction that matters: a change made
-/// on one machine never reaching another.
-///
-/// `have` is the actor the document already carries — minted at random by
-/// Automerge for every `AutoCommit`, or by `app_state::DocStore` and persisted
-/// per state directory for an app that opened through `ui::persist`. Either
-/// way it is distinct by construction, which is the property the old id only
-/// looked like it had. The prefix keeps the readable half.
-///
-/// Deliberately reads no environment: the whole failure was an id that was a
-/// function of things two replicas share, and a function of its arguments is
-/// the only shape that can be tested for it.
+/// `have` is the actor the document already carries (random per `AutoCommit`, or
+/// persisted per state directory via `ui::persist`) — distinct by construction,
+/// the property the old id only looked like it had. Deliberately reads no
+/// environment: the failure was an id that was a function of things two replicas
+/// share, so only a function of its own arguments can be tested against it.
 fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
     let hex = have.to_hex_string();
     format!("{prefix}-{}", &hex[..hex.len().min(12)])
 }
 
-/// The name this replica is given, if anything has named it.
-///
-/// `QUICK_APP_ID` is how a dev run points two instances at one shell and gets
-/// a history it can read. `QOS_USER_ID` is the session's own identity and
-/// would be the best of both — it does not reach a sandboxed app, because the
-/// launcher builds an app's environment from an allowlist and it is not on
-/// it, so in the product neither of these answers and the actor comes from
+/// The name this replica is given, if anything has named it. `QUICK_APP_ID` is
+/// how a dev run points two instances at one shell and gets a readable history;
+/// `QOS_USER_ID` is the session's own identity, but doesn't reach a sandboxed
+/// app (the launcher builds its environment from an allowlist, and this isn't on
+/// it) — so in the product neither answers, and the actor comes from
 /// [`distinct_actor`].
 fn named_actor(prefix: &str) -> Option<String> {
     if let Ok(id) = std::env::var("QUICK_APP_ID")
@@ -156,16 +145,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             .doc
             .set_actor(automerge::ActorId::from(app_id.as_bytes()));
 
-        // The document being edited is a record identified by its path, and
-        // the widget names it. Installing the record set is what puts its
-        // deltas on that record's own channel instead of one shared by every
-        // word-processor window in the room — which is what used to merge two
-        // people's unrelated documents into each other.
+        // The document is a record identified by its path; installing the
+        // record set routes its deltas onto that record's own channel instead
+        // of one shared by every word-processor window in the room (which
+        // would merge unrelated documents together).
         //
         // The set is in-memory: this app's durable form is the file on disk,
-        // not a per-record automerge store, and adding a second copy of the
-        // truth is not what records are for. What the set gives it is
-        // identity, routing and the room's index of which documents it holds.
+        // not a per-record automerge store. What the set gives it is
+        // identity, routing, and the room's index of which documents it holds.
         let (room, room_autosave) = ui::persist::open("dev.qos.word-processor");
         let records = ui::RecordSet::in_memory().with_home(
             std::env::var("QOS_WORKSPACE_ID")
@@ -184,22 +171,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 /// Give `widget`'s document a real authored history, so `--shots --history` has
-/// something worth drawing.
-///
-/// Three working sessions: two by the local author either side of a long break,
-/// one by a collaborator in between — forked, edited under its own actor, merged
-/// back, the shape a sync round has. That is what makes the strip's version band
-/// mean something: the boundaries come from a change of author and a gap in the
-/// clock, not from anything seeded here.
-///
-/// The sessions are committed with explicit wall clocks (the same primitive the
-/// FS layer uses when it replays a durable chain) because the gaps are the point;
-/// the first and last revisions go through the editor's own commit path.
-///
-/// Two of the runs are then **named**, one of them by the collaborator under its
-/// own actor, so the strip shows a name somebody else wrote. Nothing here seeds
-/// the history *pane*: it seeds the document, and the pane derives its band from
-/// the resulting change graph exactly as it does for a document a user typed.
+/// something worth drawing: three working sessions (two by the local author
+/// either side of a long break, one by a collaborator merged back in between),
+/// committed with explicit wall clocks since the gaps are the point. Two runs
+/// are named — one by the collaborator, under its own actor — so the strip
+/// shows a name somebody else wrote. Nothing here seeds the history *pane*: it
+/// seeds the document, and the pane derives its band from the resulting change
+/// graph exactly as for a document a user typed.
 fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
     state
         .doc
@@ -363,13 +341,10 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
 mod actor_tests {
     use super::distinct_actor;
 
-    /// The regression, stated as the property it broke.
-    ///
-    /// Both ids below are minted inside one process, so anything derived from
-    /// the process — a pid, which is 2 in every sandbox on this system —
-    /// produces the same string twice. Automerge then refuses the second
-    /// replica's frames with `duplicate seq 1 found for actor`, and a change
-    /// made on one machine never reaches the other.
+    /// Two ids minted inside one process must differ, even though anything
+    /// derived from the process alone (a pid, which is 2 in every sandbox here)
+    /// produces the same string twice — which is exactly what made Automerge
+    /// refuse a second replica's frames as duplicate sequence numbers.
     #[test]
     fn two_replicas_in_one_process_do_not_share_an_actor() {
         let a = automerge::AutoCommit::new();

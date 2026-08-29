@@ -84,7 +84,10 @@ pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
     let mut v: Vec<f64> = raw
         .split(',')
         .filter_map(|s| s.trim().parse::<f64>().ok())
-        .filter(|p| *p >= 0.0)
+        // `parse` accepts "nan"/"inf" as valid floats; a non-finite stop would
+        // draw off-screen forever and corrupt ruler-position math, so reject it
+        // like any other malformed entry.
+        .filter(|p| p.is_finite() && *p >= 0.0)
         .collect();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
@@ -358,7 +361,6 @@ impl WordProcessor {
         (plain.join("\n"), blocks)
     }
 
-    /// Insert a rich fragment at the caret (replacing the selection), preserving
     /// Replace the character range `[char_start, char_end)` of `block_id` with
     /// `text` (used by Find & Replace).
     pub fn splice_block(&mut self, state: &mut AutoCommit, block_id: &str, char_start: usize, char_end: usize, text: &str) {
@@ -371,17 +373,12 @@ impl WordProcessor {
         }
     }
 
-    /// Replace the **entire body** of the document with the content of `markdown`,
-    /// in place, on the live document (CRDT-friendly: existing block ids are
-    /// deleted and the imported content is appended as new blocks, so undo/redo
-    /// and incremental sync see one coherent action). Used by the
-    /// "New from template" picker (re-import a template's Markdown over the open
-    /// document) without throwing away the host `ui::State` (and thus its undo
-    /// history / collaboration session).
-    ///
-    /// The caret is moved to the first imported block. Returns `false` if the
-    /// document isn't bound yet, or if the Markdown fails to import (in which case
-    /// the document is left untouched — the body clear and the import share one
+    /// Replace the **entire body** with `markdown`, in place, on the live document:
+    /// existing block ids are deleted and imported content appended as new blocks,
+    /// so undo/redo and sync see one coherent action. Used by "New from template"
+    /// (re-import over the open document) without discarding the host `ui::State`'s
+    /// undo history / collaboration session. Caret moves to the first imported
+    /// block; returns `false` (document untouched) if unbound or import fails.
     /// uncommitted transaction window, so the host can still undo cleanly).
     pub fn replace_with_markdown(&mut self, state: &mut AutoCommit, markdown: &[u8]) -> bool {
         use qdoc::FormatProvider;
@@ -415,13 +412,10 @@ impl WordProcessor {
         true
     }
 
-    /// Replace the whole body with `bytes` decoded as `format` (`.docx`/`.odt`/
-    /// `.md`/`.html`/`.rtf`), the in-place **Open** path. Mirrors
-    /// [`Self::replace_with_markdown`] but routes through the format-aware codec
-    /// so any supported document type can be opened into the running editor.
-    /// Returns whether the document was replaced (a decode failure leaves the
-    /// removed blocks in the still-open transaction for the host's undo to
-    /// revert, and reports `false`).
+    /// Replace the whole body with `bytes` decoded as `format` — the in-place
+    /// **Open** path, mirroring [`Self::replace_with_markdown`] but through the
+    /// format-aware codec. Returns whether it replaced (a decode failure leaves
+    /// removed blocks in the still-open transaction for the host's undo to revert).
     pub fn replace_with_format(
         &mut self,
         state: &mut AutoCommit,
@@ -679,6 +673,7 @@ impl WordProcessor {
         Some((num("width")?, num("height")?))
     }
 
+    /// Insert a rich fragment at the caret (replacing the selection), preserving
     /// marks + paragraph styles.
     pub fn insert_rich(&mut self, state: &mut AutoCommit, blocks: &[ClipBlock]) {
         self.delete_selection(state);
@@ -864,8 +859,8 @@ impl WordProcessor {
         self.set_page_break_before(state, true);
     }
 
-    /// Set a block-level attribute (e.g. font) on every selected block.
     /// Char ranges to apply an inline font mark to: the selection, or — with no
+    /// selection — the whole caret block.
     /// selection — the whole caret block.
     fn font_ranges(&self, state: &AutoCommit) -> Vec<(String, usize, usize)> {
         if self.has_selection() {
@@ -1225,25 +1220,23 @@ impl WordProcessor {
             .iter()
             .find(|b| b.id == self.caret.block)
             .map(|b| match b.attrs.get("line_spacing") {
-                Some(qdoc::AttrVal::Float(f)) => *f,
-                Some(qdoc::AttrVal::Int(n)) => *n as f64,
+                // A non-finite or non-positive value (a malformed import, or a
+                // remote peer's action) is not a usable multiplier — fall back
+                // like an unset attr rather than propagating it.
+                Some(qdoc::AttrVal::Float(f)) if f.is_finite() && *f > 0.0 => *f,
+                Some(qdoc::AttrVal::Int(n)) if *n > 0 => *n as f64,
                 _ => 1.0,
             })
             .unwrap_or(1.0)
     }
 
     // ---- ruler: per-block indents + tab stops --------------------------------
-    //
-    // The horizontal ruler edits three per-paragraph measures, stored as block
-    // attrs (so they merge field-by-field and survive save/reload):
-    //   * `indent`            — left / hanging indent in px (added on top of the
-    //                           block style's indent; drives `text_x`/`wrap_w`).
-    //   * `first_line_indent` — extra indent applied to the paragraph's first line
-    //                           only (recorded + reflected by the ruler marker;
-    //                           first-line-only rendering is a v1 layout limitation).
-    //   * `tab_stops`         — a comma-separated list of px positions (measured
-    //                           from the left text margin). qdoc's attr map only
-    //                           stores scalars, so the list is encoded as one `Str`.
+    // The horizontal ruler edits three per-paragraph block attrs (so they merge
+    // field-by-field and survive save/reload): `indent` (left/hanging indent px,
+    // added on top of the style's indent), `first_line_indent` (extra indent on
+    // the paragraph's first line only — a v1 layout limitation), and `tab_stops`
+    // (a comma-separated px-position list, since qdoc's attr map stores only
+    // scalars).
 
     /// Read a numeric attr (`Float`/`Int`) off an arbitrary block by id, `0.0`
     /// when absent. Shared by the indent getters below.
@@ -1399,17 +1392,14 @@ impl WordProcessor {
         }
     }
 
-    /// Insert an image block carrying `bytes` at the caret. The bytes are stored
-    /// in the content-addressed blob store and the new `image` block references
-    /// them via its `blob` attr — mirroring how the codecs build image blocks
-    /// (see `qdoc::codecs::odt`). If the caret sits mid-text, the current block is
-    /// split so the image lands *between* the text before and after the caret;
-    /// otherwise it is inserted after the caret block. The caret moves to a fresh
-    /// empty paragraph just after the image so typing continues below it.
+    /// Insert an image block carrying `bytes` at the caret; bytes go in the
+    /// content-addressed blob store, referenced via the block's `blob` attr
+    /// (mirroring `qdoc::codecs::odt`). Mid-text, the block splits so the image
+    /// lands between the text before/after the caret; else it inserts after the
+    /// caret block. The caret lands in a fresh empty paragraph just after the image.
     ///
-    /// When the bytes decode as an image, the intrinsic pixel `width`/`height` are
-    /// recorded as attrs (matching the ODF import path); undecodable bytes still
-    /// produce a valid `image` block (the renderer/exporter draw a placeholder).
+    /// Decodable bytes record intrinsic pixel `width`/`height` as attrs (matching
+    /// ODF import); undecodable bytes still produce a valid block (a placeholder).
     pub fn insert_image_bytes(&mut self, state: &mut AutoCommit, bytes: &[u8]) {
         self.delete_selection(state);
         let Some(containers) = self.containers.clone() else {
@@ -1853,12 +1843,10 @@ impl WordProcessor {
     }
 
     // ---- region-aware primitives -------------------------------------------
-    //
     // The caret/edit machinery below addresses whichever region is active
-    // (`self.region`). These helpers dispatch each read/write to the body ops or
-    // the region-aware (`*_in`) qdoc ops accordingly, so the edit operations
-    // (`insert_str`, `enter`, `backspace`, motion, marks…) are written once and
-    // work in the body, header, and footer alike.
+    // (`self.region`), dispatching each op to the body or region-aware (`*_in`)
+    // qdoc ops, so `insert_str`/`enter`/`backspace`/motion/marks are written once
+    // and work in body, header, and footer alike.
 
     /// Block ids of the **active region**, in order.
     fn region_blocks_in_order(&self, state: &AutoCommit) -> Vec<String> {
@@ -1898,12 +1886,10 @@ impl WordProcessor {
     }
 
     // ---- region-aware writes (dispatch body vs. header/footer) -------------
-    //
-    // `splice` / `insert_block` / `set_attr` / `add_mark` have region-aware qdoc
-    // ops (`*_in`); `remove_block` / `set_kind` / `remove_mark` do NOT yet, so for
-    // header/footer they are implemented here over raw automerge against the live
-    // region container (resolved fresh from the document root each call, never a
-    // possibly-stale cached id). See the "missing qdoc ops" note in the report.
+    // `splice`/`insert_block`/`set_attr`/`add_mark` have region-aware `*_in` qdoc
+    // ops; `remove_block`/`set_kind`/`remove_mark` do not yet, so for header/footer
+    // those are implemented here over raw automerge against the live region
+    // container (resolved fresh each call, never a stale cached id).
 
     /// Resolve the active region's live block container object.
     fn region_container_obj(&self, doc: &AutoCommit) -> Option<ObjId> {
@@ -2095,18 +2081,14 @@ impl WordProcessor {
             .collect()
     }
 
-    /// Replace any previously generated table of contents with a fresh one built
-    /// from `entries` (each `(level, text, page)`), inserted as `toc`-marked
-    /// `paragraph` blocks at the very top of the document — one block per entry.
-    ///
-    /// Re-running first removes the old TOC blocks (found by their `toc` attr), so
-    /// regenerating never duplicates the table. Each line is indented by its
-    /// heading level and ends with the page number (when known) after a dot
-    /// leader, e.g. `  Background .......... 3`. The caret is left untouched unless
-    /// it pointed at a removed TOC block, in which case it falls back to the first
-    /// surviving block.
-    ///
-    /// Returns the ids of the inserted TOC blocks (top-to-bottom).
+    /// Replace any previously generated TOC with a fresh one from `entries`
+    /// (each `(level, text, page)`), inserted as `toc`-marked paragraph blocks at
+    /// the document top — one per entry. Re-running first removes the old TOC
+    /// blocks (by their `toc` attr), so regenerating never duplicates. Each line
+    /// is indented by heading level with a dot-leader page number, e.g.
+    /// `  Background .......... 3`. Caret stays put unless it pointed at a
+    /// removed TOC block, then falls back to the first surviving block. Returns
+    /// the inserted TOC block ids (top-to-bottom).
     pub fn generate_toc(&mut self, state: &mut AutoCommit, entries: &[TocEntry]) -> Vec<String> {
         let Some(containers) = self.containers.clone() else {
             return vec![];
@@ -2447,10 +2429,9 @@ impl WordProcessor {
         self.caret = Caret { block, offset };
     }
 
-    /// The active selection as `((block, start), (block, end))` **when it is a
-    /// single-block selection** (the v1 case the header/footer band renders). The
-    /// endpoints are ordered. Returns `None` for no selection or a multi-block one
-    /// (the band is one short paragraph in practice). Used by the widget to paint
+    /// The active selection as `((block, start), (block, end))`, ordered, **only**
+    /// when it is a single-block selection (the header/footer band's v1 case) —
+    /// `None` for no selection or a multi-block one. Used by the widget to paint
     /// the band selection without depending on layout.
     pub fn band_selection_range(&self) -> Option<((String, usize), (String, usize))> {
         let anchor = self.selection_anchor.as_ref()?;
