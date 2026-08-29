@@ -134,6 +134,11 @@ impl WorkspaceRuntime {
         self.subscribers.remove(device);
     }
 
+    /// Whether `device` currently holds a subscription here.
+    pub fn has_subscriber(&self, device: &[u8; 32]) -> bool {
+        self.subscribers.contains_key(device)
+    }
+
     /// Route a delta envelope to every subscriber that is NOT the
     /// author, AND enqueue for offline members. Returns how many
     /// live subscribers were fanned out to.

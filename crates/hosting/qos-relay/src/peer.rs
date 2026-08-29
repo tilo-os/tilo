@@ -73,47 +73,58 @@ where
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
 
-    loop {
-        tokio::select! {
-            biased;
-            outbound = rx.recv() => {
-                match outbound {
-                    Some(env) => {
-                        let bytes = crate::transport::encode(&env)?;
-                        write.write_all(&bytes).await?;
-                    }
-                    None => break,
-                }
-            }
-            frame = reader.read_next() => {
-                match frame {
-                    Ok(Some(env)) => {
-                        if let Some(reply) = handle_envelope(
-                            &peer,
-                            env,
-                            &workspaces,
-                            &tx,
-                            &mut subscribed,
-                        ).await? {
-                            let bytes = crate::transport::encode(&reply)?;
+    // A clean EOF is only one of the ways this ends: a write to a
+    // connection the peer has already closed, a frame that will not
+    // decode, an envelope the handler rejects. Every one of them has to
+    // unregister, so the session runs to a value and the cleanup below
+    // is unconditional. Leaving a subscription behind is not cosmetic —
+    // fan-out then writes deltas to a peer that is gone instead of
+    // queueing them for store-and-forward, and they are lost.
+    let outcome: Result<(), PeerError> = async {
+        loop {
+            tokio::select! {
+                biased;
+                outbound = rx.recv() => {
+                    match outbound {
+                        Some(env) => {
+                            let bytes = crate::transport::encode(&env)?;
                             write.write_all(&bytes).await?;
                         }
+                        None => break,
                     }
-                    Ok(None) => break,
-                    Err(e) => return Err(PeerError::Frame(e)),
+                }
+                frame = reader.read_next() => {
+                    match frame {
+                        Ok(Some(env)) => {
+                            if let Some(reply) = handle_envelope(
+                                &peer,
+                                env,
+                                &workspaces,
+                                &tx,
+                                &mut subscribed,
+                            ).await? {
+                                let bytes = crate::transport::encode(&reply)?;
+                                write.write_all(&bytes).await?;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => return Err(PeerError::Frame(e)),
+                    }
                 }
             }
         }
+        Ok(())
     }
+    .await;
 
-    // Clean up subscriptions on disconnect.
     let wsmap = workspaces.lock().await;
-    for id in subscribed {
-        if let Some(ws) = wsmap.get(&id) {
+    for id in &subscribed {
+        if let Some(ws) = wsmap.get(id) {
             ws.lock().await.remove_subscriber(&peer.device_public_key);
         }
     }
-    Ok(())
+    drop(wsmap);
+    outcome
 }
 
 async fn handle_envelope(

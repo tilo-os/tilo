@@ -10,7 +10,6 @@
 //!              the config file so the next `run` picks it up.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -156,7 +155,7 @@ fn cmd_run(path: &PathBuf) -> anyhow::Result<()> {
         // Park until Ctrl-C / SIGTERM.
         wait_for_shutdown().await;
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
-        drop(relay);
+        relay.shutdown().await;
         Ok::<(), anyhow::Error>(())
     })
 }
@@ -192,6 +191,4 @@ async fn wait_for_shutdown() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
-    // Give in-flight tasks a tick to close.
-    tokio::time::sleep(Duration::from_millis(100)).await;
 }

@@ -108,8 +108,25 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
         other => panic!("expected Delta, got {other:?}"),
     }
 
-    // Now p2 fails over to relay2 (relay1 conn is dropped).
-    drop(c2_r1);
+    // Now p2 fails over to relay2. Close rather than drop: a dropped
+    // handle may never get CONNECTION_CLOSE onto the wire, leaving
+    // relay1 to notice by idle timeout.
+    c2_r1.close().await;
+    // Relay1 has to have observed the departure before the next delta,
+    // or it fans out to the connection p2 just closed instead of
+    // queueing. Nothing makes that atomic — a relay cannot know a peer
+    // has left until the close arrives — so wait for it rather than
+    // assume it, which is a race that only shows up under load.
+    for _ in 0..300 {
+        if !relay1.relay.is_subscribed(3, &p2.device_pubkey()).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !relay1.relay.is_subscribed(3, &p2.device_pubkey()).await,
+        "relay1 never noticed p2 disconnect"
+    );
     let ep3 = client_endpoint().await;
     let c2_r2 = RelayClient::connect(
         ep3,
