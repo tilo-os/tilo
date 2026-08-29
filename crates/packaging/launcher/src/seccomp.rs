@@ -152,7 +152,8 @@ pub const BUILTIN_JIT_ENTITLED: &[&str] = &["dev.qos.browser"];
 /// "nobody" — which would leave the browser unable to render on any
 /// image that didn't ship the file.
 pub fn entitled_to_dynamic_code(package_id: &str) -> bool {
-    let policy_path = std::env::var_os(JIT_POLICY_PATH_ENV).map_or_else(|| PathBuf::from(JIT_POLICY_PATH), PathBuf::from);
+    let policy_path = std::env::var_os(JIT_POLICY_PATH_ENV)
+        .map_or_else(|| PathBuf::from(JIT_POLICY_PATH), PathBuf::from);
     match std::fs::read_to_string(&policy_path) {
         Ok(list) => crate::hardening::policy_matches(&list, package_id),
         Err(_) => BUILTIN_JIT_ENTITLED.contains(&package_id),

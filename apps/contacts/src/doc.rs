@@ -201,9 +201,10 @@ fn read_str_list(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<String> {
     let mut out = Vec::new();
     for i in 0..doc.length(&list) {
         if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
-            && let ScalarValue::Str(s) = v.as_ref() {
-                out.push(s.to_string());
-            }
+            && let ScalarValue::Str(s) = v.as_ref()
+        {
+            out.push(s.to_string());
+        }
     }
     out
 }

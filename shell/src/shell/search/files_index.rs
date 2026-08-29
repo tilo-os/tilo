@@ -213,18 +213,20 @@ impl FilesIndex {
             return Vec::new();
         }
         if let Ok(cache) = self.cache.lock()
-            && let Some(hit) = cache.get(needle, limit) {
-                return hit;
-            }
+            && let Some(hit) = cache.get(needle, limit)
+        {
+            return hit;
+        }
         // Throttled reader-reload — see READER_RELOAD_INTERVAL_MS.
         {
             let now = Instant::now();
             let mut should_reload = true;
             if let Ok(mut slot) = self.last_reload.lock() {
                 if let Some(prev) = *slot
-                    && now.duration_since(prev) < Duration::from_millis(READER_RELOAD_INTERVAL_MS) {
-                        should_reload = false;
-                    }
+                    && now.duration_since(prev) < Duration::from_millis(READER_RELOAD_INTERVAL_MS)
+                {
+                    should_reload = false;
+                }
                 if should_reload {
                     *slot = Some(now);
                 }
@@ -259,9 +261,10 @@ impl FilesIndex {
         // Only cache non-empty results — an empty one often just means the
         // walker hasn't reached these files yet.
         if !out.is_empty()
-            && let Ok(mut cache) = self.cache.lock() {
-                cache.put(needle.to_string(), limit, out.clone());
-            }
+            && let Ok(mut cache) = self.cache.lock()
+        {
+            cache.put(needle.to_string(), limit, out.clone());
+        }
         out
     }
 }

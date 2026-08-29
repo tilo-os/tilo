@@ -417,9 +417,10 @@ fn payloads_root() -> Result<PathBuf, Error> {
 /// not `QOS_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
     if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
-        && !dir.is_empty() {
-            return Ok(PathBuf::from(dir));
-        }
+        && !dir.is_empty()
+    {
+        return Ok(PathBuf::from(dir));
+    }
     dirs::data_dir().ok_or(Error::NoDataDir)
 }
 
@@ -478,12 +479,13 @@ fn verify_and_gate(
     match outcome {
         Verification::AttestedBy { attestor, manifest } => {
             if let Some(required) = &trust.require_attestor
-                && required != &attestor {
-                    return Err(Error::AttestorMismatch {
-                        required: required.clone(),
-                        found: attestor,
-                    });
-                }
+                && required != &attestor
+            {
+                return Err(Error::AttestorMismatch {
+                    required: required.clone(),
+                    found: attestor,
+                });
+            }
             let pub_key_hex = extract_publisher_key(&pkg_id, store)
                 .map(|k| hex_of(&k))
                 .unwrap_or_default();
@@ -873,13 +875,15 @@ fn update(
     runtime: RuntimeFlags,
 ) -> Result<(), Error> {
     let reg = load_registry()?;
-    let targets: Vec<RegistryEntry> = if let Some(id) = pkg_id { vec![
-        reg.entry
-            .iter()
-            .find(|e| e.id == id)
-            .cloned()
-            .ok_or_else(|| Error::NotInstalled(id.into()))?,
-    ] } else {
+    let targets: Vec<RegistryEntry> = if let Some(id) = pkg_id {
+        vec![
+            reg.entry
+                .iter()
+                .find(|e| e.id == id)
+                .cloned()
+                .ok_or_else(|| Error::NotInstalled(id.into()))?,
+        ]
+    } else {
         if from.is_some() {
             return Err(Error::Policy(
                 "--from names one .qpkg, so it needs one package id".into(),
@@ -1451,15 +1455,16 @@ fn run(
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
     if let Ok(pk_bytes) = decode_hex_32(&entry.publisher_key_hex)
-        && let Some(rev) = revocation.find(&pk_bytes) {
-            eprintln!(
-                "qos-install: REFUSED — installed package's publisher is revoked: {}",
-                rev.reason
-            );
-            return Err(Error::Revoked {
-                reason: rev.reason.clone(),
-            });
-        }
+        && let Some(rev) = revocation.find(&pk_bytes)
+    {
+        eprintln!(
+            "qos-install: REFUSED — installed package's publisher is revoked: {}",
+            rev.reason
+        );
+        return Err(Error::Revoked {
+            reason: rev.reason.clone(),
+        });
+    }
     if let Some(required) = &trust.require_attestor {
         // The recorded attested_by is fixed at install time and can go stale
         // if trusted-attestors.toml changed since; re-check it's still trusted.
@@ -1977,11 +1982,12 @@ fn age(installed_at: u64) -> String {
 fn which_launcher() -> PathBuf {
     // Prefer a sibling binary — matches how the demo installs both under target/release/.
     if let Ok(exe) = std::env::current_exe()
-        && let Some(parent) = exe.parent() {
-            let sib = parent.join("qos-launcher");
-            if sib.exists() {
-                return sib;
-            }
+        && let Some(parent) = exe.parent()
+    {
+        let sib = parent.join("qos-launcher");
+        if sib.exists() {
+            return sib;
         }
+    }
     PathBuf::from("qos-launcher")
 }

@@ -490,7 +490,7 @@ impl Shell {
         }
         self.sidebar.on_wheel(dir, &mut scratch);
         // Snap back the active strip id (if changed) by index lookup.
-        
+
         scratch
             .active_strip
             .get(&active_ws)
@@ -577,8 +577,7 @@ impl Shell {
         // Scratch persisted workspace, same reason as the other simulators.
         let mut scratch = state::Workspace::new(
             self.tree.active,
-            self
-                .tree
+            self.tree
                 .workspaces
                 .iter()
                 .find(|w| w.id == self.tree.active)
@@ -781,7 +780,8 @@ fn is_editor_label(s: &str) -> bool {
 pub(crate) fn hosted_label_for_title(title: &str) -> String {
     HOSTED_OTHER_APPS
         .iter()
-        .find(|(t, _)| t.eq_ignore_ascii_case(title)).map_or_else(|| title.to_string(), |(_, label)| (*label).to_string())
+        .find(|(t, _)| t.eq_ignore_ascii_case(title))
+        .map_or_else(|| title.to_string(), |(_, label)| (*label).to_string())
 }
 
 /// Probe into [`to_ui_tile`] for tests that don't want the full `UiTile`

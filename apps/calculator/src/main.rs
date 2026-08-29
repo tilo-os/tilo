@@ -369,9 +369,10 @@ fn shots_viewport() -> (u32, u32) {
     if let Some(s) = std::env::var_os("QOS_CALC_SHOTS_SIZE") {
         let s = s.to_string_lossy();
         if let Some((w, h)) = s.split_once(['x', 'X', '*'])
-            && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse()) {
-                return (w, h);
-            }
+            && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
+        {
+            return (w, h);
+        }
     }
     DEFAULT_SHOTS_VIEWPORT
 }
@@ -410,9 +411,10 @@ fn render_shot_to_png(
     if let Some(spec) = std::env::var_os("QOS_CALC_REMOTE_CURSOR") {
         let spec = spec.to_string_lossy();
         if let Some((sx, sy)) = spec.split_once(',')
-            && let (Ok(x), Ok(y)) = (sx.trim().parse::<f32>(), sy.trim().parse::<f32>()) {
-                presence.upsert_remote_cursor("alice".into(), [x, y], Some("Alice"));
-            }
+            && let (Ok(x), Ok(y)) = (sx.trim().parse::<f32>(), sy.trim().parse::<f32>())
+        {
+            presence.upsert_remote_cursor("alice".into(), [x, y], Some("Alice"));
+        }
     }
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

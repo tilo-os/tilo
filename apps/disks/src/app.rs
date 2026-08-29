@@ -522,8 +522,7 @@ impl DisksApp {
         let mut bx = action_bar.x0 + 14.0;
         for a in ActionKind::bar() {
             let w = (a.label().len() as f64) * 8.0 + 30.0;
-            let enabled = drive_ref
-                .is_some_and(|d| self.action_enabled(d, a));
+            let enabled = drive_ref.is_some_and(|d| self.action_enabled(d, a));
             action_buttons.push((Rect::new(bx, btn_y, bx + w, btn_y + btn_h), a, enabled));
             bx += w + 10.0;
         }
@@ -1102,7 +1101,12 @@ impl DisksApp {
         let sx = bar.x0 + 14.0;
         // Small scope tag.
         let (tw, _) = tr.measure_weighted(scope, 10.5, None, TextWeight::Bold);
-        let tag = Rect::new(sx, bar.y0 + 9.0, sx + f64::from(tw) + 16.0, bar.y0 + 9.0 + 18.0);
+        let tag = Rect::new(
+            sx,
+            bar.y0 + 9.0,
+            sx + f64::from(tw) + 16.0,
+            bar.y0 + 9.0 + 18.0,
+        );
         Self::fill_rr(scene, t, tag, 6.0, with_alpha(scope_c, 46));
         self.txt(
             scene,
@@ -1717,7 +1721,9 @@ impl DisksApp {
             TextWeight::Bold,
         );
 
-        let smart = if let Some(s) = &drive.smart { s } else {
+        let smart = if let Some(s) = &drive.smart {
+            s
+        } else {
             self.txt(
                 scene,
                 tr,
@@ -1933,33 +1939,23 @@ impl DisksApp {
         let tiles: Vec<(String, String)> = vec![
             (
                 "Temperature".into(),
-                smart
-                    .temp_c
-                    .map_or("—".into(), |v| format!("{v} °C")),
+                smart.temp_c.map_or("—".into(), |v| format!("{v} °C")),
             ),
             (
                 "Power-on hours".into(),
-                smart
-                    .power_on_hours
-                    .map_or("—".into(), |v| v.to_string()),
+                smart.power_on_hours.map_or("—".into(), |v| v.to_string()),
             ),
             (
                 "Power cycles".into(),
-                smart
-                    .power_cycles
-                    .map_or("—".into(), |v| v.to_string()),
+                smart.power_cycles.map_or("—".into(), |v| v.to_string()),
             ),
             (
                 "Reallocated".into(),
-                smart
-                    .reallocated
-                    .map_or("—".into(), |v| v.to_string()),
+                smart.reallocated.map_or("—".into(), |v| v.to_string()),
             ),
             (
                 "Wear used".into(),
-                smart
-                    .pct_used
-                    .map_or("—".into(), |v| format!("{v} %")),
+                smart.pct_used.map_or("—".into(), |v| format!("{v} %")),
             ),
         ];
         let n = tiles.len() as f64;
@@ -2904,11 +2900,12 @@ impl Widget for DisksApp {
 
         if let Some(json) = DisksDoc::topology_json(state)
             && json != self.topo_json_cache
-                && let Ok(t) = serde_json::from_str::<Topology>(&json) {
-                    self.topo = t;
-                    self.topo_json_cache = json;
-                    self.dirty = true;
-                }
+            && let Ok(t) = serde_json::from_str::<Topology>(&json)
+        {
+            self.topo = t;
+            self.topo_json_cache = json;
+            self.dirty = true;
+        }
 
         let sel = DisksDoc::selected(state).min(self.topo.drives.len().saturating_sub(1));
         if sel != self.selected {
@@ -2958,10 +2955,12 @@ impl Widget for DisksApp {
             self.status = res.text.clone();
             DisksDoc::set_status(state, &res.text);
             // A mount/format/unmount/eject changed the on-disk topology.
-            if res.refresh && self.live
-                && let Some(topo) = crate::probe::probe() {
-                    DisksDoc::write_topology(state, &topo);
-                }
+            if res.refresh
+                && self.live
+                && let Some(topo) = crate::probe::probe()
+            {
+                DisksDoc::write_topology(state, &topo);
+            }
             self.dirty = true;
         }
         if clear {
@@ -3293,17 +3292,18 @@ impl Widget for DisksApp {
                 }
                 // Drive cards are only clickable when the list is shown.
                 if self.list_open()
-                    && let Some(i) = lay.cards.iter().position(|r| r.contains(p)) {
-                        self.select(state, i);
-                        // Selecting from the overlay flap dismisses it so the
-                        // detail is immediately visible (single-pane feel).
-                        if lay.split == SplitLayout::Overlay {
-                            self.flap.close();
-                        }
-                        *handled = true;
-                        self.dirty = true;
-                        return;
+                    && let Some(i) = lay.cards.iter().position(|r| r.contains(p))
+                {
+                    self.select(state, i);
+                    // Selecting from the overlay flap dismisses it so the
+                    // detail is immediately visible (single-pane feel).
+                    if lay.split == SplitLayout::Overlay {
+                        self.flap.close();
                     }
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
                 if let Some((_, tab)) = lay.tabs.iter().find(|(r, _)| r.contains(p)) {
                     self.set_tab(state, *tab);
                     *handled = true;
@@ -3338,11 +3338,12 @@ impl Widget for DisksApp {
                             self.dirty = true;
                         }
                     } else if self.tab == Tab::Partitions
-                        && let Some((_, i)) = lay.part_rows.iter().find(|(r, _)| r.contains(pc)) {
-                            self.select_part(state, Some(*i));
-                            *handled = true;
-                            self.dirty = true;
-                        }
+                        && let Some((_, i)) = lay.part_rows.iter().find(|(r, _)| r.contains(pc))
+                    {
+                        self.select_part(state, Some(*i));
+                        *handled = true;
+                        self.dirty = true;
+                    }
                 }
             }
             WindowEvent::KeyboardInput {

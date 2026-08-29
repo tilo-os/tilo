@@ -662,8 +662,10 @@ impl TextInput {
         let cum: Vec<f64> = boundaries
             .iter()
             .map(|&b| {
-                f64::from(self.measure_str(tr, &self.display_slice(start, start + b), size)
-                    .0)
+                f64::from(
+                    self.measure_str(tr, &self.display_slice(start, start + b), size)
+                        .0,
+                )
             })
             .collect();
         let nchars = boundaries.len() - 1;

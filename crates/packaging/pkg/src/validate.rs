@@ -120,9 +120,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             // rejected on a Gui entrypoint (forward-compatible schema); the
             // installer just won't install shims from it.
             if matches!(ep.r#type, EntrypointType::Cli | EntrypointType::Both)
-                && m.cli
-                    .as_ref()
-                    .map_or(true, |c| c.commands.is_empty())
+                && m.cli.as_ref().map_or(true, |c| c.commands.is_empty())
             {
                 // A CLI entrypoint with no commands is fine — still runnable via `qos-install run <id>`, no error.
             }

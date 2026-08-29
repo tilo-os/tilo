@@ -276,9 +276,11 @@ impl Action for SlidesAction {
                 // the document's base state, so the guard evaluates identically
                 // on every replica.
                 if let Some(deck) = SlidesDoc::load(doc)
-                    && deck.slides.len() > 1 && *idx < deck.slides.len() {
-                        SlidesDoc::remove_slide(doc, *idx);
-                    }
+                    && deck.slides.len() > 1
+                    && *idx < deck.slides.len()
+                {
+                    SlidesDoc::remove_slide(doc, *idx);
+                }
             }
             SlidesAction::MoveSlide { from, to } => {
                 SlidesDoc::move_slide(doc, *from, *to);

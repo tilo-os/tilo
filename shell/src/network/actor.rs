@@ -273,17 +273,19 @@ impl Actor {
                 gossipsub::Event::Subscribed { peer_id, topic },
             )) => {
                 if let Some(ws) = ws_for_topic(&self.subscribers, &topic)
-                    && let Some(tx) = self.subscribers.get(&ws) {
-                        let _ = tx.send(NetEvent::PeerJoined { ws, peer: peer_id }).await;
-                    }
+                    && let Some(tx) = self.subscribers.get(&ws)
+                {
+                    let _ = tx.send(NetEvent::PeerJoined { ws, peer: peer_id }).await;
+                }
             }
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(
                 gossipsub::Event::Unsubscribed { peer_id, topic },
             )) => {
                 if let Some(ws) = ws_for_topic(&self.subscribers, &topic)
-                    && let Some(tx) = self.subscribers.get(&ws) {
-                        let _ = tx.send(NetEvent::PeerLeft { ws, peer: peer_id }).await;
-                    }
+                    && let Some(tx) = self.subscribers.get(&ws)
+                {
+                    let _ = tx.send(NetEvent::PeerLeft { ws, peer: peer_id }).await;
+                }
             }
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                 let any_discovered = !list.is_empty();

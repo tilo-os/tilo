@@ -190,8 +190,10 @@ impl ChangesColumn {
         let count = files.len().to_string();
         let cx = area.x0
             + 14.0
-            + f64::from(tr.measure_weighted(title, 12.0, None, TextWeight::Semibold)
-                .0)
+            + f64::from(
+                tr.measure_weighted(title, 12.0, None, TextWeight::Semibold)
+                    .0,
+            )
             + 8.0;
         draw::pill(
             scene,
@@ -443,9 +445,10 @@ impl ChangesColumn {
                 if staged_n == 1 { "" } else { "s" }
             )
         };
-        let lw = f64::from(tr
-            .measure_weighted(&label, 12.0, None, TextWeight::Semibold)
-            .0);
+        let lw = f64::from(
+            tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold)
+                .0,
+        );
         draw::text_weighted(
             scene,
             tr,

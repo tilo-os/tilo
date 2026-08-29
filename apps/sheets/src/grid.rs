@@ -400,9 +400,10 @@ impl Grid {
     /// otherwise the active cell's stored raw input.
     pub fn active_display_raw(&self) -> String {
         if let Some(e) = &self.edit
-            && e.addr == self.active {
-                return e.text();
-            }
+            && e.addr == self.active
+        {
+            return e.text();
+        }
         self.raw.get(&self.active).cloned().unwrap_or_default()
     }
 
@@ -570,13 +571,17 @@ impl Grid {
     /// Content-space x (before scroll) of column `c`'s left edge. O(1) via
     /// the cached prefix sums, with a defensive fallback past the last index.
     fn col_left(&self, c: u32) -> f64 {
-        if let Some(&x) = self.col_x.get(c as usize) { x } else {
+        if let Some(&x) = self.col_x.get(c as usize) {
+            x
+        } else {
             let last = self.col_x.last().copied().unwrap_or(0.0);
             last + f64::from(c.saturating_sub(self.n_cols)) * DEFAULT_COL_W
         }
     }
     fn row_top(&self, r: u32) -> f64 {
-        if let Some(&y) = self.row_y.get(r as usize) { y } else {
+        if let Some(&y) = self.row_y.get(r as usize) {
+            y
+        } else {
             let last = self.row_y.last().copied().unwrap_or(0.0);
             last + f64::from(r.saturating_sub(self.n_rows)) * DEFAULT_ROW_H
         }
@@ -868,7 +873,10 @@ impl Grid {
     /// uncluttered. Exposed so the app's formula bar can tint the same refs.
     pub fn highlight_formula_body(&self) -> Option<String> {
         if let Some(e) = &self.edit {
-            return e.text().strip_prefix('=').map(std::string::ToString::to_string);
+            return e
+                .text()
+                .strip_prefix('=')
+                .map(std::string::ToString::to_string);
         }
         // Not editing: a single selected formula cell still shows its trace.
         let raw = self.raw.get(&self.active)?;
@@ -993,14 +1001,16 @@ impl Grid {
         // ready for a reference (right after `=` / an operator, or replacing a
         // previously click-inserted one); otherwise the click falls through to
         // normal selection, which commits the edit.
-        if self.editing_formula() && self.can_point()
-            && let Some(addr) = self.cell_at(p) {
-                let editing_here = self.edit.as_ref().map(|e| e.addr) == Some(addr);
-                if !editing_here {
-                    self.begin_point(addr);
-                    return true;
-                }
+        if self.editing_formula()
+            && self.can_point()
+            && let Some(addr) = self.cell_at(p)
+        {
+            let editing_here = self.edit.as_ref().map(|e| e.addr) == Some(addr);
+            if !editing_here {
+                self.begin_point(addr);
+                return true;
             }
+        }
         // Start a resize drag if near a header edge.
         if let Some(target) = self.resize_target_at(p) {
             let origin_size = match target {
@@ -1022,59 +1032,67 @@ impl Grid {
         // extend the pattern. A plain press only (Ctrl/Shift keep their normal
         // selection meaning). Checked before the body-click so a grab near the
         // corner starts a fill rather than a new selection.
-        if !ctrl && !shift
-            && let Some(hr) = self.fill_handle_rect() {
-                let grab = hr.inflate(FILL_HANDLE_GRAB, FILL_HANDLE_GRAB);
-                if grab.contains(p) {
-                    self.commit_edit(out);
-                    let (c0, r0, c1, r1) = self.current_range().bounds();
-                    self.fill_drag = Some(FillDrag {
-                        src: ((c0, r0), (c1, r1)),
-                        target: (c1, r1),
-                    });
-                    self.dirty = true;
-                    return true;
-                }
+        if !ctrl
+            && !shift
+            && let Some(hr) = self.fill_handle_rect()
+        {
+            let grab = hr.inflate(FILL_HANDLE_GRAB, FILL_HANDLE_GRAB);
+            if grab.contains(p) {
+                self.commit_edit(out);
+                let (c0, r0, c1, r1) = self.current_range().bounds();
+                self.fill_drag = Some(FillDrag {
+                    src: ((c0, r0), (c1, r1)),
+                    target: (c1, r1),
+                });
+                self.dirty = true;
+                return true;
             }
+        }
         // Column header click → select the whole column (Ctrl adds it, Shift
         // extends the column span from the current anchor).
-        if p.y >= self.rect.y0 && p.y < self.grid_y0() && p.x >= self.grid_x0()
-            && let Some((c, _)) = self.cell_at(Point::new(p.x, self.grid_y0() + 1.0)) {
-                self.commit_edit(out);
-                let bottom = self.n_rows.saturating_sub(1);
-                if ctrl {
-                    self.extra_ranges.push(self.current_range());
-                    self.anchor = (c, bottom);
-                } else if shift {
-                    self.anchor = (self.anchor.0, bottom);
-                } else {
-                    self.extra_ranges.clear();
-                    self.anchor = (c, bottom);
-                }
-                self.active = (c, 0);
-                self.selecting = true;
-                self.dirty = true;
-                return true;
+        if p.y >= self.rect.y0
+            && p.y < self.grid_y0()
+            && p.x >= self.grid_x0()
+            && let Some((c, _)) = self.cell_at(Point::new(p.x, self.grid_y0() + 1.0))
+        {
+            self.commit_edit(out);
+            let bottom = self.n_rows.saturating_sub(1);
+            if ctrl {
+                self.extra_ranges.push(self.current_range());
+                self.anchor = (c, bottom);
+            } else if shift {
+                self.anchor = (self.anchor.0, bottom);
+            } else {
+                self.extra_ranges.clear();
+                self.anchor = (c, bottom);
             }
+            self.active = (c, 0);
+            self.selecting = true;
+            self.dirty = true;
+            return true;
+        }
         // Row header click → select whole row (Ctrl adds, Shift extends).
-        if p.x >= self.rect.x0 && p.x < self.grid_x0() && p.y >= self.grid_y0()
-            && let Some((_, r)) = self.cell_at(Point::new(self.grid_x0() + 1.0, p.y)) {
-                self.commit_edit(out);
-                let right = self.n_cols.saturating_sub(1);
-                if ctrl {
-                    self.extra_ranges.push(self.current_range());
-                    self.anchor = (right, r);
-                } else if shift {
-                    self.anchor = (right, self.anchor.1);
-                } else {
-                    self.extra_ranges.clear();
-                    self.anchor = (right, r);
-                }
-                self.active = (0, r);
-                self.selecting = true;
-                self.dirty = true;
-                return true;
+        if p.x >= self.rect.x0
+            && p.x < self.grid_x0()
+            && p.y >= self.grid_y0()
+            && let Some((_, r)) = self.cell_at(Point::new(self.grid_x0() + 1.0, p.y))
+        {
+            self.commit_edit(out);
+            let right = self.n_cols.saturating_sub(1);
+            if ctrl {
+                self.extra_ranges.push(self.current_range());
+                self.anchor = (right, r);
+            } else if shift {
+                self.anchor = (right, self.anchor.1);
+            } else {
+                self.extra_ranges.clear();
+                self.anchor = (right, r);
             }
+            self.active = (0, r);
+            self.selecting = true;
+            self.dirty = true;
+            return true;
+        }
         // Body click → select / extend / add.
         if let Some(addr) = self.cell_at(p) {
             self.commit_edit(out);
@@ -1106,10 +1124,11 @@ impl Grid {
         if self.fill_drag.is_some() {
             if let Some(addr) = self.cell_at(p)
                 && let Some(fd) = &mut self.fill_drag
-                    && addr != fd.target {
-                        fd.target = addr;
-                        self.dirty = true;
-                    }
+                && addr != fd.target
+            {
+                fd.target = addr;
+                self.dirty = true;
+            }
             return true;
         }
         // A held point-mode drag grows the pending reference into a range.
@@ -1136,10 +1155,11 @@ impl Grid {
         }
         if self.selecting {
             if let Some(addr) = self.cell_at(p)
-                && addr != self.active {
-                    self.active = addr;
-                    self.dirty = true;
-                }
+                && addr != self.active
+            {
+                self.active = addr;
+                self.dirty = true;
+            }
             return true;
         }
         false
@@ -1155,12 +1175,13 @@ impl Grid {
         // A fill-handle drag commits its projected region for the app to fill,
         // then extends the visible selection over it.
         if let Some(fd) = self.fill_drag.take()
-            && let Some((stl, sbr, dtl, dbr)) = Self::fill_region(fd.src, fd.target) {
-                self.pending_fill = Some((stl, sbr, dtl, dbr));
-                self.anchor = stl;
-                self.active = dbr;
-                self.dirty = true;
-            }
+            && let Some((stl, sbr, dtl, dbr)) = Self::fill_region(fd.src, fd.target)
+        {
+            self.pending_fill = Some((stl, sbr, dtl, dbr));
+            self.anchor = stl;
+            self.active = dbr;
+            self.dirty = true;
+        }
     }
 
     pub fn double_click(&mut self, p: Point, out: &mut Vec<GridCmd>) -> bool {
@@ -1284,10 +1305,11 @@ impl Grid {
                 // character before the caret.
                 if !self.delete_selection()
                     && let Some(e) = &mut self.edit
-                        && e.caret > 0 {
-                            e.chars.remove(e.caret - 1);
-                            e.caret -= 1;
-                        }
+                    && e.caret > 0
+                {
+                    e.chars.remove(e.caret - 1);
+                    e.caret -= 1;
+                }
                 self.point_anchor = None;
                 self.dirty = true;
                 true
@@ -1295,9 +1317,10 @@ impl Grid {
             Key::Named(NamedKey::Delete) => {
                 if !self.delete_selection()
                     && let Some(e) = &mut self.edit
-                        && e.caret < e.chars.len() {
-                            e.chars.remove(e.caret);
-                        }
+                    && e.caret < e.chars.len()
+                {
+                    e.chars.remove(e.caret);
+                }
                 self.point_anchor = None;
                 self.dirty = true;
                 true
@@ -1582,9 +1605,10 @@ impl Grid {
             .chain(std::iter::once(self.current_range()))
         {
             if let Some(sr) = self.range_screen_rect(range)
-                && let Some(cr) = intersect(sr, body) {
-                    scene.fill(Fill::NonZero, transform, fill, None, &cr);
-                }
+                && let Some(cr) = intersect(sr, body)
+            {
+                scene.fill(Fill::NonZero, transform, fill, None, &cr);
+            }
         }
 
         // --- cells + text (clipped to the body) ---
@@ -1596,25 +1620,25 @@ impl Grid {
                 // Skip while editing this exact cell — the editor overlay
                 // paints it instead.
                 if let Some(e) = &self.edit
-                    && e.addr == (c, r) {
-                        continue;
-                    }
+                    && e.addr == (c, r)
+                {
+                    continue;
+                }
                 // Formula view: show the raw input verbatim (formulas as
                 // typed), left-aligned in the accent colour so it reads as
                 // "source" rather than a result.
                 if self.show_formulas
                     && let Some(raw) = self.raw.get(&(c, r))
-                        && !raw.is_empty() {
-                            let color = if raw.starts_with('=') {
-                                colors.accent[5]
-                            } else {
-                                colors.text_primary
-                            };
-                            self.draw_cell_text(
-                                scene, transform, tr, raw, text_size, color, cell, false,
-                            );
-                            continue;
-                        }
+                    && !raw.is_empty()
+                {
+                    let color = if raw.starts_with('=') {
+                        colors.accent[5]
+                    } else {
+                        colors.text_primary
+                    };
+                    self.draw_cell_text(scene, transform, tr, raw, text_size, color, cell, false);
+                    continue;
+                }
                 if let Some(val) = self.values.get(&(c, r)) {
                     if val.is_empty() {
                         continue;
@@ -1718,18 +1742,19 @@ impl Grid {
                 }
             }
         } else if let Some(hr) = self.fill_handle_rect()
-            && let Some(cr) = intersect(hr, body) {
-                // A thin base-coloured ring keeps the accent square legible on
-                // any cell fill underneath.
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    colors.surfaces.base,
-                    None,
-                    &hr,
-                );
-                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &cr);
-            }
+            && let Some(cr) = intersect(hr, body)
+        {
+            // A thin base-coloured ring keeps the accent square legible on
+            // any cell fill underneath.
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                colors.surfaces.base,
+                None,
+                &hr,
+            );
+            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &cr);
+        }
 
         // Referenced ranges of the formula being edited — coloured outlines
         // matching the tinted references in the formula text, so it's clear
@@ -2165,11 +2190,13 @@ pub(crate) fn draw_formula_line(
     let mut caret_x = origin.x;
     for (s, e, color) in segs {
         if let Some(c) = caret
-            && c >= s && c <= e {
-                let prefix: String = chars[s..c].iter().collect();
-                let (pw, _) = tr.measure(&prefix, size, None);
-                caret_x = x + f64::from(pw);
-            }
+            && c >= s
+            && c <= e
+        {
+            let prefix: String = chars[s..c].iter().collect();
+            let (pw, _) = tr.measure(&prefix, size, None);
+            caret_x = x + f64::from(pw);
+        }
         let seg: String = chars[s..e].iter().collect();
         tr.draw_text(
             scene,

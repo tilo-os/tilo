@@ -547,12 +547,8 @@ impl ApiTesterApp {
         match tab {
             RequestTab::Params => Request::enabled_count(&self.request.params),
             RequestTab::Headers => Request::enabled_count(&self.request.headers),
-            RequestTab::Auth => {
-                usize::from(!matches!(self.request.auth, Auth::None))
-            }
-            RequestTab::Body => {
-                usize::from(!matches!(self.request.body_mode, BodyMode::None))
-            }
+            RequestTab::Auth => usize::from(!matches!(self.request.auth, Auth::None)),
+            RequestTab::Body => usize::from(!matches!(self.request.body_mode, BodyMode::None)),
         }
     }
 
@@ -1050,7 +1046,10 @@ impl ApiTesterApp {
             &hint,
             theme.tokens.typography.scale.sm,
             hint_col,
-            t * Affine::translate((l.main.x1 - PAD - f64::from(hw), l.tab_strip.center().y - 7.0)),
+            t * Affine::translate((
+                l.main.x1 - PAD - f64::from(hw),
+                l.tab_strip.center().y - 7.0,
+            )),
             None,
         );
     }
@@ -1626,7 +1625,10 @@ impl ApiTesterApp {
                     &ln,
                     11.0,
                     c.text_dim.with_alpha_factor(0.6),
-                    t * Affine::translate((area.x0 + gutter_w - f64::from(lnw) - 6.0, screen_y + 3.0)),
+                    t * Affine::translate((
+                        area.x0 + gutter_w - f64::from(lnw) - 6.0,
+                        screen_y + 3.0,
+                    )),
                     None,
                 );
 
@@ -1672,10 +1674,12 @@ impl ApiTesterApp {
                     );
                 }
             }
-            if line.opens_block && self.collapsed.contains(&idx)
-                && let Some(close) = line.close_line {
-                    hidden_until = Some(close);
-                }
+            if line.opens_block
+                && self.collapsed.contains(&idx)
+                && let Some(close) = line.close_line
+            {
+                hidden_until = Some(close);
+            }
             screen_y += JSON_LINE_H;
         }
         scene.pop_layer();
@@ -1866,7 +1870,8 @@ impl ApiTesterApp {
         ApiDoc::set_text(state, path, METHOD_PATH, self.request.method.as_str());
         let env_name = self
             .active_env
-            .and_then(|id| self.environments.iter().find(|e| e.id == id)).map_or_else(|| NO_ENV.to_string(), |e| e.name.clone());
+            .and_then(|id| self.environments.iter().find(|e| e.id == id))
+            .map_or_else(|| NO_ENV.to_string(), |e| e.name.clone());
         ApiDoc::set_text(state, path, ENV_PATH, &env_name);
     }
 }

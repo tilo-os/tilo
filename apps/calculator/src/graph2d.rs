@@ -584,24 +584,25 @@ impl Graph2dScreen {
         if let Some(p) = trace {
             let wx = self.to_world(p, view).x;
             if let Some(expr) = model.active_expr()
-                && let Ok(comp) = engine::compile(expr, model.deg, false) {
-                    let wy = comp.eval1(wx);
-                    draw::text_in(
-                        scene,
-                        tr,
-                        t,
-                        l3,
-                        &format!(
-                            "f({}) = {}",
-                            engine::format_number(wx),
-                            engine::format_number(wy)
-                        ),
-                        13.0,
-                        c.accent[6],
-                        Align::Left,
-                        TextWeight::Semibold,
-                    );
-                }
+                && let Ok(comp) = engine::compile(expr, model.deg, false)
+            {
+                let wy = comp.eval1(wx);
+                draw::text_in(
+                    scene,
+                    tr,
+                    t,
+                    l3,
+                    &format!(
+                        "f({}) = {}",
+                        engine::format_number(wx),
+                        engine::format_number(wy)
+                    ),
+                    13.0,
+                    c.accent[6],
+                    Align::Left,
+                    TextWeight::Semibold,
+                );
+            }
         } else {
             draw::text_in(
                 scene,

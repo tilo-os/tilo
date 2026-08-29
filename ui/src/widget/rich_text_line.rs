@@ -418,7 +418,8 @@ impl Widget for RichTextLine {
         }
 
         // Clips overpaint so a scrolled long line doesn't bleed glyphs past the column.
-        let clip_shape = vello::kurbo::RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+        let clip_shape =
+            vello::kurbo::RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),

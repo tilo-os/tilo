@@ -44,9 +44,10 @@ fn shared_pdfium() -> Option<&'static Pdfium> {
 fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
     if let Ok(path) = std::env::var("QOS_PDFIUM_LIB")
         && !path.is_empty()
-            && let Ok(b) = Pdfium::bind_to_library(&path) {
-                return Some(b);
-            }
+        && let Ok(b) = Pdfium::bind_to_library(&path)
+    {
+        return Some(b);
+    }
     let mut candidates: Vec<String> = vec![
         "/usr/lib64/libpdfium.so".into(),
         "/usr/lib/libpdfium.so".into(),
@@ -58,9 +59,10 @@ fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
     }
     for cand in candidates {
         if Path::new(&cand).exists()
-            && let Ok(b) = Pdfium::bind_to_library(&cand) {
-                return Some(b);
-            }
+            && let Ok(b) = Pdfium::bind_to_library(&cand)
+        {
+            return Some(b);
+        }
     }
     Pdfium::bind_to_system_library().ok()
 }

@@ -801,7 +801,11 @@ impl LogsApp {
         } else {
             self.boots
                 .iter()
-                .find(|(id, _)| id == &self.filter.boot).map_or_else(|| self.filter.boot.chars().take(8).collect(), |(_, l)| l.clone())
+                .find(|(id, _)| id == &self.filter.boot)
+                .map_or_else(
+                    || self.filter.boot.chars().take(8).collect(),
+                    |(_, l)| l.clone(),
+                )
         };
         self.draw_dropdown_trigger(
             scene,
@@ -1606,18 +1610,19 @@ impl Widget for LogsApp {
         self.clamp_scroll();
         // Seed the shot's scroll so the auto-selected entry is visible.
         if let Some(abs) = self.effective_selected()
-            && let Some(pos) = self.filtered_pos(abs) {
-                // Only auto-center on the very first layout (scroll == 0
-                // and nothing has been interacted with yet).
-                if self.scroll == 0.0 {
-                    let body_h = self.list_viewport_h();
-                    let top = pos as f64 * ROW_H;
-                    if top + ROW_H > body_h {
-                        self.scroll = ((top + ROW_H) - body_h) as f32 + 4.0;
-                        self.clamp_scroll();
-                    }
+            && let Some(pos) = self.filtered_pos(abs)
+        {
+            // Only auto-center on the very first layout (scroll == 0
+            // and nothing has been interacted with yet).
+            if self.scroll == 0.0 {
+                let body_h = self.list_viewport_h();
+                let top = pos as f64 * ROW_H;
+                if top + ROW_H > body_h {
+                    self.scroll = ((top + ROW_H) - body_h) as f32 + 4.0;
+                    self.clamp_scroll();
                 }
             }
+        }
     }
 
     fn draw(
@@ -1821,10 +1826,9 @@ impl Widget for LogsApp {
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
+                self.on_key(key_event, modifiers, doc, root, handled);
             }
-                if key_event.state == ElementState::Pressed => {
-                    self.on_key(key_event, modifiers, doc, root, handled);
-                }
             _ => {}
         }
     }

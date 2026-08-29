@@ -110,11 +110,12 @@ fn split_terse(line: &str) -> Vec<String> {
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\\'
-            && let Some(&next) = chars.peek() {
-                buf.push(next);
-                chars.next();
-                continue;
-            }
+            && let Some(&next) = chars.peek()
+        {
+            buf.push(next);
+            chars.next();
+            continue;
+        }
         if c == ':' {
             out.push(std::mem::take(&mut buf));
         } else {
@@ -187,9 +188,10 @@ pub fn get_link_status() -> Result<LinkStatus, String> {
     )?;
     let mut status = parse_nmcli_device_status(&out);
     if status.kind == LinkKind::Wifi
-        && let Some(pct) = wireless_link_quality_pct() {
-            status.signal = signal_pct_to_bucket(pct);
-        }
+        && let Some(pct) = wireless_link_quality_pct()
+    {
+        status.signal = signal_pct_to_bucket(pct);
+    }
     Ok(status)
 }
 

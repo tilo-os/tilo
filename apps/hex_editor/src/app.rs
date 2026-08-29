@@ -29,8 +29,10 @@ pub fn sample_view() -> HexView {
 pub fn view_for_path(path: &Path) -> HexView {
     match std::fs::read(path) {
         Ok(bytes) => {
-            let name = path
-                .file_name().map_or_else(|| "untitled".to_string(), |s| s.to_string_lossy().into_owned());
+            let name = path.file_name().map_or_else(
+                || "untitled".to_string(),
+                |s| s.to_string_lossy().into_owned(),
+            );
             HexView::new(bytes, name).with_path(path.to_path_buf())
         }
         Err(_) => HexView::empty(),

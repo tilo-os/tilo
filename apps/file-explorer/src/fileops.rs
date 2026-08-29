@@ -176,7 +176,9 @@ pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or_else(|| "Source has no file name".to_string())?;
     let dest = unique_destination(dest_dir, &name);
-    if let Ok(()) = std::fs::rename(src, &dest) { Ok(dest) } else {
+    if let Ok(()) = std::fs::rename(src, &dest) {
+        Ok(dest)
+    } else {
         // Likely a cross-filesystem move — copy then remove.
         copy_recursive(src, &dest).map_err(|e| e.to_string())?;
         remove_path(src).map_err(|e| e.to_string())?;

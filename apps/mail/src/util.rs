@@ -79,13 +79,15 @@ pub fn format_absolute(ts_min: i64) -> String {
 /// `QOS_MAIL_DOWNLOADS`, then `$HOME/Downloads`, then the system temp dir.
 pub fn downloads_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("QOS_MAIL_DOWNLOADS")
-        && !dir.is_empty() {
-            return std::path::PathBuf::from(dir);
-        }
+        && !dir.is_empty()
+    {
+        return std::path::PathBuf::from(dir);
+    }
     if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty() {
-            return std::path::Path::new(&home).join("Downloads");
-        }
+        && !home.is_empty()
+    {
+        return std::path::Path::new(&home).join("Downloads");
+    }
     std::env::temp_dir()
 }
 

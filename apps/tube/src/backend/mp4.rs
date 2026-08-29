@@ -222,9 +222,7 @@ pub fn extract_annexb(data: &[u8]) -> Result<Demuxed, String> {
         .and_then(|b| avc_config_from_moov(data, b.payload));
 
     let length_size = cfg.as_ref().map_or(4, |c| c.length_size);
-    let (sps_count, pps_count) = cfg
-        .as_ref()
-        .map_or((0, 0), |c| (c.sps.len(), c.pps.len()));
+    let (sps_count, pps_count) = cfg.as_ref().map_or((0, 0), |c| (c.sps.len(), c.pps.len()));
 
     let mut annexb = Vec::new();
     if let Some(cfg) = &cfg {

@@ -35,7 +35,10 @@ use winit::event::WindowEvent;
 use crate::doc;
 use crate::frame::{self, FrameBuf};
 use crate::library;
-use crate::model::{CaptureKind, Facing, Screen, CaptureMode, GalleryFilter, Timer, Settings, ScanEntry, Capture, ScannedCode, Resolution, PhotoFormat, CodeKind, classify};
+use crate::model::{
+    Capture, CaptureKind, CaptureMode, CodeKind, Facing, GalleryFilter, PhotoFormat, Resolution,
+    ScanEntry, ScannedCode, Screen, Settings, Timer, classify,
+};
 use crate::paint as p;
 
 /// Uniform inset for floating controls from the window edge. The camera is an
@@ -858,9 +861,10 @@ impl Widget for CameraApp {
         self.screen = doc::read_screen(state, path);
         // Dev/screenshot hook: force a screen without driving the nav.
         if let Ok(s) = std::env::var("CAMERA_SCREEN")
-            && let Some(sc) = Screen::from_str(&s) {
-                self.screen = sc;
-            }
+            && let Some(sc) = Screen::from_str(&s)
+        {
+            self.screen = sc;
+        }
         // Don't let a persisted mode flip mid-record.
         if self.recording.is_none() {
             self.mode = doc::read_mode(state, path);
@@ -876,10 +880,7 @@ impl Widget for CameraApp {
         // Hermetic path has no frame clock: while recording, synthesize a
         // procedural frame each tick so a real multi-frame clip accumulates.
         if self.recording.is_some() && matches!(self.storage, Storage::Sample) {
-            let n = self
-                .recording
-                .as_ref()
-                .map_or(0, |s| s.rec.frame_count());
+            let n = self.recording.as_ref().map_or(0, |s| s.rec.frame_count());
             let seed = Self::viewfinder_seed(self.facing).wrapping_add((n as u8) & 3);
             let fb = frame::viewfinder(seed, 480, 270);
             if let Some(state) = &mut self.recording {
@@ -900,9 +901,10 @@ impl Widget for CameraApp {
         }
         // Drop a stale selection.
         if let Some(id) = self.selected_capture.clone()
-            && !self.captures.iter().any(|c| c.id == id) {
-                self.selected_capture = None;
-            }
+            && !self.captures.iter().any(|c| c.id == id)
+        {
+            self.selected_capture = None;
+        }
         // Screenshot hook: preselect an item so the detail view can be
         // captured headless. No effect on normal runtime (env is unset).
         if self.selected_capture.is_none() && std::env::var_os("CAMERA_SELECT").is_some() {
@@ -920,20 +922,22 @@ impl Widget for CameraApp {
                 .collect();
             for p in paths {
                 if let Some((luma, w, h)) = library::load_luma(&p, 1024)
-                    && let Some(s) = crate::scan::decode_and_classify(&luma, w, h, |q| q) {
-                        self.scanned = Some(s);
-                        self.scan_dismissed = false;
-                        break;
-                    }
+                    && let Some(s) = crate::scan::decode_and_classify(&luma, w, h, |q| q)
+                {
+                    self.scanned = Some(s);
+                    self.scan_dismissed = false;
+                    break;
+                }
             }
         }
         // Screenshot hook: pin a scroll position (clamped at draw time) so a
         // scrolled state can be captured headless. No runtime effect.
         if let Ok(v) = std::env::var("CAMERA_SCROLL")
-            && let Ok(px) = v.parse::<f64>() {
-                self.gallery_scroll = px;
-                self.settings_scroll = px;
-            }
+            && let Ok(px) = v.parse::<f64>()
+        {
+            self.gallery_scroll = px;
+            self.settings_scroll = px;
+        }
     }
 
     fn build_layout(
@@ -1479,13 +1483,11 @@ impl CameraApp {
                 }
                 Storage::Disk(_) => {
                     let cur_gen = self.frame_gen;
-                    if self
-                        .live_view
-                        .as_ref()
-                        .map_or(true, |(g, _)| *g != cur_gen)
-                        && let Some(fb) = self.latest_frame.clone() {
-                            self.live_view = Some((cur_gen, frame_image_cover(fb)));
-                        }
+                    if self.live_view.as_ref().map_or(true, |(g, _)| *g != cur_gen)
+                        && let Some(fb) = self.latest_frame.clone()
+                    {
+                        self.live_view = Some((cur_gen, frame_image_cover(fb)));
+                    }
                     if let Some((_, img)) = self.live_view.as_mut() {
                         img.paint_at(scene, t, full);
                     }
@@ -2047,22 +2049,16 @@ impl CameraApp {
             }
             Storage::Disk(_) => {
                 let cur_gen = self.frame_gen;
-                if self
-                    .live_view
-                    .as_ref()
-                    .map_or(true, |(g, _)| *g != cur_gen)
-                    && let Some(fb) = self.latest_frame.clone() {
-                        let luma = frame::luma(&fb);
-                        let (fw, fh) = (fb.w, fb.h);
-                        self.scanned = crate::scan::decode_and_classify(
-                            &luma,
-                            fw as usize,
-                            fh as usize,
-                            |p| p,
-                        );
-                        self.scan_gen = (fw, fh);
-                        self.live_view = Some((cur_gen, frame_image_cover(fb)));
-                    }
+                if self.live_view.as_ref().map_or(true, |(g, _)| *g != cur_gen)
+                    && let Some(fb) = self.latest_frame.clone()
+                {
+                    let luma = frame::luma(&fb);
+                    let (fw, fh) = (fb.w, fb.h);
+                    self.scanned =
+                        crate::scan::decode_and_classify(&luma, fw as usize, fh as usize, |p| p);
+                    self.scan_gen = (fw, fh);
+                    self.live_view = Some((cur_gen, frame_image_cover(fb)));
+                }
             }
         }
 
@@ -2123,8 +2119,9 @@ impl CameraApp {
             let (gw, gh) = self.scan_gen;
             let sx = full.width() / f64::from(gw.max(1));
             let sy = full.height() / f64::from(gh.max(1));
-            let pt =
-                |(x, y): (f32, f32)| Point::new(full.x0 + f64::from(x) * sx, full.y0 + f64::from(y) * sy);
+            let pt = |(x, y): (f32, f32)| {
+                Point::new(full.x0 + f64::from(x) * sx, full.y0 + f64::from(y) * sy)
+            };
             let mut bez = BezPath::new();
             let pts: Vec<Point> = s.corners.iter().map(|c| pt(*c)).collect();
             bez.move_to(pts[0]);
@@ -2156,9 +2153,10 @@ impl CameraApp {
 
         // Floating result card, centred on the frame under the scan window.
         if let Some(s) = self.scanned.clone()
-            && !self.scan_dismissed {
-                self.draw_scan_card(scene, t, tr, theme, full, &s);
-            }
+            && !self.scan_dismissed
+        {
+            self.draw_scan_card(scene, t, tr, theme, full, &s);
+        }
     }
 
     /// No live camera: let the user scan a code out of a photo already in
@@ -2246,9 +2244,10 @@ impl CameraApp {
         p::pop(scene);
 
         if let Some(s) = self.scanned.clone()
-            && !self.scan_dismissed {
-                self.draw_scan_card(scene, t, tr, theme, stage, &s);
-            }
+            && !self.scan_dismissed
+        {
+            self.draw_scan_card(scene, t, tr, theme, stage, &s);
+        }
     }
 
     fn draw_scan_card(
@@ -2626,28 +2625,29 @@ impl CameraApp {
 
         // Detail — side panel (wide) or full overlay (narrow).
         if let Some(id) = sel_id
-            && let Some(cap) = filtered.iter().find(|c| c.id == id).cloned() {
-                if wide {
-                    let panel = Rect::new(
-                        grid.x1 + detail_gap,
-                        content.y0 + 64.0,
-                        content.x1 - pad,
-                        content.y1 - pad,
-                    );
-                    self.draw_gallery_detail(scene, t, tr, theme, panel, &cap, now, false);
-                } else {
-                    let panel = Rect::new(
-                        content.x0 + pad,
-                        content.y0 + 64.0,
-                        content.x1 - pad,
-                        content.y1 - pad,
-                    );
-                    // Scrim behind the overlay — tapping it dismisses.
-                    p::fill_rect(scene, t, content, p::alpha(Color::from_rgb8(0, 0, 0), 0.4));
-                    self.push_region(content, Action::CloseDetail);
-                    self.draw_gallery_detail(scene, t, tr, theme, panel, &cap, now, true);
-                }
+            && let Some(cap) = filtered.iter().find(|c| c.id == id).cloned()
+        {
+            if wide {
+                let panel = Rect::new(
+                    grid.x1 + detail_gap,
+                    content.y0 + 64.0,
+                    content.x1 - pad,
+                    content.y1 - pad,
+                );
+                self.draw_gallery_detail(scene, t, tr, theme, panel, &cap, now, false);
+            } else {
+                let panel = Rect::new(
+                    content.x0 + pad,
+                    content.y0 + 64.0,
+                    content.x1 - pad,
+                    content.y1 - pad,
+                );
+                // Scrim behind the overlay — tapping it dismisses.
+                p::fill_rect(scene, t, content, p::alpha(Color::from_rgb8(0, 0, 0), 0.4));
+                self.push_region(content, Action::CloseDetail);
+                self.draw_gallery_detail(scene, t, tr, theme, panel, &cap, now, true);
             }
+        }
     }
 
     fn draw_gallery_card(

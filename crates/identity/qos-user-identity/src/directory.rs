@@ -363,14 +363,16 @@ impl WorkspaceDirectory {
         let len = self.doc.length(&list_obj);
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
-            if let Ok(Some((Value::Scalar(s), _))) = self.doc.get(&list_obj, i) { match s.as_ref() {
-                ScalarValue::Bytes(b) if b.len() == 32 => {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(b);
-                    out.push(arr);
+            if let Ok(Some((Value::Scalar(s), _))) = self.doc.get(&list_obj, i) {
+                match s.as_ref() {
+                    ScalarValue::Bytes(b) if b.len() == 32 => {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(b);
+                        out.push(arr);
+                    }
+                    _ => {}
                 }
-                _ => {}
-            } }
+            }
         }
         out
     }

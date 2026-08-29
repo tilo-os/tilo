@@ -99,9 +99,10 @@ pub fn app_root() -> Box<dyn ui::widget::Widget> {
 
     // `.flatpakref` handler: opening one drives the install flow for it.
     if let Some(path) = flatpakref::ref_path_from_args(&args)
-        && let Some(r) = flatpakref::FlatpakRef::from_path(&path) {
-            store.open_flatpakref(r);
-        }
+        && let Some(r) = flatpakref::FlatpakRef::from_path(&path)
+    {
+        store.open_flatpakref(r);
+    }
 
     if is_shots {
         store.apply_shot_view_env();

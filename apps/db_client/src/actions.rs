@@ -115,17 +115,18 @@ impl Action for DbAction {
             }
             DbAction::RemoveConnection { id } => {
                 if let Some(list) = list_object(doc)
-                    && let Some(index) = row_index_for_id(doc, &list, id) {
-                        doc.delete(&list, index)?;
-                    }
+                    && let Some(index) = row_index_for_id(doc, &list, id)
+                {
+                    doc.delete(&list, index)?;
+                }
             }
             DbAction::RenameConnection { id, name } => {
                 if let Some(list) = list_object(doc)
                     && let Some(index) = row_index_for_id(doc, &list, id)
-                        && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
-                        {
-                            put_if_changed(doc, &row, "name", name.as_str());
-                        }
+                    && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
+                {
+                    put_if_changed(doc, &row, "name", name.as_str());
+                }
             }
         }
         Ok(())
@@ -159,10 +160,11 @@ fn row_index_for_id(doc: &Doc, list: &ObjId, id: &str) -> Option<usize> {
     for i in 0..doc.length(list) {
         if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(list, i)
             && let Ok(Some((Value::Scalar(v), _))) = doc.get(&row, "id")
-                && let ScalarValue::Str(s) = v.as_ref()
-                    && s.as_str() == id {
-                        return Some(i);
-                    }
+            && let ScalarValue::Str(s) = v.as_ref()
+            && s.as_str() == id
+        {
+            return Some(i);
+        }
     }
     None
 }

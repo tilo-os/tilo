@@ -1802,19 +1802,16 @@ impl PdfApp {
                 }
                 self.selected_anno = last_id;
             }
-            Tool::Ink
-                if d.points.len() >= 2 => {
-                    let a = Annotation {
-                        id: Annotation::new_id(),
-                        page: d.page,
-                        kind: AnnoKind::Ink {
-                            points: d.points,
-                        },
-                        color: self.swatch,
-                        author: self.author.clone(),
-                    };
-                    self.perform_action(state, crate::actions::add_annotation_action(&a));
-                }
+            Tool::Ink if d.points.len() >= 2 => {
+                let a = Annotation {
+                    id: Annotation::new_id(),
+                    page: d.page,
+                    kind: AnnoKind::Ink { points: d.points },
+                    color: self.swatch,
+                    author: self.author.clone(),
+                };
+                self.perform_action(state, crate::actions::add_annotation_action(&a));
+            }
             _ => {}
         }
         self.reload(state);
@@ -1876,9 +1873,7 @@ impl PdfApp {
 
     /// Whether `target` is the edit currently in progress.
     fn is_editing(&self, target: &EditTarget) -> bool {
-        self.editing
-            .as_ref()
-            .is_some_and(|e| &e.target == target)
+        self.editing.as_ref().is_some_and(|e| &e.target == target)
     }
 
     /// Write the active edit's text to its durable home and clear the edit.
@@ -2021,10 +2016,9 @@ impl PdfApp {
                         hit = Some(a.id.clone());
                     }
                 }
-                AnnoKind::Highlight { rect }
-                    if rect.contains(pt.0, pt.1) && hit.is_none() => {
-                        hit = Some(a.id.clone());
-                    }
+                AnnoKind::Highlight { rect } if rect.contains(pt.0, pt.1) && hit.is_none() => {
+                    hit = Some(a.id.clone());
+                }
                 _ => {}
             }
         }
@@ -2081,10 +2075,11 @@ impl PdfApp {
     /// only written once, on release, so a drag is a single undo step).
     fn move_note_local(&mut self, id: &str, x: f64, y: f64) {
         if let Some(a) = self.annotations.iter_mut().find(|a| a.id == id)
-            && let AnnoKind::Note { x: nx, y: ny } = &mut a.kind {
-                *nx = x;
-                *ny = y;
-            }
+            && let AnnoKind::Note { x: nx, y: ny } = &mut a.kind
+        {
+            *nx = x;
+            *ny = y;
+        }
         self.dirty = true;
     }
 
@@ -2245,9 +2240,10 @@ impl PdfApp {
                     .iter()
                     .find(|c| &c.id == id)
                     .and_then(|c| c.anno_id.clone())
-                    && self.selected_anno.as_deref() == Some(anno.as_str()) {
-                        self.selected_anno = None;
-                    }
+                    && self.selected_anno.as_deref() == Some(anno.as_str())
+                {
+                    self.selected_anno = None;
+                }
                 self.perform_action(state, crate::actions::delete_comment_action(id));
             }
             DeleteTarget::Signature(id) => {
@@ -2293,10 +2289,9 @@ impl PdfApp {
                         return Some(DeleteTarget::Annotation(a.id.clone()));
                     }
                 }
-                AnnoKind::Highlight { rect }
-                    if rect.contains(pt.0, pt.1) => {
-                        return Some(DeleteTarget::Annotation(a.id.clone()));
-                    }
+                AnnoKind::Highlight { rect } if rect.contains(pt.0, pt.1) => {
+                    return Some(DeleteTarget::Annotation(a.id.clone()));
+                }
                 _ => {}
             }
         }
@@ -3373,8 +3368,11 @@ mod tests {
 
         // After its linger, with the pointer away, it hides again.
         app.page_bubble = ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
-        app.page_bubble
-            .poke(std::time::Instant::now().checked_sub(std::time::Duration::from_millis(10)).unwrap());
+        app.page_bubble.poke(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(10))
+                .unwrap(),
+        );
         app.last_mouse = Point::new(10.0, 110.0);
         app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         assert_eq!(

@@ -57,7 +57,10 @@ impl InhibitRegistry {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let reason = reason.into();
         {
-            let mut inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             inner.held.insert(id, reason);
         }
         InhibitToken {

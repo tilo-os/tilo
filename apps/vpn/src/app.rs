@@ -58,9 +58,10 @@ impl TransferHistory {
     fn push(&mut self, xfer: Transfer) {
         let now = Instant::now();
         if let Some(last) = self.samples.last()
-            && now.duration_since(last.at).as_secs_f64() < Self::MIN_DT {
-                return;
-            }
+            && now.duration_since(last.at).as_secs_f64() < Self::MIN_DT
+        {
+            return;
+        }
         self.samples.push(RateSample { at: now, xfer });
         // Keep enough points to fill the chart, plus one for the leading edge.
         let cap = throughput::SAMPLES + 1;
@@ -393,10 +394,11 @@ impl VpnApp {
         self.vault = VpnDoc::read_vault(doc);
         self.reconcile_real_status(doc);
         if self.vault.selected.is_none()
-            && let Some(first) = self.vault.connections.first().map(|c| c.id) {
-                self.vault.selected = Some(first);
-                VpnDoc::set_selected(doc, Some(first));
-            }
+            && let Some(first) = self.vault.connections.first().map(|c| c.id)
+        {
+            self.vault.selected = Some(first);
+            VpnDoc::set_selected(doc, Some(first));
+        }
     }
 
     /// Reconcile each tunnel's stored status against the REAL kernel/process
@@ -412,9 +414,10 @@ impl VpnApp {
         }
         let now = Instant::now();
         if let Some(prev) = self.last_reconcile
-            && now.duration_since(prev).as_secs_f64() < 1.0 {
-                return;
-            }
+            && now.duration_since(prev).as_secs_f64() < 1.0
+        {
+            return;
+        }
         self.last_reconcile = Some(now);
 
         let mut changes: Vec<(ConnId, ConnStatus)> = Vec::new();
@@ -460,9 +463,10 @@ impl VpnApp {
         self.throughput.retain(|id, _| connected.contains(id));
         for id in connected {
             if let Some(c) = self.vault.get(id)
-                && let Some(xfer) = net::read_transfer(c) {
-                    self.throughput.entry(id).or_default().push(xfer);
-                }
+                && let Some(xfer) = net::read_transfer(c)
+            {
+                self.throughput.entry(id).or_default().push(xfer);
+            }
         }
     }
 
@@ -627,10 +631,7 @@ impl VpnApp {
                         .unwrap_or("Imported")
                         .to_string();
                     let kind = config::kind_from_filename(
-                        path
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(""),
+                        path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
                     )
                     .unwrap_or(self.import_hint);
                     let mut conn = config::parse_config(&stem, kind, &text);
@@ -1434,7 +1435,13 @@ impl VpnApp {
                 "Connect",
             )
         };
-        fill_round(scene, t, lay.connect_btn, f64::from(theme.tokens.radii.md), bg);
+        fill_round(
+            scene,
+            t,
+            lay.connect_btn,
+            f64::from(theme.tokens.radii.md),
+            bg,
+        );
         text_center(
             tr,
             scene,
@@ -2209,30 +2216,31 @@ impl VpnApp {
         handled: &mut bool,
     ) {
         if let WindowEvent::KeyboardInput { event: ke, .. } = event
-            && ke.state == ElementState::Pressed {
-                match &ke.logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        self.confirm_pending(doc);
-                        self.confirm_dialog = None;
-                        *handled = true;
-                        return;
-                    }
-                    Key::Character(c) if c.as_str() == "y" => {
-                        self.confirm_pending(doc);
-                        self.confirm_dialog = None;
-                        *handled = true;
-                        return;
-                    }
-                    Key::Character(c) if c.as_str() == "n" => {
-                        self.pending = None;
-                        self.modal = Modal::None;
-                        self.confirm_dialog = None;
-                        *handled = true;
-                        return;
-                    }
-                    _ => {}
+            && ke.state == ElementState::Pressed
+        {
+            match &ke.logical_key {
+                Key::Named(NamedKey::Enter) => {
+                    self.confirm_pending(doc);
+                    self.confirm_dialog = None;
+                    *handled = true;
+                    return;
                 }
+                Key::Character(c) if c.as_str() == "y" => {
+                    self.confirm_pending(doc);
+                    self.confirm_dialog = None;
+                    *handled = true;
+                    return;
+                }
+                Key::Character(c) if c.as_str() == "n" => {
+                    self.pending = None;
+                    self.modal = Modal::None;
+                    self.confirm_dialog = None;
+                    *handled = true;
+                    return;
+                }
+                _ => {}
             }
+        }
         self.ensure_confirm_dialog();
         self.layout_confirm_dialog();
         let root = automerge::ROOT;
@@ -2708,7 +2716,12 @@ impl Widget for VpnApp {
         // counters keep refreshing. The rates shown are measured, never
         // fabricated — with execution disabled nothing polls at all.
         self.import_rx.is_some()
-            || (config::exec_allowed() && self.vault.connections.iter().any(super::model::Connection::is_connected))
+            || (config::exec_allowed()
+                && self
+                    .vault
+                    .connections
+                    .iter()
+                    .any(super::model::Connection::is_connected))
     }
 
     fn draw_with_presence(

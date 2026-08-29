@@ -65,9 +65,10 @@ impl SheetProvider for XlsxCodec {
         // Preserve styles + theme so cell `s=` refs resolve and unmodeled parts survive; regenerated structural parts are not.
         for name in pkg.names() {
             if is_preserved_part(name)
-                && let Some(b) = pkg.get(name) {
-                    wb.set_preserved(&format!("xlsx/part/{name}"), b);
-                }
+                && let Some(b) = pkg.get(name)
+            {
+                wb.set_preserved(&format!("xlsx/part/{name}"), b);
+            }
         }
         Ok(())
     }
@@ -370,15 +371,17 @@ fn import_core_props(xml: &[u8], wb: &mut Workbook) {
             }
             Event::Text(t) => {
                 if cur.is_some()
-                    && let Ok(txt) = t.xml10_content() {
-                        buf.push_str(&txt);
-                    }
+                    && let Ok(txt) = t.xml10_content()
+                {
+                    buf.push_str(&txt);
+                }
             }
             Event::End(_) => {
                 if let Some(key) = cur.take()
-                    && !buf.is_empty() {
-                        wb.set_prop(key, &buf);
-                    }
+                    && !buf.is_empty()
+                {
+                    wb.set_prop(key, &buf);
+                }
             }
             Event::Eof => break,
             _ => {}

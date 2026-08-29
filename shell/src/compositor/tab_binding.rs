@@ -12,8 +12,7 @@ use crate::shell::state::{
 };
 
 /// Where a newly-adopted toplevel should land — a new window group or a tab in an existing one — decided on purpose rather than inherited from wherever the tree walk landed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Placement {
     /// Its own window group, right of the active group in the active strip. What a **launch** gets:
     /// a new task, not a tab hidden in whatever group happens to be focused; inserted beside the focused group so the strip doesn't scroll away on every launch.
@@ -29,7 +28,6 @@ pub enum Placement {
     /// peer's window asks for ([`crate::shell::peer_windows`]): the tab already arrived in the room document. Falls back to [`Placement::NewGroup`] when the tab is gone by arrival.
     IntoTab(TabId),
 }
-
 
 /// Adopt a freshly-committed wayland toplevel into the active workspace's tab tree, at the
 /// placement the launch asked for.
@@ -235,11 +233,12 @@ pub fn rename_tab_for_app_id(
                         surface_id: s,
                         app_id,
                     } = &mut tab.tile
-                        && *s == surface_id {
-                            *app_id = new_app_id;
-                            tab.title = new_title;
-                            return true;
-                        }
+                        && *s == surface_id
+                    {
+                        *app_id = new_app_id;
+                        tab.title = new_title;
+                        return true;
+                    }
                 }
             }
         }

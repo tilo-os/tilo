@@ -18,10 +18,13 @@ pub fn default_socket_path() -> PathBuf {
     if let Some(p) = std::env::var_os("QUICK_COLLAB_SOCK") {
         return PathBuf::from(p);
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+        || {
             let uid = unsafe { libc_getuid() };
             PathBuf::from(format!("/run/user/{uid}"))
-        }, PathBuf::from);
+        },
+        PathBuf::from,
+    );
     runtime
         .join("qos")
         .join("services")

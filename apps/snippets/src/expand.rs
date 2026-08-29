@@ -263,7 +263,13 @@ impl ExpandModal {
 
         // Preview card with highlighted, substituted body.
         let card = Rect::new(panel.x0 + pad, y, panel.x1 - pad, panel.y1 - 72.0);
-        draw::fill_round(scene, t, card, f64::from(theme.tokens.radii.md), c.neutral[0]);
+        draw::fill_round(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.md),
+            c.neutral[0],
+        );
         draw::stroke_round(
             scene,
             t,

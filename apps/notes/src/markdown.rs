@@ -232,72 +232,80 @@ pub fn parse_inline(line: &str) -> InlineText {
     while i < bytes.len() {
         // Inline code.
         if bytes[i] == b'`'
-            && let Some(end) = find_unescaped(bytes, i + 1, b'`') {
-                let start = plain.len();
-                plain.push_str(&line[i + 1..end]);
-                let stop = plain.len();
-                marks.push(MarkSpan::new(start..stop, Mark::Code));
-                i = end + 1;
-                continue;
-            }
+            && let Some(end) = find_unescaped(bytes, i + 1, b'`')
+        {
+            let start = plain.len();
+            plain.push_str(&line[i + 1..end]);
+            let stop = plain.len();
+            marks.push(MarkSpan::new(start..stop, Mark::Code));
+            i = end + 1;
+            continue;
+        }
         // Page link `[[Title]]`.
-        if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'['
-            && let Some(end) = find_pair(bytes, i + 2, b']', b']') {
-                let title = &line[i + 2..end];
-                let start = plain.len();
-                plain.push_str(title);
-                let stop = plain.len();
-                // Use Uuid::nil() as a placeholder; the notes app
-                // resolves titles to ids after parse via
-                // `resolve_link_ids`.
-                marks.push(MarkSpan::new(start..stop, Mark::Link(PageId::nil())));
-                i = end + 2;
-                continue;
-            }
+        if i + 1 < bytes.len()
+            && bytes[i] == b'['
+            && bytes[i + 1] == b'['
+            && let Some(end) = find_pair(bytes, i + 2, b']', b']')
+        {
+            let title = &line[i + 2..end];
+            let start = plain.len();
+            plain.push_str(title);
+            let stop = plain.len();
+            // Use Uuid::nil() as a placeholder; the notes app
+            // resolves titles to ids after parse via
+            // `resolve_link_ids`.
+            marks.push(MarkSpan::new(start..stop, Mark::Link(PageId::nil())));
+            i = end + 2;
+            continue;
+        }
         // Bold `**...**` (run before italic so `**` doesn't parse as
         // empty italic).
-        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*'
-            && let Some(end) = find_pair(bytes, i + 2, b'*', b'*') {
-                // Body may contain nested italic via `*text*`. Recurse.
-                let body = &line[i + 2..end];
+        if i + 1 < bytes.len()
+            && bytes[i] == b'*'
+            && bytes[i + 1] == b'*'
+            && let Some(end) = find_pair(bytes, i + 2, b'*', b'*')
+        {
+            // Body may contain nested italic via `*text*`. Recurse.
+            let body = &line[i + 2..end];
+            let body_parsed = parse_inline(body);
+            let start = plain.len();
+            plain.push_str(&body_parsed.text);
+            let stop = plain.len();
+            marks.push(MarkSpan::new(start..stop, Mark::Bold));
+            // Shift inner marks by `start`.
+            for m in body_parsed.marks {
+                marks.push(MarkSpan::new(
+                    (m.range.start + start)..(m.range.end + start),
+                    m.mark,
+                ));
+            }
+            i = end + 2;
+            continue;
+        }
+        // Italic `*...*`.
+        if bytes[i] == b'*'
+            && let Some(end) = find_unescaped(bytes, i + 1, b'*')
+        {
+            // Empty `**` body wouldn't reach here (bold path
+            // above already claimed it). A lone `*` with no
+            // closing partner falls through.
+            if end > i + 1 {
+                let body = &line[i + 1..end];
                 let body_parsed = parse_inline(body);
                 let start = plain.len();
                 plain.push_str(&body_parsed.text);
                 let stop = plain.len();
-                marks.push(MarkSpan::new(start..stop, Mark::Bold));
-                // Shift inner marks by `start`.
+                marks.push(MarkSpan::new(start..stop, Mark::Italic));
                 for m in body_parsed.marks {
                     marks.push(MarkSpan::new(
                         (m.range.start + start)..(m.range.end + start),
                         m.mark,
                     ));
                 }
-                i = end + 2;
+                i = end + 1;
                 continue;
             }
-        // Italic `*...*`.
-        if bytes[i] == b'*'
-            && let Some(end) = find_unescaped(bytes, i + 1, b'*') {
-                // Empty `**` body wouldn't reach here (bold path
-                // above already claimed it). A lone `*` with no
-                // closing partner falls through.
-                if end > i + 1 {
-                    let body = &line[i + 1..end];
-                    let body_parsed = parse_inline(body);
-                    let start = plain.len();
-                    plain.push_str(&body_parsed.text);
-                    let stop = plain.len();
-                    marks.push(MarkSpan::new(start..stop, Mark::Italic));
-                    for m in body_parsed.marks {
-                        marks.push(MarkSpan::new(
-                            (m.range.start + start)..(m.range.end + start),
-                            m.mark,
-                        ));
-                    }
-                    i = end + 1;
-                    continue;
-                }
-            }
+        }
         // Fallback: copy the next char verbatim. The markers we
         // scan for are all ASCII, but the body may contain
         // multi-byte UTF-8 — pushing a single byte as `char` mangles
@@ -725,11 +733,12 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
                 i += 1;
                 while i < blocks.len() {
                     if let BlockKind::CodeBlock { lang: next_lang } = &blocks[i].kind
-                        && *next_lang == run_lang {
-                            lines.push(blocks[i].text().to_string());
-                            i += 1;
-                            continue;
-                        }
+                        && *next_lang == run_lang
+                    {
+                        lines.push(blocks[i].text().to_string());
+                        i += 1;
+                        continue;
+                    }
                     break;
                 }
                 out.push(BlockSpec::CodeBlock {
@@ -765,12 +774,13 @@ where
         };
         for m in &mut inline.marks {
             if let Mark::Link(id) = &m.mark
-                && id.is_nil() {
-                    let title = &inline.text[m.range.clone()];
-                    if let Some(new_id) = resolver(title) {
-                        m.mark = Mark::Link(new_id);
-                    }
+                && id.is_nil()
+            {
+                let title = &inline.text[m.range.clone()];
+                if let Some(new_id) = resolver(title) {
+                    m.mark = Mark::Link(new_id);
                 }
+            }
         }
     }
 }

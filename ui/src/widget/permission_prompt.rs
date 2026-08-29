@@ -301,8 +301,8 @@ impl Widget for PermissionPrompt {
         let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
         let app_id_size = theme.tokens.typography.scale.sm;
         let cap_size = theme.tokens.typography.scale.base;
-        let label_y =
-            self.rect.y0 + (PROMPT_HEIGHT - (f64::from(app_id_size) + f64::from(cap_size) + 4.0)) / 2.0;
+        let label_y = self.rect.y0
+            + (PROMPT_HEIGHT - (f64::from(app_id_size) + f64::from(cap_size) + 4.0)) / 2.0;
         text_renderer.draw_text(
             scene,
             &self.app_id,

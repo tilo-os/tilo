@@ -130,13 +130,14 @@ impl PairingPromptView {
         }
 
         if let PairingPrompt::DisplayPasskey { entered, .. } = &self.request.prompt
-            && *entered > 0 {
-                body = body.push(Box::new(
-                    Text::new(&format!("{entered} of 6 digits entered"))
-                        .with_size(12.0)
-                        .with_color(theme.text_dim),
-                ));
-            }
+            && *entered > 0
+        {
+            body = body.push(Box::new(
+                Text::new(&format!("{entered} of 6 digits entered"))
+                    .with_size(12.0)
+                    .with_color(theme.text_dim),
+            ));
+        }
 
         if let PairingPrompt::AuthorizeService { uuid } = &self.request.prompt {
             body = body.push(Box::new(
@@ -310,9 +311,10 @@ impl Widget for PairingPromptView {
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
-                && let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
+        }
     }
 
     fn draw(
@@ -343,19 +345,20 @@ impl Widget for PairingPromptView {
     ) {
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
-                && let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

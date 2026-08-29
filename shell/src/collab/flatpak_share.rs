@@ -288,7 +288,8 @@ impl SharedFlatpakSession {
             m.set_chosen_encoder(chosen);
         }
 
-        let interval = std::time::Duration::from_micros((1_000_000 / u64::from(effective_fps)).max(1));
+        let interval =
+            std::time::Duration::from_micros((1_000_000 / u64::from(effective_fps)).max(1));
 
         Ok(Self {
             host_user_id,

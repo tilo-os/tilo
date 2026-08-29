@@ -126,13 +126,14 @@ impl Grid {
             self.newline();
         }
         if let Some(row) = self.cells.get_mut(self.cy)
-            && let Some(cell) = row.get_mut(self.cx) {
-                *cell = Cell {
-                    ch,
-                    color: self.pen_color,
-                    bold: self.pen_bold,
-                };
-            }
+            && let Some(cell) = row.get_mut(self.cx)
+        {
+            *cell = Cell {
+                ch,
+                color: self.pen_color,
+                bold: self.pen_bold,
+            };
+        }
         self.cx += 1;
     }
 

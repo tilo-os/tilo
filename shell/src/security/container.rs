@@ -118,9 +118,7 @@ impl Container {
         cmd.stdout(Stdio::from(log_file.try_clone()?));
         cmd.stderr(Stdio::from(log_file));
 
-        println!(
-            "DEBUG: Spawning Tab {tab_id} Log: /tmp/quick-desktop-app-{tab_id}.log"
-        );
+        println!("DEBUG: Spawning Tab {tab_id} Log: /tmp/quick-desktop-app-{tab_id}.log");
         cmd.spawn()
     }
 }

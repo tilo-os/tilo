@@ -122,8 +122,10 @@ impl UserDirs {
 
     /// The resolved directory's own file name — `~/Dokumente` → `"Dokumente"`.
     pub fn label(&self, dir: UserDir) -> String {
-        self.path(dir)
-            .and_then(|p| p.file_name()).map_or_else(|| dir.fallback_name().to_string(), |n| n.to_string_lossy().into_owned())
+        self.path(dir).and_then(|p| p.file_name()).map_or_else(
+            || dir.fallback_name().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
     }
 
     /// Home wins over Desktop wins over the content dirs when paths coincide.
@@ -149,9 +151,12 @@ impl UserDirs {
             .iter()
             .map(|&kind| {
                 let path = self
-                    .path(kind).map_or_else(|| home.join(kind.fallback_name()), Path::to_path_buf);
-                let label = path
-                    .file_name().map_or_else(|| kind.fallback_name().to_string(), |n| n.to_string_lossy().into_owned());
+                    .path(kind)
+                    .map_or_else(|| home.join(kind.fallback_name()), Path::to_path_buf);
+                let label = path.file_name().map_or_else(
+                    || kind.fallback_name().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
                 (kind, label, path)
             })
             .collect()

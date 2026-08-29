@@ -297,9 +297,10 @@ impl CursorPlanes {
         let id = self.outputs[i].id;
         if self.active != Some(id) {
             if let Some(prev) = self.active
-                && let Some(o) = self.outputs.iter().find(|o| o.id == prev) {
-                    o.mover.hide();
-                }
+                && let Some(o) = self.outputs.iter().find(|o| o.id == prev)
+            {
+                o.mover.hide();
+            }
             self.active = Some(id);
         }
         let (ox, oy, _, _) = self.outputs[i].rect;
@@ -353,7 +354,9 @@ impl DrmScanout {
         match card.acquire_master_lock() {
             Ok(()) => tracing::info!("DRM scanout: acquired DRM master"),
             Err(e) => {
-                tracing::warn!("DRM scanout: acquire_master_lock failed ({e}); set_crtc may EACCES");
+                tracing::warn!(
+                    "DRM scanout: acquire_master_lock failed ({e}); set_crtc may EACCES"
+                );
             }
         }
         Ok(card)
@@ -372,10 +375,11 @@ impl DrmScanout {
         for &ch in res.connectors() {
             if let Ok(info) = card.get_connector(ch, true)
                 && info.state() == connector::State::Connected
-                    && let Some(m) = pick_mode(info.modes()) {
-                        chosen = Some((info, m));
-                        break;
-                    }
+                && let Some(m) = pick_mode(info.modes())
+            {
+                chosen = Some((info, m));
+                break;
+            }
         }
         let (conn_info, mode) = chosen.ok_or("no connected connector with a usable mode")?;
         let connector = conn_info.handle();
@@ -534,16 +538,17 @@ impl DrmScanout {
         }
         // Per-CRTC state, gone with the rest — without this the pointer is invisible after every VT switch.
         if self.hw_cursor_active
-            && let Some(buf) = self.cursor_buffer.as_ref() {
-                #[allow(deprecated)]
-                if let Err(e) = self.card.set_cursor2(self.crtc, Some(buf), (0, 0)) {
-                    tracing::warn!(
-                        "DRM scanout: re-binding the cursor plane on resume failed ({e}); \
+            && let Some(buf) = self.cursor_buffer.as_ref()
+        {
+            #[allow(deprecated)]
+            if let Err(e) = self.card.set_cursor2(self.crtc, Some(buf), (0, 0)) {
+                tracing::warn!(
+                    "DRM scanout: re-binding the cursor plane on resume failed ({e}); \
                          falling back to the software cursor"
-                    );
-                    self.hw_cursor_active = false;
-                }
+                );
+                self.hw_cursor_active = false;
             }
+        }
     }
 
     /// A [`HwCursor`] mover for the runtime's input handler, holding a dup of the card fd so
@@ -609,9 +614,10 @@ impl DrmScanout {
             fill(dst, pitch);
             // Software fallback only — the hardware plane composites itself and must not also be drawn into the frame.
             if !self.hw_cursor_active
-                && let Some((px, py)) = cursor {
-                    draw_cursor(dst, pitch, dw, dh, px as i32, py as i32);
-                }
+                && let Some((px, py)) = cursor
+            {
+                draw_cursor(dst, pitch, dw, dh, px as i32, py as i32);
+            }
         }
 
         if self.use_pageflip {
@@ -812,9 +818,10 @@ fn pick_crtc(
         .current_encoder()
         .and_then(|e| card.get_encoder(e).ok())
         .and_then(|e| e.crtc())
-        && !used.contains(&c) {
-            return Some(c);
-        }
+        && !used.contains(&c)
+    {
+        return Some(c);
+    }
     for &eh in conn_info.encoders() {
         if let Ok(enc) = card.get_encoder(eh) {
             for c in res.filter_crtcs(enc.possible_crtcs()) {

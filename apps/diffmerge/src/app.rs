@@ -334,8 +334,10 @@ impl DiffMergeApp {
     /// `false`. Pure w.r.t. the portal (reads the file, mutates model state) so
     /// the two-file flow is unit-testable without a host dialog.
     fn consume_pick(&mut self, path: &Path) -> bool {
-        let label = path
-            .file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().to_string());
+        let label = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().to_string(),
+        );
         let content = fs::read_to_string(path)
             .unwrap_or_else(|e| format!("<could not read {}: {e}>", path.display()));
         match self.pending_left.take() {

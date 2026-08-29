@@ -34,10 +34,14 @@ fn main() -> ExitCode {
     let mut needle: Option<String> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--contains" => if let Some(v) = args.next() { needle = Some(v) } else {
-                eprintln!("--contains needs a value");
-                return ExitCode::from(2);
-            },
+            "--contains" => {
+                if let Some(v) = args.next() {
+                    needle = Some(v)
+                } else {
+                    eprintln!("--contains needs a value");
+                    return ExitCode::from(2);
+                }
+            }
             other => {
                 eprintln!("unknown argument {other:?}");
                 return ExitCode::from(2);
@@ -116,9 +120,10 @@ fn collect(
     match doc.object_type(obj) {
         Ok(ObjType::Text) => {
             if let Ok(t) = doc.text(obj)
-                && !t.is_empty() {
-                    out.push((path.to_string(), t));
-                }
+                && !t.is_empty()
+            {
+                out.push((path.to_string(), t));
+            }
         }
         Ok(ObjType::List) => {
             for i in 0..doc.length(obj) {
@@ -154,9 +159,10 @@ fn push_scalar(
     out: &mut Vec<(String, String)>,
 ) {
     if let automerge::ScalarValue::Str(s) = scalar.as_ref()
-        && !s.is_empty() {
-            out.push((path.to_string(), s.to_string()));
-        }
+        && !s.is_empty()
+    {
+        out.push((path.to_string(), s.to_string()));
+    }
 }
 
 #[cfg(test)]

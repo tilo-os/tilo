@@ -156,7 +156,8 @@ impl OpenImage {
     /// Derive the display name from a path.
     pub fn from_path(path: &str, width: u32, height: u32) -> Self {
         let name = std::path::Path::new(path)
-            .file_name().map_or_else(|| path.to_string(), |s| s.to_string_lossy().into_owned());
+            .file_name()
+            .map_or_else(|| path.to_string(), |s| s.to_string_lossy().into_owned());
         Self {
             path: path.to_string(),
             name,

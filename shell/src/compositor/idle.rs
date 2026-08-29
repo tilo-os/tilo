@@ -176,22 +176,25 @@ impl SessionManager {
         let mut out = Vec::new();
         if !self.blanked
             && let Some(t) = self.config.blank_timeout
-                && idle >= t {
-                    self.blanked = true;
-                    out.push(SessionTransition::Blanked);
-                }
+            && idle >= t
+        {
+            self.blanked = true;
+            out.push(SessionTransition::Blanked);
+        }
         if !self.locked
             && let Some(t) = self.config.lock_timeout
-                && idle >= t {
-                    self.locked = true;
-                    out.push(SessionTransition::Locked);
-                }
+            && idle >= t
+        {
+            self.locked = true;
+            out.push(SessionTransition::Locked);
+        }
         if !self.suspended
             && let Some(t) = self.config.suspend_timeout
-                && idle >= t {
-                    self.suspended = true;
-                    out.push(SessionTransition::Suspend);
-                }
+            && idle >= t
+        {
+            self.suspended = true;
+            out.push(SessionTransition::Suspend);
+        }
         out
     }
 

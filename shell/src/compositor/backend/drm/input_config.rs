@@ -60,8 +60,12 @@ impl InputSettings {
     /// independently, so a document that only sets `tap_to_click` leaves the rest alone, and a wrong-typed value is treated as absent rather than discarding the whole section.
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
-        let bool_at =
-            |k: &str, fallback: bool| section.get(k).and_then(serde_json::Value::as_bool).unwrap_or(fallback);
+        let bool_at = |k: &str, fallback: bool| {
+            section
+                .get(k)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(fallback)
+        };
         let unit_at = |k: &str, fallback: f64| {
             section
                 .get(k)
@@ -92,8 +96,8 @@ impl InputSettings {
     pub fn key_repeat_params(&self) -> (Duration, u32) {
         let t = self.key_repeat.clamp(0.0, 1.0);
         let rate = f64::from(REPEAT_RATE_MIN) + t * f64::from(REPEAT_RATE_MAX - REPEAT_RATE_MIN);
-        let delay =
-            f64::from(REPEAT_DELAY_MAX_MS) - t * f64::from(REPEAT_DELAY_MAX_MS - REPEAT_DELAY_MIN_MS);
+        let delay = f64::from(REPEAT_DELAY_MAX_MS)
+            - t * f64::from(REPEAT_DELAY_MAX_MS - REPEAT_DELAY_MIN_MS);
         (
             Duration::from_millis(delay.round() as u64),
             rate.round() as u32,
@@ -149,9 +153,10 @@ impl SettingsWatch {
     /// Whether the settings file has changed since the last time this returned `true`. Rate-limited to [`Self::with_interval`]; calls in between are free.
     pub fn changed(&mut self, now: Instant) -> bool {
         if let Some(next) = self.next_check
-            && now < next {
-                return false;
-            }
+            && now < next
+        {
+            return false;
+        }
         self.next_check = Some(now + self.interval);
         let Some(path) = self.path.as_ref() else {
             return false;

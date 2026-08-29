@@ -456,7 +456,9 @@ impl KeypadLayout {
     /// The row-major key list for this layout. Each layout is a dense grid of
     /// `cols()` columns.
     pub fn keys(self) -> Vec<Key> {
-        use Key::{Clear, Backspace, Ins, Digit, Dot, Equals, Percent, Wrap, ToggleSign, Ans, DoubleZero};
+        use Key::{
+            Ans, Backspace, Clear, Digit, Dot, DoubleZero, Equals, Ins, Percent, ToggleSign, Wrap,
+        };
         match self {
             // 4 cols × 6 rows — the everyday essentials.
             KeypadLayout::Compact => vec![

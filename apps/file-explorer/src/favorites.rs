@@ -109,8 +109,10 @@ fn describe(path: &Path, home: &Path, dirs: &UserDirs) -> (String, bool, FavKind
     if kind == FavKind::Home {
         return ("Home".to_string(), true, kind);
     }
-    let label = path
-        .file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let label = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     (label, false, kind)
 }
 

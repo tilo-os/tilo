@@ -164,7 +164,8 @@ impl RustyPipeBackend {
             .map_err(|e| BackendError(format!("playlist {id}: {e}")))?;
         let videos: Vec<Video> = pl.videos.items.into_iter().map(map_video_item).collect();
         let (channel_id, channel_name) = pl
-            .channel.map_or_else(|| (String::new(), "Unknown".into()), |c| (c.id, c.name));
+            .channel
+            .map_or_else(|| (String::new(), "Unknown".into()), |c| (c.id, c.name));
         let thumb = best_thumb(&pl.thumbnail);
         let thumbnail_url = if thumb.is_empty() {
             videos
@@ -193,7 +194,10 @@ impl RustyPipeBackend {
 /// and are filled in by a later `video_details` / `SponsorBlock` fetch.
 fn map_video_item(it: VideoItem) -> Video {
     let channel = it.channel;
-    let (channel_id, channel_name, channel_avatar_url) = channel.map_or_else(|| (String::new(), "Unknown".into(), String::new()), |c| (c.id, c.name, best_thumb(&c.avatar)));
+    let (channel_id, channel_name, channel_avatar_url) = channel.map_or_else(
+        || (String::new(), "Unknown".into(), String::new()),
+        |c| (c.id, c.name, best_thumb(&c.avatar)),
+    );
     Video {
         id: it.id.clone(),
         title: it.name,
@@ -262,7 +266,8 @@ fn initials(name: &str) -> String {
 /// [`Playlist`]. The video list is empty until the playlist page is opened.
 fn map_playlist_item(p: PlaylistItem) -> Playlist {
     let (channel_id, channel_name) = p
-        .channel.map_or_else(|| (String::new(), "Unknown".into()), |c| (c.id, c.name));
+        .channel
+        .map_or_else(|| (String::new(), "Unknown".into()), |c| (c.id, c.name));
     Playlist {
         id: p.id.clone(),
         title: p.name,

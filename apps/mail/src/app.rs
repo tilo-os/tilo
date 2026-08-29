@@ -637,10 +637,7 @@ impl MailApp {
         let (from, now) = {
             let st = self.shared.borrow();
             let acct = st.accounts.active_config();
-            (
-                Addr::new(acct.display_name.clone(), acct.email),
-                st.now_min,
-            )
+            (Addr::new(acct.display_name.clone(), acct.email), st.now_min)
         };
         let id = self.editing_draft.unwrap_or_else(uuid::Uuid::new_v4);
         let msg = Message {
@@ -857,9 +854,10 @@ impl MailApp {
             cfg.username = email.clone();
         }
         if cfg.display_name.trim().is_empty()
-            && let Some((local, _)) = email.split_once('@') {
-                cfg.display_name = local.to_string();
-            }
+            && let Some((local, _)) = email.split_once('@')
+        {
+            cfg.display_name = local.to_string();
+        }
 
         if imap_blank {
             self.setup_inputs[4].set_text(&cfg.imap_host);
@@ -1216,13 +1214,14 @@ impl MailApp {
             self.toast_deadline = current.as_ref().map(|_| now + TOAST_TTL);
         }
         if let Some(deadline) = self.toast_deadline
-            && now >= deadline {
-                let mut st = self.shared.borrow_mut();
-                st.status = None;
-                st.dirty = true;
-                self.toast_text = None;
-                self.toast_deadline = None;
-            }
+            && now >= deadline
+        {
+            let mut st = self.shared.borrow_mut();
+            st.status = None;
+            st.dirty = true;
+            self.toast_text = None;
+            self.toast_deadline = None;
+        }
     }
 
     /// Whether a toast is currently on screen and still counting down — used to
@@ -1333,9 +1332,10 @@ impl MailApp {
         // synced account config, adopt it.
         if self.shared.borrow().accounts.is_empty()
             && let Some(cfg) = MailDoc::load_account(doc)
-                && !cfg.email.is_empty() {
-                    self.shared.borrow_mut().accounts.upsert(Account::new(cfg));
-                }
+            && !cfg.email.is_empty()
+        {
+            self.shared.borrow_mut().accounts.upsert(Account::new(cfg));
+        }
         // Compose body format preference.
         if let Some(fmt) = MailDoc::get_compose_format(doc) {
             self.compose.set_format(ComposeFormat::from_key(&fmt));
@@ -1649,7 +1649,10 @@ impl MailApp {
                 label,
                 12.5,
                 col,
-                t * Affine::translate((f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0, rect.y0 + 9.0)),
+                t * Affine::translate((
+                    f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
+                    rect.y0 + 9.0,
+                )),
                 None,
                 TextWeight::Medium,
             );
@@ -1682,13 +1685,17 @@ impl MailApp {
                 TextWeight::Semibold,
             );
             // Note whether a registered client id is provisioned.
-            let has_client = self.setup_provider.and_then(super::oauth::OAuthProvider::client_id).is_some();
+            let has_client = self
+                .setup_provider
+                .and_then(super::oauth::OAuthProvider::client_id)
+                .is_some();
             let note = if has_client {
                 "Opens your browser to authorize (OAuth2 + PKCE).".to_string()
             } else {
-                let env = self
-                    .setup_provider
-                    .map_or("QOS_MAIL_*_CLIENT_ID", super::oauth::OAuthProvider::client_id_env);
+                let env = self.setup_provider.map_or(
+                    "QOS_MAIL_*_CLIENT_ID",
+                    super::oauth::OAuthProvider::client_id_env,
+                );
                 format!("Set {env} to enable sign-in.")
             };
             tr.draw_text(
@@ -2392,20 +2399,20 @@ impl Widget for MailApp {
                 button: MouseButton::Left,
                 ..
             } = event
+        {
+            let pt = self.shared.borrow().last_mouse;
+            self.rebuild_overlay_hits();
+            if self
+                .overlay_hits
+                .iter()
+                .any(|(rc, h)| matches!(h, OverlayHit::FirstRunAdd) && rc.contains(pt))
             {
-                let pt = self.shared.borrow().last_mouse;
-                self.rebuild_overlay_hits();
-                if self
-                    .overlay_hits
-                    .iter()
-                    .any(|(rc, h)| matches!(h, OverlayHit::FirstRunAdd) && rc.contains(pt))
-                {
-                    self.open_setup_edit(None);
-                }
-                *handled = true;
-                self.dirty = true;
-                return;
+                self.open_setup_edit(None);
             }
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
 
         // 2) Esc dismisses app-owned overlays first.
         if let WindowEvent::KeyboardInput {
@@ -2437,31 +2444,30 @@ impl Widget for MailApp {
                 button: MouseButton::Left,
                 ..
             } = event
-            {
-                let pt = self.shared.borrow().last_mouse;
-                self.rebuild_overlay_hits();
-                let item = self
-                    .overlay_hits
-                    .iter()
-                    .rev()
-                    .find(|(rc, h)| matches!(h, OverlayHit::CtxItem(_)) && rc.contains(pt))
-                    .cloned();
-                if let Some((_, OverlayHit::CtxItem(i))) = item {
-                    if let Some(menu) = self.context_menu.take()
-                        && let Some(action) = menu.items.get(i).copied() {
-                            self.shared.borrow_mut().apply_message_action(
-                                state,
-                                menu.target,
-                                action,
-                            );
-                            self.process_intents();
-                        }
-                } else {
-                    self.context_menu = None;
+        {
+            let pt = self.shared.borrow().last_mouse;
+            self.rebuild_overlay_hits();
+            let item = self
+                .overlay_hits
+                .iter()
+                .rev()
+                .find(|(rc, h)| matches!(h, OverlayHit::CtxItem(_)) && rc.contains(pt))
+                .cloned();
+            if let Some((_, OverlayHit::CtxItem(i))) = item {
+                if let Some(menu) = self.context_menu.take()
+                    && let Some(action) = menu.items.get(i).copied()
+                {
+                    self.shared
+                        .borrow_mut()
+                        .apply_message_action(state, menu.target, action);
+                    self.process_intents();
                 }
-                *handled = true;
-                return;
+            } else {
+                self.context_menu = None;
             }
+            *handled = true;
+            return;
+        }
 
         // 4) Setup sheet is modal while open.
         if self.setup_open {
@@ -2596,9 +2602,7 @@ impl MailApp {
                 }
                 Key::Named(NamedKey::Enter) => {
                     let order = self.setup_tab_order();
-                    let is_last = self
-                        .setup_focus
-                        .is_some_and(|f| order.last() == Some(&f));
+                    let is_last = self.setup_focus.is_some_and(|f| order.last() == Some(&f));
                     if is_last {
                         self.save_setup(state);
                     } else {

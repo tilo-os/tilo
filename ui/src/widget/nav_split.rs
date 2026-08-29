@@ -522,9 +522,9 @@ impl NavSplit {
     /// a parked event loop can't skip the slide.
     fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let now = Instant::now();
-        let dt = self
-            .last_tick
-            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT));
+        let dt = self.last_tick.map_or(0.0, |t| {
+            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
+        });
         self.last_tick = Some(now);
 
         let layout = self.layout_mode();
@@ -560,10 +560,7 @@ impl NavSplit {
 fn split_cache_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("QUICK_UI_NO_SPLIT_CACHE")
-            .is_ok_and(|s| !s.is_empty())
-    })
+    *FLAG.get_or_init(|| std::env::var("QUICK_UI_NO_SPLIT_CACHE").is_ok_and(|s| !s.is_empty()))
 }
 
 impl Widget for NavSplit {

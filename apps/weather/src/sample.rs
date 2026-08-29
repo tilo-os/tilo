@@ -99,9 +99,7 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
         temperature: (temp_at(spec.now_hour as f64) * 10.0).round() / 10.0,
         apparent: (temp_at(spec.now_hour as f64) - 1.5 + spec.wind * 0.02).round(),
         humidity: spec.humidity,
-        precipitation: spec
-            .precip_peak
-            .map_or(0.0, |(_, m)| (m / 100.0) * 1.2),
+        precipitation: spec.precip_peak.map_or(0.0, |(_, m)| (m / 100.0) * 1.2),
         weather_code: now_code,
         wind_speed: spec.wind,
         wind_direction: spec.wind_dir,

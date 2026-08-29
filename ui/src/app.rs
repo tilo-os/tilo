@@ -57,10 +57,7 @@ use vello::{
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("QUICK_UI_PERF")
-            .is_ok_and(|s| !s.is_empty())
-    })
+    *FLAG.get_or_init(|| std::env::var("QUICK_UI_PERF").is_ok_and(|s| !s.is_empty()))
 }
 
 /// `QUICK_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
@@ -70,10 +67,7 @@ fn perf_enabled() -> bool {
 fn scroll_opt_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("QUICK_UI_NO_SCROLL_OPT")
-            .is_ok_and(|s| !s.is_empty())
-    })
+    *FLAG.get_or_init(|| std::env::var("QUICK_UI_NO_SCROLL_OPT").is_ok_and(|s| !s.is_empty()))
 }
 
 fn next_boundary(s: &str, byte: usize) -> usize {
@@ -508,11 +502,7 @@ impl App {
             self.layout_dirty = true;
         }
         // If the palette closed (Escape, or a non-prompted selection), drop it.
-        if self
-            .action_palette
-            .as_ref()
-            .is_some_and(|p| !p.is_open())
-        {
+        if self.action_palette.as_ref().is_some_and(|p| !p.is_open()) {
             self.action_palette = None;
         }
         consumed
@@ -1709,7 +1699,9 @@ impl App {
     }
 
     fn navigate_focus(&mut self, direction: Direction) {
-        let current_id = if let Some(id) = self.focused_node { id } else {
+        let current_id = if let Some(id) = self.focused_node {
+            id
+        } else {
             if !self.focusable_order.is_empty() {
                 self.set_focused_node(Some(self.focusable_order[0]));
             }
@@ -2580,7 +2572,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // `recv()` is the backpressure boundary — capacity-2 means
                 // at most one frame of overlap (main building N+1 while
                 // worker presents N).
-                let mut scene = if let Ok(s) = render.scene_pool.recv() { s } else {
+                let mut scene = if let Ok(s) = render.scene_pool.recv() {
+                    s
+                } else {
                     tracing::error!("ui-render thread died; closing window");
                     event_loop.exit();
                     return;
@@ -2709,7 +2703,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // physical resolution, so the frame stays crisp at any
                 // fractional scale.
                 let transform = crate::scale::composite_transform(f64::from(scale_factor));
-                let (vp_w, vp_h) = crate::scale::logical_size((width, height), f64::from(scale_factor));
+                let (vp_w, vp_h) =
+                    crate::scale::logical_size((width, height), f64::from(scale_factor));
                 let window_rect = vello::kurbo::Rect::new(0.0, 0.0, vp_w, vp_h);
                 let prev_vp = app.presence_ctx.push_viewport(window_rect);
                 // No GPU damage clip: vello allocates a fresh `target_texture`
@@ -2907,7 +2902,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
                 // Painted last, after the frame timing was committed above,
                 // so the HUD's own cost never enters its numbers.
-                if app.profiler.as_ref().is_some_and(super::profiling::FrameProfiler::hud_enabled) {
+                if app
+                    .profiler
+                    .as_ref()
+                    .is_some_and(super::profiling::FrameProfiler::hud_enabled)
+                {
                     let (hud_w, hud_h) =
                         crate::scale::logical_size((width, height), f64::from(scale_factor));
                     if let Some(p) = app.profiler.as_ref() {

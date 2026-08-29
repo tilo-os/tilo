@@ -37,31 +37,32 @@ pub fn draw_field(
 
     // selection band first (behind glyphs)
     if let (Some(sel), false) = (selection, sel_gaps.is_empty())
-        && !sel.is_empty() {
-            let lo = sel.lo();
-            let hi = sel.hi();
-            let mut x0 = None;
-            let mut x1 = None;
-            let mut top = f64::INFINITY;
-            let mut bot = f64::NEG_INFINITY;
-            for (idx, g) in sel_gaps {
-                if *idx == lo {
-                    x0 = Some(g.x);
-                }
-                if *idx == hi {
-                    x1 = Some(g.x);
-                }
-                if *idx >= lo && *idx <= hi {
-                    top = top.min(g.top);
-                    bot = bot.max(g.bottom);
-                }
+        && !sel.is_empty()
+    {
+        let lo = sel.lo();
+        let hi = sel.hi();
+        let mut x0 = None;
+        let mut x1 = None;
+        let mut top = f64::INFINITY;
+        let mut bot = f64::NEG_INFINITY;
+        for (idx, g) in sel_gaps {
+            if *idx == lo {
+                x0 = Some(g.x);
             }
-            if let (Some(a), Some(b)) = (x0, x1) {
-                let band = Rect::new(ox + a, oy + top, ox + b, oy + bot);
-                let col = draw::with_alpha(c.accent[5], 90);
-                scene.fill(Fill::NonZero, t, col, None, &band);
+            if *idx == hi {
+                x1 = Some(g.x);
+            }
+            if *idx >= lo && *idx <= hi {
+                top = top.min(g.top);
+                bot = bot.max(g.bottom);
             }
         }
+        if let (Some(a), Some(b)) = (x0, x1) {
+            let band = Rect::new(ox + a, oy + top, ox + b, oy + bot);
+            let col = draw::with_alpha(c.accent[5], 90);
+            scene.fill(Fill::NonZero, t, col, None, &band);
+        }
+    }
 
     // boxes
     for b in &layout.boxes {
@@ -69,12 +70,11 @@ pub fn draw_field(
     }
 
     // caret bar
-    if show_caret
-        && let Some(g) = caret {
-            let x = ox + g.x;
-            let bar = Rect::new(x - 1.0, oy + g.top, x + 1.0, oy + g.bottom);
-            scene.fill(Fill::NonZero, t, c.accent[5], None, &bar);
-        }
+    if show_caret && let Some(g) = caret {
+        let x = ox + g.x;
+        let bar = Rect::new(x - 1.0, oy + g.top, x + 1.0, oy + g.bottom);
+        scene.fill(Fill::NonZero, t, c.accent[5], None, &bar);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

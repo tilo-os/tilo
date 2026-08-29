@@ -46,7 +46,6 @@ pub enum TrustPolicy {
     AllowAny,
 }
 
-
 impl TrustPolicy {
     /// Returns true if a cert's user identity is admissible under
     /// this policy.

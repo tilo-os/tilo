@@ -22,19 +22,22 @@ pub fn substitute(input: &str, vars: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(input.len());
     let mut i = 0;
     while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{'
-            && let Some(close) = input[i + 2..].find("}}") {
-                let raw = &input[i + 2..i + 2 + close];
-                let name = raw.trim();
-                if let Some(val) = vars.get(name) {
-                    out.push_str(val);
-                } else {
-                    // Keep the placeholder verbatim — unresolved is visible.
-                    out.push_str(&input[i..i + 2 + close + 2]);
-                }
-                i = i + 2 + close + 2;
-                continue;
+        if i + 1 < bytes.len()
+            && bytes[i] == b'{'
+            && bytes[i + 1] == b'{'
+            && let Some(close) = input[i + 2..].find("}}")
+        {
+            let raw = &input[i + 2..i + 2 + close];
+            let name = raw.trim();
+            if let Some(val) = vars.get(name) {
+                out.push_str(val);
+            } else {
+                // Keep the placeholder verbatim — unresolved is visible.
+                out.push_str(&input[i..i + 2 + close + 2]);
             }
+            i = i + 2 + close + 2;
+            continue;
+        }
         // Push the next char (UTF-8 safe).
         let ch_len = utf8_len(bytes[i]);
         out.push_str(&input[i..i + ch_len]);
@@ -145,9 +148,10 @@ pub fn tokenize_json(pretty: &str) -> Vec<JsonLine> {
         }
         if line_closes_block(&lines[idx])
             && let Some(open_idx) = stack.pop()
-                && open_idx != idx {
-                    lines[open_idx].close_line = Some(idx);
-                }
+            && open_idx != idx
+        {
+            lines[open_idx].close_line = Some(idx);
+        }
     }
     lines
 }

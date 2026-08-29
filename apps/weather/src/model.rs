@@ -284,10 +284,11 @@ impl WeatherModel {
     /// was mutated, clamping if it's gone.
     fn reselect_by_id(&mut self, id: Option<LocationId>) {
         if let Some(id) = id
-            && let Some(pos) = self.locations.iter().position(|l| l.id == id) {
-                self.selected = pos;
-                return;
-            }
+            && let Some(pos) = self.locations.iter().position(|l| l.id == id)
+        {
+            self.selected = pos;
+            return;
+        }
         if self.locations.is_empty() {
             self.selected = 0;
         } else if self.selected >= self.locations.len() {

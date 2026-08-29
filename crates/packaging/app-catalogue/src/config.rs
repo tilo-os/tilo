@@ -129,9 +129,10 @@ pub fn load_registries() -> RegistriesFile {
     };
     let path = dir.join("registries.toml");
     if let Ok(text) = fs::read_to_string(&path)
-        && let Ok(parsed) = toml::from_str::<RegistriesFile>(&text) {
-            return parsed;
-        }
+        && let Ok(parsed) = toml::from_str::<RegistriesFile>(&text)
+    {
+        return parsed;
+    }
     let seeded = RegistriesFile::seeded();
     if let Ok(text) = toml::to_string_pretty(&seeded) {
         let _ = fs::create_dir_all(&dir);

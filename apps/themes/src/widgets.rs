@@ -476,17 +476,16 @@ impl Widget for ThemeRow {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
+            } if self.hover => {
+                crate::doc::put_str(
+                    state,
+                    path,
+                    crate::doc::KEY_COMMAND,
+                    &format!("select:{}", self.id),
+                );
+                *focus_target = Some(node_id);
+                *handled = true;
             }
-                if self.hover => {
-                    crate::doc::put_str(
-                        state,
-                        path,
-                        crate::doc::KEY_COMMAND,
-                        &format!("select:{}", self.id),
-                    );
-                    *focus_target = Some(node_id);
-                    *handled = true;
-                }
             _ => {}
         }
     }

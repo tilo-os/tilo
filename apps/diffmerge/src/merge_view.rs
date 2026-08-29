@@ -281,14 +281,14 @@ impl Widget for MergeView {
             if let (Some(h), Some(c)) = (
                 self.model.hunks.get_mut(hunk),
                 HunkChoice::from_str(&choice),
-            )
-                && h.is_change {
-                    let res = c.to_resolution();
-                    if h.resolution != res {
-                        h.resolution = res;
-                        self.dirty = true;
-                    }
+            ) && h.is_change
+            {
+                let res = c.to_resolution();
+                if h.resolution != res {
+                    h.resolution = res;
+                    self.dirty = true;
                 }
+            }
         }
     }
 

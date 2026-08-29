@@ -69,9 +69,10 @@ fn scan_dir_memoised(
     {
         let cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");
         if let Some((entries, captured)) = cache.get(&key)
-            && captured.elapsed() < SCAN_MEMO_TTL {
-                return entries.clone();
-            }
+            && captured.elapsed() < SCAN_MEMO_TTL
+        {
+            return entries.clone();
+        }
     }
     // Slow path: actually walk the directory.
     #[cfg(test)]
@@ -81,9 +82,10 @@ fn scan_dir_memoised(
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                && filter(name) {
-                    out.push(path);
-                }
+                && filter(name)
+            {
+                out.push(path);
+            }
         }
     }
     let mut cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");

@@ -75,7 +75,9 @@ pub fn parse_refresh_override(raw: Option<&str>) -> Option<Duration> {
 /// [`parse_refresh_override`] against the process environment, warning when a value was set but rejected — a silently-ignored override would make a bench run report the fallback rate as the requested one.
 pub fn refresh_override_from_env() -> Option<Duration> {
     let raw = std::env::var(REFRESH_HZ_ENV).ok()?;
-    if let Some(d) = parse_refresh_override(Some(&raw)) { Some(d) } else {
+    if let Some(d) = parse_refresh_override(Some(&raw)) {
+        Some(d)
+    } else {
         eprintln!(
             "nirios compositor: ignoring {REFRESH_HZ_ENV}={raw:?} \
              (supported range is {MIN_REFRESH_HZ}..={MAX_REFRESH_HZ} Hz)"

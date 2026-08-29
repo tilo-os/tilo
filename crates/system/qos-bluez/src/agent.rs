@@ -95,9 +95,10 @@ impl DeviceNames {
     /// path, else the path itself — never empty, so a prompt always has something to name.
     pub fn get(&self, path: &str) -> String {
         if let Ok(m) = self.0.lock()
-            && let Some(n) = m.get(path).filter(|n| !n.is_empty()) {
-                return n.clone();
-            }
+            && let Some(n) = m.get(path).filter(|n| !n.is_empty())
+        {
+            return n.clone();
+        }
         address_from_path(path).unwrap_or_else(|| path.to_string())
     }
 }

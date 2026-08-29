@@ -141,9 +141,10 @@ fn collect_colors(blocks: &[BlockView], colors: &mut ColorTable) {
     for b in blocks {
         for m in &b.marks {
             if m.name == "color"
-                && let Some(hex) = mark_str(m).as_deref().and_then(parse_hex_color) {
-                    colors.intern(hex);
-                }
+                && let Some(hex) = mark_str(m).as_deref().and_then(parse_hex_color)
+            {
+                colors.intern(hex);
+            }
         }
         collect_colors(&b.children, colors);
     }
@@ -324,7 +325,12 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     }
 
     // Equal-width columns across the page width (≈ 9000 twips of usable width).
-    let max_cols = rows.iter().map(std::vec::Vec::len).max().unwrap_or(1).max(1);
+    let max_cols = rows
+        .iter()
+        .map(std::vec::Vec::len)
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let total_twips: i64 = 9000;
     let col_w = total_twips / max_cols as i64;
 

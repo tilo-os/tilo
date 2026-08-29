@@ -129,9 +129,10 @@ pub fn placement_for_new_window(
 
     // Rule 3: nothing is selected.
     if let Some(view) = viewport.filter(|v| v.strip == strip.id)
-        && let Some(seam) = view.visible_seam().or_else(|| view.next_seam_rightwards()) {
-            return Placement::RightOf(seam.after);
-        }
+        && let Some(seam) = view.visible_seam().or_else(|| view.next_seam_rightwards())
+    {
+        return Placement::RightOf(seam.after);
+    }
     Placement::NewGroup
 }
 

@@ -335,9 +335,9 @@ impl SynthState {
         // Derive a plausible placeholder duration from the file size when we
         // have one (~125 KB/s), clamped to a sane range; real decode replaces
         // this entirely. Remote / unknown sources get the default.
-        self.duration = source
-            .byte_len()
-            .map_or(DEFAULT_SYNTH_DURATION_MS, |b| (b / 125).clamp(3_000, 3_600_000));
+        self.duration = source.byte_len().map_or(DEFAULT_SYNTH_DURATION_MS, |b| {
+            (b / 125).clamp(3_000, 3_600_000)
+        });
         // Prefetch a file source through the ring so buffering is real
         // hydration progress. Remote sources have no local reader here.
         self.prefetch = match source.open_reader() {
@@ -371,7 +371,9 @@ impl SynthState {
     }
 
     fn buffering_percent(&self) -> u8 {
-        self.prefetch.as_ref().map_or(100, super::ring::PrefetchProgress::percent)
+        self.prefetch
+            .as_ref()
+            .map_or(100, super::ring::PrefetchProgress::percent)
     }
 
     fn poll_at(&mut self, now_ms: u64) -> Vec<MediaEvent> {
@@ -472,7 +474,7 @@ impl SynthState {
 
 #[cfg(feature = "decode")]
 mod gst_backend {
-    use super::{VideoFrame, MediaEvent, Source};
+    use super::{MediaEvent, Source, VideoFrame};
     use gstreamer as gst;
     use gstreamer::prelude::*;
     use gstreamer_app as gst_app;
@@ -610,10 +612,11 @@ mod gst_backend {
 
             // Duration, announced once as soon as it is known.
             if !self.duration_announced
-                && let Some(ms) = self.duration_ms() {
-                    events.push(MediaEvent::DurationKnown { ms });
-                    self.duration_announced = true;
-                }
+                && let Some(ms) = self.duration_ms()
+            {
+                events.push(MediaEvent::DurationKnown { ms });
+                self.duration_announced = true;
+            }
 
             // Drain bus messages (buffering / eos / error).
             while let Some(msg) = self.bus.pop() {
