@@ -30,7 +30,9 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
-use ui::widget::{Button, ButtonFace, ButtonStyle, FlapState, PushPane, SplitLayout};
+use ui::widget::{
+    Button, ButtonFace, ButtonStyle, FlapState, PushPane, SplitLayout, TextInput, Widget,
+};
 
 use crate::actions::{self, SnippetsAction, SnippetsResourceCtx};
 use crate::doc::SnippetsDoc;
@@ -77,9 +79,11 @@ struct Toast {
 pub struct SnippetsApp {
     library: Library,
     selection: Selection,
-    search: String,
-    /// Whether the search field has keyboard focus (captures typing).
-    search_focused: bool,
+    /// Local, per-peer search editor. It intentionally is not CRDT-bound:
+    /// filtering is presentation state, while snippet mutations still flow
+    /// through [`SnippetsDoc`].
+    search_input: TextInput,
+    search_rect: Rect,
     /// Currently open snippet in the detail pane.
     open: Option<SnippetId>,
     /// Ordered ids currently shown in the list pane (result of `query`).
@@ -188,8 +192,12 @@ impl SnippetsApp {
         let mut app = Self {
             library,
             selection: Selection::default(),
-            search: String::new(),
-            search_focused: false,
+            search_input: TextInput::local()
+                .with_id("snippets.search")
+                .with_placeholder("Search  ·  try language:rust  or  tag:k8s")
+                .with_font_size(14.0)
+                .with_plain_chrome(),
+            search_rect: Rect::ZERO,
             open: None,
             visible: Vec::new(),
             expand: None,
@@ -215,7 +223,9 @@ impl SnippetsApp {
     }
 
     fn recompute_visible(&mut self) {
-        self.visible = self.library.query(&self.selection, &self.search);
+        self.visible = self
+            .library
+            .query(&self.selection, self.search_input.value());
         // Keep the open snippet valid; otherwise open the first result.
         if let Some(open) = self.open {
             if !self.visible.contains(&open) {
@@ -404,9 +414,9 @@ impl SnippetsApp {
             Action::ToggleFavorite(id) => self.toggle_favorite(id, doc),
             Action::Duplicate(id) => self.duplicate(id, doc),
             Action::Delete(id) => self.delete(id, doc),
-            Action::FocusSearch => self.search_focused = true,
+            Action::FocusSearch => self.search_input.set_focus(true),
             Action::ClearSearch => {
-                self.search.clear();
+                self.search_input.set_text("");
                 self.recompute_visible();
             }
             Action::SetLanguage(id, lang) => self.set_language(id, lang, doc),
@@ -529,7 +539,7 @@ impl SnippetsApp {
 
     #[doc(hidden)]
     pub fn set_search_for_test(&mut self, q: &str) {
-        self.search = q.to_string();
+        self.search_input.set_text(q);
         self.recompute_visible();
     }
 
@@ -810,11 +820,11 @@ impl ui::widget::Widget for SnippetsApp {
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         // Track the cursor for hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -823,7 +833,17 @@ impl ui::widget::Widget for SnippetsApp {
 
         // The expand modal is modal: it owns all input while open.
         if let Some(mut modal) = self.expand.take() {
-            let outcome = modal.handle_event(event, self.last_mouse, modifiers);
+            let outcome = modal.handle_event(
+                event,
+                scale_factor,
+                self.last_mouse,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            );
             match outcome {
                 ExpandOutcome::Stay => {
                     self.expand = Some(modal);
@@ -844,6 +864,49 @@ impl ui::widget::Widget for SnippetsApp {
             }
         }
 
+        // The search editor is embedded in this canvas-style widget rather
+        // than mounted as a taffy child. Feed it pointer motion explicitly so
+        // its selection, hover and context-menu hit testing use the same
+        // geometry painted above.
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            let _ = self.route_search_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) && self.search_rect.contains(self.last_mouse)
+        {
+            self.search_input.set_focus(true);
+        }
+        if matches!(event, WindowEvent::MouseInput { .. })
+            && (self.search_input.is_focused() || self.search_rect.contains(self.last_mouse))
+            && self.route_search_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            )
+        {
+            *handled = true;
+            return;
+        }
+
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -853,12 +916,25 @@ impl ui::widget::Widget for SnippetsApp {
                 if let Some(action) = self.action_at(self.last_mouse) {
                     // Clicking anywhere that isn't the search field blurs it.
                     if !matches!(action, Action::FocusSearch) {
-                        self.search_focused = false;
+                        self.search_input.set_focus(false);
                     }
+                    let search_click = matches!(action, Action::FocusSearch);
                     self.apply(action, state);
+                    if search_click {
+                        let _ = self.route_search_event(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            focus_target,
+                            node_id,
+                            taffy,
+                        );
+                    }
                     *handled = true;
                 } else {
-                    self.search_focused = false;
+                    self.search_input.set_focus(false);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -886,7 +962,9 @@ impl ui::widget::Widget for SnippetsApp {
                 {
                     match ch.to_lowercase().as_str() {
                         "f" => {
-                            self.search_focused = true;
+                            self.search_input.set_focus(true);
+                            self.search_input
+                                .set_cursor_pos(self.search_input.value().len());
                             *handled = true;
                             return;
                         }
@@ -895,7 +973,7 @@ impl ui::widget::Widget for SnippetsApp {
                             *handled = true;
                             return;
                         }
-                        "c" => {
+                        "c" if !self.search_input.is_focused() => {
                             if let Some(id) = self.open {
                                 self.copy(id, state);
                             }
@@ -906,8 +984,33 @@ impl ui::widget::Widget for SnippetsApp {
                     }
                 }
 
-                if self.search_focused {
-                    self.handle_search_key(logical_key, handled);
+                if self.search_input.is_focused() {
+                    match logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.search_input.set_text("");
+                            self.search_input.set_focus(false);
+                            self.recompute_visible();
+                            *handled = true;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            self.search_input.set_focus(false);
+                            *handled = true;
+                        }
+                        _ => {
+                            if self.route_search_event(
+                                event,
+                                scale_factor,
+                                modifiers,
+                                state,
+                                path,
+                                focus_target,
+                                node_id,
+                                taffy,
+                            ) {
+                                *handled = true;
+                            }
+                        }
+                    }
                     return;
                 }
 
@@ -922,11 +1025,25 @@ impl ui::widget::Widget for SnippetsApp {
                     } else if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_open() {
                         self.apply(Action::DismissSidebar, state);
                         *handled = true;
-                    } else if !self.search.is_empty() {
-                        self.search.clear();
+                    } else if !self.search_input.value().is_empty() {
+                        self.search_input.set_text("");
                         self.recompute_visible();
                         *handled = true;
                     }
+                }
+            }
+            WindowEvent::Ime(_) if self.search_input.is_focused() => {
+                if self.route_search_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    focus_target,
+                    node_id,
+                    taffy,
+                ) {
+                    *handled = true;
                 }
             }
             _ => {}
@@ -964,6 +1081,70 @@ impl ui::widget::Widget for SnippetsApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if let Some(modal) = &self.expand {
+            modal.ime_cursor_rect()
+        } else {
+            self.search_input.ime_cursor_rect()
+        }
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        if let Some(modal) = &self.expand {
+            modal.ime_purpose()
+        } else {
+            self.search_input.ime_purpose()
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if let Some(modal) = &self.expand {
+            modal.cursor_shape(point)
+        } else {
+            self.search_input.cursor_shape(point)
+        }
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.expand
+            .as_ref()
+            .and_then(ExpandModal::accessibility)
+            .or_else(|| {
+                self.search_input
+                    .is_focused()
+                    .then(|| self.search_input.accessibility())
+                    .flatten()
+            })
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+            || self.expand.as_ref().is_some_and(ExpandModal::needs_commit)
+    }
+
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
+        if let Some(modal) = &mut self.expand {
+            modal.on_commit();
+        }
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let Some(modal) = &mut self.expand {
+            modal.draw_overlay(scene, transform, tr, theme, presence);
+        } else {
+            self.search_input
+                .draw_overlay(scene, transform, tr, theme, presence);
+        }
     }
 
     fn draw_with_presence(
@@ -1133,35 +1314,36 @@ impl SnippetsApp {
         }
     }
 
-    fn handle_search_key(&mut self, key: &Key, handled: &mut bool) {
-        match key {
-            Key::Character(s) => {
-                self.search.push_str(s.as_str());
-                self.recompute_visible();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                self.search.push(' ');
-                self.recompute_visible();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Backspace) => {
-                self.search.pop();
-                self.recompute_visible();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Escape) => {
-                self.search.clear();
-                self.search_focused = false;
-                self.recompute_visible();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Enter) => {
-                self.search_focused = false;
-                *handled = true;
-            }
-            _ => {}
+    #[allow(clippy::too_many_arguments)]
+    fn route_search_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let mut input_handled = false;
+        self.search_input.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            &mut input_handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        if self.search_input.take_dirty().is_some() {
+            self.scroll = 0.0;
+            self.recompute_visible();
+            input_handled = true;
         }
+        input_handled
     }
 
     // ---- sidebar --------------------------------------------------------
@@ -1313,7 +1495,8 @@ impl SnippetsApp {
             area.x1 - pad,
             area.y0 + 10.0 + SEARCH_H - 16.0,
         );
-        let focused = self.search_focused;
+        self.search_rect = search_rect;
+        let focused = self.search_input.is_focused();
         let border = if focused {
             c.border_focus
         } else {
@@ -1321,46 +1504,20 @@ impl SnippetsApp {
         };
         draw::fill_round(scene, t, search_rect, theme.radii_md(), c.surfaces.base);
         draw::stroke_round(scene, t, search_rect, theme.radii_md(), 1.5, border);
-        let placeholder = self.search.is_empty();
-        let shown = if placeholder {
-            "Search  ·  try language:rust  or  tag:k8s".to_string()
-        } else {
-            self.search.clone()
-        };
-        let scolor = if placeholder {
-            c.text_dim
-        } else {
-            c.text_primary
-        };
-        let sy = search_rect.y0 + (search_rect.height() - 15.0) / 2.0;
-        draw::text(
-            scene,
-            tr,
-            t,
-            &shown,
+        let empty = self.search_input.value().is_empty();
+        // Keep Snippets' compact rectangular chrome and grammar hint while
+        // delegating text editing, selection, clipboard and IME to the shared
+        // input. Reserve the old trailing slot for the clear affordance.
+        self.search_input.apply_layout_external(Rect::new(
             search_rect.x0 + 12.0,
-            sy,
-            14.0,
-            scolor,
-            TextWeight::Regular,
-        );
-        // Caret when focused.
-        if focused {
-            let tw = if placeholder {
-                0.0
-            } else {
-                f64::from(tr.measure(&self.search, 14.0, None).0)
-            };
-            let cx = search_rect.x0 + 12.0 + tw + 1.0;
-            draw::fill_rect(
-                scene,
-                t,
-                Rect::new(cx, sy - 1.0, cx + 1.5, sy + 16.0),
-                c.border_focus,
-            );
-        }
+            search_rect.y0,
+            search_rect.x1 - if empty { 12.0 } else { 30.0 },
+            search_rect.y1,
+        ));
+        self.search_input
+            .draw(scene, t, tr, theme, &PresenceCtx::empty());
         self.record(search_rect, Action::FocusSearch);
-        if !placeholder {
+        if !empty {
             // A small clear affordance.
             let clear = Rect::new(
                 search_rect.x1 - 26.0,
@@ -1374,7 +1531,7 @@ impl SnippetsApp {
                 t,
                 "×",
                 clear.x0 + 6.0,
-                sy - 2.0,
+                search_rect.y0 + (search_rect.height() - 15.0) / 2.0 - 2.0,
                 18.0,
                 c.text_dim,
                 TextWeight::Regular,
@@ -2183,6 +2340,33 @@ mod tests {
         let after = app.visible_count_for_test();
         assert!(after < before);
         assert!(after >= 1);
+    }
+
+    #[test]
+    fn shared_search_editor_updates_results_without_writing_view_state_to_crdt() {
+        let mut app = SnippetsApp::new_demo();
+        let visible_before = app.visible_count_for_test();
+        let mut doc = AutoCommit::new();
+        let heads_before = doc.get_heads();
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Default::default()).unwrap();
+        let mut focus_target = None;
+
+        app.search_input.set_focus(true);
+        assert!(app.route_search_event(
+            &WindowEvent::Ime(winit::event::Ime::Commit("language:rust".into())),
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus_target,
+            node,
+            &taffy,
+        ));
+
+        assert!(app.visible_count_for_test() < visible_before);
+        assert_eq!(app.search_input.value(), "language:rust");
+        assert_eq!(doc.get_heads(), heads_before, "search stays per-peer state");
     }
 
     #[test]
