@@ -232,10 +232,7 @@ impl NotesApp {
             let next_line_end = line_end_at(&self.body.text, next_line_start);
             let next_line_len = next_line_end.saturating_sub(next_line_start);
             let want_col = col.min(next_line_len);
-            snap_forward_to_char_boundary(
-                &self.body.text,
-                next_line_start.saturating_add(want_col),
-            )
+            snap_forward_to_char_boundary(&self.body.text, next_line_start.saturating_add(want_col))
         };
         self.move_or_extend(new_pos, shift);
     }
@@ -327,7 +324,9 @@ impl Widget for NotesApp {
         self.empty_action_rect = Rect::ZERO;
 
         if !self.selection.is_collapsed() {
-            self.draw_selection_highlight(scene, transform, tr, sel_color, content_x, body_top, wrap_w);
+            self.draw_selection_highlight(
+                scene, transform, tr, sel_color, content_x, body_top, wrap_w,
+            );
         }
 
         #[allow(
@@ -1024,12 +1023,18 @@ mod tests {
         app.selection.extend_to(p);
         assert_eq!(app.selection.anchor, 0);
         assert_eq!(app.selection.cursor, 1);
-        assert_eq!(app.body.text.get(app.selection.range()).unwrap_or_default(), "h");
+        assert_eq!(
+            app.body.text.get(app.selection.range()).unwrap_or_default(),
+            "h"
+        );
 
         app.selection.extend_to(3);
         assert_eq!(app.selection.anchor, 0);
         assert_eq!(app.selection.cursor, 3);
-        assert_eq!(app.body.text.get(app.selection.range()).unwrap_or_default(), "hel");
+        assert_eq!(
+            app.body.text.get(app.selection.range()).unwrap_or_default(),
+            "hel"
+        );
     }
 
     #[test]
@@ -1049,7 +1054,10 @@ mod tests {
         assert!(!app.selection.is_collapsed());
         assert_eq!(app.selection.min(), 0);
         assert_eq!(app.selection.max(), app.body.text.len());
-        assert_eq!(app.body.text.get(app.selection.range()).unwrap_or_default(), "alpha\nbeta\ngamma");
+        assert_eq!(
+            app.body.text.get(app.selection.range()).unwrap_or_default(),
+            "alpha\nbeta\ngamma"
+        );
     }
 
     #[test]
