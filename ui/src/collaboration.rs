@@ -2236,6 +2236,15 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(&serde_json::to_vec(&record).unwrap()).unwrap();
         drop(f);
+        // `runtime_identity` refuses a record any other local account could
+        // read, and `File::create` obeys the umask — 0644 on a normal login,
+        // which it rejects. Without this the test only passes for someone
+        // whose umask happens to be 0077.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("narrow the identity record to owner-only");
+        }
 
         // `new()` also reaches for `QOS_SVC_COLLAB_FD` and would race other
         // tests; use the identity-aware test constructor instead.
