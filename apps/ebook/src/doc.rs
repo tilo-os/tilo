@@ -122,6 +122,7 @@ impl BooksDoc {
         let _ = doc.put(&m, "theme", s.theme.as_str());
         let _ = doc.put(&m, "scheme_id", s.scheme_id.as_str());
         let _ = doc.put(&m, "mode", s.mode.as_str());
+        let _ = doc.put(&m, "composition", s.composition.as_str());
     }
 
     pub fn read_settings(doc: &AutoCommit) -> Settings {
@@ -147,6 +148,9 @@ impl BooksDoc {
         }
         if let Some(v) = Self::scalar_str(doc, &m, "mode") {
             s.mode = ReadMode::from_str(&v);
+        }
+        if let Some(v) = Self::scalar_str(doc, &m, "composition") {
+            s.composition = crate::model::CompositionStyle::from_str(&v);
         }
         s
     }
@@ -529,6 +533,7 @@ mod tests {
             theme: ReadTheme::Dark,
             scheme_id: "midnight".into(),
             mode: crate::model::ReadMode::TwoUp,
+            composition: crate::model::CompositionStyle::Ragged,
         };
         BooksDoc::write_settings(&mut doc, &s);
         let back = BooksDoc::read_settings(&doc);
@@ -542,10 +547,19 @@ mod tests {
             crate::model::ReadMode::TwoUp,
             "reading mode persists"
         );
+        assert_eq!(
+            back.composition,
+            crate::model::CompositionStyle::Ragged,
+            "composition style persists"
+        );
         // A fresh document defaults to the paged reading mode.
         assert_eq!(
             BooksDoc::read_settings(&AutoCommit::new()).mode,
             crate::model::ReadMode::Paged
+        );
+        assert_eq!(
+            BooksDoc::read_settings(&AutoCommit::new()).composition,
+            crate::model::CompositionStyle::Book
         );
     }
 
