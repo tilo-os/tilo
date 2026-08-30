@@ -37,7 +37,6 @@ anyhow.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-tempfile.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
 
 [lints]

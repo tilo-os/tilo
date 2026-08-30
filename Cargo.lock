@@ -2247,7 +2247,6 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -11122,7 +11121,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "tempfile",
 ]
 
 [[package]]
@@ -11238,8 +11236,6 @@ dependencies = [
  "hex",
  "postcard",
  "rand 0.8.5",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
  "serde",
  "serde_bytes",
  "tempfile",
@@ -11872,7 +11868,6 @@ dependencies = [
  "libp2p",
  "prometheus-client 0.22.3",
  "serde",
- "serde_json",
  "tempfile",
  "tokio",
  "toml 0.8.23",
@@ -13186,7 +13181,6 @@ dependencies = [
  "thiserror 2.0.18",
  "threshold-identity",
  "tokio",
- "tokio-test",
  "tokio-util",
  "toml 0.8.23",
  "tracing",
@@ -14613,17 +14607,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-test"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6d24790a10a7af737693a3e8f1d03faef7e6ca0cc99aae5066f533766de545"
-dependencies = [
- "futures-core",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15708,7 +15691,6 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
- "serial_test",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
