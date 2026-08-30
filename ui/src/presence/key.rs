@@ -47,9 +47,9 @@ pub enum PresenceKey {
 /// was drawn once per open window. With the space carried, at most one
 /// receiver can answer "that is my space".
 ///
-/// **Variant order is a wire contract.** `collab-bridge`'s `wire::PointerSpace`
-/// mirrors this enum and postcard tags variants by ordinal, so a reordering
-/// here silently drops every pointer publish rather than failing to build.
+/// **Variant order is a wire contract.** Cap'n Proto carries the postcard key
+/// bytes opaquely and peer replication forwards the same bytes, so reordering
+/// silently misreads every pointer scope rather than failing to build.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PointerSpace {
     /// Compositor scene coordinates on `room`'s desktop — the only space
@@ -269,7 +269,7 @@ mod view_key_tests {
         unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
     }
 
-    /// The ordinals `collab-bridge`'s `wire::PointerSpace` mirror is written
+    /// The ordinals in the postcard key wire contract are written
     /// against, pinned as bytes.
     ///
     /// Postcard tags variants by ordinal, so inserting `Pointer` anywhere but
