@@ -51,8 +51,29 @@ pub const BRIGHTNESS_KEY: &str = "display.brightness";
 pub const AUTO_BRIGHTNESS_KEY: &str = "display.auto_brightness";
 /// CRDT key the night-light toggle writes into.
 pub const NIGHT_LIGHT_KEY: &str = "display.night_light";
+pub const NIGHT_LIGHT_TEMPERATURE_KEY: &str = "display.night_light_temperature";
 /// CRDT key the display-scale dropdown writes into.
 pub const DISPLAY_SCALE_KEY: &str = "display.scale";
+
+const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
+    ("Subtle · 4500 K", 4_500),
+    ("Warm · 3700 K", 3_700),
+    ("Very warm · 2800 K", 2_800),
+];
+
+fn temperature_label(kelvin: u32) -> &'static str {
+    NIGHT_LIGHT_TEMPERATURES
+        .iter()
+        .min_by_key(|(_, value)| value.abs_diff(kelvin))
+        .map_or("Warm · 3700 K", |(label, _)| *label)
+}
+
+fn temperature_from_label(label: &str) -> Option<u32> {
+    NIGHT_LIGHT_TEMPERATURES
+        .iter()
+        .find(|(candidate, _)| *candidate == label)
+        .map(|(_, value)| *value)
+}
 
 /// Offered `HiDPI` display scales as `(display label, factor)`. The label is
 /// what the dropdown shows and stores in the CRDT; the factor is what
@@ -164,6 +185,7 @@ fn read_outputs() -> Vec<DisplayOutput> {
 pub struct DisplayPane {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
     outputs: Vec<DisplayOutput>,
+    ambient_sensor_available: bool,
     initial_brightness: f32,
     initial_prefs: DisplayPrefs,
     last_brightness: f32,
@@ -185,6 +207,7 @@ impl DisplayPane {
         Self {
             dispatcher: dispatcher_or_real(None),
             outputs: read_outputs(),
+            ambient_sensor_available: os_actions::has_ambient_light_sensor(),
             initial_brightness: initial,
             initial_prefs: SystemPrefs::load().display,
             last_brightness: initial,
@@ -209,6 +232,7 @@ impl DisplayPane {
                 connected: true,
                 builtin: true,
             }],
+            ambient_sensor_available: true,
             initial_brightness,
             initial_prefs: DisplayPrefs::default(),
             last_brightness: initial_brightness,
@@ -222,6 +246,11 @@ impl DisplayPane {
     /// Pin the output list (tests / `--shots`).
     pub fn with_outputs(mut self, outputs: Vec<DisplayOutput>) -> Self {
         self.outputs = outputs;
+        self
+    }
+
+    pub fn with_ambient_sensor(mut self, available: bool) -> Self {
+        self.ambient_sensor_available = available;
         self
     }
 
@@ -286,6 +315,17 @@ impl DisplayPane {
         );
 
         // --- Brightness & comfort card.
+        let automatic_brightness = if self.ambient_sensor_available {
+            setting_row(
+                "Automatic brightness",
+                Box::new(
+                    Toggle::new("settings.display.auto_brightness", AUTO_BRIGHTNESS_KEY)
+                        .with_id("display.auto_brightness"),
+                ),
+            )
+        } else {
+            value_row("Automatic brightness", "No ambient-light sensor detected")
+        };
         let brightness = card(
             "Brightness",
             rows(vec![
@@ -296,13 +336,7 @@ impl DisplayPane {
                             .with_id("display.brightness"),
                     ),
                 ),
-                setting_row(
-                    "Automatic brightness",
-                    Box::new(
-                        Toggle::new("settings.display.auto_brightness", AUTO_BRIGHTNESS_KEY)
-                            .with_id("display.auto_brightness"),
-                    ),
-                ),
+                automatic_brightness,
                 setting_row(
                     "Night light",
                     Box::new(
@@ -310,9 +344,24 @@ impl DisplayPane {
                             .with_id("display.night_light"),
                     ),
                 ),
+                choice_row(
+                    "Night light warmth",
+                    Box::new(
+                        Dropdown::new(
+                            NIGHT_LIGHT_TEMPERATURES
+                                .iter()
+                                .map(|(label, _)| (*label).to_string())
+                                .collect(),
+                            NIGHT_LIGHT_TEMPERATURE_KEY,
+                        )
+                        .with_id("display.night_light_temperature")
+                        .with_placeholder(temperature_label(
+                            self.initial_prefs.night_light_temperature,
+                        )),
+                    ),
+                ),
                 caption(
-                    "Brightness drives the backlight now; automatic brightness \
-                     and night light are applied by the compositor.",
+                    "Night Light applies a whole-desktop colour transform. Automatic brightness follows the kernel ambient-light sensor with smoothing and a deadband.",
                 ),
             ]),
         );
@@ -354,6 +403,11 @@ impl Widget for DisplayPane {
             );
             let _ = state.put(
                 root,
+                NIGHT_LIGHT_TEMPERATURE_KEY,
+                temperature_label(self.initial_prefs.night_light_temperature),
+            );
+            let _ = state.put(
+                root,
                 DISPLAY_SCALE_KEY,
                 scale_label(self.initial_prefs.scale),
             );
@@ -382,14 +436,25 @@ impl Widget for DisplayPane {
         if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
             && b != self.last_prefs.auto_brightness
         {
-            self.last_prefs.auto_brightness = b;
-            Self::persist_display(|d| d.auto_brightness = b);
+            let effective = b && self.ambient_sensor_available;
+            self.last_prefs.auto_brightness = effective;
+            Self::persist_display(|d| d.auto_brightness = effective);
+            if effective != b {
+                let _ = state.put(root, AUTO_BRIGHTNESS_KEY, false);
+            }
         }
         if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY)
             && b != self.last_prefs.night_light
         {
             self.last_prefs.night_light = b;
             Self::persist_display(|d| d.night_light = b);
+        }
+        if let Some(label) = read_str(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
+            && let Some(kelvin) = temperature_from_label(&label)
+            && kelvin != self.last_prefs.night_light_temperature
+        {
+            self.last_prefs.night_light_temperature = kelvin;
+            Self::persist_display(|d| d.night_light_temperature = kelvin);
         }
         // Display scale → persist to the shared store on change. The
         // compositor reads `display.scale` at session start and advertises

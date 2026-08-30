@@ -36,7 +36,7 @@ use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Dropdown, Row, Spacer, Text, Toggle, Widget};
+use ui::widget::{Button, Column, Dropdown, ProgressBar, Row, Spacer, Text, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -340,6 +340,19 @@ impl Rebooter for RealRebooter {
 type StatusProvider = Arc<dyn Fn() -> UpdateStatus + Send + Sync>;
 type Clock = Arc<dyn Fn() -> String + Send + Sync>;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum FirmwareUiState {
+    #[default]
+    Idle,
+    Installing {
+        percent: u8,
+        message: String,
+    },
+    Complete {
+        needs_reboot: bool,
+    },
+}
+
 /// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
 fn now_stamp() -> String {
     let date = os_actions::now_date().unwrap_or_default();
@@ -363,6 +376,8 @@ pub struct UpdatesPane {
     /// `None` means fwupd is unavailable; `Some([])` means it answered and
     /// there are no applicable upgrades.
     firmware_updates: Option<Vec<os_actions::FirmwareUpdate>>,
+    firmware_state: FirmwareUiState,
+    firmware_events: Option<std::sync::mpsc::Receiver<os_actions::FirmwareEvent>>,
     /// Set once the person has asked to roll back and been shown what it does
     /// not undo; cleared when they leave the pane's structure alone long
     /// enough to rebuild.
@@ -409,6 +424,8 @@ impl UpdatesPane {
             timer_enabled,
             rollback_target,
             firmware_updates,
+            firmware_state: FirmwareUiState::Idle,
+            firmware_events: None,
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
@@ -469,6 +486,8 @@ impl UpdatesPane {
             timer_enabled,
             rollback_target,
             firmware_updates: None,
+            firmware_state: FirmwareUiState::Idle,
+            firmware_events: None,
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
@@ -618,18 +637,35 @@ impl UpdatesPane {
                 value_row("Service", "fwupd is unavailable"),
                 caption("Firmware upgrades require the fwupd service and a supported device."),
             ]),
-            Some(updates) if updates.is_empty() => rows(vec![
-                value_row("Status", "Device firmware is up to date"),
-                Box::new(
-                    Row::new()
-                        .push(Box::new(Button::new(
-                            "settings.updates.firmware.refresh",
-                            "\u{f0450}  Check firmware",
-                            Some(FIRMWARE_REFRESH_KEY),
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ),
-            ]),
+            Some(updates) if updates.is_empty() => {
+                let mut body = vec![value_row("Status", "Device firmware is up to date")];
+                if matches!(
+                    self.firmware_state,
+                    FirmwareUiState::Complete { needs_reboot: true }
+                ) {
+                    body.push(value_row("Activation", "Restart required"));
+                    body.push(Box::new(
+                        Row::new()
+                            .push(Box::new(Button::new(
+                                "settings.updates.firmware.restart",
+                                "Restart now",
+                                Some(RESTART_KEY),
+                            )))
+                            .push(Box::new(Spacer::new())),
+                    ));
+                } else {
+                    body.push(Box::new(
+                        Row::new()
+                            .push(Box::new(Button::new(
+                                "settings.updates.firmware.refresh",
+                                "\u{f0450}  Check firmware",
+                                Some(FIRMWARE_REFRESH_KEY),
+                            )))
+                            .push(Box::new(Spacer::new())),
+                    ));
+                }
+                rows(body)
+            }
             Some(updates) => {
                 let mut items: Vec<El> = updates
                     .iter()
@@ -642,18 +678,56 @@ impl UpdatesPane {
                         value_row(&update.device, &version)
                     })
                     .collect();
+                for update in updates {
+                    if let Some(description) = &update.description {
+                        items.push(caption(description));
+                    }
+                    if !update.problems.is_empty() {
+                        items.push(caption(&format!(
+                            "Before installing: {}",
+                            update.problems.join(", ")
+                        )));
+                    }
+                }
                 items.push(caption(
-                    "Firmware is verified and installed by fwupd. Authorization may be required; some updates finish after a restart.",
+                    "Firmware is verified and installed by fwupd. Keep the device connected and do not suspend it while installation is active.",
                 ));
-                items.push(Box::new(
-                    Row::new()
-                        .push(Box::new(Button::new(
-                            "settings.updates.firmware.install",
-                            "Install firmware upgrades",
-                            Some(FIRMWARE_INSTALL_KEY),
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ));
+                match &self.firmware_state {
+                    FirmwareUiState::Idle => items.push(Box::new(
+                        Row::new()
+                            .push(Box::new(Button::new(
+                                "settings.updates.firmware.install",
+                                "Install firmware upgrades",
+                                Some(FIRMWARE_INSTALL_KEY),
+                            )))
+                            .push(Box::new(Spacer::new())),
+                    )),
+                    FirmwareUiState::Installing { percent, message } => {
+                        items.push(Box::new(ProgressBar::new(f32::from(*percent) / 100.0)));
+                        items.push(value_row("Installing", message));
+                    }
+                    FirmwareUiState::Complete { needs_reboot } => {
+                        items.push(value_row(
+                            "Installation",
+                            if *needs_reboot {
+                                "Installed · restart required"
+                            } else {
+                                "Installed successfully"
+                            },
+                        ));
+                        if *needs_reboot {
+                            items.push(Box::new(
+                                Row::new()
+                                    .push(Box::new(Button::new(
+                                        "settings.updates.firmware.restart",
+                                        "Restart now",
+                                        Some(RESTART_KEY),
+                                    )))
+                                    .push(Box::new(Spacer::new())),
+                            ));
+                        }
+                    }
+                }
                 rows(items)
             }
         };
@@ -750,6 +824,57 @@ pub fn build() -> Box<dyn Widget> {
 
 impl Widget for UpdatesPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let mut finished = false;
+        if let Some(events) = &self.firmware_events {
+            while let Ok(event) = events.try_recv() {
+                match event {
+                    os_actions::FirmwareEvent::Started { total } => {
+                        self.firmware_state = FirmwareUiState::Installing {
+                            percent: 0,
+                            message: format!("Preparing {total} update(s)…"),
+                        };
+                    }
+                    os_actions::FirmwareEvent::Progress { percent, message } => {
+                        let previous = match &self.firmware_state {
+                            FirmwareUiState::Installing { percent, .. } => *percent,
+                            _ => 0,
+                        };
+                        // fwupdmgr interleaves status lines without a numeric
+                        // percentage. They update the message but must not make
+                        // a visible progress bar jump backwards to zero.
+                        self.firmware_state = FirmwareUiState::Installing {
+                            percent: if percent == 0 {
+                                previous
+                            } else {
+                                percent.max(previous)
+                            },
+                            message,
+                        };
+                    }
+                    os_actions::FirmwareEvent::Completed(outcome) => {
+                        self.firmware_state = FirmwareUiState::Complete {
+                            needs_reboot: outcome.needs_reboot,
+                        };
+                        self.notice = Some(if outcome.needs_reboot {
+                            "Firmware installation finished. Restart to activate the update.".into()
+                        } else {
+                            "Firmware installation finished successfully.".into()
+                        });
+                        self.firmware_updates = os_actions::get_firmware_updates().ok();
+                        finished = true;
+                    }
+                    os_actions::FirmwareEvent::Failed(error) => {
+                        self.firmware_state = FirmwareUiState::Idle;
+                        self.notice = Some(format!("Firmware installation failed: {error}"));
+                        finished = true;
+                    }
+                }
+                self.structure_dirty = true;
+            }
+        }
+        if finished {
+            self.firmware_events = None;
+        }
         if self.needs_seed {
             let _ = state.put(root, CHANNEL_KEY, self.prefs.channel.as_str());
             let _ = state.put(
@@ -816,13 +941,19 @@ impl Widget for UpdatesPane {
                 FIRMWARE_INSTALL_KEY,
                 automerge::ScalarValue::Boolean(false),
             );
-            match os_actions::install_firmware_updates() {
-                Ok(()) => {
-                    self.firmware_updates = os_actions::get_firmware_updates().ok();
-                    self.notice = Some(
-                        "Firmware upgrades were handed to fwupd. Restart if the device requests it."
-                            .into(),
-                    );
+            match self
+                .firmware_updates
+                .as_deref()
+                .ok_or_else(|| "fwupd is unavailable".to_string())
+                .and_then(os_actions::start_firmware_install)
+            {
+                Ok(events) => {
+                    self.firmware_events = Some(events);
+                    self.firmware_state = FirmwareUiState::Installing {
+                        percent: 0,
+                        message: "Preparing firmware transaction…".into(),
+                    };
+                    self.notice = None;
                 }
                 Err(e) => {
                     self.notice = Some(format!("Firmware upgrades could not be installed: {e}"));
@@ -1043,6 +1174,14 @@ impl Widget for UpdatesPane {
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty());
         own || child
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.firmware_events.is_some()
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|child| child.needs_redraw())
     }
 }
 

@@ -92,6 +92,10 @@ impl Default for AudioPrefs {
 pub struct DisplayPrefs {
     pub auto_brightness: bool,
     pub night_light: bool,
+    /// Target correlated colour temperature used by the compositor's
+    /// whole-output Night Light transform.
+    #[serde(default = "default_night_light_temperature")]
+    pub night_light_temperature: u32,
     /// `HiDPI` display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,
     /// `2.0`. The compositor reads this section of the shared settings
     /// file at session start and advertises it to clients as the
@@ -106,11 +110,16 @@ fn default_display_scale() -> f64 {
     1.0
 }
 
+fn default_night_light_temperature() -> u32 {
+    3_700
+}
+
 impl Default for DisplayPrefs {
     fn default() -> Self {
         Self {
             auto_brightness: false,
             night_light: false,
+            night_light_temperature: default_night_light_temperature(),
             scale: 1.0,
         }
     }
