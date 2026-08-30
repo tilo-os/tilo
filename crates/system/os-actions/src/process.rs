@@ -5,7 +5,7 @@
 //! so call-sites can hand it straight to `tracing::warn!`.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -139,6 +139,79 @@ pub(crate) fn run_capture(binary: &str, args: &[&str]) -> Result<String, String>
 pub(crate) fn run(binary: &str, args: &[&str]) -> Result<(), String> {
     let _ = run_capture(binary, args)?;
     Ok(())
+}
+
+/// Run a client with bounded stdin, keeping secrets out of argv and the
+/// process list. Used for NetworkManager's `--ask` flow.
+pub(crate) fn run_with_input(
+    binary: &str,
+    args: &[&str],
+    input: &[u8],
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    if !which(binary) {
+        return Err(format!("{binary} not installed"));
+    }
+    let mut child = Command::new(binary)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{binary} spawn failed: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input)
+            .map_err(|e| format!("{binary} stdin failed: {e}"))?;
+    }
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(pipe) = out_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(pipe) = err_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    });
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("{binary} wait failed: {e}"))?
+        {
+            break Some(status);
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let stdout = out_reader.join().unwrap_or_default();
+    // Drain stderr to avoid a pipe deadlock, but deliberately never return it:
+    // interactive clients may echo a rejected secret in diagnostics.
+    let _stderr = err_reader.join().unwrap_or_default();
+    let Some(status) = status else {
+        return Err(format!(
+            "{binary} timed out after {} ms",
+            timeout.as_millis()
+        ));
+    };
+    if !status.success() {
+        return Err(format!(
+            "{binary} rejected the request (status {:?})",
+            status.code()
+        ));
+    }
+    String::from_utf8(stdout).map_err(|e| format!("{binary} stdout not utf-8: {e}"))
 }
 
 #[cfg(test)]
