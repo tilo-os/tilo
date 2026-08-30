@@ -56,6 +56,7 @@ impl Divider {
     }
 
     /// Logical pixels.
+    #[must_use]
     pub fn with_thickness(mut self, px: f32) -> Self {
         self.thickness = px.max(0.0);
         self
@@ -63,6 +64,7 @@ impl Divider {
 
     /// Pass a theme token (e.g. a fainter `theme.tokens.colors.neutral[..]`)
     /// so the choice still tracks the active theme.
+    #[must_use]
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.color = Some(color);
         self
