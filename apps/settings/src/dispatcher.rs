@@ -67,6 +67,10 @@ pub mod testing {
             self.push(format!("set_bluetooth({enabled})"));
             Ok(())
         }
+        fn set_wired(&self, enabled: bool) -> Result<(), String> {
+            self.push(format!("set_wired({enabled})"));
+            Ok(())
+        }
         fn connect_wifi(&self, ssid: &str, _password: Option<&str>) -> Result<(), String> {
             self.push(format!("connect_wifi({ssid})"));
             Ok(())
