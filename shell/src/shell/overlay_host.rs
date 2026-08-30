@@ -270,6 +270,9 @@ pub struct ShellOverlayHost {
     /// pixels don't depend on host hardware. See
     /// [`crate::shell::status`].
     status_bridge: Option<crate::shell::status::StatusBridge>,
+    /// Single session-lifetime owner for persistent balance/mono transforms.
+    /// Present only in real compositor sessions, never shots or unit tests.
+    session_audio_policy: Option<crate::shell::session_audio_policy::SessionAudioPolicyOwner>,
     /// Room-activity sheet. Held rather than drawn immediate-mode
     /// because it is a real `Widget` with its own hover/scroll/filter
     /// state, placed by hand like the notification stack.
@@ -958,6 +961,7 @@ impl ShellOverlayHost {
             tab_tiles: std::collections::HashMap::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             status_bridge: None,
+            session_audio_policy: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
@@ -1041,6 +1045,8 @@ impl ShellOverlayHost {
     /// identical across machines.
     pub fn with_status_bridge(mut self, bridge: crate::shell::status::StatusBridge) -> Self {
         self.status_bridge = Some(bridge);
+        self.session_audio_policy =
+            Some(crate::shell::session_audio_policy::SessionAudioPolicyOwner::spawn());
         self
     }
 
