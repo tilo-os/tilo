@@ -91,7 +91,9 @@ RUN CGO_ENABLED=0 go test ./... \
 # Build/test FluxCast from its pinned Python source on the target architecture
 # instead of shipping the project's x86-64-only AppImage.
 FROM ${BASE_REF} AS fluxcast-builder
-RUN dnf install -y python3 && dnf clean all
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    dnf install -y --setopt=reposdir=/repo python3 \
+    && dnf clean all
 ADD --checksum=sha256:bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab \
     https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz \
     /tmp/fluxcast.tar.gz
