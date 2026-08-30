@@ -1422,46 +1422,6 @@ impl Widget for GroupRow {
         clippy::too_many_arguments,
         reason = "mirrors Widget::draw's own signature"
     )]
-    fn draw_groups(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        maximized_idx: Option<usize>,
-    ) {
-        if let Some(max_i) = maximized_idx {
-            if let Some(g) = self.groups.get_mut(max_i) {
-                g.draw(scene, transform, tr, theme, presence);
-            }
-            return;
-        }
-        // A group a fresh insertion pushed along paints where it used to
-        // be and eases to its new spot, so the strip is seen opening a
-        // gap rather than having always had one.
-        let remaining = 1.0 - self.shift_anim_t();
-        let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
-            self.shift_anim
-                .as_ref()
-                .map(|a| a.offsets.clone())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        for g in &mut self.groups {
-            let dx = offsets
-                .iter()
-                .find(|(id, _)| *id == g.id)
-                .map_or(0.0, |(_, from)| from * remaining);
-            let t = if dx.abs() > f64::EPSILON {
-                shift_transform(transform, dx)
-            } else {
-                transform
-            };
-            g.draw(scene, t, tr, theme, presence);
-        }
-    }
 
     /// Painted after the groups so the accent rule sits on top. Skipped
     /// during a tab-drag (drop-zone capsule takes priority) and while
@@ -1473,98 +1433,6 @@ impl Widget for GroupRow {
         clippy::too_many_arguments,
         reason = "mirrors Widget::draw's own signature"
     )]
-    fn draw_handles(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        maximized_idx: Option<usize>,
-    ) {
-        let any_drag = self
-            .groups
-            .iter()
-            .any(super::window_group::WindowGroup::drag_in_flight);
-        if any_drag || maximized_idx.is_some() {
-            return;
-        }
-        let remaining = 1.0 - self.shift_anim_t();
-        let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
-            self.shift_anim
-                .as_ref()
-                .map(|a| a.offsets.clone())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        for (i, h) in self.handles.iter_mut().enumerate() {
-            // A group with nothing on screen has no border to be one
-            // side of. Still-opening counts as shown: it's already a
-            // card with real edges at the width it's waiting to fill.
-            let shown = |g: Option<&WindowGroup>| {
-                g.is_some_and(|g| Widget::presented(g) || Widget::opening(g))
-            };
-            let next_i = i.saturating_add(1);
-            if !shown(self.groups.get(i)) || !shown(self.groups.get(next_i)) {
-                continue;
-            }
-            let dx = self
-                .groups
-                .get(next_i)
-                .and_then(|g| offsets.iter().find(|(id, _)| *id == g.id))
-                .map_or(0.0, |(_, from)| from * remaining);
-            let t = if dx.abs() > f64::EPSILON {
-                shift_transform(transform, dx)
-            } else {
-                transform
-            };
-            h.draw(scene, t, tr, theme, presence);
-        }
-    }
-
-    /// Painted only while a group drag is past its threshold.
-    fn draw_reorder_capsule(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let (Some(_), Some(ins)) = (
-            self.group_drag.filter(|d| d.moved),
-            self.group_reorder_target,
-        ) else {
-            return;
-        };
-        if self.groups.is_empty() {
-            return;
-        }
-        let gap_x = if ins == 0 {
-            self.groups.first().map_or(0.0, |g| g.get_rect().x0 - 5.0)
-        } else if ins >= self.groups.len() {
-            self.groups.last().map_or(0.0, |g| g.get_rect().x1 + 5.0)
-        } else {
-            let left = self
-                .groups
-                .get(ins.saturating_sub(1))
-                .map(WindowGroup::get_rect);
-            let right = self.groups.get(ins).map(WindowGroup::get_rect);
-            left.zip(right)
-                .map_or(0.0, |(l, r)| f64::midpoint(l.x1, r.x0))
-        };
-        let y0 = self.rect.y0;
-        let y1 = self.rect.y1;
-        if y1 <= y0 {
-            return;
-        }
-        let thickness = 4.0;
-        let capsule = RoundedRect::from_rect(
-            Rect::new(gap_x - thickness / 2.0, y0, gap_x + thickness / 2.0, y1),
-            thickness / 2.0,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.accent[6],
-            None,
-            &capsule,
-        );
-    }
 
     fn handle_event(
         &mut self,
@@ -1663,6 +1531,260 @@ impl Widget for GroupRow {
         clippy::too_many_arguments,
         reason = "mirrors Widget::handle_event's own signature"
     )]
+
+    /// Stop dispatch once a child claims the event, but the detach sweep
+    /// after this still runs regardless — that claim is for
+    /// pointer-capture/focus, a separate concern. `groups` can grow
+    /// mid-frame (detach sweep pushes a new `WindowGroup`), briefly
+    /// outrunning `node_ids`; `.get` skips the new one until its next
+    /// layout pass assigns a node_id.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own signature"
+    )]
+
+    fn name(&self) -> &'static str {
+        "GroupRow"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Neither this nor [`WindowGroup`] exposes `children()` (groups lay
+    /// out outside taffy), so any rect a test needs has to be republished
+    /// here. Each affordance is keyed by group id, plus the bare name for
+    /// the leftmost, so a single-group scenario can stay unqualified.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        let mut out = Vec::new();
+        for g in &self.groups {
+            let r = g.new_tab_rect();
+            if r.area() <= 0.0 {
+                continue;
+            }
+            if out.is_empty() {
+                out.push(("tabbar_new_tab".to_string(), r));
+            }
+            out.push((format!("tabbar_new_tab[{}]", g.id), r));
+        }
+        // `tab:Files` per pill, so a scenario names a tab instead of a
+        // coordinate; first group's pills also take the bare name.
+        let mut first = true;
+        for g in &self.groups {
+            for (tab, rect) in g.tabs().iter().zip(g.tab_rects().iter()) {
+                if rect.area() <= 0.0 {
+                    continue;
+                }
+                if first {
+                    out.push((format!("tab:{}", tab.title), *rect));
+                }
+                out.push((format!("tab:{}[{}]", tab.title, g.id), *rect));
+            }
+            first = false;
+        }
+        // By seam index, so a scenario can narrow a group with the real
+        // gesture instead of a layout edit.
+        for (i, h) in self.handles.iter().enumerate() {
+            let r = h.get_rect();
+            if r.area() > 0.0 {
+                out.push((format!("group_resize_handle[{i}]"), r));
+            }
+        }
+        // Hosted app widgets aren't children of the row (the tile host
+        // owns them), so the walk into each active tile happens here.
+        let mut first = true;
+        for g in &self.groups {
+            let Some(host) = g.active_host() else {
+                continue;
+            };
+            let TileContent::App(app) = host.content() else {
+                continue;
+            };
+            let mut named: Vec<(String, Rect)> = Vec::new();
+            collect_named_rects(app.as_ref() as &dyn Widget, &mut named);
+            for (name, rect) in named {
+                if first {
+                    out.push((name.clone(), rect));
+                }
+                out.push((format!("{name}[{}]", g.id), rect));
+            }
+            first = false;
+        }
+        out
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // A wheel-pan changes `scroll_x` without touching the row's rect
+        // or any child's dirty bit, so without this the parent's cached
+        // scene would keep painting pre-scroll positions.
+        if self.scroll_dirty {
+            return true;
+        }
+        self.groups.iter().any(super::Widget::needs_redraw)
+            || self.handles.iter().any(super::Widget::needs_redraw)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Must bubble up child groups explicitly: the default
+        // `children()` returns empty, so a TabBar drop-zone curve would
+        // otherwise never reach the shell's overlay host.
+        self.snap_in_flight()
+            || self.shift_in_flight()
+            || self.groups.iter().any(super::Widget::needs_animation_frame)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        // `fold` rather than `any`: must not short-circuit, every child
+        // has to clear its own flag too.
+        let own = std::mem::take(&mut self.structure_dirty);
+        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
+        let children = self
+            .groups
+            .iter_mut()
+            .map(super::Widget::take_structure_dirty)
+            .fold(false, |acc, d| acc || d);
+        // Forces a rebuild next frame while snapping, since `apply_layout`
+        // (where `tick_snap_at` lives) otherwise only runs on events.
+        let snap = self.snap_in_flight();
+        own || children || snap
+    }
+}
+
+impl GroupRow {
+    fn draw_groups(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        maximized_idx: Option<usize>,
+    ) {
+        if let Some(max_i) = maximized_idx {
+            if let Some(g) = self.groups.get_mut(max_i) {
+                g.draw(scene, transform, tr, theme, presence);
+            }
+            return;
+        }
+        // A group a fresh insertion pushed along paints where it used to
+        // be and eases to its new spot, so the strip is seen opening a
+        // gap rather than having always had one.
+        let remaining = 1.0 - self.shift_anim_t();
+        let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
+            self.shift_anim
+                .as_ref()
+                .map(|a| a.offsets.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for g in &mut self.groups {
+            let dx = offsets
+                .iter()
+                .find(|(id, _)| *id == g.id)
+                .map_or(0.0, |(_, from)| from * remaining);
+            let t = if dx.abs() > f64::EPSILON {
+                shift_transform(transform, dx)
+            } else {
+                transform
+            };
+            g.draw(scene, t, tr, theme, presence);
+        }
+    }
+
+    fn draw_handles(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        maximized_idx: Option<usize>,
+    ) {
+        let any_drag = self
+            .groups
+            .iter()
+            .any(super::window_group::WindowGroup::drag_in_flight);
+        if any_drag || maximized_idx.is_some() {
+            return;
+        }
+        let remaining = 1.0 - self.shift_anim_t();
+        let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
+            self.shift_anim
+                .as_ref()
+                .map(|a| a.offsets.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for (i, h) in self.handles.iter_mut().enumerate() {
+            // A group with nothing on screen has no border to be one
+            // side of. Still-opening counts as shown: it's already a
+            // card with real edges at the width it's waiting to fill.
+            let shown = |g: Option<&WindowGroup>| {
+                g.is_some_and(|g| Widget::presented(g) || Widget::opening(g))
+            };
+            let next_i = i.saturating_add(1);
+            if !shown(self.groups.get(i)) || !shown(self.groups.get(next_i)) {
+                continue;
+            }
+            let dx = self
+                .groups
+                .get(next_i)
+                .and_then(|g| offsets.iter().find(|(id, _)| *id == g.id))
+                .map_or(0.0, |(_, from)| from * remaining);
+            let t = if dx.abs() > f64::EPSILON {
+                shift_transform(transform, dx)
+            } else {
+                transform
+            };
+            h.draw(scene, t, tr, theme, presence);
+        }
+    }
+
+    /// Painted only while a group drag is past its threshold.
+    fn draw_reorder_capsule(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let (Some(_), Some(ins)) = (
+            self.group_drag.filter(|d| d.moved),
+            self.group_reorder_target,
+        ) else {
+            return;
+        };
+        if self.groups.is_empty() {
+            return;
+        }
+        let gap_x = if ins == 0 {
+            self.groups.first().map_or(0.0, |g| g.get_rect().x0 - 5.0)
+        } else if ins >= self.groups.len() {
+            self.groups.last().map_or(0.0, |g| g.get_rect().x1 + 5.0)
+        } else {
+            let left = self
+                .groups
+                .get(ins.saturating_sub(1))
+                .map(WindowGroup::get_rect);
+            let right = self.groups.get(ins).map(WindowGroup::get_rect);
+            left.zip(right)
+                .map_or(0.0, |(l, r)| f64::midpoint(l.x1, r.x0))
+        };
+        let y0 = self.rect.y0;
+        let y1 = self.rect.y1;
+        if y1 <= y0 {
+            return;
+        }
+        let thickness = 4.0;
+        let capsule = RoundedRect::from_rect(
+            Rect::new(gap_x - thickness / 2.0, y0, gap_x + thickness / 2.0, y1),
+            thickness / 2.0,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.accent[6],
+            None,
+            &capsule,
+        );
+    }
+
     fn dispatch_to_handles(
         &mut self,
         event: &WindowEvent,
@@ -1726,16 +1848,6 @@ impl Widget for GroupRow {
         }
     }
 
-    /// Stop dispatch once a child claims the event, but the detach sweep
-    /// after this still runs regardless — that claim is for
-    /// pointer-capture/focus, a separate concern. `groups` can grow
-    /// mid-frame (detach sweep pushes a new `WindowGroup`), briefly
-    /// outrunning `node_ids`; `.get` skips the new one until its next
-    /// layout pass assigns a node_id.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature"
-    )]
     fn dispatch_to_groups(
         &mut self,
         event: &WindowEvent,
@@ -1998,112 +2110,6 @@ impl Widget for GroupRow {
                 src_group.insert_detached_tab(0, desc, host);
             }
         }
-    }
-
-    fn name(&self) -> &'static str {
-        "GroupRow"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// Neither this nor [`WindowGroup`] exposes `children()` (groups lay
-    /// out outside taffy), so any rect a test needs has to be republished
-    /// here. Each affordance is keyed by group id, plus the bare name for
-    /// the leftmost, so a single-group scenario can stay unqualified.
-    fn test_rects(&self) -> Vec<(String, Rect)> {
-        let mut out = Vec::new();
-        for g in &self.groups {
-            let r = g.new_tab_rect();
-            if r.area() <= 0.0 {
-                continue;
-            }
-            if out.is_empty() {
-                out.push(("tabbar_new_tab".to_string(), r));
-            }
-            out.push((format!("tabbar_new_tab[{}]", g.id), r));
-        }
-        // `tab:Files` per pill, so a scenario names a tab instead of a
-        // coordinate; first group's pills also take the bare name.
-        let mut first = true;
-        for g in &self.groups {
-            for (tab, rect) in g.tabs().iter().zip(g.tab_rects().iter()) {
-                if rect.area() <= 0.0 {
-                    continue;
-                }
-                if first {
-                    out.push((format!("tab:{}", tab.title), *rect));
-                }
-                out.push((format!("tab:{}[{}]", tab.title, g.id), *rect));
-            }
-            first = false;
-        }
-        // By seam index, so a scenario can narrow a group with the real
-        // gesture instead of a layout edit.
-        for (i, h) in self.handles.iter().enumerate() {
-            let r = h.get_rect();
-            if r.area() > 0.0 {
-                out.push((format!("group_resize_handle[{i}]"), r));
-            }
-        }
-        // Hosted app widgets aren't children of the row (the tile host
-        // owns them), so the walk into each active tile happens here.
-        let mut first = true;
-        for g in &self.groups {
-            let Some(host) = g.active_host() else {
-                continue;
-            };
-            let TileContent::App(app) = host.content() else {
-                continue;
-            };
-            let mut named: Vec<(String, Rect)> = Vec::new();
-            collect_named_rects(app.as_ref() as &dyn Widget, &mut named);
-            for (name, rect) in named {
-                if first {
-                    out.push((name.clone(), rect));
-                }
-                out.push((format!("{name}[{}]", g.id), rect));
-            }
-            first = false;
-        }
-        out
-    }
-
-    fn needs_redraw(&self) -> bool {
-        // A wheel-pan changes `scroll_x` without touching the row's rect
-        // or any child's dirty bit, so without this the parent's cached
-        // scene would keep painting pre-scroll positions.
-        if self.scroll_dirty {
-            return true;
-        }
-        self.groups.iter().any(super::Widget::needs_redraw)
-            || self.handles.iter().any(super::Widget::needs_redraw)
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        // Must bubble up child groups explicitly: the default
-        // `children()` returns empty, so a TabBar drop-zone curve would
-        // otherwise never reach the shell's overlay host.
-        self.snap_in_flight()
-            || self.shift_in_flight()
-            || self.groups.iter().any(super::Widget::needs_animation_frame)
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        // `fold` rather than `any`: must not short-circuit, every child
-        // has to clear its own flag too.
-        let own = std::mem::take(&mut self.structure_dirty);
-        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
-        let children = self
-            .groups
-            .iter_mut()
-            .map(super::Widget::take_structure_dirty)
-            .fold(false, |acc, d| acc || d);
-        // Forces a rebuild next frame while snapping, since `apply_layout`
-        // (where `tick_snap_at` lives) otherwise only runs on events.
-        let snap = self.snap_in_flight();
-        own || children || snap
     }
 }
 
@@ -2674,13 +2680,13 @@ mod tests {
             0.0,
             "the pan is applied by ticks, not the call"
         );
-        anim.tick_snap_at(t0 + Duration::from_millis(SNAP_ANIM_MS / 2));
+        anim.tick_snap_at(t0 + Duration::from_millis(u64::from(SNAP_ANIM_MS / 2)));
         let mid = anim.scroll_x();
         assert!(
             mid > 0.0 && mid < expected,
             "halfway through the curve scroll_x must be between 0 and {expected}, got {mid}"
         );
-        anim.tick_snap_at(t0 + Duration::from_millis(SNAP_ANIM_MS + 50));
+        anim.tick_snap_at(t0 + Duration::from_millis(u64::from(SNAP_ANIM_MS + 50)));
         assert_eq!(
             anim.scroll_x(),
             expected,
