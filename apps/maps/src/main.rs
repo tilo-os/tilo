@@ -3,12 +3,12 @@
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
-//!                       `--viewport WxH` sets the frame size and `--nav-closed`
-//!                       forces the overlay drawer shut — both affect only the
-//!                       screenshot path, never the live app. Scenario flags
-//!                       (`--pois`, `--search`, `--offline`, `--panel …`, …)
-//!                       stage a specific surface for the shot.
+//!     (headless screenshot; identical passes to the live app).
+//!     `--viewport WxH` sets the frame size and `--nav-closed`
+//!     forces the overlay drawer shut — both affect only the
+//!     screenshot path, never the live app. Scenario flags
+//!     (`--pois`, `--search`, `--offline`, `--panel …`, …)
+//!     stage a specific surface for the shot.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -42,6 +42,11 @@ use vello::peniko::Color;
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 /// Parsed screenshot request.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, orthogonal --shots scenario flag (not a state \
+              machine); a real CLI accepts them in any combination"
+)]
 struct ShotArgs {
     out: std::path::PathBuf,
     viewport: (u32, u32),
@@ -67,6 +72,9 @@ struct ShotArgs {
     menu: bool,
 }
 
+/// # Errors
+///
+/// Returns `Err` if the screenshot renderer fails to write its output file.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
