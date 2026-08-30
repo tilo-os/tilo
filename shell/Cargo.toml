@@ -77,6 +77,7 @@ wayland-protocols = "0.32.12"
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-gossip.workspace = true
+iroh-mdns-address-lookup.workspace = true
 bytes.workspace = true
 futures-lite.workspace = true
 blake3.workspace = true
@@ -167,6 +168,7 @@ landlock.workspace = true
 # Peer invitations are base64-url wrapped signed JSON tickets containing the
 # owner's stable iroh EndpointAddr.
 base64.workspace = true
+bs58.workspace = true
 # Phase 4 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
 # software H.264 encode/decode for foreign-surface streaming between peers.
 # `source` feature builds Cisco's OpenH264 in-tree (vs. dlopen'ing the system
