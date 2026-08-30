@@ -60,11 +60,8 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> (Option<String>,
                         .attributes()
                         .flatten()
                         .find(|a| a.key.as_ref() == b"text:c")
-                        .and_then(|a| {
-                            a.unescape_value()
-                                .ok()
-                                .and_then(|v| v.parse::<usize>().ok())
-                        })
+                        .and_then(|a| crate::codecs::unescape_attr(&a))
+                        .and_then(|v| v.parse::<usize>().ok())
                         .unwrap_or(1)
                         .min(256);
                     append(doc, &cur, &mut cur_len, &" ".repeat(n));
@@ -108,7 +105,7 @@ pub(super) fn annotation_name(raw: &str) -> Option<String> {
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"office:name")
-                    .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned));
+                    .and_then(|a| crate::codecs::unescape_attr(&a));
             }
             Ok(Event::Eof) | Err(_) => return None,
             _ => {}

@@ -86,7 +86,7 @@ pub fn default_key_paths() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
-    ["id_ed25519", "id_ecdsa", "id_rsa"]
+    ["id_ed25519", "id_ecdsa"]
         .iter()
         .map(|n| home.join(".ssh").join(n))
         .collect()

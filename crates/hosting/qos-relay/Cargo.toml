@@ -4,6 +4,7 @@ autotests = false
 name = "qos-relay"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
 description = "qOS host + relay daemon: authenticated iroh transport for workspace CRDT ops, pins WorkspaceDirectory, store-and-forwards for offline peers."
 license = "MIT OR Apache-2.0"
 

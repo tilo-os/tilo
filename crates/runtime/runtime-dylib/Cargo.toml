@@ -2,6 +2,8 @@
 name = "runtime-dylib"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Opt-in dynamic-library build of the qOS runtime SDK and UI toolkit. Produces libruntime_dylib.so so thin apps can link the toolkit (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
 
 # ── Why this crate exists ───────────────────────────────────────────
