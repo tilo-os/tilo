@@ -480,8 +480,8 @@ impl Shell {
                 })
                 .collect(),
             active: active_ws,
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: std::collections::HashMap::default(),
+            active_group: std::collections::HashMap::default(),
             collaborators: vec![],
             ..Default::default()
         };
@@ -532,12 +532,14 @@ impl Shell {
         let mut scratch = state::WorkspaceTree {
             workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: std::collections::HashMap::default(),
+            active_group: std::collections::HashMap::default(),
             collaborators: vec![],
             ..Default::default()
         };
-        scratch.active = scratch.workspaces[0].id;
+        if let Some(w) = scratch.workspaces.first() {
+            scratch.active = w.id;
+        }
         self.sidebar.begin_overscroll(1);
         for _ in 0..30 {
             // 300px of pull, comfortably past the 240px threshold.
@@ -562,12 +564,14 @@ impl Shell {
         let mut scratch = state::WorkspaceTree {
             workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: std::collections::HashMap::default(),
+            active_group: std::collections::HashMap::default(),
             collaborators: vec![],
             ..Default::default()
         };
-        scratch.active = scratch.workspaces[0].id;
+        if let Some(w) = scratch.workspaces.first() {
+            scratch.active = w.id;
+        }
         let _ = self.sidebar.click_management_new_workspace(&mut scratch);
         self.toasts.push("Workspace created", ToastKind::Success);
     }
@@ -755,11 +759,10 @@ fn to_ui_kind(k: &ShellKind) -> UiKind {
         ShellKind::Terminal => UiKind::Terminal,
         ShellKind::FileExplorer => UiKind::Files,
         ShellKind::Browser => UiKind::Browser,
-        ShellKind::Settings => UiKind::Settings,
         // Apps hosted under `Other` are all text editors; without this
         // they wore the unknown-kind settings cog instead of the editor glyph.
         ShellKind::Other(s) if is_editor_label(s) => UiKind::Editor,
-        ShellKind::Other(_) => UiKind::Settings,
+        ShellKind::Settings | ShellKind::Other(_) => UiKind::Settings,
     }
 }
 
@@ -802,8 +805,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
 /// [`overlay_host::ShellOverlayHost`]'s per-revision resync.
 pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
     match t {
-        ShellTile::Stub { kind, .. } => to_ui_kind(kind),
-        ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
+        ShellTile::Stub { kind, .. } | ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
         // No `AppKind` describes "arbitrary external client", so both a
         // foreign surface and a peer window wear the catch-all `Settings`
         // glyph — and keep wearing it when a `PeerWindow` binds in and
