@@ -1,8 +1,7 @@
-name: Lint + audit
+name: Fast lint and dependency audit
 
-# Static analysis, separate from check.yml so a formatting failure does not
-# hide a test failure and vice versa. Each step reports independently.
-
+# Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
+# This path stays intentionally cheap so it can run on every change.
 on:
   push:
     branches: ["main"]
@@ -19,8 +18,6 @@ jobs:
     runs-on: runner
     container:
       image: code.podesta.ai/qos/qos-builder:latest
-      # The runner pulls the job container before any step runs, so a
-      # docker/login-action step inside the job is too late for a private image.
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -33,28 +30,8 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
-      # rustc's own warnings, which the workspace is at zero of. Kept
-      # separate from the clippy ratchet: this one is a hard gate, because
-      # there is nothing to ratchet down from.
-      - name: no rustc warnings
-        env:
-          CARGO_BUILD_JOBS: "4"
-        run: tools/check-warnings.sh
-
-      # Runs whatever check.yml did not: every target, including tests.
-      # Not a plain `cargo clippy`: the workspace has ~50,000 existing
-      # violations, so that gate would be red for months and gate nothing.
-      # The ratchet fails only when a lint's count goes up.
-      - name: clippy ratchet
-        env:
-          CARGO_BUILD_JOBS: "4"
-        run: tools/clippy-ratchet.sh
-
-      - name: cargo doc (warnings are errors)
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-          CARGO_BUILD_JOBS: "4"
-        run: cargo doc --workspace --no-deps --locked
+      - name: CI selector unit tests
+        run: python3 -m unittest tools/tests/test_ci_select.py
 
   audit:
     runs-on: runner
@@ -69,35 +46,8 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      # Advisories, licence compatibility with AGPL-3.0, and the duplicate
-      # version report. Reads deny.toml.
       - name: cargo deny
         run: cargo deny --workspace check
 
-      # Dependencies nothing imports. The lockfile carries ~1,600 packages;
-      # each unused one is compile time every builder pays.
       - name: cargo machete
         run: cargo machete --with-metadata
-
-  size:
-    runs-on: runner
-    container:
-      image: code.podesta.ai/qos/qos-builder:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-
-      # The product claim is small apps; without a gate that stops being true
-      # quietly. Budgets are per binary in tools/binary-budget.toml.
-      - name: Build release binaries
-        env:
-          CARGO_BUILD_JOBS: "4"
-        run: cargo build --release --workspace --locked
-
-      - name: Check binary sizes against budget
-        run: tools/check-binary-size.sh
