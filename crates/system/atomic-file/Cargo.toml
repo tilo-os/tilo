@@ -2,6 +2,8 @@
 name = "atomic-file"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Crash-safe file replacement: temp file, fsync, rename, fsync the directory."
 
 [lib]
