@@ -1,9 +1,8 @@
-name: Check + test the whole workspace
+name: Check affected workspace packages
 
-# Fast feedback that EVERY crate compiles + its tests pass — the image build only
-# compiles the OS binaries, so without this the ~45 apps could (and did) rot
-# undetected. Runs on push/PR to main; the heavier image build stays separate.
-
+# Pull requests and pushes compile/test only packages touched by the change and
+# their transitive workspace dependants. Full target and test coverage remains
+# mandatory in nightly.yml; this job is the short feedback path.
 on:
   push:
     branches: ["main"]
@@ -15,16 +14,71 @@ concurrency:
   group: check-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_HOME: /cargo-home
+  CARGO_BUILD_JOBS: "4"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  RUSTC_WRAPPER: sccache
+  # Cache availability changes speed, never correctness or mergeability.
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  RUSTFLAGS: "-D warnings"
+  SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
+  WGPU_BACKEND: vulkan
+
 jobs:
-  check:
+  select:
     runs-on: runner
     container:
-      # Prebuilt by build-builder-image.yml: the native dependencies, the
-      # pinned toolchain and nextest. Previously every run dnf-installed ~30
-      # packages first.
       image: code.sandbox.example/qos/qos-builder:latest
-      # The runner pulls the job container before any step runs, so a
-      # docker/login-action step inside the job is too late for a private image.
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      full: ${{ steps.plan.outputs.full }}
+      selected_count: ${{ steps.plan.outputs.selected_count }}
+      workspace_count: ${{ steps.plan.outputs.workspace_count }}
+    steps:
+      - name: Checkout complete history for change selection
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+
+      - name: Workspace membership guard
+        run: ./scripts/check-workspace-complete.sh
+
+      - name: Select and balance affected packages
+        id: plan
+        shell: bash
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          if [ -z "$base" ] || [ "$base" = "null" ]; then
+            base='${{ github.event.before }}'
+          fi
+          if [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base=""
+          fi
+          python3 tools/ci_select.py --base "$base" --shards 2 \
+            --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
+          {
+            echo '```json'
+            cat ci-plan.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  affected:
+    needs: select
+    runs-on: runner
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    container:
+      image: code.sandbox.example/qos/qos-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -34,40 +88,59 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      - name: Workspace membership guard (no crate silently dropped)
-        run: ./scripts/check-workspace-complete.sh
+      - name: Restore Cargo downloads
+        id: cargo-cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-deps-
 
-      # nextest builds every test target and runs each test in its own process.
-      # `cargo check --workspace` used to run first; it compiled the tree a
-      # second time for artifacts this step cannot reuse.
-      #
-      # --locked: a fresh resolve pulls a pre-release ed25519-dalek stack
-      # through iroh that does not compile, failing inside a dependency rather
-      # than anywhere this repo touches.
-      - name: cargo nextest run --workspace
-        env:
-          # Headless GPU via llvmpipe; live network tests self-skip unless opted in.
-          WGPU_BACKEND: vulkan
-          # Bound peak memory: parallel rustc linking test binaries otherwise
-          # OOM-kills the runner mid-compile. Test-profile debuginfo has no
-          # effect on pass/fail.
-          CARGO_BUILD_JOBS: "4"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-          # A wayland socket has to be bound somewhere, and smithay's
-          # `ListeningSocket::bind_auto` puts it in the runtime dir. There is
-          # no login session in this container to set one, so the compositor's
-          # handshake tests failed with `RuntimeDirNotSet` before reaching
-          # anything they check. Providing the directory lets them bind a real
-          # socket and run for real.
-          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+      - name: Prepare headless runtime and compiler cache
         run: |
-          mkdir -p "$XDG_RUNTIME_DIR"
-          chmod 700 "$XDG_RUNTIME_DIR"
-          cargo nextest run --workspace --locked --profile ci
+          mkdir -p /tmp/qos-xdg-runtime
+          chmod 700 /tmp/qos-xdg-runtime
+          sccache --zero-stats || true
 
-      # Examples are not test targets, so nextest does not build them. The
-      # dependency rlibs it just produced make this close to free.
-      - name: cargo build --workspace --examples
+      # Build and run tests first. The resulting rlibs/rmeta are then reusable
+      # by the all-target check; doing this in the opposite order makes rustc
+      # perform metadata-only work before doing codegen for the same crates.
+      - name: Test shard ${{ matrix.shard }}
         env:
-          CARGO_BUILD_JOBS: "4"
-        run: cargo build --workspace --examples --locked
+          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+        run: >-
+          bash tools/ci-measure.sh "test shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
+          cargo nextest run --locked --profile ci ${{ matrix.packages }}
+
+      - name: Check all targets in shard ${{ matrix.shard }}
+        env:
+          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+        run: >-
+          bash tools/ci-measure.sh "check shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
+          cargo check --locked --all-targets ${{ matrix.packages }}
+
+      - name: Report remote compiler-cache effectiveness
+        if: always()
+        run: |
+          echo "### sccache shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # One writer avoids two shards racing to create the same immutable key.
+      - name: Save Cargo downloads
+        if: always() && matrix.shard == 1 && steps.cargo-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
