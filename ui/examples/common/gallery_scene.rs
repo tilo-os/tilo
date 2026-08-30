@@ -12,9 +12,9 @@
 
 use automerge::transaction::Transactable;
 
-use ui::State;
 use ui::icons::Icon;
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::table;
 use ui::widget::toggle_group::Segment;
 use ui::widget::toolbar::Orientation;
@@ -23,6 +23,10 @@ use ui::widget::{
     Divider, Dropdown, EmptyState, NumberInput, ProgressBar, RingGauge, Row, SearchField, Series,
     Slider, Spacer, Sparkline, StatTile, TabBar, TabDescriptor, Table, Text, TextInput, Toggle,
     ToggleGroup, Toolbar, Trend, Widget,
+};
+use ui::{
+    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
+    State, TextStyle, TextWeight,
 };
 
 const CARD_W: f32 = 560.0;
@@ -62,6 +66,267 @@ fn col(gap: f32) -> Column {
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(gap)
+}
+
+fn specimen_cell(caption: &str, specimen: Text, theme: &Theme, width: f32) -> Box<dyn Widget> {
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_width(width)
+            .with_child(Box::new(
+                col(4.0).push(dim(caption, theme)).push(Box::new(specimen)),
+            )),
+    )
+}
+
+fn specimen_pair(
+    theme: &Theme,
+    before_caption: &str,
+    before: Text,
+    after_caption: &str,
+    after: Text,
+) -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .push(specimen_cell(before_caption, before, theme, 520.0))
+            .push(specimen_cell(after_caption, after, theme, 520.0)),
+    )
+}
+
+/// The gallery's canonical multilingual typography review corpus.
+///
+/// Kept as its own builder so the offscreen regression test renders exactly
+/// the same widget developers inspect in the full component gallery.
+pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
+    card(
+        None,
+        "Typography & Scripts",
+        Box::new(
+            col(9.0)
+                .push(Box::new(
+                    Text::new("A clear hierarchy makes dense interfaces feel calm.")
+                        .with_role(TextRole::Heading, theme),
+                ))
+                .push(Box::new(
+                    Text::new("A quiet page gives every letter room to speak.").with_style(
+                        TextStyle::new(28.0)
+                            .with_line_height(1.25)
+                            .with_weight(TextWeight::Semibold)
+                            .with_family(FontChoice::Serif),
+                    ),
+                ))
+                .push(Box::new(
+                    Text::new(
+                        "Serif specimen — AVATAR · WAVE · To · Ta · Yo · office · affinity · ffi · naïve café.",
+                    )
+                    .with_style(
+                        TextStyle::new(18.0)
+                            .with_line_height(1.5)
+                            .with_family(FontChoice::Serif),
+                    ),
+                ))
+                .push(Box::new(
+                    Text::new(
+                        "Italic serif — Typography should feel composed, never merely typeset.",
+                    )
+                    .with_style(
+                        TextStyle::new(17.0)
+                            .with_line_height(1.5)
+                            .with_italic(true)
+                            .with_family(FontChoice::Serif),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · kerning disabled",
+                    Text::new("AVATAR  WAVE  To Ta Yo").with_style(
+                        TextStyle::new(25.0)
+                            .with_family(FontChoice::Serif)
+                            .with_kerning(false),
+                    ),
+                    "AFTER · kerning enabled",
+                    Text::new("AVATAR  WAVE  To Ta Yo").with_style(
+                        TextStyle::new(25.0)
+                            .with_family(FontChoice::Serif)
+                            .with_kerning(true),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · standard forms",
+                    Text::new("office · affinity · historic 1847").with_style(
+                        TextStyle::new(20.0).with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · discretionary ligatures + small caps",
+                    Text::new("office · affinity · historic 1847").with_style(
+                        TextStyle::new(20.0)
+                            .with_family(FontChoice::Serif)
+                            .with_discretionary_ligatures(true)
+                            .with_small_caps(true),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · proportional lining figures",
+                    Text::new("1847  2026  €12,408.50").with_style(
+                        TextStyle::new(20.0)
+                            .with_family(FontChoice::Serif)
+                            .with_numeric_style(NumericStyle::ProportionalLining),
+                    ),
+                    "AFTER · tabular old-style figures",
+                    Text::new("1847  2026  €12,408.50").with_style(
+                        TextStyle::new(20.0)
+                            .with_family(FontChoice::Serif)
+                            .with_numeric_style(NumericStyle::TabularOldstyle),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · default spacing",
+                    Text::new("A WELL-SPACED HEADING").with_style(
+                        TextStyle::new(18.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · +0.075em tracking",
+                    Text::new("A WELL-SPACED HEADING").with_style(
+                        TextStyle::new(18.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_family(FontChoice::Serif)
+                            .with_tracking(0.075),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · Adwaita Sans wght 300 · opsz 14",
+                    Text::new("Variable fonts adapt continuously").with_style(
+                        TextStyle::new(23.0)
+                            .with_family(FontChoice::Named("Adwaita Sans".into()))
+                            .with_font_variation(OpenTypeTag::WEIGHT, 300.0)
+                            .with_optical_sizing(OpticalSizing::Value(14.0)),
+                    ),
+                    "AFTER · Adwaita Sans wght 720 · optical sizing auto",
+                    Text::new("Variable fonts adapt continuously").with_style(
+                        TextStyle::new(23.0)
+                            .with_family(FontChoice::Named("Adwaita Sans".into()))
+                            .with_font_variation(OpenTypeTag::WEIGHT, 720.0)
+                            .with_optical_sizing(OpticalSizing::Auto),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · ordinary wrapping",
+                    Text::new(
+                        "A balanced heading wraps its thought into lines of comparable visual weight.",
+                    )
+                    .with_style(
+                        TextStyle::new(21.0)
+                            .with_line_height(1.25)
+                            .with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · balanced wrapping",
+                    Text::new(
+                        "A balanced heading wraps its thought into lines of comparable visual weight.",
+                    )
+                    .with_style(
+                        TextStyle::new(21.0)
+                            .with_line_height(1.25)
+                            .with_family(FontChoice::Serif),
+                    )
+                    .with_balanced_wrap(),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · ragged start",
+                    Text::new(
+                        "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+                    )
+                    .with_style(
+                        TextStyle::new(16.0)
+                            .with_line_height(1.5)
+                            .with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · full justification",
+                    Text::new(
+                        "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+                    )
+                    .with_style(
+                        TextStyle::new(16.0)
+                            .with_line_height(1.5)
+                            .with_family(FontChoice::Serif)
+                            .with_align(ParagraphAlign::Justified),
+                    ),
+                ))
+                .push(specimen_pair(
+                    theme,
+                    "BEFORE · punctuation inside the measure",
+                    Text::new("“A composed edge,” she wrote, “lets the words lead.”").with_style(
+                        TextStyle::new(20.0)
+                            .with_line_height(1.4)
+                            .with_family(FontChoice::Serif),
+                    ),
+                    "AFTER · opening and closing punctuation hangs",
+                    Text::new("“A composed edge,” she wrote, “lets the words lead.”").with_style(
+                        TextStyle::new(20.0)
+                            .with_line_height(1.4)
+                            .with_family(FontChoice::Serif)
+                            .with_hanging_punctuation(HangingPunctuation::BOTH),
+                    ),
+                ))
+                .push(dim(
+                    "PAGINATION · RichTextLayout enforces configurable 2-line widow/orphan minima at page and column breaks.",
+                    theme,
+                ))
+                .push(Box::new(
+                    Text::new("const greeting = \"Hello, 世界\";")
+                        .with_role(TextRole::Code, theme),
+                ))
+                .push(Box::new(
+                    Text::new("العربية — مرحبًا بالعالم").with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new("עברית — שלום עולם").with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new("हिन्दी — नमस्ते दुनिया  ·  বাংলা — নমস্কার বিশ্ব")
+                        .with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new("ไทย — สวัสดีชาวโลก  ·  日本語 東京  ·  简体中文 上海")
+                        .with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new(
+                        "Thai dictionary wrap (no spaces): ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์",
+                    )
+                    .with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    col(4.0)
+                        .push(Box::new(
+                            Text::new("English auto hyphenation:")
+                                .with_role(TextRole::Body, theme),
+                        ))
+                        .push(Box::new(
+                            Container::new().with_no_padding().with_width(190.0).with_child(
+                                Box::new(
+                                    Text::new("Internationalization demonstrates typography.")
+                                        .with_role(TextRole::Reading, theme)
+                                        .with_auto_hyphenation("en-US"),
+                                ),
+                            ),
+                        )),
+                ))
+                .push(Box::new(
+                    Text::new("Mixed BiDi: Invoice 123 — חשבון ٤٥٦ — total €78")
+                        .with_role(TextRole::Body, theme),
+                ))
+                .push(Box::new(
+                    Text::new("Emoji clusters: 👩🏽‍💻  👨‍👩‍👧‍👦  🏳️‍🌈  🇪🇺")
+                        .with_role(TextRole::Body, theme),
+                )),
+        ),
+    )
 }
 
 /// Build the whole showcase, seeding `state.doc`. `theme` selects dimmed-text
@@ -356,6 +621,12 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
         ),
     );
 
+    // ---- Typography conformance (full width) -----------------------------
+    // Keep the multilingual corpus visible in the ordinary gallery so font
+    // policy, fallback, shaping, metrics and BiDi regressions are reviewable
+    // in the same light/dark screenshots as every other component.
+    let typography = build_typography_showcase(theme);
+
     // ---- Empty state (full width, fixed height) ---------------------------
     let empty = card(
         None,
@@ -389,6 +660,7 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
             .push(Box::new(Row::new().push(tags).push(feedback)))
             .push(metrics)
             .push(Box::new(Row::new().push(charts).push(navigation)))
+            .push(typography)
             .push(banners)
             .push(empty)
             .push(table_card),
