@@ -4577,9 +4577,11 @@ mod tests {
     /// End-to-end through the *real app widget*: submit a YouTube-Music search,
     /// let the worker return real hits, then play the top hit and confirm the
     /// app resolved + loaded a real `googlevideo.com` audio URL into the engine.
-    /// Network-dependent, so gated behind the `live` feature.
+    /// Network-dependent, so gated behind the `live` feature and exercised by
+    /// the nightly live-integration step rather than every deterministic shard.
     #[cfg(feature = "live")]
     #[test]
+    #[ignore = "queries third-party music services; nightly runs it explicitly"]
     fn live_search_and_stream_resolve_through_the_app() {
         use std::time::Duration;
         let (mut app, mut doc) = app_with_doc();
