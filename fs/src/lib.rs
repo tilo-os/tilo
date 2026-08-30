@@ -9,6 +9,7 @@ pub mod hydration;
 pub mod identity;
 pub mod namespace;
 pub mod smart;
+pub mod storage;
 pub mod store;
 pub mod sync;
 pub mod syncstate;

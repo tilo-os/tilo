@@ -1,27 +1,22 @@
-//! External Accounts pane — the integration hub and editor for the shared
-//! account stores ([`crate::accounts`]) that Mail, Calendar, and the file
-//! apps consume.
+//! External Accounts pane — one inventory over the canonical account stores
+//! that installed clients consume.
 //!
 //! ## What's wired
 //!
-//! - **Remove** (the trash button on any real account) loads the owning
-//!   store, drops the account, and persists — a real, complete mutation of
-//!   the on-disk file Mail/Calendar/Files read.
+//! - **Remove** loads the owning store, drops the account, and persists it.
 //! - **Add email account** opens an inline form; **Save** builds an
 //!   [`AccountConfig`] (auto-configuring IMAP/SMTP from the address) and
 //!   appends it to [`MailStore`], persisting the same JSON Mail loads.
 //!
 //! ## Live vs. sample
 //!
-//! On launch the pane loads the real stores. When every store is empty (a
-//! fresh install, or `--shots` on CI) it renders
-//! [`crate::accounts::sample_directory`] as a read-only illustration — the
-//! sample rows omit the Remove button, and adding a real account replaces
-//! the illustration with the live directory.
+//! Production loads only real stores and renders an honest empty state.
+//! Screenshot and widget tests may inject [`crate::accounts::sample_directory`]
+//! explicitly; those rows are labelled examples and omit mutation controls.
 //!
 //! Adding CalDAV/WebDAV/Nextcloud accounts and editing existing ones need
-//! their own forms and a credential flow; those are follow-ups tracked in
-//! the growth ledger rather than shipped as buttons that don't act.
+//! their own forms and authorization flows. They are intentionally not
+//! shipped as buttons that do not act.
 
 use std::collections::HashMap;
 
@@ -39,6 +34,7 @@ use crate::accounts::{
 };
 use crate::widgets::{
     El, caption, card, card_with_action, hgap, icon_button, rows, setting_row, status_pill,
+    value_row,
 };
 
 /// Key the "Add" button on the Email card writes to open the form.
@@ -51,18 +47,31 @@ pub const FORM_NAME_KEY: &str = "accounts.form.name";
 pub const FORM_EMAIL_KEY: &str = "accounts.form.email";
 pub const FORM_USER_KEY: &str = "accounts.form.username";
 pub const FORM_PASSWORD_KEY: &str = "accounts.form.password";
+pub const REAUTH_PASSWORD_KEY: &str = "accounts.reauth.password";
+pub const REAUTH_SAVE_KEY: &str = "settings.accounts.reauth.save";
+pub const REAUTH_CANCEL_KEY: &str = "settings.accounts.reauth.cancel";
+pub const REMOVE_CONFIRM_KEY: &str = "settings.accounts.remove.confirm";
+pub const REMOVE_CANCEL_KEY: &str = "settings.accounts.remove.cancel";
 
 /// Per-account Remove key.
 fn remove_key(id: &str) -> String {
     format!("settings.accounts.remove.{id}")
 }
 
+fn reauth_key(id: &str) -> String {
+    format!("settings.accounts.reauth.{id}")
+}
+
 /// External accounts pane.
 pub struct AccountsPane {
     dir: AccountDirectory,
+    sync_statuses: accounts::AccountSyncStatusStore,
+    vault: accounts::SecretVault,
     /// Whether `dir` is the illustrative sample (the real stores are empty).
     is_sample: bool,
     form_open: bool,
+    reauth_id: Option<String>,
+    pending_remove: Option<(AccountKind, String)>,
     /// Ids we've already removed this session, so a stale key edge doesn't
     /// try to remove twice.
     removed: Vec<String>,
@@ -86,8 +95,12 @@ impl AccountsPane {
         // `from_dir(sample_directory(), true)` for a rich still instead.
         Self {
             dir: AccountDirectory::load(),
+            sync_statuses: accounts::AccountSyncStatusStore::load(),
+            vault: accounts::SecretVault::open(),
             is_sample: false,
             form_open: false,
+            reauth_id: None,
+            pending_remove: None,
             removed: Vec::new(),
             structure_dirty: false,
             composed: None,
@@ -101,8 +114,12 @@ impl AccountsPane {
     pub fn from_dir(dir: AccountDirectory, is_sample: bool) -> Self {
         Self {
             dir,
+            sync_statuses: accounts::AccountSyncStatusStore::default(),
+            vault: accounts::SecretVault::open(),
             is_sample,
             form_open: false,
+            reauth_id: None,
+            pending_remove: None,
             removed: Vec::new(),
             structure_dirty: false,
             composed: None,
@@ -128,13 +145,17 @@ impl AccountsPane {
         let mut intro: Vec<El> = Vec::new();
         intro.push(Box::new(
             Text::new(
-                "Accounts you add here are shared across the system. \
-                 Mail reads your email accounts, Calendar reads your \
-                 CalDAV calendars, and the file apps mount your WebDAV \
-                 and Nextcloud shares.",
+                "Accounts are listed once and consumed by compatible installed apps. \
+                 Email accounts can be added here today; calendar and file accounts \
+                 appear here when provisioned by their owning app.",
             )
             .with_size(12.0),
         ));
+        if self.vault.custody() == accounts::SecretCustody::LocalFile {
+            intro.push(caption(
+                "The desktop Secret Service is unavailable, so this session uses an owner-only local vault key. Install or unlock a Secret Service for stronger key custody.",
+            ));
+        }
         if self.is_sample {
             // Be honest that the visible rows are an illustration, not real
             // connected accounts — the store is empty until you add one.
@@ -153,6 +174,41 @@ impl AccountsPane {
 
         if self.form_open {
             panel.push(self.mail_form());
+        }
+        if let Some(id) = &self.reauth_id {
+            panel.push(self.reauth_form(id));
+        }
+        if let Some((kind, id)) = &self.pending_remove
+            && let Some(view) = self
+                .dir
+                .views_of(*kind)
+                .into_iter()
+                .find(|view| &view.id == id)
+        {
+            panel.push(card(
+                "Remove account?",
+                rows(vec![
+                    caption(&format!(
+                        "{} will be removed from this device. Locally cached copies may be removed by its apps; data on the provider is not deleted. The encrypted credential and local sync-health record are removed.",
+                        view.label
+                    )),
+                    Box::new(
+                        Row::new()
+                            .push(Box::new(Button::new(
+                                "settings.accounts.remove.confirm",
+                                "Remove from this device",
+                                Some(REMOVE_CONFIRM_KEY),
+                            )))
+                            .push(hgap(8.0))
+                            .push(Box::new(Button::new(
+                                "settings.accounts.remove.cancel",
+                                "Cancel",
+                                Some(REMOVE_CANCEL_KEY),
+                            )))
+                            .push(Box::new(Spacer::new())),
+                    ),
+                ]),
+            ));
         }
 
         // Email card carries the live "Add" button.
@@ -204,12 +260,35 @@ impl AccountsPane {
     /// Sample rows report an honest "Example" status rather than fabricating
     /// a live "Connected" — nothing is actually connected in the illustration.
     fn account_row(&self, view: &AccountView) -> El {
+        let id = accounts::AccountId::from(view.id.clone());
+        let runtime = self.sync_statuses.get(&id);
         let (status, status_color) = if self.is_sample {
             ("Example", ui::Theme::dark().text_dim)
-        } else if view.enabled {
-            ("Connected", ui::Theme::dark().status_success)
-        } else {
+        } else if !view.enabled {
             ("Disabled", ui::Theme::dark().text_dim)
+        } else {
+            match runtime.map(|status| status.health) {
+                Some(accounts::AccountSyncHealth::Syncing) => {
+                    ("Syncing", ui::Theme::dark().tokens.colors.accent[5])
+                }
+                Some(accounts::AccountSyncHealth::Healthy) => {
+                    ("Up to date", ui::Theme::dark().status_success)
+                }
+                Some(accounts::AccountSyncHealth::Offline) => {
+                    ("Offline", ui::Theme::dark().tokens.colors.semantic.warning)
+                }
+                Some(accounts::AccountSyncHealth::NeedsAuthentication) => (
+                    "Sign in again",
+                    ui::Theme::dark().tokens.colors.semantic.warning,
+                ),
+                Some(accounts::AccountSyncHealth::Error) => (
+                    "Needs attention",
+                    ui::Theme::dark().tokens.colors.semantic.danger,
+                ),
+                Some(accounts::AccountSyncHealth::Never) | None => {
+                    ("Not checked yet", ui::Theme::dark().text_dim)
+                }
+            }
         };
 
         // Top line: the account label with the status chip and (for real
@@ -224,22 +303,52 @@ impl AccountsPane {
         if !self.is_sample {
             let rk = remove_key(&view.id);
             let remove_id = format!("settings.accounts.remove.{}", view.id);
+            if self
+                .vault
+                .get(&accounts::AccountId::from(view.id.clone()))
+                .is_some_and(|secret| !secret.password.is_empty())
+            {
+                top = top.push(hgap(8.0)).push(icon_button(
+                    &format!("settings.accounts.reauth.{}", view.id),
+                    "\u{f0425}",
+                    &reauth_key(&view.id),
+                ));
+            }
             top = top
                 .push(hgap(10.0))
                 .push(icon_button(&remove_id, "\u{f01b4}", &rk));
         }
 
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(top))
-                .push(Box::new(
-                    Text::new(&view.summary)
-                        .with_size(11.0)
-                        .with_color(ui::Theme::dark().text_dim),
-                )),
-        )
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(top))
+            .push(Box::new(
+                Text::new(&view.summary)
+                    .with_size(11.0)
+                    .with_color(ui::Theme::dark().text_dim),
+            ));
+        if !self.is_sample {
+            let sync_line = runtime.map_or_else(
+                || "No application has reported a sync for this account.".to_string(),
+                |status| {
+                    let when = status
+                        .last_success_unix
+                        .map(relative_sync_time)
+                        .unwrap_or_else(|| "never completed".into());
+                    match status.message.as_deref() {
+                        Some(message) => format!("Last successful sync: {when} · {message}"),
+                        None => format!("Last successful sync: {when}"),
+                    }
+                },
+            );
+            column = column.push(Box::new(
+                Text::new(&sync_line)
+                    .with_size(11.0)
+                    .with_color(ui::Theme::dark().text_dim),
+            ));
+        }
+        Box::new(column)
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
@@ -294,11 +403,47 @@ impl AccountsPane {
         )
     }
 
+    fn reauth_form(&self, id: &str) -> El {
+        let password = TextInput::new(Vec::new())
+            .with_id("accounts.reauth.password")
+            .with_on_change_path(REAUTH_PASSWORD_KEY)
+            .with_secret(true)
+            .with_placeholder("New password or app password")
+            .with_font_size(13.0);
+        card(
+            "Replace saved password",
+            rows(vec![
+                value_row("Account", id),
+                setting_row("Credential", Box::new(password)),
+                caption(
+                    "This replaces an existing password or app password in the OS account vault. OAuth authorization remains with the owning application.",
+                ),
+                Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new(
+                            "settings.accounts.reauth.save",
+                            "Update credential",
+                            Some(REAUTH_SAVE_KEY),
+                        )))
+                        .push(hgap(8.0))
+                        .push(Box::new(Button::new(
+                            "settings.accounts.reauth.cancel",
+                            "Cancel",
+                            Some(REAUTH_CANCEL_KEY),
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ),
+            ]),
+        )
+    }
+
     /// Reload the real directory after a mutation. The live pane never
     /// substitutes the sample, so `is_sample` stays as constructed (always
     /// `false` for the live pane).
     fn reload(&mut self) {
         self.dir = AccountDirectory::load();
+        self.sync_statuses = accounts::AccountSyncStatusStore::load();
+        self.vault = accounts::SecretVault::open();
     }
 
     /// Persist a new mail account from the form fields. Returns whether an
@@ -361,12 +506,7 @@ impl AccountsPane {
                 let account_id = accounts::AccountId::from(id.to_string());
                 let mut shared = accounts::AccountStore::load();
                 shared.remove(&account_id);
-                let saved = shared.save();
-                let mut vault = accounts::SecretVault::open();
-                if vault.remove(&account_id) {
-                    vault.save();
-                }
-                saved
+                shared.save()
             }
             AccountKind::WebDav => {
                 let mut s = DavStore::load_from(DavStore::files_path());
@@ -381,7 +521,29 @@ impl AccountsPane {
         };
         if let Err(e) = res {
             warn!(target: "qos::settings", op = "account_remove", error = %e, "failed to persist account removal");
+        } else {
+            let account_id = accounts::AccountId::from(id.to_string());
+            let mut vault = accounts::SecretVault::open();
+            if vault.remove(&account_id) {
+                vault.save();
+            }
+            if let Err(error) = accounts::AccountSyncReporter::new(account_id).remove() {
+                warn!(target: "qos::settings", op = "account_status_remove", %error, "failed to remove account sync status");
+            }
         }
+    }
+}
+
+fn relative_sync_time(unix: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs() as i64);
+    let age = now.saturating_sub(unix).max(0);
+    match age {
+        0..=59 => "just now".into(),
+        60..=3_599 => format!("{} min ago", age / 60),
+        3_600..=86_399 => format!("{} h ago", age / 3_600),
+        _ => format!("{} d ago", age / 86_400),
     }
 }
 
@@ -435,6 +597,86 @@ impl Widget for AccountsPane {
                 self.structure_dirty = true;
             }
         }
+        if !self.is_sample {
+            let views: Vec<_> = [
+                AccountKind::Mail,
+                AccountKind::CalDav,
+                AccountKind::WebDav,
+                AccountKind::Nextcloud,
+            ]
+            .into_iter()
+            .flat_map(|kind| self.dir.views_of(kind))
+            .collect();
+            for view in views {
+                let has_password = self
+                    .vault
+                    .get(&accounts::AccountId::from(view.id.clone()))
+                    .is_some_and(|secret| !secret.password.is_empty());
+                if !has_password {
+                    continue;
+                }
+                let key = reauth_key(&view.id);
+                if read_bool(state, root, &key) {
+                    let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
+                    self.reauth_id = Some(view.id);
+                    let _ = crate::ensure_text_object(state, root, REAUTH_PASSWORD_KEY);
+                    self.structure_dirty = true;
+                }
+            }
+        }
+        if read_bool(state, root, REAUTH_CANCEL_KEY) {
+            let _ = state.put(
+                root,
+                REAUTH_CANCEL_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            self.reauth_id = None;
+            crate::clear_text_object(state, root, REAUTH_PASSWORD_KEY);
+            self.structure_dirty = true;
+        }
+        if read_bool(state, root, REAUTH_SAVE_KEY) {
+            let _ = state.put(
+                root,
+                REAUTH_SAVE_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            if let Some(id) = self.reauth_id.take() {
+                let password = read_str(state, root, REAUTH_PASSWORD_KEY).unwrap_or_default();
+                if !password.trim().is_empty() {
+                    let mut vault = accounts::SecretVault::open();
+                    let account_id = accounts::AccountId::from(id);
+                    let mut secret = vault.get(&account_id).unwrap_or_default();
+                    secret.password = password.trim().to_string();
+                    vault.put(&account_id, &secret);
+                    vault.save();
+                }
+                crate::clear_text_object(state, root, REAUTH_PASSWORD_KEY);
+                self.structure_dirty = true;
+            }
+        }
+
+        if read_bool(state, root, REMOVE_CANCEL_KEY) {
+            let _ = state.put(
+                root,
+                REMOVE_CANCEL_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            self.pending_remove = None;
+            self.structure_dirty = true;
+        }
+        if read_bool(state, root, REMOVE_CONFIRM_KEY) {
+            let _ = state.put(
+                root,
+                REMOVE_CONFIRM_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            if let Some((kind, id)) = self.pending_remove.take() {
+                self.remove_account(kind, &id);
+                self.removed.push(id);
+                self.reload();
+                self.structure_dirty = true;
+            }
+        }
         // Per-account Remove buttons. Snapshot (kind, id, key) so we don't
         // hold a borrow across the mutating store calls.
         if !self.is_sample {
@@ -452,19 +694,14 @@ impl Widget for AccountsPane {
                     .map(move |v| (kind, v.id.clone(), remove_key(&v.id)))
             })
             .collect();
-            let mut removed_any = false;
             for (kind, id, key) in targets {
                 if !read_bool(state, root, &key) || self.removed.contains(&id) {
                     continue;
                 }
                 let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
-                self.removed.push(id.clone());
-                self.remove_account(kind, &id);
-                removed_any = true;
-            }
-            if removed_any {
-                self.reload();
+                self.pending_remove = Some((kind, id));
                 self.structure_dirty = true;
+                break;
             }
         }
 
@@ -670,7 +907,8 @@ mod tests {
 
     #[test]
     fn real_directory_renders_remove_buttons() {
-        // Treated as real: each account gets a Remove button plus the one Add.
+        // Without stored passwords, real rows offer removal but do not invent
+        // a reauthentication action.
         let dir = sample_directory(); // 2 mail + 1 cal + 1 nextcloud = 4 accounts
         let mut pane = AccountsPane::from_dir(dir, false);
         lay_out(&mut pane);

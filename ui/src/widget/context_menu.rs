@@ -10,7 +10,7 @@ use automerge::{AutoCommit, ObjId};
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -222,22 +222,33 @@ impl ContextMenu {
         if n == 0 {
             return;
         }
-        let start = self
-            .hovered
-            .map_or(if dir > 0 { -1 } else { n as i32 }, |i| i as i32);
-        let mut i = start;
+        let down = dir > 0;
+        // With nothing hovered, entering from above starts at the first row
+        // and entering from below at the last; otherwise step off the row we
+        // are on. Either way the walk then visits at most `n` candidates.
+        let mut idx = match self.hovered {
+            Some(i) => wrapping_step(i, n, down),
+            None if down => 0,
+            None => n.saturating_sub(1),
+        };
         for _ in 0..n {
-            i += dir.signum();
-            if i < 0 {
-                i = n as i32 - 1;
-            } else if i >= n as i32 {
-                i = 0;
-            }
-            if matches!(self.items[i as usize], MenuItem::Action { .. }) {
-                self.hovered = Some(i as usize);
+            if matches!(self.items.get(idx), Some(MenuItem::Action { .. })) {
+                self.hovered = Some(idx);
                 return;
             }
+            idx = wrapping_step(idx, n, down);
         }
+    }
+}
+
+/// One step through `n` items, wrapping past either end. Kept in `usize`
+/// so a menu index can never go negative or wrap through a cast.
+fn wrapping_step(i: usize, n: usize, down: bool) -> usize {
+    if down {
+        let next = i.saturating_add(1);
+        if next >= n { 0 } else { next }
+    } else {
+        i.checked_sub(1).unwrap_or_else(|| n.saturating_sub(1))
     }
 }
 
@@ -273,6 +284,13 @@ impl Widget for ContextMenu {
         } else {
             0.0
         };
+        // Both are small logical-pixel menu dimensions: MENU_WIDTH is a
+        // compile-time constant and `height` is a row-count multiple of
+        // ROW_HEIGHT, so neither comes close to f32's range.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical-pixel menu dimensions; f32 precision is sufficient"
+        )]
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(MENU_WIDTH as f32),
@@ -362,7 +380,7 @@ impl Widget for ContextMenu {
                         label,
                         text_size,
                         theme.tokens.colors.text_primary,
-                        transform * Affine::translate((self.rect.x0 + 10.0, label_y)),
+                        transform.pre_translate(Vec2::new(self.rect.x0 + 10.0, label_y)),
                         None,
                     );
                     y += ROW_HEIGHT;

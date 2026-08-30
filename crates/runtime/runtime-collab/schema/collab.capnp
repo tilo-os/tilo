@@ -31,7 +31,7 @@ interface CollabService {
   # because the identity format is collab-types' domain and we
   # don't want this schema to drift every time that crate adds a
   # field.
-  joinChannel @0 (channelId :Text, identity :Data) -> (handle :ChannelHandle);
+  joinChannel @0 (channelId :Text, identity :Data, participantHandle :Text) -> (handle :ChannelHandle);
 }
 
 interface ChannelHandle {

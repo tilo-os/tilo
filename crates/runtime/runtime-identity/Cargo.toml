@@ -3,11 +3,10 @@ name = "runtime-identity"
 version = "0.1.0"
 edition = "2024"
 
-# qOS runtime — user-identity loader. Reads the on-disk identity
-# record the launcher points at via the QOS_USER_IDENTITY env var,
-# exposes an ergonomic `SigningIdentity` that apps can use to sign
-# collab-op / attestation payloads without knowing the on-disk
-# format.
+# qOS runtime — user-identity signing client and host-side lifecycle store.
+# Packaged apps receive a connected broker descriptor and never a key path;
+# QOS_USER_IDENTITY remains only as an unsandboxed-development compatibility
+# route.
 #
 # In single-device (1-of-1) mode signing is done locally via
 # ed25519-dalek. Threshold-mode (t > 1) signing requires a
@@ -26,6 +25,9 @@ serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde"] }
+hex.workspace = true
+libc.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -33,6 +35,7 @@ tempfile.workspace = true
 # ceremony wrote, so the loader's refusal is tested against the real
 # historical shape rather than an invented one.
 sha2.workspace = true
+serial_test.workspace = true
 
 [lints]
 workspace = true

@@ -120,7 +120,7 @@ impl EffectKind {
             EffectKind::Vignette => "Vignette",
         }
     }
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_key(s: &str) -> Option<Self> {
         Some(match s.trim().to_lowercase().as_str() {
             "grayscale" | "greyscale" | "grey" | "gray" | "b&w" => EffectKind::Grayscale,
             "sepia" => EffectKind::Sepia,
@@ -158,7 +158,7 @@ impl MediaKind {
             MediaKind::Image => "image",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_key(s: &str) -> Self {
         match s {
             "audio" => MediaKind::Audio,
             "image" => MediaKind::Image,
@@ -186,7 +186,7 @@ impl TrackKind {
             TrackKind::Audio => "audio",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_key(s: &str) -> Self {
         match s {
             "audio" => TrackKind::Audio,
             _ => TrackKind::Video,
@@ -230,7 +230,7 @@ impl Transition {
             Transition::Wipe => "Wipe",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_key(s: &str) -> Self {
         match s {
             "dissolve" => Transition::CrossDissolve,
             "fade" => Transition::FadeIn,
@@ -276,11 +276,16 @@ fn default_hydration() -> Hydration {
 mod hydration_serde {
     use super::Hydration;
     use serde::{Deserialize, Deserializer, Serializer};
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "signature is fixed by serde's `#[serde(with = ...)]` contract, which always \
+                  calls this with `&Hydration`"
+    )]
     pub fn serialize<S: Serializer>(h: &Hydration, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(h.as_str())
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Hydration, D::Error> {
-        Ok(Hydration::from_str(&String::deserialize(d)?))
+        Ok(Hydration::from_key(&String::deserialize(d)?))
     }
 }
 
@@ -446,7 +451,7 @@ impl Project {
             .iter()
             .filter(|t| t.kind == TrackKind::Video)
             .collect();
-        video.sort_by(|a, b| b.index.cmp(&a.index));
+        video.sort_by_key(|t| std::cmp::Reverse(t.index));
         let mut audio: Vec<&Track> = self
             .tracks
             .iter()

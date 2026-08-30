@@ -3,7 +3,7 @@
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -39,6 +39,20 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// can exercise the overlay-flap layout. Pass `--narrow` to select it.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
 
+/// Video Editor binary entry point: dispatches to the live event loop, the
+/// offscreen `--shots` renderer, or a headless click/keystroke drive,
+/// depending on the process's command-line arguments.
+///
+/// # Errors
+///
+/// Returns an error if the requested render mode fails — e.g. an offscreen
+/// `--shots` capture can't be encoded or written to the given output path.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one flat if/else-if branch per CLI mode (--shots scenario select, --import, \
+              headless drive, live app); each branch is a few lines and splitting it would \
+              just rename the same dispatch, not simplify it"
+)]
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

@@ -875,6 +875,24 @@ impl ForeignSurfaceWidget {
         self.surface_id
     }
 
+    /// Place a compositor-owned floating surface without putting it through
+    /// the workspace's Taffy tree. The same placement store still drives the
+    /// xdg configure handshake, so the client renders at this exact size.
+    pub fn place_floating(&mut self, rect: Rect) {
+        self.rect = rect;
+        if rect.width() > 0.0 && rect.height() > 0.0 {
+            store().note_placement(self.surface_id, rect);
+        }
+    }
+
+    /// Whether the client currently has pixels mapped. Unlike ordinary tabs,
+    /// an inactive OSK must disappear completely rather than show an
+    /// "unresponsive" placeholder while its toplevel is intentionally
+    /// unmapped.
+    pub fn is_mapped(&self) -> bool {
+        store().frame_size(self.surface_id).is_some()
+    }
+
     /// Pull a fresh frame out of the store if one has landed since the last call; returns `true` when the cache changed.
     fn refresh_cache(&mut self) -> bool {
         let seq = store().frame_seq(self.surface_id);
@@ -1398,7 +1416,7 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
     for toplevel in toplevels {
         let surface = toplevel.wl_surface();
         let id = crate::compositor::state::surface_id(surface);
-        if !is_visible_tab(&state.workspace_tree, id) {
+        if !is_visible_tab(&state.workspace_tree, id) && state.osk_surface != Some(id) {
             continue;
         }
         let mut fired = false;

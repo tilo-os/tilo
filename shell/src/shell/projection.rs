@@ -31,12 +31,27 @@ pub enum ProjectionStatus {
 /// Blocking protocol implementation. The controller always calls it on its
 /// worker thread, never on the render/event thread.
 pub trait ProjectionBackend: Send + 'static {
+    /// # Errors
+    ///
+    /// Returns a user-facing message if the projection service is
+    /// unreachable or returns malformed discovery data.
     fn discover(&mut self) -> Result<Vec<ProjectionDevice>, String>;
+
+    /// # Errors
+    ///
+    /// Returns a user-facing message if `device` doesn't support
+    /// `options.mode` or the projection service refuses/fails the
+    /// connection.
     fn connect(
         &mut self,
         device: &ProjectionDevice,
         options: ProjectionOptions,
     ) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns a user-facing message if the projection service refuses
+    /// or fails the disconnect.
     fn disconnect(&mut self, device: &ProjectionDevice) -> Result<(), String>;
 }
 
@@ -233,7 +248,7 @@ impl ProjectionController {
     pub fn new(mut backend: Box<dyn ProjectionBackend>) -> Self {
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("qos-projection".into())
             .spawn(move || {
                 while let Ok(command) = command_rx.recv() {
@@ -252,8 +267,18 @@ impl ProjectionController {
                         break;
                     }
                 }
-            })
-            .expect("projection worker thread should start");
+            });
+        if let Err(err) = spawned {
+            // Every caller of `self.tx.send` already treats a closed
+            // channel as "service stopped" and reports
+            // `ProjectionStatus::Error` (see `refresh`/`connect_selected`/
+            // `disconnect` below); a worker that never started degrades
+            // through that same path instead of panicking this
+            // panic=abort process. Dropping the closure here drops
+            // `command_rx`/`event_tx` with it, which is what makes the
+            // channels look "closed" to every method below.
+            tracing::error!("projection: worker thread failed to start: {err}");
+        }
         Self {
             tx: command_tx,
             rx: event_rx,
@@ -348,9 +373,13 @@ impl ProjectionController {
         if self.devices.is_empty() {
             return;
         }
-        self.selected =
-            (self.selected as isize + delta).rem_euclid(self.devices.len() as isize) as usize;
-        if !self.devices[self.selected].supports(self.options.mode) {
+        let len = isize::try_from(self.devices.len()).unwrap_or(isize::MAX);
+        let current = isize::try_from(self.selected).unwrap_or(0);
+        let next = current.saturating_add(delta).rem_euclid(len);
+        self.selected = usize::try_from(next).unwrap_or(0);
+        if let Some(device) = self.devices.get(self.selected)
+            && !device.supports(self.options.mode)
+        {
             self.options.mode = ProjectionMode::Mirror;
         }
     }
@@ -410,7 +439,9 @@ mod tests {
     }
 
     fn settle(controller: &mut ProjectionController) {
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
         while !controller.poll() && Instant::now() < deadline {
             std::thread::yield_now();
         }
@@ -465,13 +496,12 @@ mod tests {
         controller.connect_selected();
         settle(&mut controller);
         assert_eq!(controller.options.mode, ProjectionMode::Mirror);
-        assert!(
-            calls
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|c| c.contains(":Duplicate:"))
-        );
+        let fell_back_to_duplicate = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.contains(":Duplicate:"));
+        assert!(fell_back_to_duplicate);
     }
 
     #[test]

@@ -1,0 +1,16 @@
+// A local administrator may start only validated battery-cap instances.
+// The helper independently validates the number and writes only known battery
+// threshold attributes, so this does not confer general unit or sysfs access.
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units" ||
+        !subject.local || !subject.active) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit") || "";
+    var verb = action.lookup("verb") || "";
+    if (verb === "start" &&
+        /^qos-battery-cap@(5[0-9]|[6-9][0-9]|100)\.service$/.test(unit)) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

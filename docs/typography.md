@@ -47,6 +47,16 @@ let pull_quote = Text::new("Make the important thing unmistakable.")
 `Text::with_size` and `TextRenderer::draw_text` remain available for existing
 code. New code should prefer complete styles.
 
+Every application crate is kept behind this public boundary by
+`tools/check_app_text_contract.py`, which runs in the fast lint workflow and
+the pre-commit hook. Applications may compose `Text`, the shared input/editor
+widgets, `RichTextLayout`, or `TextRenderer` for a genuinely custom-painted
+surface. They may not depend on the private shaping crates, instantiate a
+second font system, emit raw Vello glyphs, or repeat the product font-family
+names. This keeps fallback, OpenType features, variable axes, wrapping and
+interaction geometry in the one implementation even when an application needs
+canvas-like chrome instead of a widget tree.
+
 ## OpenType and paragraph controls
 
 `TextStyle` carries advanced typography through the same measurement, shaping,
@@ -239,6 +249,44 @@ approving an intentional change, regenerate it through the build container:
 ```sh
 UPDATE_EBOOK_TYPOGRAPHY_BASELINE=1 cargo test -p ebook \
   serif_reader_matches_typography_baseline -- --nocapture
+```
+
+## Mathematical composition
+
+Structured formulas use the single compositor in `ui::math`. Its semantic tree,
+recursive 2D box layout, insertion-gap geometry, and painter are shared by the
+calculator's live editor and the ebook reader's immutable MathML content. The
+calculator alone owns mutation, caret-navigation, clipboard, and collaborative
+state; these policies are not duplicated in read-only document rendering.
+
+The compositor uses the shipped Noto Sans Math face and mathematical italic
+alphabet, with math-class spacing for binary and relation operators. It lays
+out fractions, superscripts, subscripts, paired scripts, radicals and indexed
+roots, scalable fences, stacked under/over limits, and rectangular tables.
+EPUB presentation MathML lowers directly into that tree for both inline and
+display formulas. A linear fallback remains attached to each formula for
+search, selection, and accessibility.
+
+The same tree has source front ends for practical TeX math and Typst math.
+Notes treats fenced `tex`/`latex`/`math` and `typst`/`typst-math` blocks as
+formula cards with an explicit syntax badge and a persisted Source/Visual mode.
+Source mode is editable text with a live preview; Visual mode reuses the
+calculator's structured editor core, promoted into `ui::math::edit`. Switching
+modes is lossless until a structured edit occurs, at which point the shared
+tree serializes to canonical native TeX or Typst. Both parsers are total: package-specific
+or unsupported input is preserved visibly and reported as a preview diagnostic
+rather than discarded. Their shared coverage includes scripts, fractions,
+indexed roots, large operators and limits, constructed delimiter families,
+matrices, arrays, cases, aligned rows, accents, binomials, common mathematical
+alphabets, Greek, relations, sets, and arrows.
+
+The real ebook integration is pinned by
+`apps/ebook/tests/fixtures/typography/math-reader.png`. Regenerate it only after
+visual approval:
+
+```sh
+UPDATE_EBOOK_MATH_BASELINE=1 cargo test -p ebook \
+  mathematical_reader_matches_shared_typesetting_baseline -- --nocapture
 ```
 
 Editable shaped text retains caret affinity as well as its UTF-8 document

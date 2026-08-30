@@ -28,11 +28,21 @@ pub struct LaunchArgs {
     pub scenario: Option<String>,
     pub headless: Option<headless::Spec>,
     extras: Vec<String>,
+    values: Vec<(String, String)>,
 }
 
 impl LaunchArgs {
     pub fn has(&self, flag: &str) -> bool {
         self.extras.iter().any(|arg| arg == flag)
+    }
+
+    /// Value supplied for an app-specific option allow-listed by the launch
+    /// specification.
+    pub fn value(&self, option: &str) -> Option<&str> {
+        self.values
+            .iter()
+            .find(|(name, _)| name == option)
+            .map(|(_, value)| value.as_str())
     }
 }
 
@@ -44,6 +54,7 @@ pub struct LaunchSpec {
     shot_viewport: ViewportFactory,
     configure_app: Option<ConfigureApp>,
     allowed_flags: &'static [&'static str],
+    allowed_options: &'static [&'static str],
     scenarios: &'static [&'static str],
 }
 
@@ -56,6 +67,7 @@ impl LaunchSpec {
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
             allowed_flags: &[],
+            allowed_options: &[],
             scenarios: &[],
         }
     }
@@ -81,6 +93,14 @@ impl LaunchSpec {
     /// in `LaunchArgs`; specialized CLIs should use the lower-level APIs.
     pub fn allowed_flags(mut self, flags: &'static [&'static str]) -> Self {
         self.allowed_flags = flags;
+        self
+    }
+
+    /// Allow app-specific, value-taking options in both `--name value` and
+    /// `--name=value` form. Their values are available through
+    /// [`LaunchArgs::value`].
+    pub fn allowed_options(mut self, options: &'static [&'static str]) -> Self {
+        self.allowed_options = options;
         self
     }
 
@@ -139,7 +159,7 @@ pub fn run_or_exit(spec: LaunchSpec) {
 pub fn run(spec: LaunchSpec) -> Result<(), LaunchError> {
     let _ = tracing_subscriber::fmt::try_init();
     let args: Vec<String> = std::env::args().collect();
-    let args = parse_args(&args, spec.allowed_flags)?;
+    let args = parse_args(&args, spec.allowed_flags, spec.allowed_options)?;
     validate_spec_args(&args, &spec)?;
 
     if let Some(out) = &args.shots {
@@ -188,13 +208,18 @@ fn shot_theme() -> Theme {
     }
 }
 
-fn parse_args(args: &[String], allowed_flags: &[&str]) -> Result<LaunchArgs, LaunchError> {
+fn parse_args(
+    args: &[String],
+    allowed_flags: &[&str],
+    allowed_options: &[&str],
+) -> Result<LaunchArgs, LaunchError> {
     let mut parsed = LaunchArgs {
         shots: None,
         viewport: None,
         scenario: None,
         headless: None,
         extras: Vec::new(),
+        values: Vec::new(),
     };
     let mut index = 1;
     while index < args.len() {
@@ -228,6 +253,13 @@ fn parse_args(args: &[String], allowed_flags: &[&str]) -> Result<LaunchArgs, Lau
                 }
                 parsed.extras.push(extra.to_owned());
             }
+            extra if allowed_options.contains(&extra) => {
+                if parsed.values.iter().any(|(found, _)| found == extra) {
+                    return Err(LaunchError::Duplicate(extra.to_owned()));
+                }
+                let value = take_value(args, &mut index, extra, inline)?;
+                parsed.values.push((extra.to_owned(), value.to_owned()));
+            }
             _ => return Err(LaunchError::UnknownArgument(arg.clone())),
         }
         index += 1;
@@ -244,6 +276,9 @@ fn parse_args(args: &[String], allowed_flags: &[&str]) -> Result<LaunchArgs, Lau
         }
         if let Some(extra) = parsed.extras.first() {
             return Err(LaunchError::ShotsOnly(extra.clone()));
+        }
+        if let Some((option, _)) = parsed.values.first() {
+            return Err(LaunchError::ShotsOnly(option.clone()));
         }
     }
     Ok(parsed)
@@ -305,7 +340,7 @@ mod tests {
             "--scenario=wide",
             "--empty",
         ]);
-        let parsed = parse_args(&args, &["--empty"]).unwrap();
+        let parsed = parse_args(&args, &["--empty"], &[]).unwrap();
         assert_eq!(parsed.shots, Some(PathBuf::from("/tmp/shot.png")));
         assert_eq!(parsed.viewport, Some((640, 480)));
         assert_eq!(parsed.scenario.as_deref(), Some("wide"));
@@ -317,7 +352,7 @@ mod tests {
         for value in ["wide", "800", "0x600", "800x0", "800xnope"] {
             let args = strings(&["app", "--viewport", value]);
             assert!(matches!(
-                parse_args(&args, &[]),
+                parse_args(&args, &[], &[]),
                 Err(LaunchError::InvalidViewport(_))
             ));
         }
@@ -326,15 +361,15 @@ mod tests {
     #[test]
     fn rejects_unknown_missing_and_duplicate_arguments() {
         assert!(matches!(
-            parse_args(&strings(&["app", "--mystery"]), &[]),
+            parse_args(&strings(&["app", "--mystery"]), &[], &[]),
             Err(LaunchError::UnknownArgument(_))
         ));
         assert!(matches!(
-            parse_args(&strings(&["app", "--shots"]), &[]),
+            parse_args(&strings(&["app", "--shots"]), &[], &[]),
             Err(LaunchError::MissingValue(_))
         ));
         assert!(matches!(
-            parse_args(&strings(&["app", "--scenario=a", "--scenario=b"]), &[]),
+            parse_args(&strings(&["app", "--scenario=a", "--scenario=b"]), &[], &[],),
             Err(LaunchError::Duplicate(_))
         ));
     }
@@ -346,7 +381,7 @@ mod tests {
             "--headless-drive",
             r#"{"viewport":[800,600],"actions":[{"key":"Enter"}]}"#,
         ]);
-        let parsed = parse_args(&args, &[]).unwrap();
+        let parsed = parse_args(&args, &[], &[]).unwrap();
         let spec = parsed.headless.expect("headless spec");
         assert_eq!(spec.viewport, Some((800, 600)));
         assert_eq!(spec.actions.len(), 1);
@@ -356,7 +391,7 @@ mod tests {
     fn rejects_conflicting_modes_and_shot_options_in_live_mode() {
         let both = strings(&["app", "--shots", "/tmp/a.png", "--headless-drive", "{}"]);
         assert_eq!(
-            parse_args(&both, &[]).unwrap_err(),
+            parse_args(&both, &[], &[]).unwrap_err(),
             LaunchError::ConflictingModes
         );
 
@@ -366,7 +401,7 @@ mod tests {
             strings(&["app", "--empty"]),
         ] {
             assert!(matches!(
-                parse_args(&option, &["--empty"]),
+                parse_args(&option, &["--empty"], &[]),
                 Err(LaunchError::ShotsOnly(_))
             ));
         }
@@ -381,6 +416,7 @@ mod tests {
         let args = parse_args(
             &strings(&["app", "--shots=/tmp/a.png", "--scenario=wide"]),
             &[],
+            &[],
         )
         .unwrap();
         let undeclared = LaunchSpec::new("dev.qos.test", dummy_root);
@@ -390,5 +426,37 @@ mod tests {
         ));
         let declared = LaunchSpec::new("dev.qos.test", dummy_root).scenarios(&["wide"]);
         validate_spec_args(&args, &declared).unwrap();
+    }
+
+    #[test]
+    fn app_specific_options_accept_both_forms_and_are_shots_only() {
+        for raw in [
+            strings(&["app", "--shots=/tmp/a.png", "--screen", "add"]),
+            strings(&["app", "--shots=/tmp/a.png", "--screen=add"]),
+        ] {
+            let parsed = parse_args(&raw, &[], &["--screen"]).unwrap();
+            assert_eq!(parsed.value("--screen"), Some("add"));
+        }
+        assert!(matches!(
+            parse_args(
+                &strings(&["app", "--screen=add"]),
+                &[],
+                &["--screen"]
+            ),
+            Err(LaunchError::ShotsOnly(option)) if option == "--screen"
+        ));
+        assert!(matches!(
+            parse_args(
+                &strings(&[
+                    "app",
+                    "--shots=/tmp/a.png",
+                    "--screen=add",
+                    "--screen=empty"
+                ]),
+                &[],
+                &["--screen"]
+            ),
+            Err(LaunchError::Duplicate(option)) if option == "--screen"
+        ));
     }
 }

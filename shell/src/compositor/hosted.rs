@@ -333,44 +333,32 @@ pub fn run_with_full_options(opts: HostedOptions) {
 
     let _peer_sync = peer_sync.clone(); // keep alive for lifetime of `app.run()`
 
-    // Local CRDT fan-out broker: when QUICK_COLLAB_SOCK is set, bind the path and detach a
-    // listener thread so every app launched with the same env var shares CRDT updates live. Held
-    // for the lifetime of `app.run()` so the socket file and reader threads survive the session. See
-    // `shell::collab_broker` for the protocol; when peer-sync is also enabled, the broker bridges through `ShellNetwork` so two laptops on the same gossip topic share app-level CRDT increments too.
-    let _collab_broker: Option<crate::shell::collab_broker::BrokerHandle> =
-        if let Some(path) = std::env::var_os("QUICK_COLLAB_SOCK") {
-            let socket_path = std::path::PathBuf::from(path);
-            // Optional native Cap'n Proto socket alongside the legacy JSON one: apps using the
-            // `runtime-collab` SDK clients connect directly to the native broker. Both transports share fanout — an event on one lands on subscribers of the other.
-            let capnp_socket_path =
-                std::env::var_os("QUICK_COLLAB_CAPNP_SOCK").map(std::path::PathBuf::from);
-            match crate::shell::collab_broker::spawn_full(
-                socket_path.clone(),
-                capnp_socket_path.clone(),
-                peer_sync.clone(),
-            ) {
-                Ok(handle) => {
-                    tracing::info!(
-                        "collab_broker: bound {} (json) + {} (capnp) — peer_sync={}",
-                        socket_path.display(),
-                        capnp_socket_path
-                            .as_ref()
-                            .map_or_else(|| "<none>".to_string(), |p| p.display().to_string()),
-                        peer_sync.is_some()
-                    );
-                    Some(handle)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "collab_broker: bind {} failed ({e}); apps will run without collab",
-                        socket_path.display()
-                    );
-                    None
-                }
+    // Local typed collaboration broker, held for the lifetime of `app.run()`.
+    // When peer sync is enabled it also bridges app changes between machines.
+    let _collab_broker: Option<crate::shell::collab_broker::BrokerHandle> = if let Some(path) =
+        std::env::var_os("QUICK_COLLAB_CAPNP_SOCK")
+    {
+        let socket_path = std::path::PathBuf::from(path);
+        match crate::shell::collab_broker::spawn_native(socket_path.clone(), peer_sync.clone()) {
+            Ok(handle) => {
+                tracing::info!(
+                    "collab_broker: bound {} (capnp) — peer_sync={}",
+                    socket_path.display(),
+                    peer_sync.is_some()
+                );
+                Some(handle)
             }
-        } else {
-            None
-        };
+            Err(e) => {
+                tracing::warn!(
+                    "collab_broker: bind {} failed ({e}); apps will run without collab",
+                    socket_path.display()
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Hosted-mode test-control socket: when QOS_TEST_CONTROL is set, bind it like the headless
     // backend and run the App with a proxy injecting clicks/hovers into the event loop — same code

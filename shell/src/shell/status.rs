@@ -31,6 +31,11 @@ pub struct SystemStatus {
     pub battery: Option<BatterySnapshot>,
     pub link: Option<LinkStatus>,
     pub volume: Option<VolumeState>,
+    /// Active capture streams, attributed from PipeWire's server security
+    /// PID to the kernel executable. Polled independently at one-second
+    /// cadence so a privacy indicator appears promptly without running
+    /// NetworkManager queries every second.
+    pub media: Vec<os_actions::ActiveMediaUse>,
 }
 
 /// `level` is nominally `0.0..=1.0`, but reads come from `wpctl` output and
@@ -132,8 +137,11 @@ impl StatusBridge {
         self.inner.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
-    pub fn set(&self, status: SystemStatus) {
+    pub fn set(&self, mut status: SystemStatus) {
         if let Ok(mut g) = self.inner.lock() {
+            // The slow poll owns battery/link/volume; the one-second media
+            // poll owns this field. Never let one cadence erase the other.
+            status.media = g.media.clone();
             *g = status;
         }
     }
@@ -142,6 +150,12 @@ impl StatusBridge {
     pub fn set_volume(&self, volume: VolumeState) {
         if let Ok(mut g) = self.inner.lock() {
             g.volume = Some(volume);
+        }
+    }
+
+    pub fn set_media(&self, media: Vec<os_actions::ActiveMediaUse>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.media = media;
         }
     }
 
@@ -165,7 +179,20 @@ impl StatusBridge {
         if let Err(e) = spawned {
             tracing::warn!(target: "qos::status", error = %e, "status poller not started");
             self.polling.store(false, Ordering::SeqCst);
+            return;
         }
+        let media_bridge = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("qos-media-privacy".to_string())
+            .spawn(move || {
+                loop {
+                    let bridge = media_bridge.clone();
+                    let _ = os_actions::monitor_media_usage(|media| bridge.set_media(media));
+                    // PipeWire may restart during login or an update. Rebind
+                    // without spinning and without ending the shell session.
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            });
     }
 }
 
@@ -180,6 +207,7 @@ pub fn read_once() -> SystemStatus {
         battery,
         link,
         volume,
+        media: Vec::new(),
     }
 }
 
@@ -288,6 +316,7 @@ mod tests {
                 level: 0.35,
                 muted: false,
             }),
+            media: Vec::new(),
         };
         assert_eq!(
             s.summary(),

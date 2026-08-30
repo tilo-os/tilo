@@ -7,16 +7,6 @@ autotests = false
 autoexamples = false
 
 [features]
-# Keep the legacy JSON-over-Unix-socket broker path compiled in
-# (i.e. `collaboration::broker` submodule + the `QUICK_COLLAB_SOCK`
-# code branch inside `CollaborationManager`). Runtime already
-# prefers the `runtime-collab` SDK path; this flag exists so the
-# in-tree test suites and the shell's
-# 1400-LOC broker keep compiling / working while the wider fleet
-# migrates. Flip off (in a workspace `--no-default-features` build)
-# once every consumer is on the SDK dialect.
-default = ["legacy-broker"]
-legacy-broker = []
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
@@ -47,6 +37,8 @@ portal = ["dep:ashpd"]
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
+# Shared appearance path used for startup theme resolution and live reload.
+settings-store = { path = "../crates/system/settings-store" }
 # XDG Desktop Portal client for `portal` (feature `portal`).
 ashpd = { workspace = true, optional = true }
 # Parses the portal's returned file URIs. Non-optional:
@@ -65,10 +57,7 @@ qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
 # runtime-collab is the qOS collab broker Cap'n Proto SDK.
-# `CollaborationManager` now delegates to it via a shovel thread; the
-# legacy Unix-socket JSON dialect stays available behind the
-# `legacy-broker` feature so the in-tree tests and the shell's broker
-# keep compiling.
+# `CollaborationManager` delegates to it via a shovel thread.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
 capnp-rpc.workspace = true
 runtime-portal = { path = "../crates/runtime/runtime-portal" }

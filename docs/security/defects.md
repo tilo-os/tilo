@@ -430,18 +430,23 @@ reachable only via `QOS_IDLE_LOCK_SECS`.
 
 ---
 
-## P1-6 — Vault keys sit beside the ciphertext they protect
+## P1-6 — TOTP vault key still sits beside its ciphertext
 
-`crates/system/accounts/src/vault.rs:175-215` — XChaCha20-Poly1305 with a fresh nonce per write, but
-the 256-bit key is stored as `vault.key` in the same directory as `vault.enc`, both 0600. The module
-doc is honest about it: *"a local reader with access to the config directory sees both the key and
-the ciphertext."* `apps/totp/src/storage.rs` repeats the pattern.
+The accounts vault half is closed: production account-vault keys now prefer
+the freedesktop Secret Service, migrate a verified local key into it, and
+remove the adjacent copy only after a read-back match. A headless environment
+without Secret Service retains a visibly reported owner-only fallback.
 
-The threshold identity itself is plaintext JSON at `~/.config/qos/identity/primary.json`
-(`shell/src/shell/identity_provisioning.rs:39-47`), 0600 in a 0700 dir.
+`apps/totp/src/storage.rs` still stores its encryption key alongside its
+ciphertext and remains the unresolved part of this defect.
 
-A Secret Service wrapper exists (`crates/runtime/runtime-portal-xdg/src/lib.rs:354-370`) with no
-caller in any app.
+The identity defect is closed: schema-1 plaintext records migrate to public
+metadata plus Secret Service storage (or a truthful host-only 0600 fallback),
+and apps receive an app-scoped signing socket rather than a mounted key file.
+The TOTP defect above remains separate work.
+
+Identity storage uses the standard libsecret `secret-tool` client when an
+unlocked freedesktop Secret Service is available.
 
 ---
 

@@ -456,6 +456,10 @@ impl Widget for LinkPopover {
             .flatten()
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         if !self.visible_flag {

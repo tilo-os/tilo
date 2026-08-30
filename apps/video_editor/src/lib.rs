@@ -3,19 +3,19 @@
 //!
 //! Layers:
 //!   * [`model`]   — pure data + editing math (split / trim / move / ripple /
-//!                   snap / paste, filters + fades), tested.
+//!     snap / paste, filters + fades), tested.
 //!   * [`media`]   — the FUSE-media seam: clips reference workspace paths
-//!                   (`/var/workspace/…`); bytes hydrate on demand.
+//!     (`/var/workspace/…`); bytes hydrate on demand.
 //!   * [`doc`]     — Automerge projection of the project (the collaborative,
-//!                   undoable source of truth) + the demo project seed.
+//!     undoable source of truth) + the demo project seed.
 //!   * [`preview`] — the composited-frame producer: a representative frame
-//!                   from clip metadata, or (behind the `decode` feature) a
-//!                   real decoded frame via `ui::VideoPlayer` / `GStreamer`.
+//!     from clip metadata, or (behind the `decode` feature) a
+//!     real decoded frame via `ui::VideoPlayer` / `GStreamer`.
 //!   * [`timecode`]— wall-clock ↔ frame conversions and formatting.
 //!   * [`export`]  — export presets + the (GStreamer-gated) render pipeline.
 //!   * [`app`]     — the root [`app::VideoEditorApp`] widget: media bin,
-//!                   preview + transport, multi-track timeline, inspector,
-//!                   export dialog — all drawn into one Vello scene.
+//!     preview + transport, multi-track timeline, inspector,
+//!     export dialog — all drawn into one Vello scene.
 //!
 //! `app_root()` is the single integration point used by both the live
 //! event loop and the `--shots` offscreen renderer.

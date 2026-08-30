@@ -74,6 +74,7 @@ const CLEARED_ENV: &[&str] = &[
     "QOS_WORKSPACE_ID",
     "QOS_APP_DIR",
     "QOS_USER_IDENTITY",
+    "QOS_IDENTITY_BROKER_FD",
     "QOS_CLI_COMMAND",
     "QOS_NET_GATE",
 ];

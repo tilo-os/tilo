@@ -34,6 +34,7 @@ use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{PathSegment, PresenceCtx, PresenceKey};
 
 use crate::WpFormat;
+use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
@@ -225,7 +226,6 @@ const STYLES_PANEL_W: f64 = 250.0;
 /// Width of the document outline / navigation pane reserved on the LEFT of the
 /// canvas (mirrors the styles panel on the right).
 const OUTLINE_PANEL_W: f64 = 230.0;
-const FIND_BAR_H: f64 = 42.0;
 /// Find-match highlight (amber, semi-transparent).
 const FIND_HL: Color = Color::from_rgba8(0xff, 0xc8, 0x4a, 0x80);
 /// Spell-check squiggle colour (a familiar red).
@@ -361,24 +361,6 @@ enum ToolAction {
     NewMenu,
 }
 
-/// A clickable control in the Find & Replace bar.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum FindAction {
-    FocusFind,
-    FocusReplace,
-    Prev,
-    Next,
-    Replace,
-    ReplaceAll,
-    Close,
-    /// Toggle case-sensitive matching (the **Aa** chip).
-    ToggleCase,
-    /// Toggle whole-word matching (the **W** chip).
-    ToggleWord,
-    /// Toggle regular-expression matching (the **.*** chip).
-    ToggleRegex,
-}
-
 /// A clickable zoom control (the toolbar's right-aligned zoom stepper).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum StatusAction {
@@ -398,51 +380,6 @@ const ZOOM_CLUSTER_W: f64 = 88.0;
 /// Gap between the zoom stepper cluster and the colour-swatch strips on the
 /// toolbar's last row.
 const ZOOM_SWATCH_GAP: f64 = 16.0;
-
-/// Draw a text-input box (Find/Replace fields). A trailing `_` marks the focused
-/// field's caret; an empty field shows the placeholder.
-#[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
-fn draw_field_box(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    cc: &ChromeColors,
-    r: Rect,
-    text: &str,
-    placeholder: &str,
-    focused: bool,
-) {
-    let border = if focused { cc.accent } else { cc.border };
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        cc.field,
-        None,
-        &vello::kurbo::RoundedRect::from_rect(r, 5.0),
-    );
-    scene.stroke(
-        &vello::kurbo::Stroke::new(if focused { 1.5 } else { 1.0 }),
-        transform,
-        border,
-        None,
-        &vello::kurbo::RoundedRect::from_rect(r, 5.0),
-    );
-    let (shown, col) = if text.is_empty() && !focused {
-        (placeholder.to_string(), cc.text_dim)
-    } else if focused {
-        (format!("{text}_"), cc.text)
-    } else {
-        (text.to_string(), cc.text)
-    };
-    tr.draw_text(
-        scene,
-        &shown,
-        13.0,
-        col,
-        transform * Affine::translate((r.x0 + 8.0, f64::midpoint(r.y0, r.y1) - 8.0)),
-        None,
-    );
-}
 
 /// Fill a triangle from three screen-space points (ruler indent wedges).
 fn fill_tri(
@@ -789,16 +726,6 @@ pub(crate) struct RemoteCaretOverlay {
 pub(crate) struct RemoteSelectionOverlay {
     pub user: UserId,
     pub rects: Vec<Rect>,
-}
-
-/// Whether the char range `[s, e)` in `chars` is bounded by word boundaries on
-/// both sides — i.e. the char immediately before `s` and at `e` (if present) are
-/// not word characters. Used by the Find bar's whole-word toggle.
-fn is_word_match(chars: &[char], s: usize, e: usize) -> bool {
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    let left_ok = s == 0 || !is_word(chars[s - 1]);
-    let right_ok = e >= chars.len() || !is_word(chars[e]);
-    left_ok && right_ok
 }
 
 /// Combined width the right-aligned colour + highlight swatch strips occupy on
@@ -1671,18 +1598,8 @@ pub struct WordProcessorWidget {
     format: Option<WpFormat>,
     /// Unsaved changes since the last save (drives the status-bar `●` indicator).
     modified: bool,
-    /// Find & Replace bar state.
-    find_open: bool,
-    find_query: String,
-    replace_query: String,
-    /// Which find-bar field has keyboard focus (`false` = find, `true` = replace).
-    find_on_replace: bool,
-    /// All current matches as `(block_id, char_start, char_end)`.
-    find_matches: Vec<(String, usize, usize)>,
-    /// Index of the active match within `find_matches`.
-    find_idx: usize,
-    /// Clickable find-bar controls: `(action, rect)`.
-    find_buttons: Vec<(FindAction, Rect)>,
+    /// Find & Replace owns its query modes, match cursor, drawing, and hit map.
+    find: FindBar,
     /// Image blobs (blake3 hash → bytes), refreshed from the document, plus a
     /// lazily-decoded image cache (`None` = decode failed / unsupported format).
     blobs: std::collections::BTreeMap<String, Vec<u8>>,
@@ -1762,14 +1679,6 @@ pub struct WordProcessorWidget {
     /// (top-center of the canvas). Cached so the event handler can map pointer
     /// positions from screen space back into unscaled content space.
     zoom_anchor: Point,
-    /// Find-bar match modifiers. Default-off reproduces the original
-    /// case-insensitive substring behaviour.
-    find_case: bool,
-    find_word: bool,
-    find_regex: bool,
-    /// Set when the current query is `find_regex` but does not compile — drives a
-    /// subtle "bad pattern" cue and yields zero matches (never panics).
-    find_regex_error: bool,
     /// Clickable zoom-stepper controls (now in the toolbar): `(action, rect)`.
     status_buttons: Vec<(StatusAction, Rect)>,
     /// Transient floating status readout (word/char count + modified dot,
@@ -1943,13 +1852,7 @@ impl WordProcessorWidget {
             path: None,
             format: None,
             modified: false,
-            find_open: false,
-            find_query: String::new(),
-            replace_query: String::new(),
-            find_on_replace: false,
-            find_matches: Vec::new(),
-            find_idx: 0,
-            find_buttons: Vec::new(),
+            find: FindBar::default(),
             blobs: std::collections::BTreeMap::new(),
             image_cache: std::collections::HashMap::new(),
             hover_tool: None,
@@ -1986,10 +1889,6 @@ impl WordProcessorWidget {
             scrub: None,
             zoom: 1.0,
             zoom_anchor: Point::ZERO,
-            find_case: false,
-            find_word: false,
-            find_regex: false,
-            find_regex_error: false,
             status_buttons: Vec::new(),
             status_bubble: ui::StatusBubble::new(),
             last_status: String::new(),
@@ -2564,23 +2463,21 @@ impl WordProcessorWidget {
     // ---- Find & Replace -----------------------------------------------------
 
     fn open_find(&mut self, state: &AutoCommit) {
-        self.find_open = true;
-        self.find_on_replace = false;
         // Seed the query from a single-line selection, if any.
-        if let Some((bid, s, e)) = self.selection_blocks_cached().first().cloned()
+        let seed = if let Some((bid, s, e)) = self.selection_blocks_cached().first().cloned()
             && let Some(b) = self.blocks.iter().find(|b| b.id == bid)
         {
             let sel: String = b.text.chars().skip(s).take(e.saturating_sub(s)).collect();
-            if !sel.is_empty() && !sel.contains('\n') {
-                self.find_query = sel;
-            }
-        }
-        self.find_recompute(state);
+            (!sel.is_empty() && !sel.contains('\n')).then_some(sel)
+        } else {
+            None
+        };
+        let effect = self.find.open(seed.as_deref(), &self.blocks);
+        self.apply_find_effect(state, effect);
     }
 
     fn close_find(&mut self) {
-        self.find_open = false;
-        self.find_matches.clear();
+        self.find.close();
     }
 
     // ---- Zoom ---------------------------------------------------------------
@@ -2619,101 +2516,9 @@ impl WordProcessorWidget {
         Point::new(a.x + (p.x - a.x) / self.zoom, a.y + (p.y - a.y) / self.zoom)
     }
 
-    /// Recompute all matches for the current query, honouring the case-sensitive,
-    /// whole-word, and regex toggles. Default (all off) = the original
-    /// case-insensitive substring scan. An invalid regex sets `find_regex_error`
-    /// and yields no matches (never panics).
-    fn find_recompute(&mut self, state: &AutoCommit) {
-        self.find_matches.clear();
-        self.find_regex_error = false;
-        if self.find_query.is_empty() {
-            self.find_idx = 0;
-            self.select_current_match(state);
-            return;
-        }
-        if self.find_regex {
-            self.find_recompute_regex();
-        } else {
-            self.find_recompute_literal();
-        }
-        if self.find_idx >= self.find_matches.len() {
-            self.find_idx = 0;
-        }
-        self.select_current_match(state);
-    }
-
-    /// Literal substring scan over chars, honouring `find_case` and `find_word`.
-    fn find_recompute_literal(&mut self) {
-        // Build the comparison key once: lowercased when case-insensitive.
-        let q: Vec<char> = if self.find_case {
-            self.find_query.chars().collect()
-        } else {
-            self.find_query.to_lowercase().chars().collect()
-        };
-        if q.is_empty() {
-            return;
-        }
-        for b in &self.blocks {
-            // The haystack we *compare* against (possibly lowercased) and the raw
-            // chars we test word-boundaries against share indices 1:1.
-            let raw: Vec<char> = b.text.chars().collect();
-            let hay: Vec<char> = if self.find_case {
-                raw.clone()
-            } else {
-                b.text.to_lowercase().chars().collect()
-            };
-            if q.len() > hay.len() {
-                continue;
-            }
-            let mut i = 0;
-            while i + q.len() <= hay.len() {
-                if hay[i..i + q.len()] == q[..]
-                    && (!self.find_word || is_word_match(&raw, i, i + q.len()))
-                {
-                    self.find_matches.push((b.id.clone(), i, i + q.len()));
-                    i += q.len();
-                } else {
-                    i += 1;
-                }
-            }
-        }
-    }
-
-    /// Regex scan. Compiles the query once (case-insensitive flag from
-    /// `find_case`, whole-word via `\b…\b`). On a compile error, records the error
-    /// and produces no matches.
-    fn find_recompute_regex(&mut self) {
-        let mut pattern = self.find_query.clone();
-        if self.find_word {
-            // Wrap in word boundaries so the whole-word toggle composes with regex.
-            pattern = format!(r"\b(?:{pattern})\b");
-        }
-        let re = if let Ok(re) = regex::RegexBuilder::new(&pattern)
-            .case_insensitive(!self.find_case)
-            .build()
-        {
-            re
-        } else {
-            self.find_regex_error = true;
-            return;
-        };
-        for b in &self.blocks {
-            for m in re.find_iter(&b.text) {
-                // Empty matches (e.g. `a*` on a gap) would loop / select nothing;
-                // skip them so navigation stays meaningful.
-                if m.start() == m.end() {
-                    continue;
-                }
-                let cs = byte_to_char(&b.text, m.start());
-                let ce = byte_to_char(&b.text, m.end());
-                self.find_matches.push((b.id.clone(), cs, ce));
-            }
-        }
-    }
-
     /// Select (so it highlights) + scroll to the active match.
     fn select_current_match(&mut self, _state: &AutoCommit) {
-        if let Some((bid, s, e)) = self.find_matches.get(self.find_idx).cloned() {
+        if let Some((bid, s, e)) = self.find.active_match().cloned() {
             self.inner.clear_anchor();
             self.inner.set_caret(Caret {
                 block: bid.clone(),
@@ -2736,257 +2541,49 @@ impl WordProcessorWidget {
         }
     }
 
-    fn find_jump(&mut self, delta: i32, state: &AutoCommit) {
-        if self.find_matches.is_empty() {
-            return;
-        }
-        let n = num::i32_of_usize(self.find_matches.len());
-        self.find_idx = num::usize_of_i32(((num::i32_of_usize(self.find_idx) + delta) % n + n) % n);
-        self.select_current_match(state);
-    }
-
-    fn replace_current(&mut self, state: &mut AutoCommit) {
-        if let Some((bid, s, e)) = self.find_matches.get(self.find_idx).cloned() {
-            let rep = self.replace_query.clone();
-            self.inner.splice_block(state, &bid, s, e, &rep);
-            self.refresh_blocks(state);
-            self.needs_commit = true;
-            self.find_recompute(state);
+    fn apply_find_effect(&mut self, state: &AutoCommit, effect: FindEffect) {
+        if effect == FindEffect::SelectActive {
+            self.select_current_match(state);
         }
     }
 
-    fn replace_all(&mut self, state: &mut AutoCommit) {
-        let rep = self.replace_query.clone();
-        let mut matches = self.find_matches.clone();
-        // Replace from the highest char offset down so earlier offsets stay valid.
-        matches.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
-        for (bid, s, e) in matches.into_iter().rev() {
-            self.inner.splice_block(state, &bid, s, e, &rep);
-        }
-        self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.find_recompute(state);
-    }
-
-    fn find_action(&mut self, state: &mut AutoCommit, action: FindAction) {
-        match action {
-            FindAction::FocusFind => self.find_on_replace = false,
-            FindAction::FocusReplace => self.find_on_replace = true,
-            FindAction::Prev => self.find_jump(-1, state),
-            FindAction::Next => self.find_jump(1, state),
-            FindAction::Replace => self.replace_current(state),
-            FindAction::ReplaceAll => self.replace_all(state),
-            FindAction::Close => self.close_find(),
-            FindAction::ToggleCase => {
-                self.find_case = !self.find_case;
-                self.find_recompute(state);
-            }
-            FindAction::ToggleWord => {
-                self.find_word = !self.find_word;
-                self.find_recompute(state);
-            }
-            FindAction::ToggleRegex => {
-                self.find_regex = !self.find_regex;
-                self.find_recompute(state);
-            }
-        }
-    }
-
-    fn draw_find_bar(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        bar: Rect,
-    ) {
-        let cc = self.chrome;
-        // Danger cue (regex-error ring/text) is *semantic* — keep it as the
-        // theme's danger colour, not chrome.
-        let danger = theme.tokens.colors.semantic.danger;
-        self.find_buttons.clear();
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &bar);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
-        );
-        let cy = f64::midpoint(bar.y0, bar.y1);
-        let fy0 = cy - 13.0;
-        let mut x = bar.x0 + 12.0;
-
-        let fr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
-        draw_field_box(
-            scene,
-            transform,
-            tr,
-            &cc,
-            fr,
-            &self.find_query,
-            &t("find-find"),
-            !self.find_on_replace,
-        );
-        // A subtle danger ring when a regex query fails to compile.
-        if self.find_regex && self.find_regex_error {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                transform,
-                danger,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(fr, 5.0),
-            );
-        }
-        self.find_buttons.push((FindAction::FocusFind, fr));
-        x += 196.0;
-
-        // Match-mode toggles: Aa (case), W (whole word), .* (regex).
-        for (action, label, w, on) in [
-            (FindAction::ToggleCase, "Aa", 30.0, self.find_case),
-            (FindAction::ToggleWord, "W", 26.0, self.find_word),
-            (FindAction::ToggleRegex, ".*", 30.0, self.find_regex),
-        ] {
-            let r = Rect::new(x, fy0, x + w, fy0 + 26.0);
-            let (bg, fg) = if on {
-                (cc.accent, cc.on_accent)
-            } else {
-                (cc.chip, cc.text_dim)
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                bg,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 5.0),
-            );
-            let tx = r.x0 + (w - num::f64_of_usize(label.chars().count()) * 7.2).max(4.0) / 2.0;
-            tr.draw_text(
-                scene,
-                label,
-                12.5,
-                fg,
-                transform * Affine::translate((tx, cy - 8.0)),
-                None,
-            );
-            self.find_buttons.push((action, r));
-            x += w + 5.0;
-        }
-        x += 8.0;
-
-        let rr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
-        draw_field_box(
-            scene,
-            transform,
-            tr,
-            &cc,
-            rr,
-            &self.replace_query,
-            &t("find-replace-with"),
-            self.find_on_replace,
-        );
-        self.find_buttons.push((FindAction::FocusReplace, rr));
-        x += 196.0;
-
-        let (count, count_col) = if self.find_query.is_empty() {
-            (String::new(), cc.text_dim)
-        } else if self.find_regex && self.find_regex_error {
-            (t("find-bad-pattern"), danger)
-        } else if self.find_matches.is_empty() {
-            (t("find-no-results"), cc.text_dim)
-        } else {
-            (
-                t_args(
-                    "find-count",
-                    &[
-                        arg("cur", num::i64_of_usize(self.find_idx + 1)),
-                        arg("total", num::i64_of_usize(self.find_matches.len())),
-                    ],
-                ),
-                cc.text_dim,
-            )
-        };
-        tr.draw_text(
-            scene,
-            &count,
-            12.5,
-            count_col,
-            transform * Affine::translate((x, cy - 7.0)),
-            None,
-        );
-        x += 78.0;
-
-        // Arrows / ✕ stay as glyphs; "Replace" / "All" are localized words.
-        for (action, label, w) in [
-            (FindAction::Prev, "↑".to_string(), 28.0),
-            (FindAction::Next, "↓".to_string(), 28.0),
-            (FindAction::Replace, t("find-replace"), 72.0),
-            (FindAction::ReplaceAll, t("find-replace-all"), 40.0),
-            (FindAction::Close, "✕".to_string(), 28.0),
-        ] {
-            let r = Rect::new(x, fy0, x + w, fy0 + 26.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                cc.chip,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 5.0),
-            );
-            let tx = r.x0 + (w - num::f64_of_usize(label.chars().count()) * 7.2).max(6.0) / 2.0;
-            tr.draw_text(
-                scene,
-                &label,
-                13.0,
-                cc.text,
-                transform * Affine::translate((tx, cy - 8.0)),
-                None,
-            );
-            self.find_buttons.push((action, r));
-            x += w + 6.0;
-        }
-    }
-
-    /// Handle a keypress while the Find bar is open. Returns whether it was
-    /// consumed (so the document editor doesn't also see it).
-    fn find_key(
-        &mut self,
-        state: &mut AutoCommit,
-        key: &Key,
-        typed: Option<&str>,
-        shift: bool,
-    ) -> bool {
-        match key {
-            Key::Named(NamedKey::Escape) => self.close_find(),
-            Key::Named(NamedKey::Enter) => self.find_jump(if shift { -1 } else { 1 }, state),
-            Key::Named(NamedKey::Tab) => self.find_on_replace = !self.find_on_replace,
-            Key::Named(NamedKey::Backspace) => {
-                let buf = if self.find_on_replace {
-                    &mut self.replace_query
-                } else {
-                    &mut self.find_query
+    fn apply_find_effect_mut(&mut self, state: &mut AutoCommit, effect: FindEffect) {
+        match effect {
+            FindEffect::None => {}
+            FindEffect::SelectActive => self.select_current_match(state),
+            FindEffect::ReplaceCurrent => {
+                let Some((bid, start, end)) = self.find.active_match().cloned() else {
+                    return;
                 };
-                buf.pop();
-                if !self.find_on_replace {
-                    self.find_recompute(state);
-                }
+                let replacement = self.find.replacement().to_string();
+                self.inner
+                    .splice_block(state, &bid, start, end, &replacement);
+                self.refresh_blocks(state);
+                self.needs_commit = true;
+                let effect = self.find.refresh(&self.blocks);
+                self.apply_find_effect(state, effect);
             }
-            _ => {
-                if let Some(t) = typed
-                    && !t.is_empty()
-                    && !t.chars().any(char::is_control)
-                {
-                    if self.find_on_replace {
-                        self.replace_query.push_str(t);
-                    } else {
-                        self.find_query.push_str(t);
-                        self.find_recompute(state);
-                    }
+            FindEffect::ReplaceAll => {
+                let replacement = self.find.replacement().to_string();
+                let mut matches = self.find.matches().to_vec();
+                // Replace from the highest char offset down so earlier offsets
+                // in a block stay valid.
+                matches.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+                for (bid, start, end) in matches.into_iter().rev() {
+                    self.inner
+                        .splice_block(state, &bid, start, end, &replacement);
                 }
-                // Consume all other keys while the bar is open (don't leak arrow
-                // keys etc. to the document editor).
+                self.refresh_blocks(state);
+                self.needs_commit = true;
+                let effect = self.find.refresh(&self.blocks);
+                self.apply_find_effect(state, effect);
             }
         }
-        true
+    }
+
+    #[cfg(test)]
+    fn replace_all(&mut self, state: &mut AutoCommit) {
+        self.apply_find_effect_mut(state, FindEffect::ReplaceAll);
     }
 
     fn refresh_blocks(&mut self, state: &AutoCommit) {
@@ -5365,7 +4962,7 @@ impl Widget for WordProcessorWidget {
             self.recovery_buttons.clear();
         }
         // Reserve the Find bar (when open) out of the canvas top (below the banner).
-        let find_h = if self.find_open { FIND_BAR_H } else { 0.0 };
+        let find_h = self.find.height();
         if find_h > 0.0 {
             let fbar = Rect::new(
                 canvas_left,
@@ -5373,9 +4970,24 @@ impl Widget for WordProcessorWidget {
                 canvas_right,
                 full.y0 + tb_h + recovery_h + find_h,
             );
-            self.draw_find_bar(scene, transform, text_renderer, theme, fbar);
-        } else {
-            self.find_buttons.clear();
+            let cc = self.chrome;
+            self.find.draw(
+                scene,
+                transform,
+                text_renderer,
+                FindPalette {
+                    bar: cc.bar,
+                    field: cc.field,
+                    chip: cc.chip,
+                    border: cc.border,
+                    text: cc.text,
+                    text_dim: cc.text_dim,
+                    accent: cc.accent,
+                    on_accent: cc.on_accent,
+                    danger: theme.tokens.colors.semantic.danger,
+                },
+                fbar,
+            );
         }
         // Reserve the horizontal ruler band (when on) out of the canvas top, below
         // the find bar. It is drawn with the *unscaled* `transform` so it stays a
@@ -6347,8 +5959,8 @@ impl Widget for WordProcessorWidget {
             }
 
             // Find-match highlights (under the text).
-            if self.find_open {
-                for (bid, cs, ce) in &self.find_matches {
+            if self.find.is_open() {
+                for (bid, cs, ce) in self.find.matches() {
                     if bid == &l.id {
                         let bs = char_to_byte(&l.text, *cs);
                         let be = char_to_byte(&l.text, *ce);
@@ -7284,23 +6896,17 @@ impl Widget for WordProcessorWidget {
                 // Find bar (when open): dispatch clicks on its fields + controls.
                 // The recovery banner (when shown) sits above the find bar, so the
                 // find band starts below it.
-                if self.find_open {
+                if self.find.is_open() {
                     let recovery_h = if self.recovery.is_some() {
                         RECOVERY_BANNER_H
                     } else {
                         0.0
                     };
                     let fbar_top = self.rect.y0 + tb_h + recovery_h;
-                    let fbar_bot = fbar_top + FIND_BAR_H;
+                    let fbar_bot = fbar_top + crate::find_bar::HEIGHT;
                     if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
-                        if let Some(action) = self
-                            .find_buttons
-                            .iter()
-                            .find(|(_, r)| r.contains(self.pointer))
-                            .map(|(a, _)| *a)
-                        {
-                            self.find_action(state, action);
-                        }
+                        let effect = self.find.click(self.pointer, &self.blocks);
+                        self.apply_find_effect_mut(state, effect);
                         self.dirty = true;
                         *handled = true;
                         return;
@@ -7579,13 +7185,13 @@ impl Widget for WordProcessorWidget {
                     return;
                 }
                 // While the Find bar is open, non-Ctrl keys edit its fields.
-                if self.find_open && !ctrl {
+                if self.find.is_open() && !ctrl {
                     let typed = text.as_deref();
-                    if self.find_key(state, logical_key, typed, shift) {
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
+                    let effect = self.find.key(logical_key, typed, shift, &self.blocks);
+                    self.apply_find_effect_mut(state, effect);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
                 }
                 // Ctrl+Enter inserts a manual page break: the caret block splits
                 // and the new block is marked to start on a fresh page. (Handled
@@ -7623,7 +7229,7 @@ impl Widget for WordProcessorWidget {
                         return;
                     }
                     if s.eq_ignore_ascii_case("f") {
-                        if self.find_open {
+                        if self.find.is_open() {
                             self.close_find();
                         } else {
                             self.open_find(state);
@@ -10114,7 +9720,7 @@ mod tests {
         wp.model_mut().enter(&mut state.doc);
         wp.model_mut().insert_str(&mut state.doc, "Body text here");
         // Open the find bar + outline pane so their chrome is drawn too.
-        wp.find_open = true;
+        wp.find.open(None, &wp.blocks);
         wp.outline_open = true;
         (state, wp)
     }
@@ -10483,20 +10089,19 @@ mod tests {
             .insert_str(&mut state.doc, "hello world hello there");
         wp.refresh_blocks(&state.doc);
 
-        wp.find_query = "hello".to_string();
-        wp.find_recompute(&state.doc);
+        wp.find.set_queries_for_tests("hello", "hi");
+        wp.find.open(None, &wp.blocks);
         assert_eq!(
-            wp.find_matches.len(),
+            wp.find.matches().len(),
             2,
             "case-insensitive search finds both"
         );
 
-        wp.replace_query = "hi".to_string();
         wp.replace_all(&mut state.doc);
         wp.refresh_blocks(&state.doc);
         assert_eq!(wp.blocks[0].text, "hi world hi there");
         assert!(
-            wp.find_matches.is_empty(),
+            wp.find.matches().is_empty(),
             "no matches remain after replace-all"
         );
     }
@@ -12057,118 +11662,6 @@ mod tests {
             wp.max_scroll > scroll_1x,
             "zooming in enlarges the content, so there is more to scroll"
         );
-    }
-
-    // ---- Find toggles -------------------------------------------------------
-
-    #[test]
-    fn find_case_sensitive_excludes_wrong_case() {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut()
-            .insert_str(&mut state.doc, "Hello hello HELLO");
-        wp.refresh_blocks(&state.doc);
-
-        // Case-insensitive (default): all three forms match.
-        wp.find_query = "hello".to_string();
-        wp.find_recompute(&state.doc);
-        assert_eq!(
-            wp.find_matches.len(),
-            3,
-            "case-insensitive finds every form"
-        );
-
-        // Case-sensitive: only the exact-case "hello" matches.
-        wp.find_case = true;
-        wp.find_recompute(&state.doc);
-        assert_eq!(
-            wp.find_matches.len(),
-            1,
-            "case-sensitive excludes Hello and HELLO"
-        );
-        let (bid, s, e) = wp.find_matches[0].clone();
-        let block = wp.blocks.iter().find(|b| b.id == bid).unwrap();
-        let matched: String = block.text.chars().skip(s).take(e - s).collect();
-        assert_eq!(matched, "hello", "the single match is the exact-case form");
-    }
-
-    #[test]
-    fn find_whole_word_excludes_substrings() {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut()
-            .insert_str(&mut state.doc, "cat category catalog cat");
-        wp.refresh_blocks(&state.doc);
-
-        wp.find_query = "cat".to_string();
-        wp.find_recompute(&state.doc);
-        assert_eq!(
-            wp.find_matches.len(),
-            4,
-            "substring search matches inside category/catalog too"
-        );
-
-        wp.find_word = true;
-        wp.find_recompute(&state.doc);
-        assert_eq!(
-            wp.find_matches.len(),
-            2,
-            "whole-word matches only the standalone 'cat' tokens"
-        );
-    }
-
-    #[test]
-    fn find_regex_matches_and_bad_pattern_is_safe() {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "a1 b22 c333");
-        wp.refresh_blocks(&state.doc);
-
-        wp.find_regex = true;
-        wp.find_query = r"\d+".to_string();
-        wp.find_recompute(&state.doc);
-        assert_eq!(wp.find_matches.len(), 3, "regex finds each digit run");
-        assert!(!wp.find_regex_error, "a valid pattern records no error");
-
-        // An invalid regex must not panic; it records the error and yields nothing.
-        wp.find_query = "(".to_string();
-        wp.find_recompute(&state.doc);
-        assert!(
-            wp.find_matches.is_empty(),
-            "an invalid pattern yields no matches"
-        );
-        assert!(wp.find_regex_error, "the invalid pattern is flagged");
-
-        // Toggling regex back off restores literal substring matching of "(".
-        wp.find_regex = false;
-        wp.model_mut().insert_str(&mut state.doc, ""); // no-op keep caret
-        wp.find_query = "1".to_string();
-        wp.find_recompute(&state.doc);
-        assert!(
-            !wp.find_regex_error,
-            "leaving regex mode clears the error flag"
-        );
-        assert_eq!(wp.find_matches.len(), 1, "literal search resumes");
-    }
-
-    #[test]
-    fn find_toggle_actions_recompute() {
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "Word word");
-        wp.refresh_blocks(&state.doc);
-        wp.find_query = "word".to_string();
-        wp.find_recompute(&state.doc);
-        assert_eq!(wp.find_matches.len(), 2);
-
-        // The production toggle action both flips the flag and recomputes.
-        wp.find_action(&mut state.doc, FindAction::ToggleCase);
-        assert!(wp.find_case, "the action flipped the case flag");
-        assert_eq!(wp.find_matches.len(), 1, "recompute ran with the new flag");
     }
 
     // ---- Responsive toolbar -------------------------------------------------

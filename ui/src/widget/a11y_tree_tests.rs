@@ -181,10 +181,10 @@ fn slash_menu_open_exposes_menu_items() {
     // Every canonical row is an activatable MenuItem; the cursor row is
     // selected. `Paragraph` is the first row and the default highlight.
     let items = of_role(&nodes, AkRole::MenuItem);
-    assert_eq!(items.len(), 9, "all nine block-type rows are exposed");
+    assert_eq!(items.len(), 11, "all eleven block-type rows are exposed");
     let para = by_label(&nodes, AkRole::MenuItem, "Paragraph");
     assert_eq!(para.position_in_set(), Some(1));
-    assert_eq!(para.size_of_set(), Some(9));
+    assert_eq!(para.size_of_set(), Some(11));
     assert_eq!(
         para.is_selected(),
         Some(true),
