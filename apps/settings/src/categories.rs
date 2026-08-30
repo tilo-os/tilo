@@ -167,7 +167,7 @@ impl Category {
             Category::Bluetooth => "Pair and manage Bluetooth devices",
             Category::Sound => "Output, input, volume, and system sounds",
             Category::Displays => "Resolution, scale, arrangement, and brightness",
-            Category::MouseKeyboard => "Pointer speed, scrolling, and keyboard layout",
+            Category::MouseKeyboard => "Pointer speed, scrolling, and input sources",
             Category::KeyboardShortcuts => "System and workspace keyboard shortcuts",
             Category::TimeDate => "Clock, time zone, and how dates display",
             Category::Users => "Accounts on this device and their roles",
@@ -178,10 +178,10 @@ impl Category {
             Category::Notifications => "Banners, previews, sounds, and Do Not Disturb",
             Category::DefaultApps => "Your preferred apps for links and file types",
             Category::Storage => "Apps, data, cache, and synced files",
-            Category::ExternalAccounts => "Email, calendars, file sync, and Nextcloud",
+            Category::ExternalAccounts => "Accounts shared with compatible installed apps",
             Category::RegionFormats => "Currency, date, time, and measurement units",
             Category::Permissions => "Device security, privacy hardware, and workspace access",
-            Category::Updates => "System updates and release channel",
+            Category::Updates => "Operating-system and firmware updates",
             Category::About => "Device identity and transfer",
         }
     }
@@ -392,8 +392,7 @@ impl Category {
                 "microphone",
             ],
             Category::Updates => &[
-                "software", "upgrade", "channel", "stable", "nightly", "version", "bootc",
-                "release",
+                "software", "upgrade", "version", "bootc", "firmware", "rollback", "release",
             ],
             Category::Power => &[
                 "battery",

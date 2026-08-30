@@ -9,22 +9,18 @@
 //!
 //! # Key custody
 //!
-//! The symmetric key lives in `vault.key` next to the ciphertext, created with the OS CSPRNG
-//! on first save and written `0600` on unix — protecting the blob from a backup, a sync, or
-//! another local user, while keeping the vault recoverable by backing up the config directory.
-//!
-//! **TODO (hardening):** the key is a local random file today. [`load_or_create_key`] is the
-//! single seam for stronger custody: when the compositor exposes a keyring/TPM-sealed
-//! device-key capability over its Unix-socket channel, only that function changes to request
-//! an AEAD seal/open from the device key instead of a local file, keeping the on-disk format
-//! identical. Until then a local reader with config-directory access sees both key and
-//! ciphertext.
+//! On a normal desktop session the symmetric key is held by the freedesktop
+//! Secret Service through `secret-tool`; it is not stored beside the
+//! ciphertext. Headless/test environments without Secret Service use an
+//! owner-only local key and can report that weaker custody to their caller.
 //!
 //! Persistence is best-effort: every IO or crypto error is logged via `tracing` and
 //! swallowed, so a read-only or missing config dir never crashes an app.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -77,6 +73,13 @@ pub struct SecretVault {
     dir: PathBuf,
     /// Secrets keyed by the account id string.
     entries: BTreeMap<String, Secret>,
+    custody: SecretCustody,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretCustody {
+    SecretService,
+    LocalFile,
 }
 
 impl SecretVault {
@@ -84,10 +87,24 @@ impl SecretVault {
     /// vault when nothing is stored or the config root can't be resolved — never an error.
     pub fn open() -> Self {
         match crate::config_root() {
-            Some(root) => Self::open_in(&root),
+            Some(root) => {
+                let dir = crate::vault_dir_in(&root);
+                let custody = if secret_service_available() {
+                    SecretCustody::SecretService
+                } else {
+                    SecretCustody::LocalFile
+                };
+                let entries = load_entries(&dir, custody);
+                Self {
+                    dir,
+                    entries,
+                    custody,
+                }
+            }
             None => Self {
                 dir: PathBuf::from("accounts/vault"),
                 entries: BTreeMap::new(),
+                custody: SecretCustody::LocalFile,
             },
         }
     }
@@ -96,8 +113,17 @@ impl SecretVault {
     /// callers that want a non-default location use.
     pub fn open_in(config_root: &Path) -> Self {
         let dir = crate::vault_dir_in(config_root);
-        let entries = load_entries(&dir);
-        Self { dir, entries }
+        let custody = SecretCustody::LocalFile;
+        let entries = load_entries(&dir, custody);
+        Self {
+            dir,
+            entries,
+            custody,
+        }
+    }
+
+    pub fn custody(&self) -> SecretCustody {
+        self.custody
     }
 
     /// Store (or replace) `secret` for `id`. In-memory until [`Self::save`].
@@ -127,7 +153,7 @@ impl SecretVault {
             tracing::warn!(error = %e, "accounts: could not create vault dir");
             return;
         }
-        let Some(key) = load_or_create_key(&self.dir) else {
+        let Some(key) = load_or_create_key(&self.dir, self.custody) else {
             tracing::warn!("accounts: no vault key available; secrets kept in memory only");
             return;
         };
@@ -150,12 +176,12 @@ impl SecretVault {
 
 /// Read + decrypt the vault entries under `dir`. Empty on anything that isn't a well-formed,
 /// authenticated blob.
-fn load_entries(dir: &Path) -> BTreeMap<String, Secret> {
+fn load_entries(dir: &Path, custody: SecretCustody) -> BTreeMap<String, Secret> {
     let enc = dir.join("vault.enc");
     if !enc.exists() {
         return BTreeMap::new();
     }
-    match (load_or_create_key(dir), std::fs::read(&enc)) {
+    match (load_or_create_key(dir, custody), std::fs::read(&enc)) {
         (Some(key), Ok(blob)) => {
             if let Some(plaintext) = open(&key, &blob) {
                 serde_json::from_slice(&plaintext).unwrap_or_else(|e| {
@@ -174,7 +200,160 @@ fn load_entries(dir: &Path) -> BTreeMap<String, Secret> {
 /// Read the vault key from `dir`, generating + persisting a fresh random one the first time.
 /// `None` only when the key can neither be read nor created. The single point of key
 /// custody — see module docs for the TPM/keyring seam that will replace it.
-fn load_or_create_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
+fn load_or_create_key(dir: &Path, custody: SecretCustody) -> Option<Zeroizing<[u8; KEY_LEN]>> {
+    match custody {
+        SecretCustody::SecretService => secret_service_key(dir),
+        SecretCustody::LocalFile => local_file_key(dir),
+    }
+}
+
+fn secret_service_available() -> bool {
+    Command::new("secret-tool")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
+    match lookup_secret_service_key() {
+        Ok(Some(key)) => return Some(key),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(%error, "accounts: Secret Service lookup failed; refusing local fallback");
+            return None;
+        }
+    }
+
+    let local_path = dir.join("vault.key");
+    let (key, migrated) = match std::fs::read(&local_path) {
+        Ok(bytes) if bytes.len() == KEY_LEN => {
+            let mut key = Zeroizing::new([0u8; KEY_LEN]);
+            key.copy_from_slice(&bytes);
+            (key, true)
+        }
+        Ok(_) => {
+            tracing::warn!("accounts: local vault key is malformed; not replacing it");
+            return None;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut key = Zeroizing::new([0u8; KEY_LEN]);
+            getrandom::getrandom(key.as_mut_slice()).ok()?;
+            (key, false)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "accounts: local vault key could not be read for migration");
+            return None;
+        }
+    };
+
+    if let Err(error) = store_secret_service_key(&key) {
+        tracing::warn!(%error, "accounts: Secret Service key creation failed");
+        return None;
+    }
+    match lookup_secret_service_key() {
+        Ok(Some(stored)) if stored.as_ref() == key.as_ref() => {
+            if migrated && let Err(error) = std::fs::remove_file(&local_path) {
+                tracing::warn!(%error, "accounts: migrated vault key but could not remove local copy");
+            }
+            Some(key)
+        }
+        _ => {
+            tracing::warn!("accounts: Secret Service did not return the key after storing it");
+            None
+        }
+    }
+}
+
+fn lookup_secret_service_key() -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, String> {
+    let output = Command::new("secret-tool")
+        .args(["lookup", "application", "qOS", "purpose", "account-vault"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("secret-tool could not start: {error}"))?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return if error.is_empty() {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    let encoded = String::from_utf8(output.stdout)
+        .map_err(|_| "Secret Service returned non-UTF-8 key material".to_string())?;
+    if encoded.trim().is_empty() {
+        Ok(None)
+    } else {
+        decode_key(encoded.trim()).map(Some)
+    }
+}
+
+fn store_secret_service_key(key: &[u8; KEY_LEN]) -> Result<(), String> {
+    let mut child = Command::new("secret-tool")
+        .args([
+            "store",
+            "--label=qOS account credentials",
+            "application",
+            "qOS",
+            "purpose",
+            "account-vault",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("secret-tool could not start: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "secret-tool stdin unavailable".to_string())?
+        .write_all(encode_key(key).as_bytes())
+        .map_err(|error| format!("could not send key to Secret Service: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("secret-tool wait failed: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn encode_key(key: &[u8; KEY_LEN]) -> String {
+    use std::fmt::Write as _;
+    let mut encoded = String::with_capacity(KEY_LEN * 2);
+    for byte in key {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+fn decode_key(encoded: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
+    if encoded.len() != KEY_LEN * 2 {
+        return Err("Secret Service key has the wrong length".into());
+    }
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    for (byte, pair) in key.iter_mut().zip(encoded.as_bytes().chunks_exact(2)) {
+        let high = hex_nibble(pair[0])?;
+        let low = hex_nibble(pair[1])?;
+        *byte = high
+            .checked_mul(16)
+            .and_then(|value| value.checked_add(low))
+            .ok_or_else(|| "Secret Service key is not hexadecimal".to_string())?;
+    }
+    Ok(key)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, String> {
+    char::from(byte)
+        .to_digit(16)
+        .and_then(|value| u8::try_from(value).ok())
+        .ok_or_else(|| "Secret Service key is not hexadecimal".into())
+}
+
+fn local_file_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     let path = dir.join("vault.key");
     match std::fs::read(&path) {
         Ok(bytes) if bytes.len() == KEY_LEN => {
@@ -281,11 +460,19 @@ mod tests {
     }
 
     #[test]
+    fn secret_service_key_encoding_round_trips() {
+        let key = [0xa5; KEY_LEN];
+        assert_eq!(decode_key(&encode_key(&key)).unwrap().as_ref(), &key);
+        assert!(decode_key("too-short").is_err());
+    }
+
+    #[test]
     fn vault_put_save_load_round_trips() {
         let root = temp_root();
         let id = AccountId::from("ada@example.com");
         {
             let mut v = SecretVault::open_in(&root);
+            assert_eq!(v.custody(), SecretCustody::LocalFile);
             v.put(&id, &Secret::password("hunter2"));
             v.save();
         }

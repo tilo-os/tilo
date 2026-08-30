@@ -25,11 +25,16 @@ of them.
 
 - timedated is the authority for time zone and NTP enablement. Zone choices
   come from `timedatectl list-timezones`, i.e. installed IANA tzdata.
-- the selector and future visual map share `TimeZonePoint`; there is no second
-  embedded time-zone list.
+- the searchable selector and compact coordinate map use that same accepted
+  identifier set. Map coordinates are joined from the installed tzdata
+  `zone1970.tab`/`zone.tab`; there is no second embedded city or coordinate
+  database. Canonical zones with published coordinates appear on the map,
+  while aliases and coordinate-less identifiers remain available in the
+  selector. The UI never implies that a point is device geolocation.
 - number/date/time/measurement/first-weekday choices live in the shared locale
   section. Keyboard input sources remain owned by Mouse & Keyboard; Region does
-  not duplicate them.
+  not duplicate them. See [Input sources](input-sources.md) for the per-user
+  XKB ownership and migration contract.
 
 ## External accounts
 
@@ -40,9 +45,9 @@ of them.
   Mail currently reports connecting, successful fetches, OAuth completion and
   authentication/error outcomes. A missing report is displayed as “Not checked
   yet”, never “Connected”.
-- Nextcloud's existing `use_mail`, `use_calendar` and `use_files` fields are the
-  granular service controls consumed by apps. Fixed-purpose IMAP, CalDAV and
-  WebDAV accounts do not get meaningless duplicate switches.
+- Settings does not expose Nextcloud service switches until Mail, Calendar,
+  and Files consume the same canonical fields. Protocol-specific authorization
+  remains with its owning app rather than being reimplemented in Settings.
 - removal is confirmed and explains local versus provider data. Account
   metadata, sealed credentials and runtime health are removed together.
 

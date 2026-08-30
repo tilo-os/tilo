@@ -10,9 +10,8 @@
 //! - **Power profile** (Saver / Balanced / Performance) drives
 //!   `powerprofilesctl` through the shared `os_actions::Dispatcher`
 //!   (`set_power_profile`), the same binding the compositor's quick-settings
-//!   uses; the initial selection is sampled from `powerprofilesctl get`. When
-//!   `powerprofilesctl` is absent the selector still records the choice but the
-//!   dispatch is a logged no-op.
+//!   uses. The initial selection and the offered choices are sampled from
+//!   `powerprofilesctl`; unavailable profiles are never presented as working.
 //! - **Automatic suspend** and **screen-blank timeout** are durable
 //!   preferences persisted to the shared store ([`crate::prefs::SystemPrefs`]);
 //!   the compositor's idle layer reads them.
@@ -143,6 +142,8 @@ pub struct PowerPane {
     history: os_actions::BatteryHistory,
     charge_cap: Option<ChargeCapCapability>,
     charge_notice: Option<String>,
+    available_profiles: Vec<PowerProfile>,
+    profile_notice: Option<String>,
     profile: PowerProfile,
     last_profile: PowerProfile,
     prefs: PowerPrefs,
@@ -160,7 +161,34 @@ impl Default for PowerPane {
 
 impl PowerPane {
     pub fn new() -> Self {
-        let profile = os_actions::get_power_profile().unwrap_or(PowerProfile::Balanced);
+        let profile_result = os_actions::get_power_profile();
+        let available_result = os_actions::available_power_profiles();
+        let mut available_profiles = available_result.clone().unwrap_or_default();
+        let profile = profile_result.clone().unwrap_or_else(|_| {
+            available_profiles
+                .first()
+                .copied()
+                .unwrap_or(PowerProfile::Balanced)
+        });
+        if profile_result.is_ok() && !available_profiles.contains(&profile) {
+            available_profiles.push(profile);
+        }
+        let profile_notice = match (profile_result.err(), available_result.err()) {
+            (None, None) => None,
+            (profile_error, capability_error) => {
+                let mut details = Vec::new();
+                if let Some(error) = profile_error {
+                    details.push(error);
+                }
+                if let Some(error) = capability_error {
+                    details.push(format!("capabilities: {error}"));
+                }
+                Some(format!(
+                    "Power-profile service is unavailable: {}.",
+                    details.join("; ")
+                ))
+            }
+        };
         let battery = BatteryInfo::from_system();
         // The shell-owned UPower monitor is the single history writer.
         // Settings only reads the canonical atomic file.
@@ -172,6 +200,8 @@ impl PowerPane {
             history,
             charge_cap: os_actions::charge_capability(),
             charge_notice: None,
+            available_profiles,
+            profile_notice,
             profile,
             last_profile: profile,
             prefs: SystemPrefs::load().power,
@@ -203,6 +233,8 @@ impl PowerPane {
             history: os_actions::BatteryHistory::default(),
             charge_cap,
             charge_notice: None,
+            available_profiles: PROFILES.iter().map(|(_, profile)| *profile).collect(),
+            profile_notice: None,
             profile,
             last_profile: profile,
             prefs,
@@ -306,24 +338,30 @@ impl PowerPane {
         };
 
         // --- Power profile card.
-        let profile_opts: Vec<String> = PROFILES.iter().map(|(l, _)| l.to_string()).collect();
-        let profile = card(
-            "Power profile",
-            rows(vec![
-                choice_row(
-                    "Profile",
-                    Box::new(
-                        Dropdown::new(profile_opts, PROFILE_KEY)
-                            .with_id("power.profile")
-                            .with_placeholder(profile_label(self.profile)),
-                    ),
+        let profile_opts: Vec<String> = self
+            .available_profiles
+            .iter()
+            .map(|profile| profile_label(*profile).to_string())
+            .collect();
+        let mut profile_rows = if profile_opts.is_empty() {
+            vec![value_row("Profile", "Power-profile service unavailable")]
+        } else {
+            vec![choice_row(
+                "Profile",
+                Box::new(
+                    Dropdown::new(profile_opts, PROFILE_KEY)
+                        .with_id("power.profile")
+                        .with_placeholder(profile_label(self.profile)),
                 ),
-                caption(
-                    "Balanced trades performance for battery life; Power Saver \
-                     favours runtime; Performance favours speed.",
-                ),
-            ]),
-        );
+            )]
+        };
+        profile_rows.push(caption(
+            "Only modes supported by this device are shown. Balanced trades performance for battery life; Power Saver favours runtime; Performance favours speed.",
+        ));
+        if let Some(notice) = &self.profile_notice {
+            profile_rows.push(caption(notice));
+        }
+        let profile = card("Power profile", rows(profile_rows));
 
         // --- Session-idle card (durable preferences).
         let blank_opts: Vec<String> = BLANK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
@@ -496,10 +534,26 @@ impl Widget for PowerPane {
             && let Some(p) = profile_from_label(&label)
             && p != self.last_profile
         {
-            self.last_profile = p;
-            self.profile = p;
-            if let Err(e) = self.dispatcher.set_power_profile(p) {
-                warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
+            if !self.available_profiles.contains(&p) {
+                let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
+                self.profile_notice = Some(format!(
+                    "{} is not supported by this device.",
+                    profile_label(p)
+                ));
+            } else {
+                match self.dispatcher.set_power_profile(p) {
+                    Ok(()) => {
+                        self.last_profile = p;
+                        self.profile = p;
+                        self.profile_notice = Some(format!("{} is now active.", profile_label(p)));
+                    }
+                    Err(e) => {
+                        let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
+                        self.profile_notice =
+                            Some(format!("Could not change the power profile: {e}"));
+                        warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
+                    }
+                }
             }
         }
 
@@ -847,6 +901,34 @@ mod tests {
         pane.sync(&mut doc, &root); // idempotent at rest
         assert_eq!(rec.calls(), vec!["set_power_profile(performance)"]);
         assert_eq!(pane.profile(), PowerProfile::Performance);
+    }
+
+    #[test]
+    fn failed_profile_change_reverts_instead_of_lying() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        rec.set_fail_power_profile(true);
+        let mut pane = PowerPane::with_parts(
+            rec as Arc<dyn Dispatcher + Send + Sync>,
+            sample_battery(),
+            PowerProfile::Balanced,
+            PowerPrefs::default(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, PROFILE_KEY, "Performance");
+        pane.sync(&mut doc, &root);
+
+        assert_eq!(pane.profile(), PowerProfile::Balanced);
+        assert_eq!(
+            read_str(&doc, &root, PROFILE_KEY).as_deref(),
+            Some("Balanced")
+        );
+        assert!(
+            pane.profile_notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("simulated"))
+        );
     }
 
     /// The idle preferences are durable: toggling auto-suspend and choosing a

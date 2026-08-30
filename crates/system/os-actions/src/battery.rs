@@ -216,19 +216,35 @@ pub fn charge_capability_from(sys_root: &Path) -> Option<ChargeCapCapability> {
         })
         .unwrap_or_default();
     batteries.sort();
+    let mut standard = Vec::new();
     for battery in batteries {
         for attr in ["charge_control_end_threshold", "charge_stop_threshold"] {
             if let Some(current) = read_trim(&battery.join(attr)).and_then(|v| v.parse().ok()) {
-                return Some(ChargeCapCapability {
-                    backend: ChargeCapBackend::PowerSupply,
+                standard.push((
                     current,
-                    choices: (50..=100).step_by(5).collect(),
-                    supports_start_threshold: battery
-                        .join("charge_control_start_threshold")
-                        .exists(),
-                });
+                    battery.join("charge_control_start_threshold").exists(),
+                ));
+                break;
             }
         }
+    }
+    if let Some(&(current, supports_start_threshold)) = standard.first() {
+        // The privileged helper applies one normalized cap to every battery.
+        // A single selector is only truthful when every controllable battery
+        // currently exposes the same contract; mixed state is left to a
+        // specialist diagnostic tool rather than partially changing hardware.
+        if standard
+            .iter()
+            .any(|entry| *entry != (current, supports_start_threshold))
+        {
+            return None;
+        }
+        return Some(ChargeCapCapability {
+            backend: ChargeCapBackend::PowerSupply,
+            current,
+            choices: (50..=100).step_by(5).collect(),
+            supports_start_threshold,
+        });
     }
 
     let mut conservation_paths = Vec::new();
@@ -357,6 +373,18 @@ mod tests {
         assert_eq!(cap.backend, ChargeCapBackend::PowerSupply);
         assert!(cap.supports_start_threshold);
         assert!(cap.choices.contains(&85));
+    }
+
+    #[test]
+    fn mixed_multi_battery_contract_is_not_presented_as_one_control() {
+        let root = tempfile::tempdir().unwrap();
+        for (name, limit) in [("BAT-main", "80"), ("CMB-aux", "90")] {
+            let battery = root.path().join("class/power_supply").join(name);
+            std::fs::create_dir_all(&battery).unwrap();
+            std::fs::write(battery.join("type"), "Battery\n").unwrap();
+            std::fs::write(battery.join("charge_control_end_threshold"), limit).unwrap();
+        }
+        assert!(charge_capability_from(root.path()).is_none());
     }
 
     #[test]

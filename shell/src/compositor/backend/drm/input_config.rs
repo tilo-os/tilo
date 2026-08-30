@@ -21,6 +21,59 @@ pub const TAP_TO_CLICK_KEY: &str = "tap_to_click";
 pub const POINTER_SPEED_KEY: &str = "pointer_speed";
 pub const KEY_REPEAT_KEY: &str = "key_repeat";
 
+/// Fully validated per-user XKB keymap request. The strings are ready for
+/// libxkbcommon's rules API: one comma-separated variant slot per layout,
+/// including empty slots for base layouts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyboardSettings {
+    pub source_ids: Vec<String>,
+    pub layouts: String,
+    pub variants: String,
+    pub options: Option<String>,
+    pub active_index: usize,
+}
+
+impl Default for KeyboardSettings {
+    fn default() -> Self {
+        Self {
+            source_ids: vec!["us".into()],
+            layouts: "us".into(),
+            variants: String::new(),
+            options: None,
+            active_index: 0,
+        }
+    }
+}
+
+impl KeyboardSettings {
+    pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let config = settings_store::hardware::RichInputConfig::from_section(section);
+        let sources = config.sources();
+        Self {
+            source_ids: sources.iter().map(|source| source.id.clone()).collect(),
+            layouts: sources
+                .iter()
+                .map(|source| source.layout.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            variants: sources
+                .iter()
+                .map(|source| source.variant.as_deref().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join(","),
+            options: {
+                let options = config.xkb_options();
+                (!options.is_empty()).then(|| options.join(","))
+            },
+            active_index: config.active_source_index(),
+        }
+    }
+
+    pub fn load() -> Self {
+        Self::from_section(&settings_store::load_section(SECTION))
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct AccessibilityInputSettings {
     pub sticky_keys: bool,
@@ -563,6 +616,39 @@ mod tests {
             plan_for(&InputSettings::default(), &keyboard()),
             DevicePlan::default()
         );
+    }
+
+    #[test]
+    fn keyboard_settings_compile_order_variants_active_and_compose() {
+        let section = serde_json::json!({
+            "keyboard_layout": "de:nodeadkeys",
+            "keyboard_layouts": ["us", "de:nodeadkeys", "fr"],
+            "compose_key": "ralt"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let settings = KeyboardSettings::from_section(&section);
+        assert_eq!(settings.layouts, "us,de,fr");
+        assert_eq!(settings.variants, ",nodeadkeys,");
+        assert_eq!(settings.active_index, 1);
+        assert_eq!(
+            settings.options.as_deref(),
+            Some("grp:alt_shift_toggle,compose:ralt")
+        );
+    }
+
+    #[test]
+    fn keyboard_settings_migrate_the_single_legacy_layout() {
+        let section = serde_json::json!({ "keyboard_layout": "gb" })
+            .as_object()
+            .unwrap()
+            .clone();
+        let settings = KeyboardSettings::from_section(&section);
+        assert_eq!(settings.source_ids, ["gb"]);
+        assert_eq!(settings.layouts, "gb");
+        assert_eq!(settings.variants, "");
+        assert_eq!(settings.active_index, 0);
     }
 
     #[test]

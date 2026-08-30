@@ -6,7 +6,8 @@
 //! than maintaining another printer database.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::printing::{
@@ -77,12 +78,22 @@ pub struct PrintersPane {
     jobs: Vec<PrintJob>,
     discovered: Vec<DiscoveredPrinter>,
     scanners: Vec<Scanner>,
+    refresh_rx: Option<mpsc::Receiver<PrinterSnapshot>>,
+    discover_rx: Option<mpsc::Receiver<Result<Vec<DiscoveredPrinter>, String>>>,
+    last_refresh: Instant,
+    loading: bool,
     discovering: bool,
     confirm_remove: Option<String>,
     error: Option<String>,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
+}
+
+struct PrinterSnapshot {
+    printers: Result<Vec<PrinterQueue>, String>,
+    jobs: Result<Vec<PrintJob>, String>,
+    scanners: Result<Vec<Scanner>, String>,
 }
 
 impl Default for PrintersPane {
@@ -93,9 +104,32 @@ impl Default for PrintersPane {
 
 impl PrintersPane {
     pub fn new() -> Self {
-        Self::from_service(Arc::new(CupsService))
+        let mut pane = Self::empty(Arc::new(CupsService));
+        pane.request_refresh();
+        pane
     }
 
+    fn empty(service: Arc<dyn PrintService>) -> Self {
+        Self {
+            service,
+            printers: Vec::new(),
+            jobs: Vec::new(),
+            discovered: Vec::new(),
+            scanners: Vec::new(),
+            refresh_rx: None,
+            discover_rx: None,
+            last_refresh: Instant::now(),
+            loading: false,
+            discovering: false,
+            confirm_remove: None,
+            error: None,
+            structure_dirty: false,
+            composed: None,
+            rect: Rect::ZERO,
+        }
+    }
+
+    #[cfg(test)]
     fn from_service(service: Arc<dyn PrintService>) -> Self {
         let printers = service.queues().unwrap_or_default();
         let jobs = service.jobs().unwrap_or_default();
@@ -106,6 +140,10 @@ impl PrintersPane {
             jobs,
             discovered: Vec::new(),
             scanners,
+            refresh_rx: None,
+            discover_rx: None,
+            last_refresh: Instant::now(),
+            loading: false,
             discovering: false,
             confirm_remove: None,
             error: None,
@@ -120,24 +158,88 @@ impl PrintersPane {
         Self::from_service(service)
     }
 
-    fn refresh(&mut self) {
-        match self.service.queues() {
-            Ok(v) => self.printers = v,
-            Err(e) => self.error = Some(e),
+    fn request_refresh(&mut self) {
+        if self.refresh_rx.is_some() {
+            return;
         }
-        match self.service.jobs() {
-            Ok(v) => self.jobs = v,
-            Err(e) => self.error = Some(e),
+        let service = self.service.clone();
+        let (tx, rx) = mpsc::channel();
+        self.refresh_rx = Some(rx);
+        self.loading = true;
+        if let Err(error) = std::thread::Builder::new()
+            .name("qos-printer-status".into())
+            .spawn(move || {
+                let _ = tx.send(PrinterSnapshot {
+                    printers: service.queues(),
+                    jobs: service.jobs(),
+                    scanners: service.scanners(),
+                });
+            })
+        {
+            self.refresh_rx = None;
+            self.loading = false;
+            self.error = Some(format!("Could not start printer status worker: {error}"));
         }
-        if let Ok(v) = self.service.scanners() {
-            self.scanners = v;
+    }
+
+    fn request_discovery(&mut self) {
+        if self.discover_rx.is_some() {
+            return;
         }
-        self.structure_dirty = true;
+        let service = self.service.clone();
+        let (tx, rx) = mpsc::channel();
+        self.discover_rx = Some(rx);
+        self.discovering = true;
+        if let Err(error) = std::thread::Builder::new()
+            .name("qos-printer-discovery".into())
+            .spawn(move || {
+                let _ = tx.send(service.discover());
+            })
+        {
+            self.discover_rx = None;
+            self.discovering = false;
+            self.error = Some(format!("Could not start printer discovery: {error}"));
+        }
+    }
+
+    fn poll_background(&mut self) {
+        if let Some(result) = self.refresh_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.refresh_rx = None;
+            self.loading = false;
+            self.last_refresh = Instant::now();
+            let mut errors = Vec::new();
+            match result.printers {
+                Ok(value) => self.printers = value,
+                Err(error) => errors.push(format!("Printers: {error}")),
+            }
+            match result.jobs {
+                Ok(value) => self.jobs = value,
+                Err(error) => errors.push(format!("Jobs: {error}")),
+            }
+            match result.scanners {
+                Ok(value) => self.scanners = value,
+                Err(error) => errors.push(format!("Scanners: {error}")),
+            }
+            self.error = (!errors.is_empty()).then(|| errors.join(" · "));
+            self.structure_dirty = true;
+        }
+        if let Some(result) = self.discover_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.discover_rx = None;
+            self.discovering = false;
+            match result {
+                Ok(value) => {
+                    self.discovered = value;
+                    self.error = None;
+                }
+                Err(error) => self.error = Some(error),
+            }
+            self.structure_dirty = true;
+        }
     }
 
     fn apply(&mut self, result: Result<(), String>) {
         self.error = result.err();
-        self.refresh();
+        self.request_refresh();
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -148,7 +250,11 @@ impl PrintersPane {
 
         let refresh = Box::new(Button::new(
             "settings.printers.refresh",
-            "Refresh",
+            if self.loading {
+                "Refreshing…"
+            } else {
+                "Refresh"
+            },
             Some(REFRESH_KEY),
         ));
         let printers = if self.printers.is_empty() {
@@ -387,19 +493,28 @@ fn job_row(job: &PrintJob) -> El {
         .state_reasons
         .first()
         .map_or(String::new(), |reason| format!(" · {reason}"));
+    let mut action_row = Row::new()
+        .push(Box::new(
+            Text::new(&format!("{} → {}", job.id, job.destination)).with_size(13.0),
+        ))
+        .push(Box::new(Spacer::new()));
+    if matches!(
+        job.state,
+        Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
+    ) {
+        action_row = action_row.push(Box::new(Button::new(&retry, "Retry", Some(&retry))));
+    }
+    if matches!(
+        job.state,
+        None | Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
+    ) {
+        action_row = action_row.push(Box::new(Button::new(&cancel, "Cancel", Some(&cancel))));
+    }
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Text::new(&format!("{} → {}", job.id, job.destination)).with_size(13.0),
-                    ))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(Button::new(&retry, "Retry", Some(&retry))))
-                    .push(Box::new(Button::new(&cancel, "Cancel", Some(&cancel)))),
-            ))
+            .push(Box::new(action_row))
             .push(Box::new(
                 Text::new(&format!("{} · {} · {}", job.owner, size, job.submitted))
                     .with_size(11.0)
@@ -436,20 +551,15 @@ fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
 
 impl Widget for PrintersPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.poll_background();
+        if self.last_refresh.elapsed() >= Duration::from_secs(3) {
+            self.request_refresh();
+        }
         if take_bool(state, root, REFRESH_KEY) {
-            self.refresh();
+            self.request_refresh();
         }
         if take_bool(state, root, SCAN_KEY) {
-            self.discovering = true;
-            match self.service.discover() {
-                Ok(v) => {
-                    self.discovered = v;
-                    self.error = None;
-                }
-                Err(e) => self.error = Some(e),
-            }
-            self.discovering = false;
-            self.structure_dirty = true;
+            self.request_discovery();
         }
         for p in self.discovered.clone() {
             let key = format!("settings.printers.add.{}", slug(&p.uri));

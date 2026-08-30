@@ -4,6 +4,12 @@ The compositor is the freedesktop notification server and the only owner of
 delivery policy, history, focus suppression, sounds and shell badges. Settings
 edits the shared policy; it does not deliver notifications itself.
 
+Retired and focus-suppressed notifications remain in a bounded, session-local
+history exposed through Quick Settings → History, where the user can clear it.
+History is intentionally not copied into Settings or persisted across sign-in:
+the compositor already owns the delivery lifecycle, and avoiding a second
+on-disk message archive reduces both ambiguity and sensitive-data retention.
+
 The freedesktop `app_name`, summary, body and custom hints are sender data. For
 package attribution, the service asks the session bus for the caller PID, walks
 the bounded `/proc` parent chain, and accepts an application identity only when
