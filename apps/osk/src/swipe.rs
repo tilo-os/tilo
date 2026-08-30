@@ -478,9 +478,17 @@ mod tests {
     }
 
     #[test]
+    // The budget is a property of the shipping build. A debug build runs this
+    // an order of magnitude slower, so the gate there measures the compiler,
+    // not the decoder — it only ever caught the machine being busy. Decode
+    // correctness is covered by the tests above, in every build.
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "wall-clock budget only means something in a release build; run with --release"
+    )]
     fn decode_is_fast_enough() {
-        // Sanity perf gate: a full decode over the embedded dictionary should
-        // be well under the 30ms budget. Generous bound to avoid CI flakes.
+        // A full decode over the embedded dictionary against the 30 ms budget,
+        // with headroom so only a real regression trips it.
         let (layout, geom) = qwerty_geom();
         let model = GeometricSwipeModel::english();
         let path = path_through("keyboard", &geom, &layout);
