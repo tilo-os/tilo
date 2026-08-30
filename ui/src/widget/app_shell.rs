@@ -157,22 +157,26 @@ impl AppShell {
 
     /// Pinned at the top of the sidebar (or the narrow list screen); stays
     /// keyboard-focusable across the filter rebuild.
+    #[must_use]
     pub fn with_search(mut self, search: Element) -> Self {
         self.search = Some(search);
         self
     }
 
+    #[must_use]
     pub fn with_sidebar_width(mut self, px: f64) -> Self {
         self.sidebar_width = px;
         self
     }
 
+    #[must_use]
     pub fn with_breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = px;
         self
     }
 
     /// For a deterministic cold `--shots` frame.
+    #[must_use]
     pub fn with_width_hint(mut self, px: f64) -> Self {
         self.width_hint = Some(px);
         self.layout = ShellLayout::from_width(px, self.breakpoint);
@@ -182,6 +186,7 @@ impl AppShell {
 
     /// No visible effect when wide. Also seeds the last-interacted surface,
     /// so a later collapse honours this choice.
+    #[must_use]
     pub fn with_narrow_screen(mut self, screen: NarrowScreen) -> Self {
         self.narrow_screen = screen;
         self.last_active = screen;
@@ -311,6 +316,12 @@ impl AppShell {
     /// Width-independent where it can be (fixed sidebar width; content uses
     /// left+right insets), so it is resolvable at `build_layout` time before
     /// the real width is known.
+    // Every `f64 -> f32` cast below narrows a sidebar/band/pad layout constant
+    // or width in on-screen pixels — bounded well inside `f32`'s exact range.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "shell layout dimensions are small on-screen pixel values"
+    )]
     fn slot_style(&self, slot: Slot, base: &Style) -> Style {
         let sw = self.sidebar_width;
         let mut s = base.clone();
@@ -381,7 +392,7 @@ impl AppShell {
     }
 
     fn draw_back(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -399,12 +410,19 @@ impl AppShell {
         let gx = self.back_rect.x0 + (self.back_rect.width() - f64::from(gw)) / 2.0;
         let line_box = f64::from(BACK_GLYPH_SIZE) * 1.25;
         let gy = self.back_rect.y0 + (self.back_rect.height() - line_box) / 2.0;
+        // Affine composition: pure `f64` matrix multiply, cannot panic regardless
+        // of operand magnitude.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition is float matrix math and cannot panic"
+        )]
+        let text_transform = transform * Affine::translate((gx, gy));
         tr.draw_text(
             scene,
             BACK_GLYPH,
             BACK_GLYPH_SIZE,
             theme.text_primary,
-            transform * Affine::translate((gx, gy)),
+            text_transform,
             None,
         );
     }
@@ -865,6 +883,12 @@ mod tests {
             .with_search(Box::new(TextInput::new(Vec::new()).with_id("search")))
     }
 
+    // Test fixture widths/heights are small literal px values, well inside
+    // `f32`'s exact-integer range.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "test fixture dimensions are small literal px values"
+    )]
     fn lay(s: &mut AppShell, w: f64, h: f64) {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -1072,8 +1096,8 @@ mod tests {
         assert!(s.back_rect().width() > 0.0, "the back arrow is present");
         // A real click on the back arrow.
         let mid = Point::new(
-            (s.back_rect().x0 + s.back_rect().x1) / 2.0,
-            (s.back_rect().y0 + s.back_rect().y1) / 2.0,
+            f64::midpoint(s.back_rect().x0, s.back_rect().x1),
+            f64::midpoint(s.back_rect().y0, s.back_rect().y1),
         );
         click(&mut s, mid);
         assert_eq!(
