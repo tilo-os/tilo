@@ -16,8 +16,10 @@ use winit::keyboard::{Key, NamedKey};
 use crate::color_compat::ColorCompat;
 use crate::icons::{self, Icon};
 use crate::presence::PresenceCtx;
+use crate::query_text::{QueryComposition, QueryEventChange};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST;
 use crate::widget::Widget;
 use qos_actions::{ActionInput, FlatAction};
@@ -330,13 +332,13 @@ pub struct InputRowLayout {
 
 /// While `Some`, keyboard input edits `buffer` instead of the query, and the
 /// result list is frozen.
-#[derive(Clone, Debug)]
 struct ArgState {
     entry_id: String,
     prompt: String,
     placeholder: String,
     buffer: String,
     selection: crate::text_selection::Selection,
+    composition: QueryComposition,
 }
 
 /// A predicate narrowing which [`CommandEntry`] rows are shown.
@@ -346,6 +348,7 @@ pub struct CommandPalette {
     entries: Vec<CommandEntry>,
     query: String,
     query_selection: crate::text_selection::Selection,
+    query_composition: QueryComposition,
     filter: Option<EntryFilter>,
     visible: Vec<usize>,
     cursor: usize,
@@ -399,6 +402,7 @@ impl CommandPalette {
             entries: Vec::new(),
             query: String::new(),
             query_selection: crate::text_selection::Selection::collapsed(0),
+            query_composition: QueryComposition::new(),
             filter: None,
             visible: Vec::new(),
             cursor: 0,
@@ -453,6 +457,7 @@ impl CommandPalette {
         self.is_focused = true;
         self.query.clear();
         self.query_selection = crate::text_selection::Selection::collapsed(0);
+        self.query_composition.clear();
         self.arg_state = None;
         self.outcome = None;
         self.cursor = 0;
@@ -464,6 +469,7 @@ impl CommandPalette {
     pub fn close(&mut self) {
         self.is_focused = false;
         self.arg_state = None;
+        self.query_composition.clear();
     }
 
     pub fn is_open(&self) -> bool {
@@ -615,6 +621,7 @@ impl CommandPalette {
                 placeholder: spec.placeholder,
                 buffer,
                 selection,
+                composition: QueryComposition::new(),
             });
         } else {
             let id = self.entries[idx].id.clone();
@@ -649,6 +656,7 @@ impl CommandPalette {
     /// All keys are consumed so nothing leaks to the app behind.
     fn handle_arg_key(
         &mut self,
+        event: &WindowEvent,
         key: &winit::keyboard::Key,
         shift: bool,
         ctrl: bool,
@@ -656,10 +664,6 @@ impl CommandPalette {
         path: &ObjId,
         handled: &mut bool,
     ) {
-        use crate::text_selection::{
-            Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-            prev_char_boundary, prev_word_boundary,
-        };
         // Everything past this point consumes the key.
         *handled = true;
         match key {
@@ -682,105 +686,8 @@ impl CommandPalette {
             _ => {}
         }
         let arg = self.arg_state.as_mut().unwrap();
-        match key {
-            Key::Named(NamedKey::ArrowLeft) => {
-                let pos = arg.selection.cursor;
-                arg.selection.cursor = if ctrl {
-                    prev_word_boundary(&arg.buffer, pos)
-                } else {
-                    prev_char_boundary(&arg.buffer, pos)
-                };
-                if !shift {
-                    arg.selection.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                let pos = arg.selection.cursor;
-                arg.selection.cursor = if ctrl {
-                    next_word_boundary(&arg.buffer, pos)
-                } else {
-                    next_char_boundary(&arg.buffer, pos)
-                };
-                if !shift {
-                    arg.selection.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::Home) => {
-                arg.selection.cursor = 0;
-                if !shift {
-                    arg.selection.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::End) => {
-                arg.selection.cursor = arg.buffer.len();
-                if !shift {
-                    arg.selection.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::Backspace) => {
-                let r = arg.selection.range();
-                if !r.is_empty() {
-                    arg.buffer.replace_range(r.clone(), "");
-                    arg.selection = Selection::collapsed(r.start);
-                } else if r.start > 0 {
-                    let prev = prev_char_boundary(&arg.buffer, r.start);
-                    arg.buffer.replace_range(prev..r.start, "");
-                    arg.selection = Selection::collapsed(prev);
-                }
-            }
-            Key::Named(NamedKey::Delete) => {
-                let r = arg.selection.range();
-                if !r.is_empty() {
-                    arg.buffer.replace_range(r.clone(), "");
-                    arg.selection = Selection::collapsed(r.start);
-                } else if r.start < arg.buffer.len() {
-                    let next = next_char_boundary(&arg.buffer, r.start);
-                    arg.buffer.replace_range(r.start..next, "");
-                }
-            }
-            Key::Named(NamedKey::Space) => {
-                let r = arg.selection.range();
-                arg.buffer.replace_range(r.clone(), " ");
-                arg.selection = Selection::collapsed(r.start + 1);
-            }
-            Key::Character(s) if ctrl => match s.as_str() {
-                "a" | "A" => {
-                    arg.selection.anchor = 0;
-                    arg.selection.cursor = arg.buffer.len();
-                }
-                "c" | "C" => {
-                    let r = arg.selection.range();
-                    if !r.is_empty() {
-                        clipboard_copy(&arg.buffer[r]);
-                    }
-                }
-                "x" | "X" => {
-                    let r = arg.selection.range();
-                    if !r.is_empty() {
-                        clipboard_copy(&arg.buffer[r.clone()]);
-                        arg.buffer.replace_range(r.clone(), "");
-                        arg.selection = Selection::collapsed(r.start);
-                    }
-                }
-                "v" | "V" => {
-                    if let Some(paste) = clipboard_paste() {
-                        let r = arg.selection.range();
-                        arg.buffer.replace_range(r.clone(), &paste);
-                        arg.selection = Selection::collapsed(r.start + paste.len());
-                    }
-                }
-                _ => {}
-            },
-            Key::Character(s) => {
-                let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-                if !filtered.is_empty() {
-                    let r = arg.selection.range();
-                    arg.buffer.replace_range(r.clone(), &filtered);
-                    arg.selection = Selection::collapsed(r.start + filtered.len());
-                }
-            }
-            _ => {}
-        }
+        arg.composition
+            .handle_event(event, &mut arg.buffer, &mut arg.selection, shift, ctrl);
     }
 
     pub fn search_filter(&self) -> &SearchFilter {
@@ -846,28 +753,8 @@ impl CommandPalette {
         // rather than insert mid-string.
         let end = self.query.len();
         self.query_selection = crate::text_selection::Selection::collapsed(end);
+        self.query_composition.clear();
         self.rebuild();
-    }
-
-    fn replace_query_selection(&mut self, s: &str) {
-        let r = self.query_selection.range();
-        self.query.replace_range(r.clone(), s);
-        let new_caret = r.start + s.len();
-        self.query_selection = crate::text_selection::Selection::collapsed(new_caret);
-        self.rebuild();
-    }
-
-    /// `true` if a range was actually removed, so the caller can skip the
-    /// per-char fallback path for Backspace / Delete.
-    fn delete_query_selection(&mut self) -> bool {
-        if self.query_selection.is_collapsed() {
-            return false;
-        }
-        let r = self.query_selection.range();
-        self.query.replace_range(r.clone(), "");
-        self.query_selection = crate::text_selection::Selection::collapsed(r.start);
-        self.rebuild();
-        true
     }
 
     pub fn query(&self) -> &str {
@@ -1734,8 +1621,8 @@ impl Widget for CommandPalette {
         let text_y =
             layout.input_rect.y0 + (layout.input_rect.height() - f64::from(text_size)) / 2.0;
         let mut tx = layout.input_rect.x0;
-        let avail = layout.input_rect.width();
-        if let Some(arg) = &self.arg_state {
+        let style = theme.tokens.typography.style(TextRole::Body);
+        if let Some(arg) = &mut self.arg_state {
             if !arg.prompt.is_empty() {
                 let heading = format!("{}:  ", arg.prompt);
                 text_renderer.draw_text(
@@ -1749,35 +1636,41 @@ impl Widget for CommandPalette {
                 let (hw, _) = text_renderer.measure(&heading, text_size, None);
                 tx += f64::from(hw);
             }
-            let (body, color) = if arg.buffer.is_empty() {
-                (arg.placeholder.as_str(), colors.text_dim)
-            } else {
-                (arg.buffer.as_str(), colors.text_primary)
-            };
-            let body =
-                text_renderer.elide_to_width(body, text_size, (layout.input_rect.x1 - tx) as f32);
-            text_renderer.draw_text(
+            arg.composition.draw(
                 scene,
-                &body,
-                text_size,
-                color,
-                transform * Affine::translate((tx, text_y)),
-                None,
+                transform,
+                text_renderer,
+                &arg.buffer,
+                &arg.selection,
+                &arg.placeholder,
+                Rect::new(
+                    tx,
+                    layout.input_rect.y0,
+                    layout.input_rect.x1,
+                    layout.input_rect.y1,
+                ),
+                &style,
+                colors.text_primary,
+                colors.text_dim,
+                colors.accent[5].with_alpha_factor(0.3),
+                colors.accent[5],
+                self.is_focused,
             );
         } else {
-            let (display, text_color) = if self.query.is_empty() {
-                ("Search\u{2026}".to_string(), colors.text_dim)
-            } else {
-                (self.query.clone(), colors.text_primary)
-            };
-            let display = text_renderer.elide_to_width(&display, text_size, avail as f32);
-            text_renderer.draw_text(
+            self.query_composition.draw(
                 scene,
-                &display,
-                text_size,
-                text_color,
-                transform * Affine::translate((tx, text_y)),
-                None,
+                transform,
+                text_renderer,
+                &self.query,
+                &self.query_selection,
+                "Search\u{2026}",
+                layout.input_rect,
+                &style,
+                colors.text_primary,
+                colors.text_dim,
+                colors.accent[5].with_alpha_factor(0.3),
+                colors.accent[5],
+                self.is_focused,
             );
         }
 
@@ -1810,6 +1703,30 @@ impl Widget for CommandPalette {
         if !self.is_focused {
             return;
         }
+        if matches!(event, WindowEvent::Ime(_)) {
+            let change = if let Some(arg) = &mut self.arg_state {
+                arg.composition.handle_event(
+                    event,
+                    &mut arg.buffer,
+                    &mut arg.selection,
+                    false,
+                    false,
+                )
+            } else {
+                self.query_composition.handle_event(
+                    event,
+                    &mut self.query,
+                    &mut self.query_selection,
+                    false,
+                    false,
+                )
+            };
+            if self.arg_state.is_none() && change == QueryEventChange::Edited {
+                self.rebuild();
+            }
+            *handled = true;
+            return;
+        }
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -1823,15 +1740,11 @@ impl Widget for CommandPalette {
             if *element_state != ElementState::Pressed {
                 return;
             }
-            use crate::text_selection::{
-                Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-                prev_char_boundary, prev_word_boundary,
-            };
             let mods = modifiers.state();
             let shift = mods.shift_key();
             let ctrl = mods.control_key() || mods.super_key();
             if self.arg_state.is_some() {
-                self.handle_arg_key(logical_key, shift, ctrl, state, path, handled);
+                self.handle_arg_key(event, logical_key, shift, ctrl, state, path, handled);
                 return;
             }
             match logical_key {
@@ -1854,110 +1767,21 @@ impl Widget for CommandPalette {
                     self.is_focused = false;
                     *handled = true;
                 }
-                Key::Named(NamedKey::ArrowLeft) => {
-                    let pos = self.query_selection.cursor;
-                    let new_pos = if ctrl {
-                        prev_word_boundary(&self.query, pos)
-                    } else {
-                        prev_char_boundary(&self.query, pos)
-                    };
-                    self.query_selection.cursor = new_pos;
-                    if !shift {
-                        self.query_selection.collapse_to_cursor();
+                _ => {
+                    let change = self.query_composition.handle_event(
+                        event,
+                        &mut self.query,
+                        &mut self.query_selection,
+                        shift,
+                        ctrl,
+                    );
+                    if change == QueryEventChange::Edited {
+                        self.rebuild();
                     }
-                    *handled = true;
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    let pos = self.query_selection.cursor;
-                    let new_pos = if ctrl {
-                        next_word_boundary(&self.query, pos)
-                    } else {
-                        next_char_boundary(&self.query, pos)
-                    };
-                    self.query_selection.cursor = new_pos;
-                    if !shift {
-                        self.query_selection.collapse_to_cursor();
-                    }
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Home) => {
-                    self.query_selection.cursor = 0;
-                    if !shift {
-                        self.query_selection.collapse_to_cursor();
-                    }
-                    *handled = true;
-                }
-                Key::Named(NamedKey::End) => {
-                    self.query_selection.cursor = self.query.len();
-                    if !shift {
-                        self.query_selection.collapse_to_cursor();
-                    }
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    if !self.delete_query_selection() {
-                        let pos = self.query_selection.cursor;
-                        if pos > 0 {
-                            let prev = prev_char_boundary(&self.query, pos);
-                            self.query.replace_range(prev..pos, "");
-                            self.query_selection = Selection::collapsed(prev);
-                            self.rebuild();
-                        }
-                    }
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Delete) => {
-                    if !self.delete_query_selection() {
-                        let pos = self.query_selection.cursor;
-                        if pos < self.query.len() {
-                            let next = next_char_boundary(&self.query, pos);
-                            self.query.replace_range(pos..next, "");
-                            self.rebuild();
-                        }
-                    }
-                    *handled = true;
-                }
-                Key::Character(s) if ctrl => match s.as_str() {
-                    "a" | "A" => {
-                        self.query_selection.anchor = 0;
-                        self.query_selection.cursor = self.query.len();
-                        *handled = true;
-                    }
-                    "c" | "C" => {
-                        let r = self.query_selection.range();
-                        if !r.is_empty() {
-                            clipboard_copy(&self.query[r]);
-                        }
-                        *handled = true;
-                    }
-                    "x" | "X" => {
-                        let r = self.query_selection.range();
-                        if !r.is_empty() {
-                            clipboard_copy(&self.query[r]);
-                            self.delete_query_selection();
-                        }
-                        *handled = true;
-                    }
-                    "v" | "V" => {
-                        if let Some(s) = clipboard_paste() {
-                            self.replace_query_selection(&s);
-                        }
-                        *handled = true;
-                    }
-                    _ => {}
-                },
-                Key::Named(NamedKey::Space) => {
-                    self.replace_query_selection(" ");
-                    *handled = true;
-                }
-                Key::Character(s) => {
-                    let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-                    if !filtered.is_empty() {
-                        self.replace_query_selection(&filtered);
+                    if change != QueryEventChange::Ignored {
                         *handled = true;
                     }
                 }
-                _ => {}
             }
         }
     }
@@ -1984,6 +1808,13 @@ impl Widget for CommandPalette {
     }
     fn is_focused(&self) -> bool {
         self.is_focused
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.arg_state.as_ref().map_or_else(
+            || self.query_composition.ime_cursor_rect(),
+            |arg| arg.composition.ime_cursor_rect(),
+        )
     }
 
     /// Only traps focus as a modal command launcher; the default Search
@@ -2261,6 +2092,56 @@ mod tests {
             total,
         );
         assert!(handled, "the palette must consume the keystroke");
+    }
+
+    #[test]
+    fn ime_preedit_is_visible_but_filters_only_after_atomic_commit() {
+        let mut palette = CommandPalette::new();
+        palette.push(CommandEntry::new("jp", "東京"));
+        palette.push(CommandEntry::new("en", "London"));
+        palette.set_focus(true);
+        palette.rect = Rect::new(0.0, 0.0, 420.0, 260.0);
+        let mut document = AutoCommit::new();
+        let modifiers = Modifiers::default();
+
+        assert!(palette.handle_overlay_key(
+            &WindowEvent::Ime(winit::event::Ime::Preedit(
+                "東京".into(),
+                Some(("東".len(), "東".len())),
+            )),
+            &modifiers,
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(palette.query(), "", "preedit is not committed query state");
+        assert_eq!(
+            palette.visible_entries().len(),
+            2,
+            "preedit does not filter"
+        );
+
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        Widget::draw(
+            &mut palette,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        let candidate = Widget::ime_cursor_rect(&palette).expect("query publishes IME caret");
+        assert!(palette.input_row_rect().contains(candidate.center()));
+
+        assert!(palette.handle_overlay_key(
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+            &modifiers,
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(palette.query(), "東京");
+        assert_eq!(palette.visible_entries().len(), 1);
+        assert_eq!(palette.visible_entries()[0].label, "東京");
     }
 
     #[test]

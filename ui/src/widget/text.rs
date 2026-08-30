@@ -1,8 +1,12 @@
 use crate::i18n::ArgValue;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::{FontChoice, TextRenderer, TextWeight};
+use crate::text_render::{
+    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
+    TextRenderer, TextStyle, TextWeight, TextWrapMode,
+};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -17,14 +21,9 @@ pub struct Text {
     /// to `Count is 5` (not the literal `{$count}`) every frame, even though the
     /// widget caches its rendered scene. Empty for plain, variable-free labels.
     args: Vec<(String, ArgValue)>,
-    size: f32,
+    style: TextStyle,
     /// `None` (default) renders with the theme's `text_primary`.
     color: Option<vello::peniko::Color>,
-    /// Optional font-family override. `None` shapes the label in the
-    /// system sans face; `Some(family)` renders it in an explicit
-    /// [`FontChoice`], resolved through the renderer's cosmic-text system
-    /// (e.g. a font-picker row previewing each family in its own face).
-    family: Option<FontChoice>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -49,9 +48,8 @@ impl Text {
         Self {
             label: label.to_string(),
             args: Vec::new(),
-            size: 16.0,
+            style: TextStyle::new(16.0),
             color: None,
-            family: None,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -97,7 +95,48 @@ impl Text {
     }
 
     pub fn with_size(mut self, size: f32) -> Self {
-        self.size = size;
+        self.style.size = size;
+        self
+    }
+
+    /// Apply a complete style in one operation. Measurement and painting use
+    /// this same value, so leading, weight, face, and italic cannot drift.
+    pub fn with_style(mut self, style: TextStyle) -> Self {
+        self.style = style;
+        self.dirty = true;
+        self
+    }
+
+    /// Resolve a semantic role from the active theme. This is the preferred
+    /// application-level API: one role selects size, leading, weight, and face
+    /// together and automatically reflects text/UI scaling in `theme`.
+    pub fn with_role(self, role: TextRole, theme: &Theme) -> Self {
+        self.with_style(theme.tokens.typography.style(role))
+    }
+
+    pub fn with_line_height(mut self, multiplier: f32) -> Self {
+        self.style.line_height = multiplier.max(0.1);
+        self.dirty = true;
+        self
+    }
+
+    /// Enable TeX/Liang automatic hyphenation for this text block using a
+    /// BCP-47 language tag such as `"en-US"` or `"de"`.
+    pub fn with_auto_hyphenation(mut self, language: impl Into<String>) -> Self {
+        self.style = self.style.with_auto_hyphenation(language);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_weight(mut self, weight: TextWeight) -> Self {
+        self.style.weight = weight;
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_italic(mut self, italic: bool) -> Self {
+        self.style.italic = italic;
+        self.dirty = true;
         self
     }
 
@@ -105,7 +144,85 @@ impl Text {
     /// default sans. Both measurement and draw shape use the same family,
     /// so a label previewing a font in its own face lays out correctly.
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
-        self.family = Some(family);
+        self.style.family = family;
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_letter_spacing(mut self, px: f32) -> Self {
+        self.style = self.style.with_letter_spacing(px);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_tracking(mut self, em: f32) -> Self {
+        self.style = self.style.with_tracking(em);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_font_feature(mut self, tag: OpenTypeTag, value: u32) -> Self {
+        self.style = self.style.with_font_feature(tag, value);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_kerning(mut self, enabled: bool) -> Self {
+        self.style = self.style.with_kerning(enabled);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_discretionary_ligatures(mut self, enabled: bool) -> Self {
+        self.style = self.style.with_discretionary_ligatures(enabled);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_small_caps(mut self, enabled: bool) -> Self {
+        self.style = self.style.with_small_caps(enabled);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_numeric_style(mut self, numeric_style: NumericStyle) -> Self {
+        self.style = self.style.with_numeric_style(numeric_style);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_font_variation(mut self, tag: OpenTypeTag, value: f32) -> Self {
+        self.style = self.style.with_font_variation(tag, value);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_optical_sizing(mut self, optical_sizing: OpticalSizing) -> Self {
+        self.style = self.style.with_optical_sizing(optical_sizing);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_align(mut self, align: ParagraphAlign) -> Self {
+        self.style = self.style.with_align(align);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_balanced_wrap(mut self) -> Self {
+        self.style = self.style.with_wrap_mode(TextWrapMode::Balance);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_hanging_punctuation(mut self, hanging: HangingPunctuation) -> Self {
+        self.style = self.style.with_hanging_punctuation(hanging);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_fragmentation(mut self, orphans: u8, widows: u8) -> Self {
+        self.style = self.style.with_fragmentation(orphans, widows);
         self.dirty = true;
         self
     }
@@ -113,10 +230,15 @@ impl Text {
     /// Mutate the font-family override after construction. `None` restores the
     /// default sans face.
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
-        if self.family != family {
-            self.family = family;
+        let family = family.unwrap_or(FontChoice::SansSerif);
+        if self.style.family != family {
+            self.style.family = family;
             self.dirty = true;
         }
+    }
+
+    pub fn text_style(&self) -> &TextStyle {
+        &self.style
     }
 
     /// External-layout assignment for callers placing this label outside
@@ -196,13 +318,7 @@ impl Widget for Text {
             }
         };
 
-        // Measure through the family-aware path when an override is set,
-        // so the reserved box matches the drawn face.
-        let (w, h) = if let Some(fam) = &self.family {
-            text_renderer.measure_font(&label, self.size, max_w, TextWeight::Regular, false, fam)
-        } else {
-            text_renderer.measure(&label, self.size, max_w)
-        };
+        let (w, h) = text_renderer.measure_style(&label, max_w, &self.style);
 
         // Tiny epsilon on width so rounding in Row/Column doesn't read the
         // text as "just a bit too big" and wrap it unnecessarily.
@@ -243,28 +359,14 @@ impl Widget for Text {
             let max_width = self.rect.width() as f32;
             let color = self.color.unwrap_or(theme.tokens.colors.text_primary);
             let origin = Affine::translate((self.rect.x0, self.rect.y0));
-            if let Some(fam) = &self.family {
-                text_renderer.draw_text_font(
-                    &mut self.cached,
-                    &label,
-                    self.size,
-                    color,
-                    origin,
-                    Some(max_width + 1.0),
-                    TextWeight::Regular,
-                    false,
-                    fam,
-                );
-            } else {
-                text_renderer.draw_text(
-                    &mut self.cached,
-                    &label,
-                    self.size,
-                    color,
-                    origin,
-                    Some(max_width + 1.0),
-                );
-            }
+            text_renderer.draw_style(
+                &mut self.cached,
+                &label,
+                color,
+                origin,
+                Some(max_width + 1.0),
+                &self.style,
+            );
             self.cache_rect = self.rect;
         }
         let dx = self.rect.x0 - self.cache_rect.x0;
@@ -389,6 +491,28 @@ impl Widget for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_style_is_retained_by_the_widget() {
+        let style = TextStyle::new(18.0)
+            .with_line_height(1.6)
+            .with_weight(TextWeight::Semibold)
+            .with_italic(true)
+            .with_family(FontChoice::Serif);
+        let text = Text::new("Reading").with_style(style.clone());
+        assert_eq!(text.text_style(), &style);
+    }
+
+    #[test]
+    fn semantic_role_uses_active_theme_typography() {
+        let theme = Theme::dark().with_text_scale(1.5);
+        let text = Text::new("Readable").with_role(TextRole::Reading, &theme);
+        assert_eq!(text.text_style().size, theme.tokens.typography.scale.base);
+        assert_eq!(
+            text.text_style().line_height,
+            theme.tokens.typography.line_height_relaxed
+        );
+    }
     use crate::a11y::Role;
 
     #[test]

@@ -627,6 +627,10 @@ impl Widget for NumberInput {
             }
         }
     }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.field)
+    }
     fn is_focused(&self) -> bool {
         self.is_focused || self.field.is_focused()
     }
