@@ -23,7 +23,7 @@ first — see [ui gaps](#ui-gaps)).
 
 | Category | Canonical widget | Apps affected | Worst offenders |
 |---|---|---|---|
-| 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | **23** | db_client, imager, pdf_viewer, chat, maps, mail |
+| 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | **19** | db_client, imager, pdf_viewer, chat, maps, mail |
 | 2. Buttons (MED) | `Button` / `Toolbar` | **~28** (painted-rect + hit-test; 6 converted via `Button::paint`) | ebook, software_store, slides, camera |
 | 3. Modals (MED) | `ModalDialog` | **14** (6 done: monitor, containers, vpn, software_store, music, feeds) | disks, db_client, snippets |
 | 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`ToggleGroup`/`ContextMenu`/`Popover`/`Chart` | **~22** (6 toggle/segmented/tab converts via `Toggle::paint` + `ToggleGroup::paint`) | tube, music, monitor, logs, camera |
@@ -69,20 +69,30 @@ reuses ContextMenu), `video-player` (thin `VideoPlayer` shell).
 The worst class: a per-app `String` (or `chars`/`caret`) that receives characters
 directly from `Key::Character`/`Backspace`. No real selection, no clipboard, no
 IME, no a11y, no caret-by-click. Several offenders also rewrite the whole CRDT
-field every keystroke (O(n²) tombstone churn — see `ui/HIG.md` §6). The
-calibration exemplar is feeds' `Modal::AddSubscription`.
+field every keystroke (O(n²) tombstone churn — see `ui/HIG.md` §6).
+
+**Status (search-field wave):** **feeds** and **weather** were already migrated
+to shared `TextInput` / `Autocomplete` widgets (their audit entries were stale).
+**hex_editor** now embeds shared
+local `TextInput`s in its search and goto overlays; the app still owns byte
+pattern parsing, hex/text mode, match navigation/counter and hex-or-decimal
+offset parsing, while the fields gain caret navigation, selection, clipboard,
+context menu and IME. **logs** now embeds a CRDT-bound shared `TextInput` in its
+existing filter-bar chrome. Its collaborative `search` text remains the source
+of truth and type-to-filter still transfers focus into the field; the copied
+append/pop editor and its document helpers were deleted.
 
 ### Pure non-adoption — a fitting widget already exists (do these first)
 
 | file:symbol | app | evidence | ui alt | effort | risk |
 |---|---|---|---|---|---|
-| `apps/feeds/src/app.rs:3040-3048` `Modal::AddSubscription/RenameFeed{input}` | feeds | `input.push_str(s)`/`.pop()`/`.push(' ')` on raw keys; fake caret `vline` at fixed end-x (`:2726`) — **the exemplar** | `TextInput` | M | HIGH |
+| `apps/feeds/src/app.rs` add/rename modal | feeds ✅ | **DONE (prior)** — shared `ModalDialog` body hosts a real `TextInput` | `TextInput` | M | HIGH |
 | `apps/maps/src/app.rs:3491` search + `:3461` route endpoints | maps | `query.push_str(s)`, `endpoint_query_mut(o).push_str(s)`; `draw_search` fake blinking caret (`:1918`); zero `TextInput` | `SearchField`/`TextInput` | M | HIGH |
-| `apps/weather/src/core.rs:1146` `search_query` | weather | `push_str`/`pop`/`clear`, append-only, no caret; zero `TextInput` | `SearchField` | S | HIGH |
-| `apps/logs/src/app.rs:1414` search box | logs | `LogsDoc::search_push`/`search_backspace` on raw keys | `SearchField` | M | HIGH |
+| `apps/weather/src/core.rs` city search | weather ✅ | **DONE (prior)** — shared `Autocomplete`, including selection/clipboard/IME and async geocode suggestions | `Autocomplete` | S | HIGH |
+| `apps/logs/src/app.rs` search box | logs ✅ | **DONE** — embedded CRDT-bound `TextInput`; shared editor with collaborative live-filter state | `TextInput` | M | HIGH |
 | `apps/monitor/src/app.rs:257` `filter` + `:2582` | monitor | `filter.push(ch)`/`.pop()`, own `search_focused` | `SearchField` | M | HIGH |
 | `apps/snippets/src/app.rs:990` search + `expand.rs:337` var fields | snippets | `search.push_str`/`pop`; `f.value.pop()/push_str` per variable | `SearchField`/`TextInput` | M | HIGH |
-| `apps/hex_editor/src/view.rs:1188` search + `:1226` goto | hex_editor | `search_query.pop()/push_str`, `goto_query…` | `SearchField`/`NumberInput` | S | HIGH |
+| `apps/hex_editor/src/view.rs` search + goto | hex_editor ✅ | **DONE** — two embedded local `TextInput`s; byte-search and mixed-radix goto policy preserved | `TextInput` | S | HIGH |
 | `apps/word-processor/src/widget.rs:2533` `find_query`/`replace_query` | word-processor | `buf.pop()`/`push_str`, drawn via `draw_field_box` | `SearchField` | M | HIGH |
 | `apps/sheets/src/app.rs:136` `NameBoxEdit`, `:125` `TabRename` | sheets | `nb.chars.insert/remove`, `r.chars.insert/remove` (go-to + tab rename) | `TextInput`/`EditableLabel` | M | HIGH |
 | `apps/music/src/app.rs:384` `name_input` | music | new-playlist/rename prompt; `render.rs:654` `.pop()`, `:670` `push_str` | `TextInput` | M | HIGH |
@@ -517,11 +527,11 @@ require extending a `ui` widget *before* the app migrations.
 
 ### Wave 1 — Text inputs, pure non-adoption (HIGH, no ui changes needed)
 Route existing single-line fields to `TextInput`/`SearchField`/`NumberInput`/
-`EditableLabel`. **Apps:** feeds, maps, weather, logs, monitor, snippets,
-hex_editor, word-processor (find), sheets (name box + tab rename), music
+`EditableLabel`. **Done:** feeds, weather, logs, hex_editor. **Remaining apps:**
+maps, monitor, snippets, word-processor (find), sheets (name box + tab rename), music
 (name_input), ebook (num_edit + note), disks (confirm), vpn (add), containers
 (prompt), remote (fields), software_store (search), chat (inline rename),
-pdf_viewer (find query). *Start with feeds (the exemplar) and weather (smallest).*
+pdf_viewer (find query). *Continue with monitor, then maps' search and route fields.*
 
 ### Wave 2 — Extend `TextInput`, then migrate the blocked text inputs (HIGH)
 Land ui gaps **1** (multiline), **5** (secret mode), then migrate: mail

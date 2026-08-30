@@ -42,7 +42,7 @@ use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{TextInput, Widget};
 
 use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
@@ -115,6 +115,9 @@ pub struct LogsApp {
     hover_row: Option<usize>,
     popup: Option<Popup>,
     focused: bool,
+    /// Shared CRDT-bound field for the collaborative search query. The filter
+    /// bar keeps its app-specific layout; text editing is toolkit-owned.
+    search_input: TextInput,
     dirty: bool,
 
     // ---- responsiveness (master-detail push on narrow windows) ----
@@ -147,6 +150,11 @@ impl LogsApp {
             hover_row: None,
             popup: None,
             focused: true,
+            search_input: TextInput::new(Vec::new())
+                .with_id("logs.search")
+                .with_on_change_path(crate::doc::K_SEARCH)
+                .with_placeholder("Search messages, units…")
+                .with_plain_chrome(),
             dirty: true,
             push: PushNav::default(),
             allow_live,
@@ -656,7 +664,7 @@ impl LogsApp {
     }
 
     fn draw_filter_bar(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -678,7 +686,7 @@ impl LogsApp {
         );
 
         // --- Search box ---
-        let focused = self.focused;
+        let focused = self.search_input.is_focused();
         fill_round(
             scene,
             t,
@@ -726,57 +734,14 @@ impl LogsApp {
             theme.text_dim,
             1.4,
         );
-        let text_x = reg.search.x0 + 30.0;
-        let sz = theme.tokens.typography.scale.base;
-        if self.filter.search.is_empty() {
-            text_at(
-                tr,
-                scene,
-                t,
-                "Search messages, units…",
-                sz,
-                theme.text_dim,
-                text_x,
-                vcenter(reg.search, sz),
-                TextWeight::Regular,
-                false,
-            );
-        } else {
-            let shown = elide(
-                tr,
-                &self.filter.search,
-                sz,
-                reg.search.x1 - text_x - 22.0,
-                false,
-            );
-            text_at(
-                tr,
-                scene,
-                t,
-                &shown,
-                sz,
-                theme.text_primary,
-                text_x,
-                vcenter(reg.search, sz),
-                TextWeight::Regular,
-                false,
-            );
-            // caret
-            if focused {
-                let (sw, _) = tr.measure(&shown, sz, None);
-                let cx = text_x + f64::from(sw) + 1.0;
-                line(
-                    scene,
-                    t,
-                    cx,
-                    reg.search.y0 + 8.0,
-                    cx,
-                    reg.search.y1 - 8.0,
-                    c.border_focus,
-                    1.5,
-                );
-            }
-        }
+        self.search_input.apply_layout_external(Rect::new(
+            reg.search.x0 + 28.0,
+            reg.search.y0,
+            reg.search.x1 - 8.0,
+            reg.search.y1,
+        ));
+        let presence = PresenceCtx::empty();
+        self.search_input.draw(scene, t, tr, theme, &presence);
 
         // --- Unit + boot dropdown triggers ---
         let unit_label = if self.filter.unit.is_empty() {
@@ -1544,6 +1509,7 @@ fn contrast_on(bg: Color) -> Color {
 impl Widget for LogsApp {
     fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
         LogsDoc::ensure_defaults(doc, root);
+        self.search_input.sync(doc, root);
 
         // Optional live tail: throttled re-poll, never under --shots.
         if self.allow_live
@@ -1783,15 +1749,103 @@ impl Widget for LogsApp {
     fn handle_event(
         &mut self,
         event: &WindowEvent,
-        _scale_factor: f64,
+        scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         doc: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
+        let search_rect = self.regions().search;
+        self.search_input.apply_layout_external(Rect::new(
+            search_rect.x0 + 28.0,
+            search_rect.y0,
+            search_rect.x1 - 8.0,
+            search_rect.y1,
+        ));
+
+        // This field is embedded in a canvas-style parent rather than mounted
+        // as a child node, so the parent explicitly owns focus transfer while
+        // still routing every editing event through the shared text core.
+        let left_press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        );
+        if left_press {
+            if search_rect.contains(self.cursor) {
+                self.search_input.set_focus(true);
+            } else {
+                self.search_input.set_focus(false);
+            }
+        }
+
+        // Preserve Logs' convenient type-to-filter behaviour: a printable key
+        // (or Backspace) transfers focus into the real field before routing,
+        // instead of maintaining a second append/pop editor in the app.
+        let starts_search = matches!(
+            event,
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && !modifiers.state().control_key()
+                    && !modifiers.state().super_key()
+                    && (matches!(key.logical_key, Key::Character(_))
+                        || matches!(key.logical_key, Key::Named(NamedKey::Backspace)))
+        );
+        if starts_search && !self.search_input.is_focused() {
+            self.search_input.set_focus(true);
+            self.search_input
+                .set_cursor_pos(self.search_input.value().len());
+        }
+
+        if self.search_input.is_focused()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event: key, .. }
+                    if key.state == ElementState::Pressed
+                        && matches!(key.logical_key, Key::Named(NamedKey::Escape))
+            )
+        {
+            LogsDoc::search_set(doc, root, "");
+            self.search_input.set_text("");
+            self.scroll = 0.0;
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+
+        let route_to_search = self.search_input.is_focused()
+            || matches!(event, WindowEvent::CursorMoved { .. })
+            || (left_press && search_rect.contains(self.cursor));
+        if route_to_search {
+            let mut input_handled = false;
+            self.search_input.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                doc,
+                root,
+                &mut input_handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if self.search_input.take_dirty().is_some() {
+                self.scroll = 0.0;
+                self.dirty = true;
+                input_handled = true;
+            }
+            if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
+                *handled = true;
+                return;
+            }
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x, position.y);
@@ -1850,9 +1904,33 @@ impl Widget for LogsApp {
             self.dirty = true;
         }
         self.focused = f;
+        if !f {
+            self.search_input.set_focus(false);
+        }
     }
     fn is_focused(&self) -> bool {
         self.focused
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.search_input.ime_cursor_rect()
+    }
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.search_input.ime_purpose()
+    }
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.search_input.cursor_shape(point)
+    }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.search_input
+            .is_focused()
+            .then(|| self.search_input.accessibility())
+            .flatten()
+    }
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
     }
     fn needs_redraw(&self) -> bool {
         self.dirty
@@ -1939,7 +2017,8 @@ impl LogsApp {
             return;
         }
 
-        // 3. Search box → just take focus (typing handled in on_key).
+        // 3. Search box → focus is transferred to the embedded TextInput by
+        // handle_event; this keeps the region consumed by the filter bar.
         if reg.search.contains(pt) {
             self.focused = true;
             *handled = true;
@@ -2049,17 +2128,6 @@ impl LogsApp {
                 self.dirty = true;
                 *handled = true;
             }
-            Key::Named(NamedKey::Backspace) => {
-                LogsDoc::search_backspace(doc, root);
-                self.scroll = 0.0;
-                self.dirty = true;
-                *handled = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                LogsDoc::search_push(doc, root, " ");
-                self.dirty = true;
-                *handled = true;
-            }
             Key::Character(s) => {
                 if ctrl {
                     match s.as_str() {
@@ -2076,16 +2144,6 @@ impl LogsApp {
                         }
                         _ => {}
                     }
-                } else {
-                    // Append printable characters to the search query.
-                    for ch in s.chars() {
-                        if !ch.is_control() {
-                            let mut buf = [0u8; 4];
-                            LogsDoc::search_push(doc, root, ch.encode_utf8(&mut buf));
-                        }
-                    }
-                    self.scroll = 0.0;
-                    *handled = true;
                 }
                 self.dirty = true;
             }
@@ -2142,6 +2200,7 @@ mod tests {
         let (mut app, mut doc) = synced_app();
         LogsDoc::search_set(&mut doc, &ROOT, "iroh");
         app.sync(&mut doc, &ROOT);
+        assert_eq!(app.search_input.value(), "iroh");
         assert!(!app.filtered.is_empty());
         for &i in &app.filtered {
             let e = &app.entries[i];
