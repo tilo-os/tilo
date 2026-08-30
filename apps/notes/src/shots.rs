@@ -54,10 +54,12 @@ fn seed_sample_workspace(root: &Path) {
     ws.rename(reading, "Reading list");
     let recipes = ws.create_page(None);
     ws.rename(recipes, "Recipes");
+    let formulas = ws.create_page(None);
+    ws.rename(formulas, "Formula notebook");
 
     ws.set_selected(Some(launch));
 
-    let bodies: [(uuid::Uuid, &str); 5] = [
+    let bodies: [(uuid::Uuid, &str); 6] = [
         (
             launch,
             "\
@@ -138,6 +140,31 @@ Active work, one page each.
 4. Finish with parsley off the heat.
 ",
         ),
+        (
+            formulas,
+            r#"# Formula notebook
+
+Edit the source; the mathematical preview stays live underneath.
+
+## TeX
+
+```tex
+\sum_{i=1}^{n} \frac{x_i^2}{\sqrt{1+x_i}} + \begin{bmatrix}a&b\\c&d\end{bmatrix}
+```
+
+## Typst
+
+```typst visual
+integral_0^infinity frac(1, 1+x^2) + vec(alpha, beta, gamma)
+```
+
+## Typst cases
+
+```typst
+f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
+```
+"#,
+        ),
     ];
 
     storage::save_workspace(root, &ws).expect("seed workspace save");
@@ -213,6 +240,7 @@ fn settle_layout(
 /// - `Some("heading")` — type a `# ` shortcut to promote a paragraph to an H1.
 /// - `Some("title_edit")` — open the prominent title's inline rename.
 /// - `Some("recipes")` — select the Recipes page (shows a numbered list).
+/// - `Some("formula")` — select the formula notebook with TeX and Typst previews.
 pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
@@ -519,6 +547,12 @@ fn drive_scenario(
             // Select the "Recipes" row (index 4) so the shot shows the
             // numbered "Method" list rendered with its ordinals.
             if let Some(row) = app.sidebar_row_center_for_test(4) {
+                send(app, &cursor(row.x, row.y));
+                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+            }
+        }
+        Some("formula") => {
+            if let Some(row) = app.sidebar_row_center_for_test(5) {
                 send(app, &cursor(row.x, row.y));
                 send(app, &mouse(ElementState::Pressed, MouseButton::Left));
             }
