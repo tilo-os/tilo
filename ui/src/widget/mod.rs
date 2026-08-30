@@ -117,6 +117,14 @@ pub trait Widget {
         false
     }
 
+    /// Caret rectangle for the platform input method, in window-logical
+    /// coordinates. Returning `Some` enables IME for the focused widget and
+    /// positions its candidate window; non-text controls keep the default
+    /// `None` and therefore disable IME.
+    fn ime_cursor_rect(&self) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
     /// While any widget answers `true`, the host restricts Tab/directional
     /// focus to this subtree (wrapping at the ends) and restores the prior
     /// focus once it goes back to `false`. Default `false`.
@@ -533,7 +541,9 @@ pub use rich_text_line::{LineSignal, RichTextLine};
 pub mod rich_text_editor;
 pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
-pub use block_editor::{Block, BlockEditor, BlockKind, CursorPlacement};
+pub use block_editor::{
+    Block, BlockEditor, BlockKind, CursorPlacement, DocumentPosition, DocumentSelection,
+};
 pub mod slash_menu;
 pub use slash_menu::SlashMenu;
 pub mod link_popover;
