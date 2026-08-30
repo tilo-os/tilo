@@ -17,7 +17,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-fn render_state(app: &mut NotesApp, out: &str, w: u32, h: u32) {
+fn render_state(app: &mut NotesApp, out: &str, w: u16, h: u16) -> Result<(), String> {
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
@@ -32,14 +32,14 @@ fn render_state(app: &mut NotesApp, out: &str, w: u32, h: u32) {
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
+                    width: Dimension::length(f32::from(w)),
+                    height: Dimension::length(f32::from(h)),
                 },
                 ..Default::default()
             },
             &[child],
         )
-        .unwrap();
+        .map_err(|e| e.to_string())?;
     {
         let measure_map = node_map.clone();
         let tr = &mut text_renderer;
@@ -47,8 +47,8 @@ fn render_state(app: &mut NotesApp, out: &str, w: u32, h: u32) {
             .compute_layout_with_measure(
                 root,
                 taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
+                    width: AvailableSpace::Definite(f32::from(w)),
+                    height: AvailableSpace::Definite(f32::from(h)),
                 },
                 |known, avail, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {
@@ -58,7 +58,7 @@ fn render_state(app: &mut NotesApp, out: &str, w: u32, h: u32) {
                     }
                 },
             )
-            .unwrap();
+            .map_err(|e| e.to_string())?;
     }
     (app as &mut dyn Widget).apply_layout(&taffy, child, Point::ORIGIN);
 
@@ -71,9 +71,10 @@ fn render_state(app: &mut NotesApp, out: &str, w: u32, h: u32) {
         &presence,
         &permission,
     );
-    let mut renderer = OffscreenRenderer::new(w, h);
+    let mut renderer = OffscreenRenderer::new(u32::from(w), u32::from(h));
     renderer.render_png(&scene, Color::TRANSPARENT, std::path::Path::new(out));
     eprintln!("notes: snapshot written to {out}");
+    Ok(())
 }
 
 #[test]
@@ -87,17 +88,17 @@ fn critique_state_dump() {
     app.tick_for_test();
 
     // 1) Default landing state — full Welcome page.
-    render_state(&mut app, &format!("{dir}/01-welcome.png"), 1280, 800);
+    render_state(&mut app, &format!("{dir}/01-welcome.png"), 1280, 800).unwrap();
 
     // 2) Shortcuts overlay open (the user pressed `?`).
     app.shortcuts_mut().set_visible(true);
-    render_state(&mut app, &format!("{dir}/02-shortcuts.png"), 1280, 800);
+    render_state(&mut app, &format!("{dir}/02-shortcuts.png"), 1280, 800).unwrap();
     app.shortcuts_mut().set_visible(false);
 
     // 3) Cmd-K palette open.
     app.palette_mut().set_visible(true);
     app.palette_mut().set_anchor(Point::new(450.0, 200.0));
-    render_state(&mut app, &format!("{dir}/03-palette.png"), 1280, 800);
+    render_state(&mut app, &format!("{dir}/03-palette.png"), 1280, 800).unwrap();
     app.palette_mut().set_visible(false);
 
     // 4) Empty page (a brand new page with no body yet).
@@ -107,7 +108,7 @@ fn critique_state_dump() {
         panel.load_page(new_id, "New page".into(), String::new());
     }
     app.tick_for_test();
-    render_state(&mut app, &format!("{dir}/04-empty-page.png"), 1280, 800);
+    render_state(&mut app, &format!("{dir}/04-empty-page.png"), 1280, 800).unwrap();
 
     // 5) Many pages in the sidebar so the tree pattern shows up.
     let many = [
@@ -131,5 +132,5 @@ fn critique_state_dump() {
         let _ = id;
     }
     app.tick_for_test();
-    render_state(&mut app, &format!("{dir}/05-many-pages.png"), 1280, 800);
+    render_state(&mut app, &format!("{dir}/05-many-pages.png"), 1280, 800).unwrap();
 }
