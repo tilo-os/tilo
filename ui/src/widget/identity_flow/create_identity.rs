@@ -387,6 +387,44 @@ impl Widget for CreateIdentityScreen {
         self.draw_submit_button(scene, transform, text_renderer, theme, card, card_pad);
     }
 
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        // Real input goes through `handle_event_screen`, which the
+        // container calls with the IdentityStore; this path is unused.
+    }
+
+    fn name(&self) -> &'static str {
+        "CreateIdentityScreen"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("identity_flow_create")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        true
+    }
+}
+
+impl CreateIdentityScreen {
     /// Title + explanation lines at the top of the card.
     fn draw_header(
         &self,
@@ -612,42 +650,6 @@ impl Widget for CreateIdentityScreen {
                 None,
             );
         }
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Real input goes through `handle_event_screen`, which the
-        // container calls with the IdentityStore; this path is unused.
-    }
-
-    fn name(&self) -> &'static str {
-        "CreateIdentityScreen"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("identity_flow_create")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        true
     }
 }
 

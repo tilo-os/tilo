@@ -410,6 +410,49 @@ impl Widget for RecoveryVerifyScreen {
         }
     }
 
+    /// One square of the grid: the row/col number label, and either the
+    /// read-only word or (for a blanked position) the editable slot.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal grid-layout helper, not a public surface"
+    )]
+
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+    }
+
+    fn name(&self) -> &'static str {
+        "RecoveryVerifyScreen"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("identity_flow_recovery_verify")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        true
+    }
+}
+
+impl RecoveryVerifyScreen {
     /// Backdrop scrim, the card surface, and the two header lines. Returns
     /// the card's `Rect` so the grid and buttons can lay out against it.
     fn draw_backdrop_and_header(
@@ -498,12 +541,6 @@ impl Widget for RecoveryVerifyScreen {
         }
     }
 
-    /// One square of the grid: the row/col number label, and either the
-    /// read-only word or (for a blanked position) the editable slot.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal grid-layout helper, not a public surface"
-    )]
     fn draw_grid_cell(
         &self,
         scene: &mut Scene,
@@ -725,40 +762,6 @@ impl Widget for RecoveryVerifyScreen {
             ),
             None,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
-    fn name(&self) -> &'static str {
-        "RecoveryVerifyScreen"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("identity_flow_recovery_verify")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        true
     }
 }
 

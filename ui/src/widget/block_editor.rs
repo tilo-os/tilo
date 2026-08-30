@@ -14,7 +14,8 @@ use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::{KeyEvent, Modifiers, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
@@ -3147,110 +3148,7 @@ impl Widget for BlockEditor {
             self.draw_block_presence(i, b, &mut ctx);
         }
     }
-}
 
-impl BlockEditor {
-    /// Peer authorship marker, live-typing glow, carets and selection
-    /// bands for one block — collaboration overlays drawn after every
-    /// block's own content so they land on top.
-    fn draw_block_presence(&self, i: usize, b: &Block, ctx: &mut BlockDrawCtx<'_>) {
-        let key = block_presence_key(i);
-        let line = &b.line;
-        let brect = line.get_rect();
-        let _tr_rect = {
-            let p0 = transformed(ctx.transform, Point::new(brect.x0, brect.y0));
-            let p1 = transformed(ctx.transform, Point::new(brect.x1, brect.y1));
-            Rect::new(p0.x, p0.y, p1.x, p1.y)
-        };
-        // Drawn first, under caret/selection: the runs each foreign
-        // author wrote, marker-style in their color.
-        for (bs, be, author) in line.author_runs() {
-            if self.local_author.as_deref() == Some(author.as_str()) {
-                continue;
-            }
-            let x0 = line.pixel_x_for_byte(ctx.theme, *bs);
-            let x1 = line.pixel_x_for_byte(ctx.theme, *be);
-            let p0 = transformed(ctx.transform, Point::new(x0, brect.y0));
-            let p1 = transformed(ctx.transform, Point::new(x1, brect.y1));
-            let user = crate::permissions::UserId(author.clone());
-            ctx.presence.draw_peer_authorship(
-                ctx.scene,
-                ctx.theme,
-                &user,
-                &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
-            );
-        }
-        // A peer's recently-inserted run glows and decays over
-        // TYPING_FADE. Drawn over authorship, under caret/selection.
-        let now = std::time::Instant::now();
-        for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
-            if self.local_author.as_deref() == Some(user.0.as_str()) {
-                continue;
-            }
-            let rect = line.selection_rect(ctx.theme, range.start, range.end);
-            let p0 = transformed(ctx.transform, Point::new(rect.x0, rect.y0));
-            let p1 = transformed(ctx.transform, Point::new(rect.x1, rect.y1));
-            ctx.presence.draw_peer_typing(
-                ctx.scene,
-                ctx.theme,
-                &user,
-                &[(Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
-            );
-        }
-        if let Some(list) = ctx.presence.carets.get(&key) {
-            for (user, byte_pos) in list {
-                let name = ctx.presence.display_name(user);
-                ctx.presence.draw_peer_caret_labeled(
-                    ctx.scene,
-                    ctx.theme,
-                    ctx.text_renderer,
-                    ctx.transform,
-                    user,
-                    &name,
-                    line.caret_rect(ctx.theme, *byte_pos),
-                );
-            }
-        }
-        if let Some(list) = ctx.presence.selections.get(&key) {
-            for (user, range) in list {
-                ctx.presence.draw_peer_selection(
-                    ctx.scene,
-                    ctx.theme,
-                    ctx.transform,
-                    user,
-                    line.selection_rect(ctx.theme, range.start, range.end),
-                );
-            }
-        }
-        // Cross-block selection presence is sent once under a document
-        // key, then expanded into the same per-line geometry locally.
-        for (document_key, list) in &ctx.presence.selections {
-            let Some((start_block, end_block)) = document_selection_blocks(document_key) else {
-                continue;
-            };
-            if i < start_block || i > end_block {
-                continue;
-            }
-            for (user, range) in list {
-                let start = if i == start_block { range.start } else { 0 };
-                let end = if i == end_block {
-                    range.end
-                } else {
-                    line.value().len()
-                };
-                ctx.presence.draw_peer_selection(
-                    ctx.scene,
-                    ctx.theme,
-                    ctx.transform,
-                    user,
-                    line.selection_rect(ctx.theme, start, end),
-                );
-            }
-        }
-    }
-}
-
-impl Widget for BlockEditor {
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -3366,6 +3264,276 @@ impl Widget for BlockEditor {
         self.focus_block_under_mouse(event, &mut ctx);
 
         self.route_event_to_focused_block(event, &mut ctx);
+    }
+
+    fn name(&self) -> &'static str {
+        "BlockEditor"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("block_editor")
+    }
+
+    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        use crate::collaboration::PresencePayload;
+        let idx = self.focused?;
+        let block = self.blocks.get(idx)?;
+        if !block.line.is_focused() {
+            return None;
+        }
+        if let Some(selection) = self.document_selection {
+            let (start, end) = selection.ordered();
+            return Some((
+                document_selection_presence_key(start.block, end.block),
+                PresencePayload::Selection {
+                    start: start.byte,
+                    end: end.byte,
+                },
+            ));
+        }
+        let key = block_presence_key(idx);
+        // A selection takes priority over the bare caret.
+        if let Some((start, end)) = block.line.selection_range() {
+            return Some((key, PresencePayload::Selection { start, end }));
+        }
+        Some((
+            key,
+            PresencePayload::Caret {
+                pos: block.line.cursor_pos(),
+            },
+        ))
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.formula_chrome.iter().flatten().any(|chrome| {
+            chrome.source_button.contains(point) || chrome.visual_button.contains(point)
+        }) {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
+        if self.rect.contains(point) {
+            Some(winit::window::CursorIcon::Text)
+        } else {
+            None
+        }
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        Self::set_focus(self, focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if self.link_popover.is_visible() {
+            return Widget::ime_cursor_rect(&self.link_popover);
+        }
+        if self.slash_menu.is_visible() {
+            return Widget::ime_cursor_rect(&self.slash_menu);
+        }
+        let block = self.blocks.get(self.focused?)?;
+        Widget::ime_cursor_rect(&block.line)
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
+    /// Block contents are not surfaced as a `value` — a screen reader
+    /// walks the per-block subtree instead.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let formulas = self
+            .formula_chrome
+            .iter()
+            .enumerate()
+            .filter_map(|(start, chrome)| {
+                let chrome = chrome.as_ref()?;
+                let syntax = match chrome.descriptor.syntax {
+                    crate::math::FormulaSyntax::Tex => "TeX",
+                    crate::math::FormulaSyntax::Typst => "Typst",
+                };
+                let source = self.blocks[start..=chrome.end]
+                    .iter()
+                    .map(Block::text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(
+                    AccessNode::new(Role::Group)
+                        .with_name(format!("{syntax} formula"))
+                        .with_value(source)
+                        .with_children(vec![
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Source editor")
+                                .with_state(AccessState {
+                                    checked: Some(
+                                        chrome.descriptor.mode == crate::math::FormulaMode::Source,
+                                    ),
+                                    ..Default::default()
+                                }),
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Visual editor")
+                                .with_state(AccessState {
+                                    checked: Some(
+                                        chrome.descriptor.mode == crate::math::FormulaMode::Visual,
+                                    ),
+                                    ..Default::default()
+                                }),
+                        ]),
+                )
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Document)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    multiline: true,
+                    ..Default::default()
+                })
+                .with_children(formulas),
+        )
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+            || self.visual_formula_focus.is_some()
+            || self.blocks.iter().any(|b| b.line.is_focused())
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.commit_pending
+            || self
+                .blocks
+                .iter()
+                .any(|block| Widget::needs_commit(block.line.inner()))
+    }
+
+    fn on_commit(&mut self) {
+        self.commit_pending = false;
+        for block in &mut self.blocks {
+            Widget::on_commit(block.line.inner_mut());
+        }
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let was = self.structure_dirty;
+        self.structure_dirty = false;
+        was
+    }
+}
+
+impl BlockEditor {
+    /// Peer authorship marker, live-typing glow, carets and selection
+    /// bands for one block — collaboration overlays drawn after every
+    /// block's own content so they land on top.
+    fn draw_block_presence(&self, i: usize, b: &Block, ctx: &mut BlockDrawCtx<'_>) {
+        let key = block_presence_key(i);
+        let line = &b.line;
+        let brect = line.get_rect();
+        let _tr_rect = {
+            let p0 = transformed(ctx.transform, Point::new(brect.x0, brect.y0));
+            let p1 = transformed(ctx.transform, Point::new(brect.x1, brect.y1));
+            Rect::new(p0.x, p0.y, p1.x, p1.y)
+        };
+        // Drawn first, under caret/selection: the runs each foreign
+        // author wrote, marker-style in their color.
+        for (bs, be, author) in line.author_runs() {
+            if self.local_author.as_deref() == Some(author.as_str()) {
+                continue;
+            }
+            let x0 = line.pixel_x_for_byte(ctx.theme, *bs);
+            let x1 = line.pixel_x_for_byte(ctx.theme, *be);
+            let p0 = transformed(ctx.transform, Point::new(x0, brect.y0));
+            let p1 = transformed(ctx.transform, Point::new(x1, brect.y1));
+            let user = crate::permissions::UserId(author.clone());
+            ctx.presence.draw_peer_authorship(
+                ctx.scene,
+                ctx.theme,
+                &user,
+                &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
+            );
+        }
+        // A peer's recently-inserted run glows and decays over
+        // TYPING_FADE. Drawn over authorship, under caret/selection.
+        let now = std::time::Instant::now();
+        for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
+            if self.local_author.as_deref() == Some(user.0.as_str()) {
+                continue;
+            }
+            let rect = line.selection_rect(ctx.theme, range.start, range.end);
+            let p0 = transformed(ctx.transform, Point::new(rect.x0, rect.y0));
+            let p1 = transformed(ctx.transform, Point::new(rect.x1, rect.y1));
+            ctx.presence.draw_peer_typing(
+                ctx.scene,
+                ctx.theme,
+                &user,
+                &[(Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
+            );
+        }
+        if let Some(list) = ctx.presence.carets.get(&key) {
+            for (user, byte_pos) in list {
+                let name = ctx.presence.display_name(user);
+                ctx.presence.draw_peer_caret_labeled(
+                    ctx.scene,
+                    ctx.theme,
+                    ctx.text_renderer,
+                    ctx.transform,
+                    user,
+                    &name,
+                    line.caret_rect(ctx.theme, *byte_pos),
+                );
+            }
+        }
+        if let Some(list) = ctx.presence.selections.get(&key) {
+            for (user, range) in list {
+                ctx.presence.draw_peer_selection(
+                    ctx.scene,
+                    ctx.theme,
+                    ctx.transform,
+                    user,
+                    line.selection_rect(ctx.theme, range.start, range.end),
+                );
+            }
+        }
+        // Cross-block selection presence is sent once under a document
+        // key, then expanded into the same per-line geometry locally.
+        for (document_key, list) in &ctx.presence.selections {
+            let Some((start_block, end_block)) = document_selection_blocks(document_key) else {
+                continue;
+            };
+            if i < start_block || i > end_block {
+                continue;
+            }
+            for (user, range) in list {
+                let start = if i == start_block { range.start } else { 0 };
+                let end = if i == end_block {
+                    range.end
+                } else {
+                    line.value().len()
+                };
+                ctx.presence.draw_peer_selection(
+                    ctx.scene,
+                    ctx.theme,
+                    ctx.transform,
+                    user,
+                    line.selection_rect(ctx.theme, start, end),
+                );
+            }
+        }
     }
 }
 
@@ -3800,177 +3968,6 @@ impl BlockEditor {
                 }
             }
         }
-    }
-}
-
-impl Widget for BlockEditor {
-    fn name(&self) -> &'static str {
-        "BlockEditor"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("block_editor")
-    }
-
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        use crate::collaboration::PresencePayload;
-        let idx = self.focused?;
-        let block = self.blocks.get(idx)?;
-        if !block.line.is_focused() {
-            return None;
-        }
-        if let Some(selection) = self.document_selection {
-            let (start, end) = selection.ordered();
-            return Some((
-                document_selection_presence_key(start.block, end.block),
-                PresencePayload::Selection {
-                    start: start.byte,
-                    end: end.byte,
-                },
-            ));
-        }
-        let key = block_presence_key(idx);
-        // A selection takes priority over the bare caret.
-        if let Some((start, end)) = block.line.selection_range() {
-            return Some((key, PresencePayload::Selection { start, end }));
-        }
-        Some((
-            key,
-            PresencePayload::Caret {
-                pos: block.line.cursor_pos(),
-            },
-        ))
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.formula_chrome.iter().flatten().any(|chrome| {
-            chrome.source_button.contains(point) || chrome.visual_button.contains(point)
-        }) {
-            return Some(winit::window::CursorIcon::Pointer);
-        }
-        if self.rect.contains(point) {
-            Some(winit::window::CursorIcon::Text)
-        } else {
-            None
-        }
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        Self::set_focus(self, focused);
-    }
-
-    fn is_focused(&self) -> bool {
-        self.is_focused
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        if self.link_popover.is_visible() {
-            return Widget::ime_cursor_rect(&self.link_popover);
-        }
-        if self.slash_menu.is_visible() {
-            return Widget::ime_cursor_rect(&self.slash_menu);
-        }
-        let block = self.blocks.get(self.focused?)?;
-        Widget::ime_cursor_rect(&block.line)
-    }
-
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Normal)
-    }
-
-    /// Block contents are not surfaced as a `value` — a screen reader
-    /// walks the per-block subtree instead.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let formulas = self
-            .formula_chrome
-            .iter()
-            .enumerate()
-            .filter_map(|(start, chrome)| {
-                let chrome = chrome.as_ref()?;
-                let syntax = match chrome.descriptor.syntax {
-                    crate::math::FormulaSyntax::Tex => "TeX",
-                    crate::math::FormulaSyntax::Typst => "Typst",
-                };
-                let source = self.blocks[start..=chrome.end]
-                    .iter()
-                    .map(Block::text)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Some(
-                    AccessNode::new(Role::Group)
-                        .with_name(format!("{syntax} formula"))
-                        .with_value(source)
-                        .with_children(vec![
-                            AccessNode::new(Role::ToggleButton)
-                                .with_name("Source editor")
-                                .with_state(AccessState {
-                                    checked: Some(
-                                        chrome.descriptor.mode == crate::math::FormulaMode::Source,
-                                    ),
-                                    ..Default::default()
-                                }),
-                            AccessNode::new(Role::ToggleButton)
-                                .with_name("Visual editor")
-                                .with_state(AccessState {
-                                    checked: Some(
-                                        chrome.descriptor.mode == crate::math::FormulaMode::Visual,
-                                    ),
-                                    ..Default::default()
-                                }),
-                        ]),
-                )
-            })
-            .collect();
-        Some(
-            AccessNode::new(Role::Document)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    multiline: true,
-                    ..Default::default()
-                })
-                .with_children(formulas),
-        )
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-            || self.visual_formula_focus.is_some()
-            || self.blocks.iter().any(|b| b.line.is_focused())
-    }
-
-    fn needs_commit(&self) -> bool {
-        self.commit_pending
-            || self
-                .blocks
-                .iter()
-                .any(|block| Widget::needs_commit(block.line.inner()))
-    }
-
-    fn on_commit(&mut self) {
-        self.commit_pending = false;
-        for block in &mut self.blocks {
-            Widget::on_commit(block.line.inner_mut());
-        }
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let was = self.structure_dirty;
-        self.structure_dirty = false;
-        was
     }
 }
 

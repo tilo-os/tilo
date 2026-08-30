@@ -1802,79 +1802,6 @@ impl Widget for TabBar {
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    /// Visual-slot ordering (pinned first) plus each slot's fitted width and
-    /// in-flight reveal growth — the inputs `apply_layout`'s placement loop turns
-    /// into rects. Split out so `apply_layout` itself stays inside the
-    /// `too_many_lines` budget.
-    fn compute_pill_layout(&mut self) -> (Vec<usize>, Vec<f64>, Vec<f64>) {
-        // The only place the reveal curve advances, so rects and paint stay in step.
-        let live: HashSet<u64> = self.tabs.iter().map(|t| t.id).collect();
-        self.reveal_anim.retain(|id, _| live.contains(id));
-        // Owned copy of the ids, not a borrow of `self.tabs`, so the loop below can
-        // still call the `&mut self` `advance_reveal`.
-        let tab_ids: Vec<u64> = self.tabs.iter().map(|t| t.id).collect();
-        let mut animated: Vec<f64> = Vec::with_capacity(tab_ids.len());
-        for (i, &id) in tab_ids.iter().enumerate() {
-            let target = self.target_reveal(i);
-            animated.push(self.advance_reveal(id, target));
-        }
-        // Visual-slot → data-index: pinned first, then unpinned. `self.tabs`
-        // stays untouched so caches keyed by data index still apply.
-        let mut visual_order: Vec<usize> = Vec::with_capacity(self.tabs.len());
-        for (i, t) in self.tabs.iter().enumerate() {
-            if self.pinned_ids.contains(&t.id) {
-                visual_order.push(i);
-            }
-        }
-        for (i, t) in self.tabs.iter().enumerate() {
-            if !self.pinned_ids.contains(&t.id) {
-                visual_order.push(i);
-            }
-        }
-        let pinned_flags: Vec<bool> = visual_order
-            .iter()
-            .map(|&i| {
-                self.tabs
-                    .get(i)
-                    .is_some_and(|t| self.pinned_ids.contains(&t.id))
-            })
-            .collect();
-        // Fit at resting widths (pointer elsewhere) — see [`Reveal`] for why.
-        let resting: Vec<f64> = visual_order
-            .iter()
-            .map(|&i| self.natural_pill_width(i, self.resting_reveal(i).reserve()))
-            .collect();
-        let headroom = if pinned_flags.iter().any(|p| !p) {
-            HOVER_GROWTH_PX
-        } else {
-            0.0
-        };
-        let laid_out = self.rect.width() > 0.0;
-        let fit_avail = if laid_out {
-            (self.rect.width() - headroom - NEW_TAB_CHIP_PX - PILL_GAP).max(1.0)
-        } else {
-            self.rect.width()
-        };
-        let base = fit_pill_widths(&resting, &pinned_flags, fit_avail);
-        // Growth beyond resting, scaled down together if two pills are briefly
-        // part-open mid-handover so the total can't outrun the one-pill headroom.
-        let mut grow: Vec<f64> = visual_order
-            .iter()
-            .map(|&i| {
-                let a = animated.get(i).copied().unwrap_or(0.0);
-                (a - self.resting_reveal(i).reserve()).max(0.0)
-            })
-            .collect();
-        let total_grow: f64 = grow.iter().sum();
-        if total_grow > headroom && total_grow > 0.0 {
-            let k = headroom / total_grow;
-            for g in &mut grow {
-                *g *= k;
-            }
-        }
-        let widths: Vec<f64> = base.iter().zip(grow.iter()).map(|(b, g)| b + g).collect();
-        (visual_order, widths, grow)
-    }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
@@ -2011,6 +1938,245 @@ impl Widget for TabBar {
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform);
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _m: &winit::event::Modifiers,
+        _s: &mut AutoCommit,
+        _p: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.on_cursor_moved(*position, scale_factor, handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                // Works without first hovering to reveal the × — hosts actions
+                // with no keyboard chord.
+                let p = self.last_cursor;
+                if let Some(idx) = self
+                    .tab_rects
+                    .iter()
+                    .position(|r| r.area() > 0.0 && r.contains(p))
+                    && let Some(t) = self.tabs.get(idx)
+                {
+                    self.pending_context_menu = Some((t.id, p));
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.on_left_press(handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.finish_drag_release(handled);
+            }
+            _ => {}
+        }
+    }
+    fn name(&self) -> &'static str {
+        "TabBar"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("tabs")
+    }
+
+    /// So a scenario clicks the rect the renderer actually painted, not a
+    /// guessed coordinate. The zero-area case (chip suppressed) is filtered
+    /// out by the registry.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        let mut out = vec![("tabbar_new_tab".to_string(), self.new_tab_rect)];
+        // By title, so a scenario can select "Files" by name instead of a
+        // coordinate that moves with every layout change.
+        for (tab, rect) in self.tabs.iter().zip(self.tab_rects.iter()) {
+            out.push((format!("tab:{}", tab.title), *rect));
+        }
+        out
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // Maps to an AT tablist: the *active* tab's title as `value`, each tab as
+        // a synthetic `Tab` child (`TabDescriptor` data, not Widget children).
+        // Titles are runtime strings, not FTL keys, so no `i18n!` wrap.
+        let active_idx = self.tabs.iter().position(|t| t.id == self.active_id);
+        let value = active_idx
+            .and_then(|i| self.tabs.get(i))
+            .map(|t| t.title.clone());
+        let mut node = AccessNode::new(Role::TabBar)
+            .with_optional_value(value)
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.is_enabled(),
+                ..Default::default()
+            });
+        // Surface the active tab's ordinal so the reader can say "2 of 4". Tab
+        // counts never approach `usize::MAX`, so `saturating_add` never actually
+        // saturates — it just keeps the ordinal math panic-free.
+        if let Some(i) = active_idx {
+            node = node.with_position(i.saturating_add(1), self.tabs.len());
+        }
+        let count = self.tabs.len();
+        let tab_children: Vec<AccessNode> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let node = AccessNode::new(Role::Tab)
+                    .with_name(t.title.clone())
+                    .with_state(AccessState {
+                        selected: t.id == self.active_id,
+                        ..Default::default()
+                    })
+                    .with_position(i.saturating_add(1), count);
+                // The unsaved-changes dot is colour-and-shape only, so a reader
+                // that can't see it gets it as a description instead.
+                // `AccessState` has no flag for this and inventing one would
+                // ripple through every widget.
+                if self.modified_ids.contains(&t.id) {
+                    node.with_description(crate::i18n!("tab-modified"))
+                } else {
+                    node
+                }
+            })
+            .collect();
+        node = node.with_children(tab_children);
+        Some(node)
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn wants_pointer_capture(&self) -> bool {
+        self.press_origin.is_some() || self.pending_drag.is_some()
+    }
+    fn accepts_drop(&self, payload: &DragPayload) -> bool {
+        matches!(payload, DragPayload::Tab { .. })
+    }
+    fn needs_animation_frame(&self) -> bool {
+        // Keep pumping redraws while any curve is in flight: drop-zone expand,
+        // layout spring, insert fade, close fade, drop-line fade-in, or reveal.
+        let drop_zone = self
+            .drop_zone_animated_at
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(DROP_ZONE_ANIM_MS));
+        let layout = self
+            .layout_anim_started
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(LAYOUT_ANIM_MS));
+        let insert_fade = self
+            .inserted_at
+            .values()
+            .any(|t| t.elapsed() < Duration::from_millis(INSERT_FADE_MS));
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "CLOSE_FADE_MS is a small fixed positive animation constant"
+        )]
+        let close_fade_ms = CLOSE_FADE_MS as u128;
+        let close_fade = self
+            .closing_tabs
+            .iter()
+            .any(|c| c.started_at.elapsed().as_millis() < close_fade_ms);
+        let hover_drop_fade = self
+            .hover_drop_animated_at
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(HOVER_DROP_FADE_MS));
+        // Keeps the curve running once the pointer stops moving, until an
+        // opening pill finishes.
+        let reveal = self.reveal_in_flight();
+        drop_zone || layout || insert_fade || close_fade || hover_drop_fade || reveal
+    }
+}
+
+impl TabBar {
+    /// Visual-slot ordering (pinned first) plus each slot's fitted width and
+    /// in-flight reveal growth — the inputs `apply_layout`'s placement loop turns
+    /// into rects. Split out so `apply_layout` itself stays inside the
+    /// `too_many_lines` budget.
+    fn compute_pill_layout(&mut self) -> (Vec<usize>, Vec<f64>, Vec<f64>) {
+        // The only place the reveal curve advances, so rects and paint stay in step.
+        let live: HashSet<u64> = self.tabs.iter().map(|t| t.id).collect();
+        self.reveal_anim.retain(|id, _| live.contains(id));
+        // Owned copy of the ids, not a borrow of `self.tabs`, so the loop below can
+        // still call the `&mut self` `advance_reveal`.
+        let tab_ids: Vec<u64> = self.tabs.iter().map(|t| t.id).collect();
+        let mut animated: Vec<f64> = Vec::with_capacity(tab_ids.len());
+        for (i, &id) in tab_ids.iter().enumerate() {
+            let target = self.target_reveal(i);
+            animated.push(self.advance_reveal(id, target));
+        }
+        // Visual-slot → data-index: pinned first, then unpinned. `self.tabs`
+        // stays untouched so caches keyed by data index still apply.
+        let mut visual_order: Vec<usize> = Vec::with_capacity(self.tabs.len());
+        for (i, t) in self.tabs.iter().enumerate() {
+            if self.pinned_ids.contains(&t.id) {
+                visual_order.push(i);
+            }
+        }
+        for (i, t) in self.tabs.iter().enumerate() {
+            if !self.pinned_ids.contains(&t.id) {
+                visual_order.push(i);
+            }
+        }
+        let pinned_flags: Vec<bool> = visual_order
+            .iter()
+            .map(|&i| {
+                self.tabs
+                    .get(i)
+                    .is_some_and(|t| self.pinned_ids.contains(&t.id))
+            })
+            .collect();
+        // Fit at resting widths (pointer elsewhere) — see [`Reveal`] for why.
+        let resting: Vec<f64> = visual_order
+            .iter()
+            .map(|&i| self.natural_pill_width(i, self.resting_reveal(i).reserve()))
+            .collect();
+        let headroom = if pinned_flags.iter().any(|p| !p) {
+            HOVER_GROWTH_PX
+        } else {
+            0.0
+        };
+        let laid_out = self.rect.width() > 0.0;
+        let fit_avail = if laid_out {
+            (self.rect.width() - headroom - NEW_TAB_CHIP_PX - PILL_GAP).max(1.0)
+        } else {
+            self.rect.width()
+        };
+        let base = fit_pill_widths(&resting, &pinned_flags, fit_avail);
+        // Growth beyond resting, scaled down together if two pills are briefly
+        // part-open mid-handover so the total can't outrun the one-pill headroom.
+        let mut grow: Vec<f64> = visual_order
+            .iter()
+            .map(|&i| {
+                let a = animated.get(i).copied().unwrap_or(0.0);
+                (a - self.resting_reveal(i).reserve()).max(0.0)
+            })
+            .collect();
+        let total_grow: f64 = grow.iter().sum();
+        if total_grow > headroom && total_grow > 0.0 {
+            let k = headroom / total_grow;
+            for g in &mut grow {
+                *g *= k;
+            }
+        }
+        let widths: Vec<f64> = base.iter().zip(grow.iter()).map(|(b, g)| b + g).collect();
+        (visual_order, widths, grow)
     }
 
     /// One row of tab pills, each springing from its previous layout rect and
@@ -2329,6 +2495,7 @@ impl Widget for TabBar {
         );
         scene.pop_layer();
     }
+
     /// `CursorMoved` handling: hover state, drag-start detection and the
     /// in-flight drop-zone target. Split out of `handle_event` to keep that
     /// dispatcher inside the `too_many_lines` budget.
@@ -2487,169 +2654,6 @@ impl Widget for TabBar {
             }
             *handled = true;
         }
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.on_cursor_moved(*position, scale_factor, handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } => {
-                // Works without first hovering to reveal the × — hosts actions
-                // with no keyboard chord.
-                let p = self.last_cursor;
-                if let Some(idx) = self
-                    .tab_rects
-                    .iter()
-                    .position(|r| r.area() > 0.0 && r.contains(p))
-                    && let Some(t) = self.tabs.get(idx)
-                {
-                    self.pending_context_menu = Some((t.id, p));
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.on_left_press(handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.finish_drag_release(handled);
-            }
-            _ => {}
-        }
-    }
-    fn name(&self) -> &'static str {
-        "TabBar"
-    }
-    fn test_id(&self) -> Option<&str> {
-        Some("tabs")
-    }
-
-    /// So a scenario clicks the rect the renderer actually painted, not a
-    /// guessed coordinate. The zero-area case (chip suppressed) is filtered
-    /// out by the registry.
-    fn test_rects(&self) -> Vec<(String, Rect)> {
-        let mut out = vec![("tabbar_new_tab".to_string(), self.new_tab_rect)];
-        // By title, so a scenario can select "Files" by name instead of a
-        // coordinate that moves with every layout change.
-        for (tab, rect) in self.tabs.iter().zip(self.tab_rects.iter()) {
-            out.push((format!("tab:{}", tab.title), *rect));
-        }
-        out
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        // Maps to an AT tablist: the *active* tab's title as `value`, each tab as
-        // a synthetic `Tab` child (`TabDescriptor` data, not Widget children).
-        // Titles are runtime strings, not FTL keys, so no `i18n!` wrap.
-        let active_idx = self.tabs.iter().position(|t| t.id == self.active_id);
-        let value = active_idx
-            .and_then(|i| self.tabs.get(i))
-            .map(|t| t.title.clone());
-        let mut node = AccessNode::new(Role::TabBar)
-            .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                ..Default::default()
-            });
-        // Surface the active tab's ordinal so the reader can say "2 of 4". Tab
-        // counts never approach `usize::MAX`, so `saturating_add` never actually
-        // saturates — it just keeps the ordinal math panic-free.
-        if let Some(i) = active_idx {
-            node = node.with_position(i.saturating_add(1), self.tabs.len());
-        }
-        let count = self.tabs.len();
-        let tab_children: Vec<AccessNode> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let node = AccessNode::new(Role::Tab)
-                    .with_name(t.title.clone())
-                    .with_state(AccessState {
-                        selected: t.id == self.active_id,
-                        ..Default::default()
-                    })
-                    .with_position(i.saturating_add(1), count);
-                // The unsaved-changes dot is colour-and-shape only, so a reader
-                // that can't see it gets it as a description instead.
-                // `AccessState` has no flag for this and inventing one would
-                // ripple through every widget.
-                if self.modified_ids.contains(&t.id) {
-                    node.with_description(crate::i18n!("tab-modified"))
-                } else {
-                    node
-                }
-            })
-            .collect();
-        node = node.with_children(tab_children);
-        Some(node)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-    fn wants_pointer_capture(&self) -> bool {
-        self.press_origin.is_some() || self.pending_drag.is_some()
-    }
-    fn accepts_drop(&self, payload: &DragPayload) -> bool {
-        matches!(payload, DragPayload::Tab { .. })
-    }
-    fn needs_animation_frame(&self) -> bool {
-        // Keep pumping redraws while any curve is in flight: drop-zone expand,
-        // layout spring, insert fade, close fade, drop-line fade-in, or reveal.
-        let drop_zone = self
-            .drop_zone_animated_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(DROP_ZONE_ANIM_MS));
-        let layout = self
-            .layout_anim_started
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(LAYOUT_ANIM_MS));
-        let insert_fade = self
-            .inserted_at
-            .values()
-            .any(|t| t.elapsed() < Duration::from_millis(INSERT_FADE_MS));
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "CLOSE_FADE_MS is a small fixed positive animation constant"
-        )]
-        let close_fade_ms = CLOSE_FADE_MS as u128;
-        let close_fade = self
-            .closing_tabs
-            .iter()
-            .any(|c| c.started_at.elapsed().as_millis() < close_fade_ms);
-        let hover_drop_fade = self
-            .hover_drop_animated_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(HOVER_DROP_FADE_MS));
-        // Keeps the curve running once the pointer stops moving, until an
-        // opening pill finishes.
-        let reveal = self.reveal_in_flight();
-        drop_zone || layout || insert_fade || close_fade || hover_drop_fade || reveal
     }
 }
 
