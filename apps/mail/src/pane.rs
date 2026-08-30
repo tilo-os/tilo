@@ -34,7 +34,7 @@ use crate::draw::{
     HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect, fill_round, stroke_round,
 };
 use crate::model::{Addr, Folder, Message, MessageId};
-use crate::state::{CtxAction, Intent, Shared};
+use crate::state::{CtxAction, Intent, MailState, Shared};
 use crate::util::{format_absolute, format_relative};
 
 /// Distance (px) a horizontal drag must pass to fire a swipe action.
@@ -114,6 +114,28 @@ enum Hit {
 struct SwipeState {
     id: MessageId,
     dx: f64,
+}
+
+/// Where and for which message to draw [`Pane::draw_card_header`]: the
+/// message and its card's top-left origin + width.
+struct CardHeaderArgs<'a> {
+    msg: &'a Message,
+    x: f64,
+    y: f64,
+    width: f32,
+}
+
+/// Everything [`Pane::draw_list_row`] needs about one row that
+/// [`Pane::draw_list`] has already resolved: the message, its slot rect, its
+/// thread size, and its selection/hover/swipe state.
+struct ListRowArgs<'a> {
+    msg: &'a Message,
+    rect: Rect,
+    len: usize,
+    selected: bool,
+    hov: bool,
+    swipe_dx: f64,
+    now_min: i64,
 }
 
 pub struct Pane {
@@ -235,123 +257,140 @@ impl Pane {
 
     fn rebuild_hits(&mut self) {
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
-        let r = self.rect;
-        let role = self.role;
         let mut search_rect: Option<Rect> = None;
         {
             let st = self.shared.borrow();
-            match role {
-                Role::Sidebar => {
-                    let sb = r;
-                    // Compose button under the shell's collapse chip (no
-                    // app-name header band to clear anymore), so it aligns with
-                    // the list column's first row.
-                    let pad = 12.0;
-                    let mut y = sb.y0 + CHIP_INSET + CHIP_SIZE + 8.0;
-                    hits.push((
-                        Rect::new(sb.x0 + pad, y, sb.x1 - pad, y + 40.0),
-                        Hit::Compose,
-                    ));
-                    y += 40.0 + 14.0;
-                    for (ai, account) in st.accounts.accounts.iter().enumerate() {
-                        let header = Rect::new(sb.x0 + 8.0, y, sb.x1 - 8.0, y + ACCOUNT_HEADER_H);
-                        hits.push((header, Hit::Account(ai)));
-                        let chev = Rect::new(header.x0, header.y0, header.x0 + 28.0, header.y1);
-                        hits.push((chev, Hit::AccountToggle(ai)));
-                        // Per-account settings gear on the right of the row. Pushed
-                        // after the row so it wins the hit test in its sub-rect;
-                        // it edits THIS account, not the active one.
-                        let gear = account_gear_rect(header);
-                        hits.push((gear, Hit::AccountSettings(ai)));
-                        y += ACCOUNT_HEADER_H;
-                        if !account.collapsed {
-                            // A gap after the account card so its highlight
-                            // never abuts the first folder row's highlight.
-                            y += 6.0;
-                            for f in AccountStore::folders_for(account) {
-                                let row =
-                                    Rect::new(sb.x0 + 14.0, y, sb.x1 - 10.0, y + FOLDER_ROW_H);
-                                hits.push((row, Hit::Folder(ai, f)));
-                                y += FOLDER_ROW_H;
-                            }
-                        }
-                        y += 16.0;
-                    }
-                    // A clear, separate "Add account" action at the foot of the
-                    // list — adding is its own thing, distinct from per-account
-                    // settings.
-                    hits.push((
-                        Rect::new(sb.x0 + 8.0, y, sb.x1 - 8.0, y + ADD_ACCOUNT_ROW_H),
-                        Hit::AddAccount,
-                    ));
-                }
-                Role::List => {
-                    hits.push((self.refresh_box_rect(), Hit::Refresh));
-                    let sr = self.search_box_rect();
-                    search_rect = Some(Rect::new(sr.x0 + 30.0, sr.y0, sr.x1 - 26.0, sr.y1));
-                    hits.push((sr, Hit::SearchFocus));
-                    if !st.search.is_empty() {
-                        hits.push((
-                            Rect::new(sr.x1 - 26.0, sr.y0, sr.x1, sr.y1),
-                            Hit::SearchClear,
-                        ));
-                    }
-                    let top = r.y0 + HEADER_H;
-                    let mut ly = top;
-                    for (id, _len) in st.list_rows() {
-                        if ly >= r.y1 {
-                            break;
-                        }
-                        let row = Rect::new(r.x0, ly, r.x1, ly + LIST_ROW_H);
-                        let star =
-                            Rect::new(row.x1 - 36.0, row.y0 + 8.0, row.x1 - 12.0, row.y0 + 32.0);
-                        hits.push((star, Hit::RowStar(id)));
-                        hits.push((row, Hit::Row(id)));
-                        ly += LIST_ROW_H;
-                    }
-                }
-                Role::Reader => {
-                    if st.selected.is_some() {
-                        let inset = if st.narrow && st.detail_pushed {
-                            BACK_CLEARANCE
-                        } else {
-                            20.0
-                        };
-                        let mut bx = r.x0 + inset;
-                        let by = r.y0 + 12.0;
-                        // Compact icon-only buttons when the reader column is
-                        // tight (narrow layout, or a slim detail pane) so five
-                        // actions always fit; labelled when there's room.
-                        let compact = st.narrow || r.width() < READER_COMPACT_W;
-                        let specs: [(f64, Hit); 5] = if compact {
-                            [
-                                (38.0, Hit::Reply),
-                                (38.0, Hit::Archive),
-                                (38.0, Hit::Delete),
-                                (38.0, Hit::Star),
-                                (38.0, Hit::Unread),
-                            ]
-                        } else {
-                            [
-                                (78.0, Hit::Reply),
-                                (88.0, Hit::Archive),
-                                (78.0, Hit::Delete),
-                                (64.0, Hit::Star),
-                                (104.0, Hit::Unread),
-                            ]
-                        };
-                        for (w, hit) in specs {
-                            let b = Rect::new(bx, by, bx + w, by + 32.0);
-                            hits.push((b, hit));
-                            bx += w + 8.0;
-                        }
-                    }
-                }
+            match self.role {
+                Role::Sidebar => self.rebuild_sidebar_hits(&st, &mut hits),
+                Role::List => self.rebuild_list_hits(&st, &mut hits, &mut search_rect),
+                Role::Reader => self.rebuild_reader_hits(&st, &mut hits),
             }
         }
         self.hits = hits;
         if let (Some(sr), Some(inp)) = (search_rect, self.search_input.as_mut()) {
             inp.apply_layout_external(sr);
+        }
+    }
+
+    /// The sidebar's hit regions: compose, each account's header/chevron/
+    /// settings-gear, its folders when expanded, and the add-account row.
+    /// Part of [`Self::rebuild_hits`].
+    fn rebuild_sidebar_hits(&self, st: &MailState, hits: &mut Vec<(Rect, Hit)>) {
+        let sb = self.rect;
+        // Compose button under the shell's collapse chip (no app-name header
+        // band to clear anymore), so it aligns with the list column's first
+        // row.
+        let pad = 12.0;
+        let mut y = sb.y0 + CHIP_INSET + CHIP_SIZE + 8.0;
+        hits.push((
+            Rect::new(sb.x0 + pad, y, sb.x1 - pad, y + 40.0),
+            Hit::Compose,
+        ));
+        y += 40.0 + 14.0;
+        for (ai, account) in st.accounts.accounts.iter().enumerate() {
+            let header = Rect::new(sb.x0 + 8.0, y, sb.x1 - 8.0, y + ACCOUNT_HEADER_H);
+            hits.push((header, Hit::Account(ai)));
+            let chev = Rect::new(header.x0, header.y0, header.x0 + 28.0, header.y1);
+            hits.push((chev, Hit::AccountToggle(ai)));
+            // Per-account settings gear on the right of the row. Pushed after
+            // the row so it wins the hit test in its sub-rect; it edits THIS
+            // account, not the active one.
+            let gear = account_gear_rect(header);
+            hits.push((gear, Hit::AccountSettings(ai)));
+            y += ACCOUNT_HEADER_H;
+            if !account.collapsed {
+                // A gap after the account card so its highlight never abuts
+                // the first folder row's highlight.
+                y += 6.0;
+                for f in AccountStore::folders_for(account) {
+                    let row = Rect::new(sb.x0 + 14.0, y, sb.x1 - 10.0, y + FOLDER_ROW_H);
+                    hits.push((row, Hit::Folder(ai, f)));
+                    y += FOLDER_ROW_H;
+                }
+            }
+            y += 16.0;
+        }
+        // A clear, separate "Add account" action at the foot of the list —
+        // adding is its own thing, distinct from per-account settings.
+        hits.push((
+            Rect::new(sb.x0 + 8.0, y, sb.x1 - 8.0, y + ADD_ACCOUNT_ROW_H),
+            Hit::AddAccount,
+        ));
+    }
+
+    /// The list pane's hit regions: refresh, the search box (+ its clear
+    /// button and focus-target sub-rect), and each visible row + its star.
+    /// Part of [`Self::rebuild_hits`].
+    fn rebuild_list_hits(
+        &self,
+        st: &MailState,
+        hits: &mut Vec<(Rect, Hit)>,
+        search_rect: &mut Option<Rect>,
+    ) {
+        let r = self.rect;
+        hits.push((self.refresh_box_rect(), Hit::Refresh));
+        let sr = self.search_box_rect();
+        *search_rect = Some(Rect::new(sr.x0 + 30.0, sr.y0, sr.x1 - 26.0, sr.y1));
+        hits.push((sr, Hit::SearchFocus));
+        if !st.search.is_empty() {
+            hits.push((
+                Rect::new(sr.x1 - 26.0, sr.y0, sr.x1, sr.y1),
+                Hit::SearchClear,
+            ));
+        }
+        let mut ly = r.y0 + HEADER_H;
+        for (id, _len) in st.list_rows() {
+            if ly >= r.y1 {
+                break;
+            }
+            let row = Rect::new(r.x0, ly, r.x1, ly + LIST_ROW_H);
+            let star = Rect::new(row.x1 - 36.0, row.y0 + 8.0, row.x1 - 12.0, row.y0 + 32.0);
+            hits.push((star, Hit::RowStar(id)));
+            hits.push((row, Hit::Row(id)));
+            ly += LIST_ROW_H;
+        }
+    }
+
+    /// The reader's action-bar hit regions (Reply/Archive/Delete/Star/Mark
+    /// unread), sized compact (icon-only) or full width depending on
+    /// available room. Part of [`Self::rebuild_hits`].
+    fn rebuild_reader_hits(&self, st: &MailState, hits: &mut Vec<(Rect, Hit)>) {
+        let r = self.rect;
+        if st.selected.is_none() {
+            return;
+        }
+        let inset = if st.narrow && st.detail_pushed {
+            BACK_CLEARANCE
+        } else {
+            20.0
+        };
+        let mut bx = r.x0 + inset;
+        let by = r.y0 + 12.0;
+        // Compact icon-only buttons when the reader column is tight (narrow
+        // layout, or a slim detail pane) so five actions always fit;
+        // labelled when there's room.
+        let compact = st.narrow || r.width() < READER_COMPACT_W;
+        let specs: [(f64, Hit); 5] = if compact {
+            [
+                (38.0, Hit::Reply),
+                (38.0, Hit::Archive),
+                (38.0, Hit::Delete),
+                (38.0, Hit::Star),
+                (38.0, Hit::Unread),
+            ]
+        } else {
+            [
+                (78.0, Hit::Reply),
+                (88.0, Hit::Archive),
+                (78.0, Hit::Delete),
+                (64.0, Hit::Star),
+                (104.0, Hit::Unread),
+            ]
+        };
+        for (w, hit) in specs {
+            let b = Rect::new(bx, by, bx + w, by + 32.0);
+            hits.push((b, hit));
+            bx += w + 8.0;
         }
     }
 
@@ -409,195 +448,253 @@ impl Pane {
         for (rect, hit) in &self.hits {
             match hit {
                 Hit::Account(ai) => {
-                    let Some(account) = st.accounts.accounts.get(*ai) else {
-                        continue;
-                    };
-                    let active = *ai == st.accounts.active;
-                    let hov = rect.contains(st.last_mouse);
-                    if active {
-                        fill_round(scene, t, *rect, 9.0, c.accent[5].with_alpha_factor(0.12));
-                    } else if hov {
-                        fill_round(scene, t, *rect, 9.0, c.surface_white_5);
-                    }
-                    let chev = if account.collapsed {
-                        Icon::ChevronRight
-                    } else {
-                        Icon::ChevronDown
-                    };
-                    chev.draw(
-                        scene,
-                        t,
-                        Rect::new(
-                            rect.x0 + 6.0,
-                            rect.y0 + ACCOUNT_HEADER_H / 2.0 - 8.0,
-                            rect.x0 + 22.0,
-                            rect.y0 + ACCOUNT_HEADER_H / 2.0 + 8.0,
-                        ),
-                        c.text_dim,
-                    );
-                    draw_avatar(
-                        scene,
-                        tr,
-                        t,
-                        theme,
-                        &st.images,
-                        Point::new(rect.x0 + 36.0, rect.y0 + ACCOUNT_HEADER_H / 2.0),
-                        13.0,
-                        &Addr::new(
-                            account.config.display_name.clone(),
-                            account.config.email.clone(),
-                        ),
-                        account.tint,
-                    );
-                    // Reserve room on the right for the per-account gear.
-                    let label = elide(
-                        tr,
-                        account.label(),
-                        13.0,
-                        TextWeight::Semibold,
-                        sb.width() - 108.0,
-                    );
-                    let email = elide(
-                        tr,
-                        &account.config.email,
-                        10.5,
-                        TextWeight::Regular,
-                        sb.width() - 108.0,
-                    );
-                    tr.draw_text_weighted(
-                        scene,
-                        &label,
-                        13.0,
-                        c.text_primary,
-                        t * Affine::translate((rect.x0 + 54.0, rect.y0 + 6.0)),
-                        None,
-                        TextWeight::Semibold,
-                    );
-                    tr.draw_text(
-                        scene,
-                        &email,
-                        10.5,
-                        c.text_dim,
-                        t * Affine::translate((rect.x0 + 54.0, rect.y0 + 24.0)),
-                        None,
-                    );
-                    // Per-account settings gear (right edge). Hover-lit; always
-                    // drawn so it is visible headless / in shots.
-                    let gear = account_gear_rect(*rect);
-                    let ghov = gear.contains(st.last_mouse);
-                    if ghov {
-                        fill_round(scene, t, gear, 8.0, c.surface_white_10);
-                    }
-                    Icon::Settings.draw(
-                        scene,
-                        t,
-                        gear.inset(-7.0),
-                        if ghov { c.text_primary } else { c.text_dim },
-                    );
+                    self.draw_sidebar_account_row(scene, t, tr, theme, &st, *rect, *ai, sb);
                 }
                 Hit::AddAccount => {
-                    let hov = rect.contains(st.last_mouse);
-                    if hov {
-                        fill_round(scene, t, *rect, 9.0, c.surface_white_5);
-                    }
-                    let cy = rect.y0 + ADD_ACCOUNT_ROW_H / 2.0;
-                    let icon = Rect::new(rect.x0 + 12.0, cy - 8.0, rect.x0 + 28.0, cy + 8.0);
-                    let col = if hov { c.accent[4] } else { c.accent[5] };
-                    Icon::Plus.draw(scene, t, icon, col);
-                    tr.draw_text_weighted(
-                        scene,
-                        "Add account",
-                        13.0,
-                        col,
-                        t * Affine::translate((rect.x0 + 38.0, cy - 8.0)),
-                        None,
-                        TextWeight::Semibold,
-                    );
+                    self.draw_sidebar_add_account_row(scene, t, tr, theme, *rect);
                 }
                 Hit::Folder(ai, f) => {
-                    let f = *f;
-                    let active_account = *ai == st.accounts.active;
-                    let selected = active_account && f == st.folder;
-                    let hov = rect.contains(st.last_mouse);
-                    if selected {
-                        fill_round(scene, t, *rect, 8.0, c.accent[5].with_alpha_factor(0.20));
-                        fill_rect(
-                            scene,
-                            t,
-                            Rect::new(rect.x0, rect.y0 + 6.0, rect.x0 + 3.0, rect.y1 - 6.0),
-                            c.accent[5],
-                        );
-                    } else if hov {
-                        fill_round(scene, t, *rect, 8.0, c.surface_white_5);
-                    }
-                    let ty = rect.y0 + (FOLDER_ROW_H - 14.0) / 2.0;
-                    let label_col = if selected {
-                        c.text_primary
-                    } else {
-                        c.neutral[7]
-                    };
-                    let icon_box = Rect::new(
-                        rect.x0 + 12.0,
-                        rect.y0 + FOLDER_ROW_H / 2.0 - 9.0,
-                        rect.x0 + 30.0,
-                        rect.y0 + FOLDER_ROW_H / 2.0 + 9.0,
-                    );
-                    let icon_col = if selected { c.accent[5] } else { c.neutral[6] };
-                    f.icon().draw(scene, t, icon_box, icon_col);
-                    tr.draw_text_weighted(
-                        scene,
-                        f.title(),
-                        13.0,
-                        label_col,
-                        t * Affine::translate((rect.x0 + 40.0, ty)),
-                        Some(120.0),
-                        if selected {
-                            TextWeight::Semibold
-                        } else {
-                            TextWeight::Regular
-                        },
-                    );
-                    if active_account {
-                        let unread = st.mailbox.unread_count(f);
-                        if unread > 0 {
-                            let txt = unread.to_string();
-                            let (twd, _) =
-                                tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
-                            let bw = (f64::from(twd) + 14.0).max(20.0);
-                            let badge = Rect::new(
-                                rect.x1 - bw - 8.0,
-                                rect.y0 + 8.0,
-                                rect.x1 - 8.0,
-                                rect.y0 + 28.0,
-                            );
-                            let bg = if selected { c.accent[5] } else { c.neutral[3] };
-                            fill_round(scene, t, badge, 10.0, bg);
-                            tr.draw_text_weighted(
-                                scene,
-                                &txt,
-                                11.0,
-                                Color::WHITE,
-                                t * Affine::translate((
-                                    f64::midpoint(badge.x0, badge.x1) - f64::from(twd) / 2.0,
-                                    badge.y0 + 4.0,
-                                )),
-                                None,
-                                TextWeight::Semibold,
-                            );
-                        }
-                    }
+                    self.draw_sidebar_folder_row(scene, t, tr, theme, &st, *rect, *ai, *f);
                 }
                 _ => {}
             }
         }
     }
 
-    fn draw_list(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    /// One account header row: expand chevron, avatar, name/email, and the
+    /// per-account settings gear. A no-op if `ai` is out of range. Part of
+    /// [`Self::draw_sidebar`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
+    )]
+    fn draw_sidebar_account_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        st: &MailState,
+        rect: Rect,
+        ai: usize,
+        sb: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let Some(account) = st.accounts.accounts.get(ai) else {
+            return;
+        };
+        let active = ai == st.accounts.active;
+        let hov = rect.contains(st.last_mouse);
+        if active {
+            fill_round(scene, t, rect, 9.0, c.accent[5].with_alpha_factor(0.12));
+        } else if hov {
+            fill_round(scene, t, rect, 9.0, c.surface_white_5);
+        }
+        let chev = if account.collapsed {
+            Icon::ChevronRight
+        } else {
+            Icon::ChevronDown
+        };
+        chev.draw(
+            scene,
+            t,
+            Rect::new(
+                rect.x0 + 6.0,
+                rect.y0 + ACCOUNT_HEADER_H / 2.0 - 8.0,
+                rect.x0 + 22.0,
+                rect.y0 + ACCOUNT_HEADER_H / 2.0 + 8.0,
+            ),
+            c.text_dim,
+        );
+        draw_avatar(
+            scene,
+            tr,
+            t,
+            theme,
+            &st.images,
+            Point::new(rect.x0 + 36.0, rect.y0 + ACCOUNT_HEADER_H / 2.0),
+            13.0,
+            &Addr::new(
+                account.config.display_name.clone(),
+                account.config.email.clone(),
+            ),
+            account.tint,
+        );
+        // Reserve room on the right for the per-account gear.
+        let label = elide(
+            tr,
+            account.label(),
+            13.0,
+            TextWeight::Semibold,
+            sb.width() - 108.0,
+        );
+        let email = elide(
+            tr,
+            &account.config.email,
+            10.5,
+            TextWeight::Regular,
+            sb.width() - 108.0,
+        );
+        tr.draw_text_weighted(
+            scene,
+            &label,
+            13.0,
+            c.text_primary,
+            t * Affine::translate((rect.x0 + 54.0, rect.y0 + 6.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        tr.draw_text(
+            scene,
+            &email,
+            10.5,
+            c.text_dim,
+            t * Affine::translate((rect.x0 + 54.0, rect.y0 + 24.0)),
+            None,
+        );
+        // Per-account settings gear (right edge). Hover-lit; always drawn so
+        // it is visible headless / in shots.
+        let gear = account_gear_rect(rect);
+        let ghov = gear.contains(st.last_mouse);
+        if ghov {
+            fill_round(scene, t, gear, 8.0, c.surface_white_10);
+        }
+        Icon::Settings.draw(
+            scene,
+            t,
+            gear.inset(-7.0),
+            if ghov { c.text_primary } else { c.text_dim },
+        );
+    }
+
+    /// The "Add account" row at the foot of the account list. Part of
+    /// [`Self::draw_sidebar`].
+    fn draw_sidebar_add_account_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let hov = rect.contains(self.shared.borrow().last_mouse);
+        if hov {
+            fill_round(scene, t, rect, 9.0, c.surface_white_5);
+        }
+        let cy = rect.y0 + ADD_ACCOUNT_ROW_H / 2.0;
+        let icon = Rect::new(rect.x0 + 12.0, cy - 8.0, rect.x0 + 28.0, cy + 8.0);
+        let col = if hov { c.accent[4] } else { c.accent[5] };
+        Icon::Plus.draw(scene, t, icon, col);
+        tr.draw_text_weighted(
+            scene,
+            "Add account",
+            13.0,
+            col,
+            t * Affine::translate((rect.x0 + 38.0, cy - 8.0)),
+            None,
+            TextWeight::Semibold,
+        );
+    }
+
+    /// One folder row within an expanded account: icon, title, unread badge
+    /// (active account only), and the selected-state highlight. Part of
+    /// [`Self::draw_sidebar`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
+    )]
+    fn draw_sidebar_folder_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        st: &MailState,
+        rect: Rect,
+        ai: usize,
+        f: Folder,
+    ) {
+        let c = &theme.tokens.colors;
+        let active_account = ai == st.accounts.active;
+        let selected = active_account && f == st.folder;
+        let hov = rect.contains(st.last_mouse);
+        if selected {
+            fill_round(scene, t, rect, 8.0, c.accent[5].with_alpha_factor(0.20));
+            fill_rect(
+                scene,
+                t,
+                Rect::new(rect.x0, rect.y0 + 6.0, rect.x0 + 3.0, rect.y1 - 6.0),
+                c.accent[5],
+            );
+        } else if hov {
+            fill_round(scene, t, rect, 8.0, c.surface_white_5);
+        }
+        let ty = rect.y0 + (FOLDER_ROW_H - 14.0) / 2.0;
+        let label_col = if selected {
+            c.text_primary
+        } else {
+            c.neutral[7]
+        };
+        let icon_box = Rect::new(
+            rect.x0 + 12.0,
+            rect.y0 + FOLDER_ROW_H / 2.0 - 9.0,
+            rect.x0 + 30.0,
+            rect.y0 + FOLDER_ROW_H / 2.0 + 9.0,
+        );
+        let icon_col = if selected { c.accent[5] } else { c.neutral[6] };
+        f.icon().draw(scene, t, icon_box, icon_col);
+        tr.draw_text_weighted(
+            scene,
+            f.title(),
+            13.0,
+            label_col,
+            t * Affine::translate((rect.x0 + 40.0, ty)),
+            Some(120.0),
+            if selected {
+                TextWeight::Semibold
+            } else {
+                TextWeight::Regular
+            },
+        );
+        if !active_account {
+            return;
+        }
+        let unread = st.mailbox.unread_count(f);
+        if unread == 0 {
+            return;
+        }
+        let txt = unread.to_string();
+        let (twd, _) = tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
+        let bw = (f64::from(twd) + 14.0).max(20.0);
+        let badge = Rect::new(
+            rect.x1 - bw - 8.0,
+            rect.y0 + 8.0,
+            rect.x1 - 8.0,
+            rect.y0 + 28.0,
+        );
+        let bg = if selected { c.accent[5] } else { c.neutral[3] };
+        fill_round(scene, t, badge, 10.0, bg);
+        tr.draw_text_weighted(
+            scene,
+            &txt,
+            11.0,
+            Color::WHITE,
+            t * Affine::translate((
+                f64::midpoint(badge.x0, badge.x1) - f64::from(twd) / 2.0,
+                badge.y0 + 4.0,
+            )),
+            None,
+            TextWeight::Semibold,
+        );
+    }
+
+    /// The list pane's header: folder title (+ count) and the search box, plus
+    /// the manual sync/refresh button beside it. Part of [`Self::draw_list`].
+    fn draw_list_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         let st = self.shared.borrow();
         let r = self.rect;
-        fill_rect(scene, t, r, c.surfaces.base);
-
         // Header: folder title (+ count), search box. The title is vertically
         // centred on the NavShell collapse/hamburger chip beside it and spaced a
         // consistent gap (a theme spacing token) past it — never crowding it.
@@ -689,6 +786,14 @@ impl Pane {
         );
         stroke_round(scene, t, rb, 9.0, 1.0, c.border_standard);
         Icon::Refresh.draw(scene, t, rb.inset(-9.0), c.neutral[7]);
+    }
+
+    fn draw_list(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let st = self.shared.borrow();
+        let r = self.rect;
+        fill_rect(scene, t, r, c.surfaces.base);
+        self.draw_list_header(scene, t, tr, theme);
 
         // Rows.
         let rows = st.list_rows();
@@ -730,227 +835,278 @@ impl Pane {
                 .map_or(1, |(_, l)| *l);
             let selected = st.selected == Some(id) && !st.narrow;
             let hov = rect.contains(st.last_mouse);
-
             let swipe_dx = self.swipe.filter(|s| s.id == id).map_or(0.0, |s| s.dx);
-            if swipe_dx.abs() > 1.0 {
-                let (col, icon, label, on_left) = if swipe_dx < 0.0 {
-                    (c.semantic.warning, Icon::Archive, "Archive", false)
-                } else {
-                    (c.semantic.danger, Icon::Trash, "Delete", true)
-                };
-                fill_rect(scene, t, *rect, col.with_alpha_factor(0.9));
-                let gx = if on_left {
-                    rect.x0 + 18.0
-                } else {
-                    rect.x1 - 90.0
-                };
-                icon.draw(
-                    scene,
-                    t,
-                    Rect::new(gx, rect.y0 + 20.0, gx + 18.0, rect.y0 + 38.0),
-                    Color::WHITE,
-                );
-                tr.draw_text_weighted(
-                    scene,
-                    label,
-                    12.0,
-                    Color::WHITE,
-                    t * Affine::translate((gx + 26.0, rect.y0 + 22.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-            }
-            let row = Rect::new(rect.x0 + swipe_dx, rect.y0, rect.x1 + swipe_dx, rect.y1);
-
-            if selected {
-                fill_rect(scene, t, row, c.accent[5].with_alpha_factor(0.16));
-                fill_rect(
-                    scene,
-                    t,
-                    Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
-                    c.accent[5],
-                );
-            } else if hov && swipe_dx.abs() < 1.0 {
-                fill_rect(scene, t, row, c.surface_white_5);
-            }
-            fill_rect(
+            self.draw_list_row(
                 scene,
                 t,
-                Rect::new(row.x0 + 12.0, row.y1 - 1.0, row.x1, row.y1),
-                c.neutral[2],
-            );
-
-            let unread = !msg.read;
-            if unread {
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    c.accent[5],
-                    None,
-                    &Circle::new(Point::new(row.x0 + 14.0, row.y0 + LIST_ROW_H / 2.0), 4.0),
-                );
-            }
-            draw_avatar(
-                scene,
                 tr,
-                t,
                 theme,
-                &st.images,
-                Point::new(row.x0 + 42.0, row.y0 + 26.0),
-                17.0,
-                &msg.from,
-                0,
+                ListRowArgs {
+                    msg,
+                    rect: *rect,
+                    len,
+                    selected,
+                    hov,
+                    swipe_dx,
+                    now_min: st.now_min,
+                },
             );
-
-            let text_x = row.x0 + 70.0;
-            let right = row.x1 - 14.0;
-            let name_weight = if unread {
-                TextWeight::Bold
-            } else {
-                TextWeight::Medium
-            };
-            let name = elide(
-                tr,
-                &msg.from.display(),
-                13.5,
-                name_weight,
-                right - text_x - 56.0,
-            );
-            tr.draw_text_weighted(
-                scene,
-                &name,
-                13.5,
-                c.text_primary,
-                t * Affine::translate((text_x, row.y0 + 12.0)),
-                None,
-                name_weight,
-            );
-            let date = format_relative(msg.timestamp_min, st.now_min);
-            let (dw, _) = tr.measure(&date, 11.5, None);
-            tr.draw_text(
-                scene,
-                &date,
-                11.5,
-                c.text_dim,
-                t * Affine::translate((right - f64::from(dw), row.y0 + 13.0)),
-                None,
-            );
-
-            let subj_y = row.y0 + 32.0;
-            let subj_col = if unread { c.text_primary } else { c.neutral[7] };
-            let subj_weight = if unread {
-                TextWeight::Semibold
-            } else {
-                TextWeight::Regular
-            };
-            let subj_budget = right - text_x - if len > 1 { 48.0 } else { 16.0 };
-            let subject = elide(tr, &msg.thread_subject(), 12.5, subj_weight, subj_budget);
-            tr.draw_text_weighted(
-                scene,
-                &subject,
-                12.5,
-                subj_col,
-                t * Affine::translate((text_x, subj_y)),
-                None,
-                subj_weight,
-            );
-            if len > 1 {
-                let badge_txt = len.to_string();
-                let (bw, _) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
-                let bx = right - f64::from(bw) - 12.0;
-                let badge = Rect::new(bx - 6.0, subj_y - 1.0, right, subj_y + 15.0);
-                fill_round(scene, t, badge, 8.0, c.neutral[3]);
-                tr.draw_text_weighted(
-                    scene,
-                    &badge_txt,
-                    10.5,
-                    c.neutral[8],
-                    t * Affine::translate((bx, subj_y + 1.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-            }
-
-            let icon_reserve = if msg.has_attachments() { 64.0 } else { 28.0 };
-            let snippet = elide(
-                tr,
-                &msg.snippet(),
-                11.5,
-                TextWeight::Regular,
-                right - text_x - icon_reserve,
-            );
-            tr.draw_text(
-                scene,
-                &snippet,
-                11.5,
-                c.text_dim,
-                t * Affine::translate((text_x, row.y0 + 52.0)),
-                None,
-            );
-
-            // A favourited mail shows a solid, filled star; an unstarred one a
-            // faint outline — the state reads at a glance, not just as a colour.
-            let star_box = Rect::new(right - 24.0, row.y0 + 48.0, right - 8.0, row.y0 + 64.0);
-            if msg.starred {
-                Icon::Star.draw_filled(scene, t, star_box, c.semantic.warning);
-            } else {
-                Icon::Star.draw(scene, t, star_box, c.neutral[4]);
-            }
-            if msg.has_attachments() {
-                Icon::Paperclip.draw(
-                    scene,
-                    t,
-                    Rect::new(right - 44.0, row.y0 + 48.0, right - 30.0, row.y0 + 62.0),
-                    c.text_dim,
-                );
-            }
         }
     }
 
-    fn draw_reader(
-        &mut self,
+    /// One row of the message list: the swipe-action overlay (if dragged),
+    /// selection/hover background, unread dot, avatar, name/date, subject
+    /// (+ thread-size badge), snippet, and star/attachment glyphs. Part of
+    /// [`Self::draw_list`].
+    fn draw_list_row(
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        presence: &PresenceCtx,
+        args: ListRowArgs<'_>,
     ) {
-        let c = &theme.tokens.colors;
-        let mut chip_hits: Vec<(Rect, MessageId, usize)> = Vec::new();
-        let st = self.shared.borrow();
-        let rr = self.rect;
-        fill_rect(scene, t, rr, c.surfaces.raised);
+        let ListRowArgs {
+            msg,
+            rect,
+            len,
+            selected,
+            hov,
+            swipe_dx,
+            now_min,
+        } = args;
+        let row = self.draw_list_row_frame(scene, t, tr, theme, rect, swipe_dx, selected, hov);
+        self.draw_list_row_content(scene, t, tr, theme, row, msg, len, now_min);
+    }
 
-        let msgs = st.selected_thread_messages();
-        if msgs.is_empty() {
-            self.reader_attachment_hits.clear();
-            let cx = f64::midpoint(rr.x0, rr.x1);
-            let cy = rr.y0 + rr.height() / 2.0;
-            Icon::Mail.draw(
+    /// Draw the swipe-action overlay (if dragged past the threshold) and the
+    /// row's selection/hover background + bottom divider, returning the
+    /// (possibly swipe-shifted) row rect the rest of the row draws into.
+    /// Part of [`Self::draw_list_row`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
+    )]
+    fn draw_list_row_frame(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        swipe_dx: f64,
+        selected: bool,
+        hov: bool,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
+        if swipe_dx.abs() > 1.0 {
+            let (col, icon, label, on_left) = if swipe_dx < 0.0 {
+                (c.semantic.warning, Icon::Archive, "Archive", false)
+            } else {
+                (c.semantic.danger, Icon::Trash, "Delete", true)
+            };
+            fill_rect(scene, t, rect, col.with_alpha_factor(0.9));
+            let gx = if on_left {
+                rect.x0 + 18.0
+            } else {
+                rect.x1 - 90.0
+            };
+            icon.draw(
                 scene,
                 t,
-                Rect::new(cx - 26.0, cy - 66.0, cx + 26.0, cy - 14.0),
-                c.neutral[4],
+                Rect::new(gx, rect.y0 + 20.0, gx + 18.0, rect.y0 + 38.0),
+                Color::WHITE,
             );
-            let hint = "Select a conversation to read";
-            let (w, _) = tr.measure(hint, 14.0, None);
-            tr.draw_text(
+            tr.draw_text_weighted(
                 scene,
-                hint,
-                14.0,
-                c.text_dim,
-                t * Affine::translate((cx - f64::from(w) / 2.0, cy)),
+                label,
+                12.0,
+                Color::WHITE,
+                t * Affine::translate((gx + 26.0, rect.y0 + 22.0)),
                 None,
+                TextWeight::Semibold,
             );
-            return;
+        }
+        let row = Rect::new(rect.x0 + swipe_dx, rect.y0, rect.x1 + swipe_dx, rect.y1);
+
+        if selected {
+            fill_rect(scene, t, row, c.accent[5].with_alpha_factor(0.16));
+            fill_rect(
+                scene,
+                t,
+                Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
+                c.accent[5],
+            );
+        } else if hov && swipe_dx.abs() < 1.0 {
+            fill_rect(scene, t, row, c.surface_white_5);
+        }
+        fill_rect(
+            scene,
+            t,
+            Rect::new(row.x0 + 12.0, row.y1 - 1.0, row.x1, row.y1),
+            c.neutral[2],
+        );
+        row
+    }
+
+    /// Draw one row's content within its (already framed) `row` rect: unread
+    /// dot, avatar, name/date, subject (+ thread-size badge), snippet, and
+    /// star/attachment glyphs. Part of [`Self::draw_list_row`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
+    )]
+    fn draw_list_row_content(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        msg: &Message,
+        len: usize,
+        now_min: i64,
+    ) {
+        let c = &theme.tokens.colors;
+        let unread = !msg.read;
+        if unread {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.accent[5],
+                None,
+                &Circle::new(Point::new(row.x0 + 14.0, row.y0 + LIST_ROW_H / 2.0), 4.0),
+            );
+        }
+        draw_avatar(
+            scene,
+            tr,
+            t,
+            theme,
+            &self.shared.borrow().images,
+            Point::new(row.x0 + 42.0, row.y0 + 26.0),
+            17.0,
+            &msg.from,
+            0,
+        );
+
+        let text_x = row.x0 + 70.0;
+        let right = row.x1 - 14.0;
+        let name_weight = if unread {
+            TextWeight::Bold
+        } else {
+            TextWeight::Medium
+        };
+        let name = elide(
+            tr,
+            &msg.from.display(),
+            13.5,
+            name_weight,
+            right - text_x - 56.0,
+        );
+        tr.draw_text_weighted(
+            scene,
+            &name,
+            13.5,
+            c.text_primary,
+            t * Affine::translate((text_x, row.y0 + 12.0)),
+            None,
+            name_weight,
+        );
+        let date = format_relative(msg.timestamp_min, now_min);
+        let (dw, _) = tr.measure(&date, 11.5, None);
+        tr.draw_text(
+            scene,
+            &date,
+            11.5,
+            c.text_dim,
+            t * Affine::translate((right - f64::from(dw), row.y0 + 13.0)),
+            None,
+        );
+
+        let subj_y = row.y0 + 32.0;
+        let subj_col = if unread { c.text_primary } else { c.neutral[7] };
+        let subj_weight = if unread {
+            TextWeight::Semibold
+        } else {
+            TextWeight::Regular
+        };
+        let subj_budget = right - text_x - if len > 1 { 48.0 } else { 16.0 };
+        let subject = elide(tr, &msg.thread_subject(), 12.5, subj_weight, subj_budget);
+        tr.draw_text_weighted(
+            scene,
+            &subject,
+            12.5,
+            subj_col,
+            t * Affine::translate((text_x, subj_y)),
+            None,
+            subj_weight,
+        );
+        if len > 1 {
+            let badge_txt = len.to_string();
+            let (bw, _) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
+            let bx = right - f64::from(bw) - 12.0;
+            let badge = Rect::new(bx - 6.0, subj_y - 1.0, right, subj_y + 15.0);
+            fill_round(scene, t, badge, 8.0, c.neutral[3]);
+            tr.draw_text_weighted(
+                scene,
+                &badge_txt,
+                10.5,
+                c.neutral[8],
+                t * Affine::translate((bx, subj_y + 1.0)),
+                None,
+                TextWeight::Semibold,
+            );
         }
 
-        // Action bar (header strip).
-        let compact = st.narrow || rr.width() < READER_COMPACT_W;
-        let starred = st
-            .selected
-            .and_then(|id| st.mailbox.get(id))
-            .is_some_and(|m| m.starred);
+        let icon_reserve = if msg.has_attachments() { 64.0 } else { 28.0 };
+        let snippet = elide(
+            tr,
+            &msg.snippet(),
+            11.5,
+            TextWeight::Regular,
+            right - text_x - icon_reserve,
+        );
+        tr.draw_text(
+            scene,
+            &snippet,
+            11.5,
+            c.text_dim,
+            t * Affine::translate((text_x, row.y0 + 52.0)),
+            None,
+        );
+
+        // A favourited mail shows a solid, filled star; an unstarred one a
+        // faint outline — the state reads at a glance, not just as a colour.
+        let star_box = Rect::new(right - 24.0, row.y0 + 48.0, right - 8.0, row.y0 + 64.0);
+        if msg.starred {
+            Icon::Star.draw_filled(scene, t, star_box, c.semantic.warning);
+        } else {
+            Icon::Star.draw(scene, t, star_box, c.neutral[4]);
+        }
+        if msg.has_attachments() {
+            Icon::Paperclip.draw(
+                scene,
+                t,
+                Rect::new(right - 44.0, row.y0 + 48.0, right - 30.0, row.y0 + 62.0),
+                c.text_dim,
+            );
+        }
+    }
+
+    /// The reader's action bar: Reply/Archive/Delete/Star/Mark-unread, icon
+    /// only when `compact`, icon + label otherwise. Part of [`Self::draw_reader`].
+    fn draw_reader_action_bar(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        compact: bool,
+        starred: bool,
+        last_mouse: Point,
+    ) {
+        let c = &theme.tokens.colors;
         for (rect, hit) in &self.hits {
             let (label, danger, icon) = match hit {
                 Hit::Reply => ("Reply", false, Icon::Reply),
@@ -960,7 +1116,7 @@ impl Pane {
                 Hit::Unread => ("Mark unread", false, Icon::Mail),
                 _ => continue,
             };
-            let hov = rect.contains(st.last_mouse);
+            let hov = rect.contains(last_mouse);
             let bg = if hov {
                 c.surface_white_10
             } else {
@@ -1016,8 +1172,59 @@ impl Pane {
                 );
             }
         }
+    }
 
-        let head = &msgs[msgs.len() - 1];
+    fn draw_reader(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let c = &theme.tokens.colors;
+        let mut chip_hits: Vec<(Rect, MessageId, usize)> = Vec::new();
+        let st = self.shared.borrow();
+        let rr = self.rect;
+        fill_rect(scene, t, rr, c.surfaces.raised);
+
+        let msgs = st.selected_thread_messages();
+        if msgs.is_empty() {
+            self.reader_attachment_hits.clear();
+            let cx = f64::midpoint(rr.x0, rr.x1);
+            let cy = rr.y0 + rr.height() / 2.0;
+            Icon::Mail.draw(
+                scene,
+                t,
+                Rect::new(cx - 26.0, cy - 66.0, cx + 26.0, cy - 14.0),
+                c.neutral[4],
+            );
+            let hint = "Select a conversation to read";
+            let (w, _) = tr.measure(hint, 14.0, None);
+            tr.draw_text(
+                scene,
+                hint,
+                14.0,
+                c.text_dim,
+                t * Affine::translate((cx - f64::from(w) / 2.0, cy)),
+                None,
+            );
+            return;
+        }
+
+        // Action bar (header strip).
+        let compact = st.narrow || rr.width() < READER_COMPACT_W;
+        let starred = st
+            .selected
+            .and_then(|id| st.mailbox.get(id))
+            .is_some_and(|m| m.starred);
+        self.draw_reader_action_bar(scene, t, tr, theme, compact, starred, st.last_mouse);
+
+        let Some(head) = msgs.last() else {
+            // Unreachable: `msgs.is_empty()` returned above — but bail rather
+            // than panic if that invariant is ever violated.
+            return;
+        };
         let content_x = rr.x0 + 24.0;
         let content_w = (rr.width() - 48.0) as f32;
         let mut y = rr.y0 + HEADER_H + 8.0;
@@ -1075,7 +1282,18 @@ impl Pane {
                 // Head card: draw the header, then reserve the rest of the
                 // reader for the sandboxed HTML body (painted once the shared
                 // borrow is released, since the view needs `&mut self`).
-                y = self.draw_card_header(scene, t, tr, theme, m, content_x, y, content_w);
+                y = self.draw_card_header(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    CardHeaderArgs {
+                        msg: m,
+                        x: content_x,
+                        y,
+                        width: content_w,
+                    },
+                );
                 y += 8.0;
                 let bottom = rr.y1 - 46.0; // room for the remote-images bar
                 if bottom > y + 48.0 {
@@ -1188,11 +1406,9 @@ impl Pane {
     /// Lazily create the reader's HTML-body `WebView` (and its engine) on first
     /// use. Text-only mail never touches this, so it stays webview-free.
     fn ensure_html_view(&mut self) -> &mut WebView {
-        if self.html_view.is_none() {
-            let engine = self.html_engine.get_or_insert_with(new_html_engine).clone();
-            self.html_view = Some(WebView::new(engine).with_test_id("mail_html_body"));
-        }
-        self.html_view.as_mut().unwrap()
+        let engine = self.html_engine.get_or_insert_with(new_html_engine).clone();
+        self.html_view
+            .get_or_insert_with(|| WebView::new(engine).with_test_id("mail_html_body"))
     }
 
     /// Load `html` for message `id` into the sandboxed view — building the
@@ -1234,13 +1450,16 @@ impl Pane {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        m: &Message,
-        x: f64,
-        y: f64,
-        w: f32,
+        args: CardHeaderArgs<'_>,
     ) -> f64 {
+        let CardHeaderArgs {
+            msg,
+            x: cx,
+            y: cy,
+            width,
+        } = args;
         let c = &theme.tokens.colors;
-        let card_x1 = x + f64::from(w);
+        let card_x1 = cx + f64::from(width);
         let st = self.shared.borrow();
         draw_avatar(
             scene,
@@ -1248,57 +1467,58 @@ impl Pane {
             t,
             theme,
             &st.images,
-            Point::new(x + 18.0, y + 18.0),
+            Point::new(cx + 18.0, cy + 18.0),
             17.0,
-            &m.from,
+            &msg.from,
             0,
         );
         let from_name = elide(
             tr,
-            &m.from.display(),
+            &msg.from.display(),
             13.5,
             TextWeight::Semibold,
-            f64::from(w - 150.0),
+            f64::from(width - 150.0),
         );
         tr.draw_text_weighted(
             scene,
             &from_name,
             13.5,
             c.text_primary,
-            t * Affine::translate((x + 44.0, y + 6.0)),
+            t * Affine::translate((cx + 44.0, cy + 6.0)),
             None,
             TextWeight::Semibold,
         );
         let from_email = elide(
             tr,
-            &m.from.email,
+            &msg.from.email,
             11.5,
             TextWeight::Regular,
-            f64::from(w - 150.0),
+            f64::from(width - 150.0),
         );
         tr.draw_text(
             scene,
             &from_email,
             11.5,
             c.text_dim,
-            t * Affine::translate((x + 44.0, y + 24.0)),
+            t * Affine::translate((cx + 44.0, cy + 24.0)),
             None,
         );
-        let date = format_absolute(m.timestamp_min);
+        let date = format_absolute(msg.timestamp_min);
         let (dw, _) = tr.measure(&date, 11.5, None);
         tr.draw_text(
             scene,
             &date,
             11.5,
             c.text_dim,
-            t * Affine::translate((card_x1 - f64::from(dw), y + 8.0)),
+            t * Affine::translate((card_x1 - f64::from(dw), cy + 8.0)),
             None,
         );
         let to_line = elide(
             tr,
             &format!(
                 "to {}",
-                m.to.iter()
+                msg.to
+                    .iter()
                     .map(super::model::Addr::display)
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -1312,146 +1532,181 @@ impl Pane {
             &to_line,
             11.0,
             c.text_dim,
-            t * Affine::translate((card_x1 - 150.0, y + 24.0)),
+            t * Affine::translate((card_x1 - 150.0, cy + 24.0)),
             None,
         );
-        y + 48.0
+        cy + 48.0
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Draw the "N attachments" label and the wrapping row of attachment
+    /// chips for an expanded message card, recording each chip's hit region.
+    /// Returns the y past the chips. Part of [`Self::draw_message_card`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the card layout draw_message_card already computed; bundling them would just move the same count into a field list"
+    )]
+    fn draw_attachment_chips(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        msg: &Message,
+        cx: f64,
+        card_x1: f64,
+        mut yy: f64,
+        chip_hits: &mut Vec<(Rect, MessageId, usize)>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        yy += 8.0;
+        tr.draw_text_weighted(
+            scene,
+            &format!(
+                "{} attachment{}",
+                msg.attachments.len(),
+                if msg.attachments.len() == 1 { "" } else { "s" }
+            ),
+            11.5,
+            c.text_dim,
+            t * Affine::translate((cx, yy)),
+            None,
+            TextWeight::Medium,
+        );
+        yy += 20.0;
+        let mut ax = cx;
+        let hov_mouse = self.shared.borrow().last_mouse;
+        for (ai, a) in msg.attachments.iter().enumerate() {
+            let label = format!("{}  {}", a.filename, a.size_human());
+            let (lw, _) = tr.measure(&label, 11.5, None);
+            // Room for the trailing download/state glyph.
+            let chip_w = f64::from(lw) + 64.0;
+            if ax + chip_w > card_x1 {
+                ax = cx;
+                yy += 36.0;
+            }
+            let chip = Rect::new(ax, yy, ax + chip_w, yy + 30.0);
+            let hov = chip.contains(hov_mouse);
+            fill_round(
+                scene,
+                t,
+                chip,
+                8.0,
+                if hov {
+                    c.surface_white_10
+                } else {
+                    c.surface_white_5
+                },
+            );
+            stroke_round(scene, t, chip, 8.0, 1.0, c.border_white_10);
+            a.icon().draw(
+                scene,
+                t,
+                Rect::new(chip.x0 + 7.0, chip.y0 + 7.0, chip.x0 + 23.0, chip.y0 + 23.0),
+                c.neutral[7],
+            );
+            tr.draw_text(
+                scene,
+                &a.filename,
+                11.5,
+                c.text_primary,
+                t * Affine::translate((chip.x0 + 30.0, chip.y0 + 4.0)),
+                Some(lw),
+            );
+            tr.draw_text(
+                scene,
+                &a.size_human(),
+                10.0,
+                c.text_dim,
+                t * Affine::translate((chip.x0 + 30.0, chip.y0 + 17.0)),
+                None,
+            );
+            // Trailing affordance: a save/download icon when the bytes are
+            // present (clickable), a cloud when it must still be hydrated
+            // from the server.
+            let (icon, col) = if a.is_downloadable() {
+                (Icon::Download, c.accent[5])
+            } else {
+                (Icon::CloudDownload, c.neutral[5])
+            };
+            icon.draw(
+                scene,
+                t,
+                Rect::new(chip.x1 - 24.0, chip.y0 + 7.0, chip.x1 - 8.0, chip.y0 + 23.0),
+                col,
+            );
+            chip_hits.push((chip, msg.id, ai));
+            ax += chip_w + 10.0;
+        }
+        yy + 30.0
+    }
+
     fn draw_message_card(
         &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        m: &Message,
-        x: f64,
-        y: f64,
-        w: f32,
+        msg: &Message,
+        cx: f64,
+        cy: f64,
+        width: f32,
         expanded: bool,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let card_x1 = x + f64::from(w);
-        let mut yy = self.draw_card_header(scene, t, tr, theme, m, x, y, w);
+        let card_x1 = cx + f64::from(width);
+        let mut yy = self.draw_card_header(
+            scene,
+            t,
+            tr,
+            theme,
+            CardHeaderArgs {
+                msg,
+                x: cx,
+                y: cy,
+                width,
+            },
+        );
         if expanded {
-            for para in m.body.split('\n') {
+            for para in msg.body.split('\n') {
                 if para.trim().is_empty() {
                     yy += 8.0;
                     continue;
                 }
                 let quote = para.starts_with('>');
                 let col = if quote { c.text_dim } else { c.neutral[8] };
-                let (_pw, ph) = tr.measure(para, 13.0, Some(w - 8.0));
+                let (_pw, ph) = tr.measure(para, 13.0, Some(width - 8.0));
                 tr.draw_text(
                     scene,
                     para,
                     13.0,
                     col,
-                    t * Affine::translate((x, yy)),
-                    Some(w - 8.0),
+                    t * Affine::translate((cx, yy)),
+                    Some(width - 8.0),
                 );
                 yy += f64::from(ph.max(18.0)) + 2.0;
             }
-            if m.has_attachments() {
-                yy += 8.0;
-                tr.draw_text_weighted(
-                    scene,
-                    &format!(
-                        "{} attachment{}",
-                        m.attachments.len(),
-                        if m.attachments.len() == 1 { "" } else { "s" }
-                    ),
-                    11.5,
-                    c.text_dim,
-                    t * Affine::translate((x, yy)),
-                    None,
-                    TextWeight::Medium,
-                );
-                yy += 20.0;
-                let mut ax = x;
-                let hov_mouse = self.shared.borrow().last_mouse;
-                for (ai, a) in m.attachments.iter().enumerate() {
-                    let label = format!("{}  {}", a.filename, a.size_human());
-                    let (lw, _) = tr.measure(&label, 11.5, None);
-                    // Room for the trailing download/state glyph.
-                    let chip_w = f64::from(lw) + 64.0;
-                    if ax + chip_w > card_x1 {
-                        ax = x;
-                        yy += 36.0;
-                    }
-                    let chip = Rect::new(ax, yy, ax + chip_w, yy + 30.0);
-                    let hov = chip.contains(hov_mouse);
-                    fill_round(
-                        scene,
-                        t,
-                        chip,
-                        8.0,
-                        if hov {
-                            c.surface_white_10
-                        } else {
-                            c.surface_white_5
-                        },
-                    );
-                    stroke_round(scene, t, chip, 8.0, 1.0, c.border_white_10);
-                    a.icon().draw(
-                        scene,
-                        t,
-                        Rect::new(chip.x0 + 7.0, chip.y0 + 7.0, chip.x0 + 23.0, chip.y0 + 23.0),
-                        c.neutral[7],
-                    );
-                    tr.draw_text(
-                        scene,
-                        &a.filename,
-                        11.5,
-                        c.text_primary,
-                        t * Affine::translate((chip.x0 + 30.0, chip.y0 + 4.0)),
-                        Some(lw),
-                    );
-                    tr.draw_text(
-                        scene,
-                        &a.size_human(),
-                        10.0,
-                        c.text_dim,
-                        t * Affine::translate((chip.x0 + 30.0, chip.y0 + 17.0)),
-                        None,
-                    );
-                    // Trailing affordance: a save/download icon when the bytes
-                    // are present (clickable), a cloud when it must still be
-                    // hydrated from the server.
-                    let (icon, col) = if a.is_downloadable() {
-                        (Icon::Download, c.accent[5])
-                    } else {
-                        (Icon::CloudDownload, c.neutral[5])
-                    };
-                    icon.draw(
-                        scene,
-                        t,
-                        Rect::new(chip.x1 - 24.0, chip.y0 + 7.0, chip.x1 - 8.0, chip.y0 + 23.0),
-                        col,
-                    );
-                    chip_hits.push((chip, m.id, ai));
-                    ax += chip_w + 10.0;
-                }
-                yy += 30.0;
+            if msg.has_attachments() {
+                yy = self
+                    .draw_attachment_chips(scene, t, tr, theme, msg, cx, card_x1, yy, chip_hits);
             }
         } else {
             // Collapsed preview: a single elided line so a narrow reader column
             // can't wrap it into the following card.
             let snip = elide(
                 tr,
-                &m.snippet(),
+                &msg.snippet(),
                 12.0,
                 TextWeight::Regular,
-                f64::from(w - 8.0),
+                f64::from(width - 8.0),
             );
             tr.draw_text(
                 scene,
                 &snip,
                 12.0,
                 c.text_dim,
-                t * Affine::translate((x, yy)),
+                t * Affine::translate((cx, yy)),
                 None,
             );
             yy += 18.0;
@@ -1466,152 +1721,168 @@ impl Pane {
             return;
         }
         match self.role {
-            Role::Sidebar => {
-                if let Some(hit) = self.hit_at(pt) {
-                    match hit {
-                        Hit::Compose => self.shared.borrow_mut().push_intent(Intent::Compose),
-                        Hit::AccountSettings(ai) => {
-                            // Per-account settings, scoped to the clicked account
-                            // (not the active one).
-                            self.shared
-                                .borrow_mut()
-                                .push_intent(Intent::Settings(Some(ai)));
-                        }
-                        Hit::AddAccount => {
-                            // Adding an account is its own action (a blank sheet).
-                            self.shared.borrow_mut().push_intent(Intent::Settings(None));
-                        }
-                        Hit::AccountToggle(ai) => {
-                            self.shared.borrow_mut().toggle_account_collapsed(ai);
-                        }
-                        Hit::Account(ai) => {
-                            let mut st = self.shared.borrow_mut();
-                            st.set_active_account(doc, ai);
-                            st.select_folder(doc, Folder::Inbox);
-                            st.push_intent(Intent::CloseDrawer);
-                        }
-                        Hit::Folder(ai, f) => {
-                            let mut st = self.shared.borrow_mut();
-                            st.set_active_account(doc, ai);
-                            st.select_folder(doc, f);
-                            st.push_intent(Intent::CloseDrawer);
-                        }
-                        _ => {}
-                    }
-                    *handled = true;
-                }
+            Role::Sidebar => self.on_left_press_sidebar(doc, pt, handled),
+            Role::List => self.on_left_press_list(doc, pt, handled),
+            Role::Reader => self.on_left_press_reader(doc, pt, handled),
+        }
+    }
+
+    /// The sidebar's left-click routing: compose, per-account settings/
+    /// toggle/select, and folder select. Part of [`Self::on_left_press`].
+    fn on_left_press_sidebar(&mut self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
+        let Some(hit) = self.hit_at(pt) else {
+            return;
+        };
+        match hit {
+            Hit::Compose => self.shared.borrow_mut().push_intent(Intent::Compose),
+            Hit::AccountSettings(ai) => {
+                // Per-account settings, scoped to the clicked account (not
+                // the active one).
+                self.shared
+                    .borrow_mut()
+                    .push_intent(Intent::Settings(Some(ai)));
             }
-            Role::List => {
-                if let Some(hit) = self.hit_at(pt) {
-                    match hit {
-                        Hit::Refresh => {
-                            // Manually re-fetch the current folder from the server.
-                            let (account, folder) = {
-                                let st = self.shared.borrow();
-                                (st.accounts.active_config(), st.folder)
-                            };
-                            let mut st = self.shared.borrow_mut();
-                            if !account.email.is_empty() {
-                                st.push_intent(Intent::Engine(
-                                    crate::engine::EngineRequest::Fetch { account, folder },
-                                ));
-                            }
-                            st.status = Some(format!("Syncing {}…", folder.title()));
-                            st.dirty = true;
-                            *handled = true;
-                        }
-                        Hit::SearchFocus => {
-                            self.set_search_focus(true);
-                            *handled = true;
-                        }
-                        Hit::SearchClear => {
-                            self.shared.borrow_mut().search.clear();
-                            if let Some(i) = self.search_input.as_mut() {
-                                i.set_text("");
-                            }
-                            crate::doc::MailDoc::set_search(doc, "");
-                            self.set_search_focus(false);
-                            *handled = true;
-                        }
-                        Hit::RowStar(id) => {
-                            let mut st = self.shared.borrow_mut();
-                            st.toggle_star(doc, id);
-                            *handled = true;
-                        }
-                        Hit::Row(id) => {
-                            self.set_search_focus(false);
-                            let is_draft = self
-                                .shared
-                                .borrow()
-                                .mailbox
-                                .get(id)
-                                .is_some_and(|m| m.folder == Folder::Drafts);
-                            if is_draft {
-                                // A Drafts row reopens the composer, not the reader.
-                                self.shared.borrow_mut().push_intent(Intent::EditDraft(id));
-                            } else {
-                                self.shared.borrow_mut().select_message(doc, id);
-                            }
-                            *handled = true;
-                        }
-                        _ => {}
-                    }
-                }
-                // Record a potential swipe origin whenever the press lands on a
-                // row. A later drag past the threshold turns it into a swipe
-                // action (archive/delete) on release; a release without a drag
-                // is a plain tap, which already selected on press.
-                if let Some(id) = self.row_id_at(pt) {
-                    self.mouse_down_row = Some((id, pt));
-                }
+            Hit::AddAccount => {
+                // Adding an account is its own action (a blank sheet).
+                self.shared.borrow_mut().push_intent(Intent::Settings(None));
             }
-            Role::Reader => {
-                // The remote-images toggle under an HTML body: opt this message
-                // in to (or back out of) loading remote content.
-                if self.html_toggle_rect.is_some_and(|r| r.contains(pt)) {
-                    self.html_load_remote = !self.html_load_remote;
-                    // Force a reload with the new policy on the next draw.
-                    self.html_key = None;
-                    self.dirty = true;
-                    self.shared.borrow_mut().dirty = true;
-                    *handled = true;
-                    return;
-                }
-                // An attachment chip saves the real bytes to disk.
-                if let Some((_, mid, ai)) = self
-                    .reader_attachment_hits
-                    .iter()
-                    .find(|(rc, _, _)| rc.contains(pt))
-                    .copied()
-                {
-                    self.save_attachment_click(mid, ai);
-                    *handled = true;
-                    return;
-                }
-                if let Some(hit) = self.hit_at(pt) {
-                    let sel = self.shared.borrow().selected;
-                    if let Some(id) = sel {
-                        let mut st = self.shared.borrow_mut();
-                        match hit {
-                            Hit::Reply => st.push_intent(Intent::Reply(id)),
-                            Hit::Archive => st.apply_message_action(doc, id, CtxAction::Archive),
-                            Hit::Delete => st.apply_message_action(doc, id, CtxAction::Delete),
-                            Hit::Star => st.apply_message_action(doc, id, CtxAction::ToggleStar),
-                            Hit::Unread => {
-                                st.set_read(doc, id, false);
-                            }
-                            _ => {}
-                        }
-                        *handled = true;
+            Hit::AccountToggle(ai) => {
+                self.shared.borrow_mut().toggle_account_collapsed(ai);
+            }
+            Hit::Account(ai) => {
+                let mut st = self.shared.borrow_mut();
+                st.set_active_account(doc, ai);
+                st.select_folder(doc, Folder::Inbox);
+                st.push_intent(Intent::CloseDrawer);
+            }
+            Hit::Folder(ai, f) => {
+                let mut st = self.shared.borrow_mut();
+                st.set_active_account(doc, ai);
+                st.select_folder(doc, f);
+                st.push_intent(Intent::CloseDrawer);
+            }
+            _ => {}
+        }
+        *handled = true;
+    }
+
+    /// The list pane's left-click routing: refresh, search focus/clear, star
+    /// toggle, row select/open, and arming a potential row swipe. Part of
+    /// [`Self::on_left_press`].
+    fn on_left_press_list(&mut self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
+        if let Some(hit) = self.hit_at(pt) {
+            match hit {
+                Hit::Refresh => {
+                    // Manually re-fetch the current folder from the server.
+                    let (account, folder) = {
+                        let st = self.shared.borrow();
+                        (st.accounts.active_config(), st.folder)
+                    };
+                    let mut st = self.shared.borrow_mut();
+                    if !account.email.is_empty() {
+                        st.push_intent(Intent::Engine(crate::engine::EngineRequest::Fetch {
+                            account,
+                            folder,
+                        }));
                     }
+                    st.status = Some(format!("Syncing {}…", folder.title()));
+                    st.dirty = true;
+                    *handled = true;
                 }
+                Hit::SearchFocus => {
+                    self.set_search_focus(true);
+                    *handled = true;
+                }
+                Hit::SearchClear => {
+                    self.shared.borrow_mut().search.clear();
+                    if let Some(i) = self.search_input.as_mut() {
+                        i.set_text("");
+                    }
+                    crate::doc::MailDoc::set_search(doc, "");
+                    self.set_search_focus(false);
+                    *handled = true;
+                }
+                Hit::RowStar(id) => {
+                    let mut st = self.shared.borrow_mut();
+                    st.toggle_star(doc, id);
+                    *handled = true;
+                }
+                Hit::Row(id) => {
+                    self.set_search_focus(false);
+                    let is_draft = self
+                        .shared
+                        .borrow()
+                        .mailbox
+                        .get(id)
+                        .is_some_and(|m| m.folder == Folder::Drafts);
+                    if is_draft {
+                        // A Drafts row reopens the composer, not the reader.
+                        self.shared.borrow_mut().push_intent(Intent::EditDraft(id));
+                    } else {
+                        self.shared.borrow_mut().select_message(doc, id);
+                    }
+                    *handled = true;
+                }
+                _ => {}
+            }
+        }
+        // Record a potential swipe origin whenever the press lands on a row.
+        // A later drag past the threshold turns it into a swipe action
+        // (archive/delete) on release; a release without a drag is a plain
+        // tap, which already selected on press.
+        if let Some(id) = self.row_id_at(pt) {
+            self.mouse_down_row = Some((id, pt));
+        }
+    }
+
+    /// The reader's left-click routing: the remote-images toggle, an
+    /// attachment-chip save, and the action bar (Reply/Archive/Delete/Star/
+    /// Mark unread). Part of [`Self::on_left_press`].
+    fn on_left_press_reader(&mut self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
+        // The remote-images toggle under an HTML body: opt this message in to
+        // (or back out of) loading remote content.
+        if self.html_toggle_rect.is_some_and(|r| r.contains(pt)) {
+            self.html_load_remote = !self.html_load_remote;
+            // Force a reload with the new policy on the next draw.
+            self.html_key = None;
+            self.dirty = true;
+            self.shared.borrow_mut().dirty = true;
+            *handled = true;
+            return;
+        }
+        // An attachment chip saves the real bytes to disk.
+        if let Some((_, mid, ai)) = self
+            .reader_attachment_hits
+            .iter()
+            .find(|(rc, _, _)| rc.contains(pt))
+            .copied()
+        {
+            self.save_attachment_click(mid, ai);
+            *handled = true;
+            return;
+        }
+        if let Some(hit) = self.hit_at(pt) {
+            let sel = self.shared.borrow().selected;
+            if let Some(id) = sel {
+                let mut st = self.shared.borrow_mut();
+                match hit {
+                    Hit::Reply => st.push_intent(Intent::Reply(id)),
+                    Hit::Archive => st.apply_message_action(doc, id, CtxAction::Archive),
+                    Hit::Delete => st.apply_message_action(doc, id, CtxAction::Delete),
+                    Hit::Star => st.apply_message_action(doc, id, CtxAction::ToggleStar),
+                    Hit::Unread => {
+                        st.set_read(doc, id, false);
+                    }
+                    _ => {}
+                }
+                *handled = true;
             }
         }
     }
 
     /// Save a reader attachment's real bytes to the downloads directory, or
     /// report that it hasn't been downloaded (hydrated) yet.
-    fn save_attachment_click(&mut self, mid: MessageId, ai: usize) {
+    fn save_attachment_click(&self, mid: MessageId, ai: usize) {
         let mut st = self.shared.borrow_mut();
         let Some(att) = st
             .mailbox
@@ -1675,6 +1946,14 @@ impl Widget for Pane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `Widget::build_layout` returns a bare `NodeId`, not a `Result` — a
+        // framework-wide contract this one widget can't change — so a
+        // `new_leaf` failure (which a valid, freshly-created `Style` cannot
+        // produce) has no propagation path here.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_leaf on a fresh tree with a valid Style cannot fail; Widget::build_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -1689,6 +1968,14 @@ impl Widget for Pane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `node` is the id this same widget inserted into this exact tree in
+        // `build_layout` earlier in the same frame, so `layout` cannot fail
+        // here in practice; `apply_layout`'s `()` return leaves no error
+        // path, and that signature is shared framework-wide.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "node was inserted into this tree by this widget's own build_layout earlier in the same frame; Widget::apply_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
+        )]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -1730,6 +2017,105 @@ impl Widget for Pane {
         }
     }
 
+    /// Forward pointer-move/wheel into the sandboxed HTML body view while one
+    /// is actually shown in the reader, so an HTML mail scrolls; the view
+    /// consumes a wheel that lands over it. Part of [`Self::handle_event`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
+    )]
+    fn forward_html_view_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let over_html = self.role == Role::Reader
+            && self.html_view_rect.is_some()
+            && matches!(
+                event,
+                WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. }
+            );
+        if !over_html {
+            return;
+        }
+        if let Some(view) = self.html_view.as_mut() {
+            view.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+    }
+
+    /// Route a keyboard event to the focused search field (list role only),
+    /// reflecting the field's value into the query + first-row selection.
+    /// Returns whether [`Self::handle_event`] should return immediately
+    /// after this (true whenever the event was a keyboard event on the list
+    /// role, matching the field regardless of whether search was focused).
+    /// Part of [`Self::handle_event`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
+    )]
+    fn handle_search_keyboard(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !(matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List) {
+            return false;
+        }
+        let focused = self.shared.borrow().search_focused;
+        if focused {
+            if let Some(inp) = self.search_input.as_mut() {
+                inp.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+            }
+            // Reflect the field into the query + first-row selection.
+            let value = self
+                .search_input
+                .as_ref()
+                .map(|i| i.value().to_string())
+                .unwrap_or_default();
+            let mut st = self.shared.borrow_mut();
+            st.search = value;
+            crate::doc::MailDoc::set_search(state, &st.search);
+            st.selected = st.list_rows().first().map(|(id, _)| *id);
+            st.dirty = true;
+            *handled = true;
+        }
+        true
+    }
+
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1747,64 +2133,32 @@ impl Widget for Pane {
         }
         self.rebuild_hits();
 
-        // Reader: forward pointer-move and wheel into the sandboxed HTML body
-        // view (only while one is actually shown), so an HTML mail scrolls. The
-        // view consumes a wheel that lands over it.
-        if self.role == Role::Reader
-            && self.html_view_rect.is_some()
-            && matches!(
-                event,
-                WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. }
-            )
-        {
-            if let Some(view) = self.html_view.as_mut() {
-                view.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
-            }
-            if *handled {
-                return;
-            }
+        self.forward_html_view_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        if *handled {
+            return;
         }
 
-        // Keyboard: route to the focused search field (list only).
-        if matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List {
-            let focused = self.shared.borrow().search_focused;
-            if focused {
-                if let Some(inp) = self.search_input.as_mut() {
-                    inp.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                }
-                // Reflect the field into the query + first-row selection.
-                let value = self
-                    .search_input
-                    .as_ref()
-                    .map(|i| i.value().to_string())
-                    .unwrap_or_default();
-                let mut st = self.shared.borrow_mut();
-                st.search = value;
-                crate::doc::MailDoc::set_search(state, &st.search);
-                st.selected = st.list_rows().first().map(|(id, _)| *id);
-                st.dirty = true;
-                *handled = true;
-            }
+        if self.handle_search_keyboard(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
             return;
         }
 
