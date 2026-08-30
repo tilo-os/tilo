@@ -33,6 +33,9 @@ ui = { path = "../../ui" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
+# Public identity summaries + active selector. The secret share never enters
+# Settings state; switching writes only the non-secret active id.
+runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
