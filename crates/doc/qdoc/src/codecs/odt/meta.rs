@@ -10,7 +10,7 @@ use crate::schema::{
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 // `write!` into a `String` cannot fail; the discarded `Result` is the
 // `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
@@ -32,7 +32,7 @@ fn prop_for_element(local: &[u8]) -> Option<&'static str> {
 /// The element local-name (after any `prefix:`).
 fn local_name(name: &[u8]) -> &[u8] {
     match name.iter().rposition(|&b| b == b':') {
-        Some(i) => &name[i + 1..],
+        Some(i) => name.get(i.saturating_add(1)..).unwrap_or(name),
         None => name,
     }
 }
@@ -71,8 +71,7 @@ pub(super) fn import_meta(xml: &[u8], doc: &mut DocMut) {
                     text.clear();
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
+            Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
         buf.clear();
@@ -124,7 +123,7 @@ fn modeled_children(doc: &DocRef) -> String {
 
 /// Strip modeled child elements from an existing `office:meta` inner XML, keeping the unmodeled ones verbatim so they survive the round-trip.
 fn unmodeled_children(meta_inner: &[u8]) -> String {
-    let modeled: BTreeMap<&[u8], ()> = [
+    let modeled: BTreeSet<&[u8]> = [
         b"title".as_slice(),
         b"creator".as_slice(),
         b"subject".as_slice(),
@@ -134,7 +133,6 @@ fn unmodeled_children(meta_inner: &[u8]) -> String {
         b"generator".as_slice(),
     ]
     .into_iter()
-    .map(|k| (k, ()))
     .collect();
 
     let mut reader = Reader::from_reader(meta_inner);
@@ -146,9 +144,9 @@ fn unmodeled_children(meta_inner: &[u8]) -> String {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let is_modeled = modeled.contains_key(local_name(e.name().as_ref()));
+                let is_modeled = modeled.contains(local_name(e.name().as_ref()));
                 if skip_depth > 0 {
-                    skip_depth += 1;
+                    skip_depth = skip_depth.saturating_add(1);
                 } else if is_modeled {
                     skip_depth = 1;
                 } else {
@@ -156,14 +154,14 @@ fn unmodeled_children(meta_inner: &[u8]) -> String {
                 }
             }
             Ok(Event::Empty(e)) => {
-                let is_modeled = modeled.contains_key(local_name(e.name().as_ref()));
+                let is_modeled = modeled.contains(local_name(e.name().as_ref()));
                 if skip_depth == 0 && !is_modeled {
                     append_start(&mut out, &e, true);
                 }
             }
             Ok(Event::End(e)) => {
                 if skip_depth > 0 {
-                    skip_depth -= 1;
+                    skip_depth = skip_depth.saturating_sub(1);
                 } else {
                     out.extend_from_slice(b"</");
                     out.extend_from_slice(e.name().as_ref());
@@ -175,8 +173,7 @@ fn unmodeled_children(meta_inner: &[u8]) -> String {
                     out.extend_from_slice(t.into_inner().as_ref());
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
+            Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
         buf.clear();
@@ -215,14 +212,18 @@ fn meta_inner(xml: &[u8]) -> Option<Vec<u8>> {
     // The element is shallow (a flat list of children), so a substring search suffices.
     let text = String::from_utf8_lossy(s);
     let open = text.find("office:meta")?;
-    let after_name = &text[open..];
+    let after_name = text.get(open..)?;
     let gt = after_name.find('>')?;
     if after_name.as_bytes().get(gt.wrapping_sub(1)) == Some(&b'/') {
         return Some(Vec::new());
     }
-    let inner_start = open + gt + 1;
-    let close = text[inner_start..].find("</office:meta>")?;
-    Some(text[inner_start..inner_start + close].as_bytes().to_vec())
+    let inner_start = open.checked_add(gt)?.checked_add(1)?;
+    let close = text.get(inner_start..)?.find("</office:meta>")?;
+    Some(
+        text.get(inner_start..inner_start.checked_add(close)?)?
+            .as_bytes()
+            .to_vec(),
+    )
 }
 
 /// Build the `meta.xml` bytes for export, preserving unmodeled `office:meta` children from
