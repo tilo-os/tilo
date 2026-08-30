@@ -12,8 +12,6 @@ use std::collections::BTreeMap;
 /// The fixed part names + relationship ids qdoc writes for footnotes/endnotes.
 pub(super) const FOOTNOTES_PART: &str = "word/footnotes.xml";
 pub(super) const ENDNOTES_PART: &str = "word/endnotes.xml";
-pub(super) const FOOTNOTES_REL_ID: &str = "rIdQdocFtnotes";
-pub(super) const ENDNOTES_REL_ID: &str = "rIdQdocEndnotes";
 
 /// Import a footnotes/endnotes part, returning a `docx_id → qdoc_note_id` map for the
 /// body parser. Reserved separator/continuationSeparator notes hold no user content and
@@ -206,12 +204,6 @@ pub(super) struct ExportedNotes {
     pub id_map: BTreeMap<String, i64>,
     /// qdoc note id → kind, so the body emits the right reference element.
     pub kind_map: BTreeMap<String, NoteKind>,
-}
-
-impl ExportedNotes {
-    pub fn any(&self) -> bool {
-        self.footnotes_xml.is_some() || self.endnotes_xml.is_some()
-    }
 }
 
 /// Footnote and endnote ids each start at 1 (independent id spaces, as Word uses);

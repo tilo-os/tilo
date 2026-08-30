@@ -822,10 +822,6 @@ impl Widget for DiffMergeApp {
     }
 }
 
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
