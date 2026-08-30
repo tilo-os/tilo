@@ -54,14 +54,15 @@ const H: f32 = 900.0;
 fn screenshots_dir() -> PathBuf {
     // CARGO_TARGET_DIR respects workspace overrides; default to `target/`
     // under the crate root, which `cargo test` uses.
-    let root = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let root = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap_or(Path::new("."))
                 .join("target")
-        });
+        },
+        PathBuf::from,
+    );
     root.join("nirios-screenshots")
 }
 
@@ -263,7 +264,9 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn e2e_open_close_overview() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // bootstrap_demo already seeds 3 workspaces, so the Overview grid has
     // cards to paint without further appends.
     let tree = WorkspaceTree::bootstrap_demo();
@@ -371,7 +374,12 @@ fn overview_btn_hit(
     theme: &Theme,
     chrome: shell::shell::chrome_state::Chrome,
 ) -> Point {
-    let (_, centre) = probe_topbar(tree, theme, chrome, |bar| bar.overview_btn_rect());
+    let (_, centre) = probe_topbar(
+        tree,
+        theme,
+        chrome,
+        shell::shell::topbar_chrome::TopBarChrome::overview_btn_rect,
+    );
     centre
 }
 
@@ -380,7 +388,12 @@ fn tray_pill_hit(
     theme: &Theme,
     chrome: shell::shell::chrome_state::Chrome,
 ) -> Point {
-    let (_, centre) = probe_topbar(tree, theme, chrome, |bar| bar.tray_pill_rect());
+    let (_, centre) = probe_topbar(
+        tree,
+        theme,
+        chrome,
+        shell::shell::topbar_chrome::TopBarChrome::tray_pill_rect,
+    );
     centre
 }
 
@@ -430,7 +443,7 @@ fn probe_topbar(
     let presence = PresenceCtx::default();
     bar.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     let r = extract(&bar);
-    let centre = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+    let centre = Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1));
     (r, centre)
 }
 
@@ -438,7 +451,9 @@ fn probe_topbar(
 
 #[test]
 fn e2e_tab_drag_reorder() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Standalone WindowGroup with four Stub tabs, avoiding full-root plumbing.
     // Tab 1 (Files) is the drag source; tab 3 (Browser) the drop target.
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
@@ -547,7 +562,7 @@ fn e2e_tab_drag_reorder() {
 
     // Cross the 8 px DRAG_START threshold in steps, capturing one mid-drag
     // frame so the drop-zone highlight is visible.
-    let midway = Point::new((from.x + to.x) / 2.0, from.y);
+    let midway = Point::new(f64::midpoint(from.x, to.x), from.y);
     for step in [0.33_f64, 0.66, 1.0] {
         let p = Point::new(
             from.x + (to.x - from.x) * step,
@@ -664,8 +679,8 @@ fn tab_stub(id: u64, title: &str, kind: AppKind, label: &str) -> (TabDescriptor,
     )
 }
 
-/// Each tab pill's centre, via a parallel TabBar run through the same
-/// build/compute/apply/draw the real WindowGroup uses.
+/// Each tab pill's centre, via a parallel `TabBar` run through the same
+/// build/compute/apply/draw the real `WindowGroup` uses.
 fn probe_tab_centers() -> [Point; 4] {
     let descs = vec![
         TabDescriptor {
@@ -810,7 +825,7 @@ fn probe_tab_centers() -> [Point; 4] {
 }
 
 fn center(r: vello::kurbo::Rect) -> Point {
-    Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+    Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
 }
 
 /// Expected post-drop order for `(from, to) = (1, 3)`, kept separate from the
@@ -827,7 +842,9 @@ fn expected_post_drop_descriptor_order() -> Vec<&'static str> {
 
 #[test]
 fn e2e_open_quick_settings() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
     let theme = Theme::dark();
 
@@ -886,7 +903,9 @@ fn e2e_open_quick_settings() {
 // flip maximized -> floating-controls draw).
 #[test]
 fn e2e_maximized_tile_floating_controls() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
         tab_stub(1, "Notes", AppKind::Editor, "notes"),
         tab_stub(2, "Files", AppKind::Files, "files"),
@@ -1239,7 +1258,9 @@ fn pump_host(
 
 #[test]
 fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The concrete-type sibling of what the live binary builds — exercises the
     // real widget tree, not a hand-rolled stub.
     let tree = WorkspaceTree::bootstrap_demo();
@@ -1257,7 +1278,9 @@ fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
 
 #[test]
 fn e2e_escape_closes_search_palette() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
 
@@ -1283,7 +1306,9 @@ fn e2e_escape_closes_search_palette() {
 
 #[test]
 fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
@@ -1301,7 +1326,9 @@ fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
 /// commits and closes.
 #[test]
 fn e2e_overview_arrows_select_and_enter_switches_room() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
     let started_on = tree.active;
     assert!(
@@ -1351,7 +1378,9 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
 /// event must actually reach the content.
 #[test]
 fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
     let mut h = Harness::new(&tree);
     assert!(
@@ -1530,7 +1559,9 @@ impl UndoHarness {
 /// `undo` pops it back, and the next sync re-reads the empty body.
 #[test]
 fn e2e_undo_redo_round_trip_restores_golden() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut h = UndoHarness::new();
 
     let mut renderer_opt = try_new_renderer(960, 540);
@@ -1551,7 +1582,7 @@ fn e2e_undo_redo_round_trip_restores_golden() {
         let probe = probe_tab_rects();
         if let Some(pill) = probe.first() {
             let close_cx = pill.x1 - 13.0; // x0 = x1 - 22 + 9 for centre
-            let close_cy = (pill.y0 + pill.y1) / 2.0;
+            let close_cy = f64::midpoint(pill.y0, pill.y1);
             let mods = Modifiers::default();
             h.pump_event(
                 WindowEvent::CursorMoved {
@@ -1670,7 +1701,9 @@ fn e2e_undo_redo_round_trip_restores_golden() {
 /// match the post-mutation frame pixel-for-pixel.
 #[test]
 fn e2e_redo_after_undo_rehydrates_golden() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut h = UndoHarness::new();
     let mut renderer_opt = try_new_renderer(960, 540);
     let out_dir = screenshots_dir();

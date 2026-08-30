@@ -349,7 +349,7 @@ fn list_images() -> Option<Vec<Image>> {
             }
         })
         .collect();
-    images.sort_by_key(|a| a.reference());
+    images.sort_by_key(super::model::Image::reference);
     Some(images)
 }
 

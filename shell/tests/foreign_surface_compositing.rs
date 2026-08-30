@@ -143,7 +143,7 @@ fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> (FrameBuilder, Wor
             focus.expect("the mirrored tree must hold the adopted client's group");
         rendered.set_active_group(strip_id, group_id);
     }
-    fb.with_chrome(|st| st.bump());
+    fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
     (fb, protocol_tree)
 }
 
@@ -353,7 +353,7 @@ fn destroying_the_toplevel_removes_the_tab_from_the_rendered_tree() {
         foreign::reconcile_foreign_tabs(&protocol, &mut rendered)
     };
     assert!(mirrored, "the teardown must mirror across");
-    fb.with_chrome(|st| st.bump());
+    fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
     let _ = frame(&mut fb);
 
     assert!(
@@ -445,7 +445,7 @@ fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
             "the tab it was adopted beside is now in the background"
         );
     }
-    fb.with_chrome(|st| st.bump());
+    fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
     settle(&mut fb);
 
     let rect = tile_rect(&mut fb, front);

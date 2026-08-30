@@ -6,7 +6,7 @@
 //!
 //! Walks the whole chain the way a pairing does:
 //!
-//! 1. The compositor's [`PairingService`] connects to BlueZ and registers the
+//! 1. The compositor's [`PairingService`] connects to `BlueZ` and registers the
 //!    agent — the real daemon, not a stub.
 //! 2. A **root** process invokes `org.bluez.Agent1.RequestConfirmation`, which
 //!    is the only thing the bus policy permits to drive an agent, and is
@@ -204,10 +204,9 @@ fn render(view: &mut PairingPromptView, out: &PathBuf) -> Result<(), String> {
                 height: AvailableSpace::Definite(H as f32),
             },
             |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
             },
         )
         .map_err(|e| e.to_string())?;

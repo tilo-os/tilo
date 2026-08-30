@@ -293,7 +293,7 @@ mod tests {
             TileContent::AppPlaceholder { kind, .. } => {
                 assert_eq!(kind, &AppKind::Other("Editor".into()));
             }
-            other => panic!("expected AppPlaceholder, got {:?}", other),
+            other => panic!("expected AppPlaceholder, got {other:?}"),
         }
     }
 

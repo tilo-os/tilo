@@ -227,8 +227,8 @@ mod tests {
         }
         let count = std::fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "png").unwrap_or(false))
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
             .count();
         assert!(count <= 10, "disk cache pruned to its bound, got {count}");
     }

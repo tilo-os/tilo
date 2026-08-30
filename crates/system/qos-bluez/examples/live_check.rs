@@ -2,7 +2,7 @@
 //!
 //! This is a tool, not a test: it is deliberately outside the test suite so
 //! it can insist on observing real hardware instead of skipping when the bus
-//! is absent. Every failure — no system bus, no adapter, an agent BlueZ
+//! is absent. Every failure — no system bus, no adapter, an agent `BlueZ`
 //! refuses to register, a decline that does not come back as a decline —
 //! exits non-zero.
 //!

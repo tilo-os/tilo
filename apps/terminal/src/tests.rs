@@ -468,7 +468,7 @@ mod tests {
         // not hard-code a string. This test asserts the presence of a
         // `font_mono` accessor on Theme::tokens (added by Plan 1) and that the
         // terminal records the last-drawn font for inspection.
-        let mono = theme.tokens.font_mono.clone();
+        let mono = theme.tokens.font_mono;
         assert!(
             !mono.family.is_empty(),
             "theme must expose mono font tokens"
@@ -503,7 +503,7 @@ mod tests {
         let fg_a = crate::inner::map_ansi_256(1, &palette_a);
         let fg_b = crate::inner::map_ansi_256(1, &palette_b);
         assert_ne!(
-            format!("{:?}", fg_a),
+            format!("{fg_a:?}"),
             format!("{:?}", fg_b),
             "palette swap must change ANSI 1 lookup"
         );
@@ -513,7 +513,7 @@ mod tests {
         let cursor_a = crate::inner::cursor_from_palette(&palette_a);
         let cursor_b = crate::inner::cursor_from_palette(&palette_b);
         assert_ne!(
-            format!("{:?}", cursor_a),
+            format!("{cursor_a:?}"),
             format!("{:?}", cursor_b),
             "palette swap must change cursor color"
         );
@@ -523,7 +523,7 @@ mod tests {
         let cube_a = crate::inner::map_ansi_256(42, &palette_a);
         let cube_b = crate::inner::map_ansi_256(42, &palette_b);
         assert_eq!(
-            format!("{:?}", cube_a),
+            format!("{cube_a:?}"),
             format!("{:?}", cube_b),
             "6x6x6 ANSI cube is spec-defined and must not move with the theme"
         );
@@ -576,7 +576,7 @@ mod tests {
         // Before any draw, accessors return the sentinel transparent value.
         let pre = widget.last_fg_default();
         assert_eq!(
-            format!("{:?}", pre),
+            format!("{pre:?}"),
             format!("{:?}", Color::from_rgba8(0, 0, 0, 0)),
             "before first draw the cached fg must be the sentinel"
         );
@@ -589,7 +589,7 @@ mod tests {
         let cursor = crate::inner::cursor_from_palette(&palette);
         let default_cursor = crate::inner::cursor_from_palette(&TerminalPalette::dark());
         assert_ne!(
-            format!("{:?}", cursor),
+            format!("{cursor:?}"),
             format!("{:?}", default_cursor),
             "cursor must follow the palette's fg_default"
         );
@@ -838,7 +838,7 @@ mod tests {
 
         let mut payload = Vec::new();
         for i in 0..60 {
-            payload.extend_from_slice(format!("LINE{:03}\r\n", i).as_bytes());
+            payload.extend_from_slice(format!("LINE{i:03}\r\n").as_bytes());
         }
         w.feed(&mut doc, &automerge::ROOT, &payload);
         w.sync(&mut doc, &automerge::ROOT);
@@ -847,8 +847,7 @@ mod tests {
         let bottom = w.visible_lines();
         assert!(
             bottom.iter().any(|l| l.contains("LINE059")),
-            "bottom shows newest: {:?}",
-            bottom
+            "bottom shows newest: {bottom:?}"
         );
         assert!(
             !bottom.iter().any(|l| l.contains("LINE000")),
@@ -861,8 +860,7 @@ mod tests {
         let top = w.visible_lines();
         assert!(
             top.iter().any(|l| l.contains("LINE000")),
-            "top shows oldest: {:?}",
-            top
+            "top shows oldest: {top:?}"
         );
         assert!(
             !top.iter().any(|l| l.contains("LINE059")),
@@ -878,8 +876,7 @@ mod tests {
         let after = w.visible_lines();
         assert!(
             after.iter().any(|l| l.contains("LINE060")),
-            "bottom shows freshest: {:?}",
-            after
+            "bottom shows freshest: {after:?}"
         );
     }
 
@@ -1008,7 +1005,7 @@ mod tests {
 
         let mut payload = Vec::new();
         for i in 0..60 {
-            payload.extend_from_slice(format!("L{:03}\r\n", i).as_bytes());
+            payload.extend_from_slice(format!("L{i:03}\r\n").as_bytes());
         }
         w.feed(&mut doc, &automerge::ROOT, &payload);
         w.sync(&mut doc, &automerge::ROOT);
@@ -1187,8 +1184,7 @@ mod tests {
         let a = w.cell_attr(0, 0);
         assert!(
             a.bold && a.italic && a.underline && a.reverse,
-            "combined SGR style bits: {:?}",
-            a
+            "combined SGR style bits: {a:?}"
         );
 
         // A reset clears everything back to the default attribute.
@@ -1198,8 +1194,7 @@ mod tests {
         assert_eq!(b.fg, CellColor::Default);
         assert!(
             !b.bold && !b.italic && !b.underline && !b.reverse,
-            "SGR 0 resets style: {:?}",
-            b
+            "SGR 0 resets style: {b:?}"
         );
     }
 
@@ -1286,8 +1281,8 @@ mod tests {
         w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[2;9mX");
         w.sync(&mut doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
-        assert!(a.dim, "SGR 2 sets faint: {:?}", a);
-        assert!(a.strike, "SGR 9 sets crossed-out: {:?}", a);
+        assert!(a.dim, "SGR 2 sets faint: {a:?}");
+        assert!(a.strike, "SGR 9 sets crossed-out: {a:?}");
 
         // SGR 22 clears both bold and faint; SGR 29 clears crossed-out.
         w.feed(
@@ -1297,8 +1292,8 @@ mod tests {
         );
         w.sync(&mut doc, &automerge::ROOT);
         let z = w.cell_attr(0, 1);
-        assert!(!z.dim && !z.bold, "SGR 22 clears bold+faint: {:?}", z);
-        assert!(!z.strike, "SGR 29 clears crossed-out: {:?}", z);
+        assert!(!z.dim && !z.bold, "SGR 22 clears bold+faint: {z:?}");
+        assert!(!z.strike, "SGR 29 clears crossed-out: {z:?}");
     }
 
     // ---------------------------------------------------------------
@@ -1517,7 +1512,7 @@ mod tests {
         for _chunk in 0..3 {
             let mut payload = Vec::new();
             for _ in 0..50 {
-                payload.extend_from_slice(format!("ROW{:04}\r\n", emitted).as_bytes());
+                payload.extend_from_slice(format!("ROW{emitted:04}\r\n").as_bytes());
                 emitted += 1;
             }
             w.feed(&mut doc, &automerge::ROOT, &payload);
@@ -1558,7 +1553,7 @@ mod tests {
 
         let mut payload = Vec::new();
         for i in 0..40 {
-            payload.extend_from_slice(format!("BASE{:03}\r\n", i).as_bytes());
+            payload.extend_from_slice(format!("BASE{i:03}\r\n").as_bytes());
         }
         w.feed(&mut doc, &automerge::ROOT, &payload);
         w.sync(&mut doc, &automerge::ROOT);
@@ -1746,9 +1741,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0); // 12 visible rows
         // A deterministic 20-row buffer; row 5 carries a distinctive word.
-        let mut grid: Vec<String> = (0..20)
-            .map(|i| format!("row{:02} filler text", i))
-            .collect();
+        let mut grid: Vec<String> = (0..20).map(|i| format!("row{i:02} filler text")).collect();
         grid[5] = "alpha bravo charlie".to_string();
         w.force_grid(grid);
         // Simulate the draw having scrolled so row 5 is the top visible row.
@@ -1913,7 +1906,7 @@ mod tests {
             PresenceKey::App { app, .. } => {
                 assert_eq!(app, ui::permissions::AppKind::Terminal);
             }
-            other => panic!("expected App presence key, got {:?}", other),
+            other => panic!("expected App presence key, got {other:?}"),
         }
     }
 
@@ -1937,7 +1930,7 @@ mod tests {
             PresencePayload::Selection { start, end } => {
                 assert_eq!((start, end), (2, 5), "selection linearised to cell columns");
             }
-            other => panic!("expected Selection payload, got {:?}", other),
+            other => panic!("expected Selection payload, got {other:?}"),
         }
 
         // Without a selection, the payload is a Caret at the cursor.
@@ -2363,15 +2356,15 @@ mod tests {
         // The real resolver: when $SHELL is set (as it is in an interactive
         // session), spawn_default launches exactly that shell. We assert on the
         // resolver the spawn path calls, not a reimplementation.
-        if let Ok(shell) = std::env::var("SHELL") {
-            if !shell.is_empty() {
-                assert_eq!(
-                    crate::inner::resolve_login_shell(),
-                    shell,
-                    "spawn_default's shell resolution must honour $SHELL"
-                );
-                return;
-            }
+        if let Ok(shell) = std::env::var("SHELL")
+            && !shell.is_empty()
+        {
+            assert_eq!(
+                crate::inner::resolve_login_shell(),
+                shell,
+                "spawn_default's shell resolution must honour $SHELL"
+            );
+            return;
         }
         // No $SHELL in this environment: the resolver must still yield an
         // absolute shell path from passwd (or /bin/sh), never an empty string.
@@ -2696,7 +2689,7 @@ mod tests {
         );
         let (r, g, b) = rgb(lp.bg_default);
         assert!(
-            r as u32 + g as u32 + b as u32 > 360,
+            u32::from(r) + u32::from(g) + u32::from(b) > 360,
             "the light terminal ground must actually be light, got {:?}",
             (r, g, b)
         );

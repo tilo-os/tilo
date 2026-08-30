@@ -586,41 +586,6 @@ impl Widget for PreviewPane {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::seed_custom;
-
-    #[test]
-    fn font_family_change_reshapes_the_previewed_specimen() {
-        // The preview's specimen is drawn in `font_choice`; `set_spec` must
-        // recompute it from the spec's font so a font-family change updates the
-        // rendered typeface immediately (not just the font-name caption).
-        let mut p = PreviewPane::new();
-        let mut spec = seed_custom();
-
-        spec.font = "Inter".to_string();
-        p.set_spec(&spec);
-        assert_eq!(p.font_choice, FontChoice::Named("Inter".to_string()));
-
-        spec.font = "JetBrains Mono".to_string();
-        p.set_spec(&spec);
-        assert_eq!(
-            p.font_choice,
-            FontChoice::Monospace,
-            "mono font re-shapes the specimen"
-        );
-
-        spec.font = "Source Serif".to_string();
-        p.set_spec(&spec);
-        assert_eq!(
-            p.font_choice,
-            FontChoice::Serif,
-            "serif font re-shapes the specimen"
-        );
-    }
-}
-
 impl PreviewPane {
     fn draw_bar_chart(&self, scene: &mut Scene, t: Affine, rect: Rect, th: &Theme) {
         draw::fill_rrect(
@@ -707,5 +672,40 @@ impl PreviewPane {
         if let Some(last) = pts.last() {
             draw::circle(scene, t, *last, 3.5, th.accent_primary);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::seed_custom;
+
+    #[test]
+    fn font_family_change_reshapes_the_previewed_specimen() {
+        // The preview's specimen is drawn in `font_choice`; `set_spec` must
+        // recompute it from the spec's font so a font-family change updates the
+        // rendered typeface immediately (not just the font-name caption).
+        let mut p = PreviewPane::new();
+        let mut spec = seed_custom();
+
+        spec.font = "Inter".to_string();
+        p.set_spec(&spec);
+        assert_eq!(p.font_choice, FontChoice::Named("Inter".to_string()));
+
+        spec.font = "JetBrains Mono".to_string();
+        p.set_spec(&spec);
+        assert_eq!(
+            p.font_choice,
+            FontChoice::Monospace,
+            "mono font re-shapes the specimen"
+        );
+
+        spec.font = "Source Serif".to_string();
+        p.set_spec(&spec);
+        assert_eq!(
+            p.font_choice,
+            FontChoice::Serif,
+            "serif font re-shapes the specimen"
+        );
     }
 }

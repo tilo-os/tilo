@@ -6,7 +6,7 @@
 //! device peers use. When relay2 restarts and re-federates, its
 //! subscribe drains the queue in order.
 //!
-//! To simulate "restart" cleanly, relay2's state_root and device
+//! To simulate "restart" cleanly, relay2's `state_root` and device
 //! identity persist across the drop/re-`Relay::start` cycle. Its
 //! iroh secret is `load_or_create_iroh_secret` — same file → same
 //! iroh node id. Its device cert is built by the test.

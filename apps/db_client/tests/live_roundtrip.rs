@@ -60,7 +60,7 @@ fn postgres_real_round_trip() {
         s.status
     );
     // DDL is non-select.
-    assert!(create.map_or(true, |r| !r.is_select));
+    assert!(create.is_none_or(|r| !r.is_select));
 
     s.run_query(&format!(
         "INSERT INTO {table} (id, name) VALUES (1, 'alice'), (2, 'bob')"

@@ -340,7 +340,7 @@ mod tests {
                 ScalarValue::Bytes(b) => out.push_str(&String::from_utf8_lossy(b)),
                 other => out.push_str(&format!("{other:?}")),
             },
-            Value::Object(ObjType::List) | Value::Object(ObjType::Text) => {
+            Value::Object(ObjType::List | ObjType::Text) => {
                 for i in 0..doc.length(id) {
                     if let Some((v, child)) = doc.get(id, i).ok().flatten() {
                         dump_value(doc, &v, &child, out);
@@ -764,7 +764,7 @@ mod tests {
         let tree_b = guest_tree.shared();
         tree_a.write().sync_room_doc(room_a);
 
-        let rep_a = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree_a.clone())));
+        let rep_a = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree_a)));
         let rep_b = Arc::new(Mutex::new(WorkspaceTreeReplica::new(2, tree_b.clone())));
         let mut hub = Hub::new();
         hub.attach(Box::new(ArcReplica(rep_a.clone())));
@@ -805,11 +805,11 @@ mod tests {
         assert_eq!(drained.len(), 2);
         match &drained[0] {
             NeighbourMsg::SyncReq { since, .. } => assert_eq!(since, &vec![1]),
-            other => panic!("expected SyncReq, got {:?}", other),
+            other => panic!("expected SyncReq, got {other:?}"),
         }
         match &drained[1] {
             NeighbourMsg::SyncReq { since, .. } => assert_eq!(since, &vec![2]),
-            other => panic!("expected SyncReq, got {:?}", other),
+            other => panic!("expected SyncReq, got {other:?}"),
         }
         assert!(
             rep.drain_outgoing().is_empty(),
@@ -838,7 +838,7 @@ mod tests {
                 );
                 assert_eq!(r, &room.to_string(), "the request names the room");
             }
-            other => panic!("expected SyncReq, got {:?}", other),
+            other => panic!("expected SyncReq, got {other:?}"),
         }
     }
 

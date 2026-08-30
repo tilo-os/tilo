@@ -1115,7 +1115,7 @@ mod tests {
             .position(|a| a == "--seccomp")
             .expect("expected --seccomp triple in argv");
         assert_eq!(
-            argv.get(pos + 1).map(|s| s.as_str()),
+            argv.get(pos + 1).map(std::string::String::as_str),
             Some("16"),
             "argv carries --seccomp at index {pos} but the fd value is \
              {:?} (must match seccomp_fd=Some(16), not the legacy 10): \

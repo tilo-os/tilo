@@ -796,8 +796,7 @@ mod tests {
 
         let element = slide
             .children
-            .iter()
-            .next()
+            .first()
             .expect("a slide has at least one element");
         assert_eq!(element.kind, "slides.element");
         let e_actions: Vec<&str> = element.actions.iter().map(|a| a.id.as_str()).collect();
@@ -836,7 +835,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         let after = SlidesDoc::load(&state.doc).unwrap();
         assert_eq!(
@@ -991,7 +990,7 @@ mod tests {
         );
 
         // Delete-element spec == builder, carrying the element's real id.
-        let element = slide.children.iter().next().unwrap();
+        let element = slide.children.first().unwrap();
         let el_id = element
             .id
             .0

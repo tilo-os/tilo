@@ -165,7 +165,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             Command::Type { text: text.clone() }
         }
         "modifiers" => {
-            let flags = iter.next().map(String::as_str).unwrap_or("");
+            let flags = iter.next().map_or("", String::as_str);
             let (ctrl, shift, alt, logo) = parse_modifier_flags(flags)?;
             Command::Modifiers {
                 ctrl,
@@ -406,7 +406,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
                     .and_then(|v| v.as_array())
                     .map(|a| {
                         a.iter()
-                            .filter_map(|v| v.as_f64())
+                            .filter_map(serde_json::Value::as_f64)
                             .map(|f| format!("{f:.0}"))
                             .collect::<Vec<_>>()
                     })
@@ -617,7 +617,7 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Invocation, ParseError> {
-        let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         parse_args(&argv)
     }
 

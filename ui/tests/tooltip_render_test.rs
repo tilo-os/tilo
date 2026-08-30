@@ -63,7 +63,7 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
 
     // Reveal the tooltip over the first (Search) button via the shared
     // primitive — the same call the App's central TooltipHost makes.
-    let viewport = Rect::new(0.0, 0.0, w as f64, h as f64);
+    let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
     tooltip::draw_hover_tooltip(
         &mut scene,
         Affine::IDENTITY,

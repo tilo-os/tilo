@@ -940,7 +940,7 @@ impl TubeApp {
         let stub = self
             .model
             .channel(channel_id)
-            .map_or(true, |c| c.avatar_url.is_empty() || c.subscribers == 0);
+            .is_none_or(|c| c.avatar_url.is_empty() || c.subscribers == 0);
         if stub {
             self.requested_channels.insert(channel_id.to_string());
             self.request_live(Request::Channel(channel_id.to_string()));
@@ -1289,7 +1289,7 @@ impl TubeApp {
                                 && self
                                     .model
                                     .channel(cid)
-                                    .map_or(true, |c| c.avatar_url.is_empty())
+                                    .is_none_or(|c| c.avatar_url.is_empty())
                         })
                         .take(6)
                         .collect();
@@ -1334,7 +1334,7 @@ impl TubeApp {
                         && self
                             .model
                             .channel(&channel_id)
-                            .map_or(true, |c| c.avatar_url.is_empty() || c.subscribers == 0)
+                            .is_none_or(|c| c.avatar_url.is_empty() || c.subscribers == 0)
                     {
                         fetch_channels.push(channel_id);
                     }
@@ -1836,7 +1836,7 @@ impl Widget for TubeApp {
     fn needs_redraw(&self) -> bool {
         self.structure_dirty
             || self.images_pending()
-            || self.root_child.as_ref().map_or(true, |c| c.needs_redraw())
+            || self.root_child.as_ref().is_none_or(|c| c.needs_redraw())
     }
 
     fn mark_drawn(&mut self) {
@@ -1846,9 +1846,7 @@ impl Widget for TubeApp {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.root_child
-            .as_ref()
-            .map_or(true, |c| c.is_layout_dirty())
+        self.root_child.as_ref().is_none_or(|c| c.is_layout_dirty())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1934,7 +1932,7 @@ mod tests {
 
     /// A fresh app whose player uses the deterministic **synthesized** media
     /// engine, so the transport-wiring tests behave identically whether or not
-    /// the `media` (real GStreamer) backend is compiled in — a real pipeline
+    /// the `media` (real `GStreamer`) backend is compiled in — a real pipeline
     /// can't preroll/seek the fake test URLs, so its position would stay 0.
     fn fresh_synth() -> (TubeApp, AutoCommit) {
         let (app, doc) = fresh();
@@ -2004,7 +2002,7 @@ mod tests {
         app.apply(Action::OpenVideo("vid_donut".into()), &mut doc, &r);
         assert_eq!(app.model.route, Route::Watch("vid_donut".into()));
         assert_eq!(
-            app.model.history.first().map(|s| s.as_str()),
+            app.model.history.first().map(std::string::String::as_str),
             Some("vid_donut")
         );
         assert_eq!(app.model.playhead, 0.0);
@@ -2049,7 +2047,7 @@ mod tests {
                 assert!(
                     url.contains("local=true"),
                     "opened the rangeable proxy URL: {url}"
-                )
+                );
             }
             other => panic!("expected a remote source on the engine, got {other:?}"),
         }
@@ -2129,8 +2127,7 @@ mod tests {
             .player
             .borrow()
             .engine()
-            .map(|e| e.position_ms())
-            .unwrap_or(0);
+            .map_or(0, media::MediaEngine::position_ms);
         assert!(
             engine_pos > 0,
             "the auto-skip seeked the engine (pos={engine_pos})"
@@ -2144,7 +2141,7 @@ mod tests {
         let r = automerge::ROOT;
         // vid_rust_async has a Sponsor segment 1440..1570.
         app.apply(Action::OpenVideo("vid_rust_async".into()), &mut doc, &r);
-        let dur = app.model.video("vid_rust_async").unwrap().duration as f64;
+        let dur = f64::from(app.model.video("vid_rust_async").unwrap().duration);
         // Seek to ~1500s (inside the sponsor segment).
         app.apply(Action::Seek(1500.0 / dur), &mut doc, &r);
         // Auto-skip should jump the playhead to the segment end (1570).
@@ -2470,10 +2467,7 @@ mod tests {
             "auto-skip shows no manual overlay"
         );
 
-        app.model
-            .settings
-            .categories
-            .insert(key.clone(), SkipMode::Show);
+        app.model.settings.categories.insert(key, SkipMode::Show);
         assert_eq!(
             app.current_show_skip_end(),
             Some(1570.0),

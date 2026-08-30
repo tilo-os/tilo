@@ -1151,7 +1151,7 @@ mod tests {
             let back = hsv_to_rgb(h, s, v);
             for i in 0..3 {
                 assert!(
-                    (c[i] as i32 - back[i] as i32).abs() <= 1,
+                    (i32::from(c[i]) - i32::from(back[i])).abs() <= 1,
                     "channel {i}: {c:?} -> {back:?}"
                 );
             }

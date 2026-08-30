@@ -110,7 +110,7 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
     let enc = scene.encoding();
     let mut out = Vec::new();
     let mut data_cursor = 0usize;
-    for tag in enc.draw_tags.iter() {
+    for tag in &enc.draw_tags {
         let Some(words) = draw_data_words(*tag) else {
             panic!(
                 "collect_solid_colors met an unmeasured draw tag ({:#x}); add its \
@@ -119,15 +119,13 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
                 tag.0
             );
         };
-        if *tag == DrawTag::COLOR {
-            if data_cursor < enc.draw_data.len() {
-                let packed = enc.draw_data[data_cursor];
-                let r = (packed & 0xff) as u8;
-                let g = ((packed >> 8) & 0xff) as u8;
-                let b = ((packed >> 16) & 0xff) as u8;
-                let a = ((packed >> 24) & 0xff) as u8;
-                out.push((r, g, b, a));
-            }
+        if *tag == DrawTag::COLOR && data_cursor < enc.draw_data.len() {
+            let packed = enc.draw_data[data_cursor];
+            let r = (packed & 0xff) as u8;
+            let g = ((packed >> 8) & 0xff) as u8;
+            let b = ((packed >> 16) & 0xff) as u8;
+            let a = ((packed >> 24) & 0xff) as u8;
+            out.push((r, g, b, a));
         }
         data_cursor += words;
     }
@@ -746,9 +744,9 @@ fn quick_settings_renders_action_row_with_settings_camera_power() {
     let danger = theme.tokens.colors.semantic.danger.to_rgba8();
     let wash = 0.20_f32;
     let premul = (
-        (danger.r as f32 * wash).round() as u8,
-        (danger.g as f32 * wash).round() as u8,
-        (danger.b as f32 * wash).round() as u8,
+        (f32::from(danger.r) * wash).round() as u8,
+        (f32::from(danger.g) * wash).round() as u8,
+        (f32::from(danger.b) * wash).round() as u8,
     );
     let has_danger_wash = contains_color_close(&fills, (danger.r, danger.g, danger.b), 4)
         || contains_color_close(&fills, premul, 4);
@@ -1220,9 +1218,9 @@ fn topbar_system_monitor_sparkline_takes_the_cpu_metric_colour() {
     let cpu = theme.tokens.colors.semantic.success.to_rgba8();
     let a = 0.30_f32;
     let premul = (
-        (cpu.r as f32 * a).round() as u8,
-        (cpu.g as f32 * a).round() as u8,
-        (cpu.b as f32 * a).round() as u8,
+        (f32::from(cpu.r) * a).round() as u8,
+        (f32::from(cpu.g) * a).round() as u8,
+        (f32::from(cpu.b) * a).round() as u8,
     );
 
     assert!(
@@ -2030,7 +2028,7 @@ fn draw_data_word_table_accounts_for_the_whole_stream() {
     let (scene, _chrome) = render_overlay_host(&tree);
     let enc = scene.encoding();
     let mut walked = 0usize;
-    for tag in enc.draw_tags.iter() {
+    for tag in &enc.draw_tags {
         let words = draw_data_words(*tag).unwrap_or_else(|| {
             panic!(
                 "draw tag {:#x} has no measured draw_data size; add it to \

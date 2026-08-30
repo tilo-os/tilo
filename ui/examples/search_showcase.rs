@@ -4,8 +4,8 @@
 //! renders end-to-end (declare providers → query → merge/rank → grouped,
 //! selectable overlay) without opening a window.
 //!
-//! Run:  cargo run -p ui --example search_showcase
-//! Out:  $SEARCH_SHOWCASE_OUT (default /tmp/search_showcase) —
+//! Run:  cargo run -p ui --example `search_showcase`
+//! Out:  $`SEARCH_SHOWCASE_OUT` (default /`tmp/search_showcase`) —
 //!       search-{dark,light}-populated.png, search-dark-selected.png,
 //!       search-dark-empty.png
 //!
@@ -39,8 +39,7 @@ fn provider(reg: &mut SearchRegistry, kind: &'static str, icon: Icon, recs: &'st
     reg.register_fn(kind, move |q: &str| {
         recs.iter()
             .filter(|(title, sub, _)| {
-                fuzzy_score(q, title).is_some()
-                    || sub.map(|s| fuzzy_score(q, s).is_some()).unwrap_or(false)
+                fuzzy_score(q, title).is_some() || sub.is_some_and(|s| fuzzy_score(q, s).is_some())
             })
             .map(|(title, sub, id)| {
                 let mut r = SearchResult::new(kind, *title, *id).with_icon(icon);
@@ -112,10 +111,9 @@ fn lay_out_field(field: &mut SearchField, theme: &Theme, width: f64, origin: Poi
                 height: AvailableSpace::Definite(FIELD_H as f32),
             },
             |known, available, id, _, _| {
-                node_map
-                    .get(&id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
             },
         )
         .unwrap();
@@ -125,7 +123,7 @@ fn lay_out_field(field: &mut SearchField, theme: &Theme, width: f64, origin: Poi
 fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
-    let field_w = WIDTH as f64 - PAD * 2.0;
+    let field_w = f64::from(WIDTH) - PAD * 2.0;
 
     // The shared input, seeded with the query and focused (so the focus ring
     // shows). Real widget, real shared text core.
@@ -144,7 +142,7 @@ fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
     view.set_rect(Rect::new(
         PAD,
         overlay_top,
-        WIDTH as f64 - PAD,
+        f64::from(WIDTH) - PAD,
         overlay_top + view.desired_height(),
     ));
 

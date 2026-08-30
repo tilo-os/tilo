@@ -3151,7 +3151,7 @@ mod open_with_tests {
             .context_menu
             .items()
             .iter()
-            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect();
         // Selection-aware actions are present.
         for expected in [
@@ -3181,7 +3181,7 @@ mod open_with_tests {
             .context_menu
             .items()
             .iter()
-            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect();
         assert!(!labels.contains(&"Move to Trash".to_string()));
         assert!(labels.contains(&"New Folder".to_string()));
@@ -3201,7 +3201,7 @@ mod open_with_tests {
             .context_menu
             .items()
             .iter()
-            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect();
         assert!(labels.contains(&"Paste".to_string()));
     }
@@ -3851,7 +3851,7 @@ mod command_path_tests {
         std::fs::create_dir(&b).unwrap();
 
         let (mut w, _cfg) = hermetic();
-        w.navigate(a.clone());
+        w.navigate(a);
         // Simulate the list having been scrolled down 240px.
         w.scroll_offset.set((0.0, 240.0));
 
@@ -3875,7 +3875,7 @@ mod command_path_tests {
         );
 
         // Navigating to a different directory starts at the top.
-        w.navigate(b.clone());
+        w.navigate(b);
         assert_eq!(
             w.scroll_offset.get(),
             (0.0, 0.0),
@@ -4551,7 +4551,7 @@ mod breadcrumb_home_tests {
         let resolved = crate::model::user_home();
         let widget_home = FileExplorerWidget::new()
             .home_path()
-            .map(|p| p.to_path_buf());
+            .map(std::path::Path::to_path_buf);
 
         unsafe { std::env::remove_var("QOS_USER_HOME") };
 

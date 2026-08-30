@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn an_unchanged_set_produces_no_wire_traffic() {
         let o = out(0, (0, 0), (1920, 1080), 1.0);
-        assert!(plan(&[advertised(&o)], &[o.clone()]).is_empty());
+        assert!(plan(&[advertised(&o)], std::slice::from_ref(&o)).is_empty());
     }
 
     #[test]
@@ -278,7 +278,7 @@ mod tests {
         let external = out(1, (1920, 0), (2560, 1440), 1.0);
         let changes = plan(
             &[advertised(&laptop), advertised(&external)],
-            &[laptop.clone()],
+            std::slice::from_ref(&laptop),
         );
         assert_eq!(changes, vec![GlobalChange::Destroy(OutputId(1))]);
     }

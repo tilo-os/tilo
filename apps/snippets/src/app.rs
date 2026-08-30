@@ -2364,7 +2364,7 @@ mod tests {
     }
 
     /// The toolbar Delete button dispatches the byte-identical `EncodedAction`
-    /// the Ctrl+K palette's "Delete snippet" ActionSpec exports — proof the two
+    /// the Ctrl+K palette's "Delete snippet" `ActionSpec` exports — proof the two
     /// share one source of truth — and it actually removes the row.
     #[test]
     fn toolbar_delete_dispatches_the_same_action_as_the_palette() {

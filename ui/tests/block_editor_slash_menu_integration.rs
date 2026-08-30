@@ -1,5 +1,5 @@
 //! Integration: typing `/h2` then Enter on a focused paragraph block
-//! must convert the block to Heading(2). Drives the BlockEditor's
+//! must convert the block to Heading(2). Drives the `BlockEditor`'s
 //! event chain end-to-end via the test hooks.
 //!
 //! See `ui/src/widget/slash_menu.rs` and `block_editor.rs` for the
@@ -82,7 +82,7 @@ fn slash_menu_committed_kind_converts_focused_block() {
     editor.slash_menu_handle_key_for_test(&key_press(Key::Named(NamedKey::Enter), None));
     match &editor.blocks()[0].kind {
         BlockKind::Bullet { indent } => assert_eq!(*indent, 0),
-        k => panic!("expected Bullet, got {:?}", k),
+        k => panic!("expected Bullet, got {k:?}"),
     }
     assert_eq!(editor.blocks()[0].text(), "body");
 }

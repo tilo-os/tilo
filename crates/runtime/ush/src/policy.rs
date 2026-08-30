@@ -380,7 +380,7 @@ mod tests {
         assert!(Policy::load(&bad).capabilities.is_empty());
 
         let wrong = dir.path().join("wrong.json");
-        std::fs::write(&wrong, br#"[1,2,3]"#).unwrap();
+        std::fs::write(&wrong, br"[1,2,3]").unwrap();
         assert!(Policy::load(&wrong).capabilities.is_empty());
     }
 

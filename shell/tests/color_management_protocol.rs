@@ -48,7 +48,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
         state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -79,7 +79,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for ClientAppState {
         _: &mut Self,
         _: &wl_compositor::WlCompositor,
         _: wl_compositor::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -91,7 +91,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for ClientAppState {
         _: &mut Self,
         _: &wl_surface::WlSurface,
         _: wl_surface::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -103,7 +103,7 @@ impl Dispatch<WpColorManagerV1, ()> for ClientAppState {
         state: &mut Self,
         _: &WpColorManagerV1,
         event: wp_color_manager_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -136,7 +136,7 @@ impl Dispatch<WpImageDescriptionCreatorParamsV1, ()> for ClientAppState {
         _: &mut Self,
         _: &WpImageDescriptionCreatorParamsV1,
         _: wp_image_description_creator_params_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -148,7 +148,7 @@ impl Dispatch<WpImageDescriptionV1, ()> for ClientAppState {
         state: &mut Self,
         _: &WpImageDescriptionV1,
         event: wp_image_description_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -167,7 +167,7 @@ impl Dispatch<wp_color_management_surface_v1::WpColorManagementSurfaceV1, ()> fo
         _: &mut Self,
         _: &wp_color_management_surface_v1::WpColorManagementSurfaceV1,
         _: wp_color_management_surface_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -350,14 +350,12 @@ fn client_attaches_bt2020_pq_image_description_and_surface_data_records_it() {
             .object_from_protocol_id::<
                 smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
             >(&dh, surface_protocol_id)
-        {
-            if let Some((color, _hdr)) = surface_current_colorimetry(&server_surface) {
+            && let Some((color, _hdr)) = surface_current_colorimetry(&server_surface) {
                 assert_eq!(color.primaries, ColorPrimaries::Bt2020);
                 assert_eq!(color.transfer, TransferCharacteristics::SmpteSt2084);
                 server_saw_it = true;
                 break;
             }
-        }
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(

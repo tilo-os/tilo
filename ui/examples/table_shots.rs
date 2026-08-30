@@ -13,8 +13,8 @@
 //!      empty column has appeared between the
 //!      originals (asserted on the model too).
 //!
-//! Run:  cargo run -p ui --example table_shots
-//! Out:  $TABLE_SHOTS_OUT (default /tmp/table_shots)
+//! Run:  cargo run -p ui --example `table_shots`
+//! Out:  $`TABLE_SHOTS_OUT` (default /`tmp/table_shots`)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -61,7 +61,7 @@ fn seed(doc: &mut AutoCommit, t: &ObjId) {
     }
 }
 
-/// sync → build_layout → compute_layout → apply_layout at the table's natural
+/// sync → `build_layout` → `compute_layout` → `apply_layout` at the table's natural
 /// size, positioned at `(MARGIN, MARGIN)`.
 fn frame(
     table: &mut Table,
@@ -83,9 +83,9 @@ fn frame(
                 height: AvailableSpace::MaxContent,
             },
             |known, available, node_id, _, _| {
-                nm.get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
+                nm.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
             },
         )
         .unwrap();

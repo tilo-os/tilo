@@ -153,7 +153,7 @@ fn empty_doc_yields_valid_single_page_pdf() {
     assert_eq!(count(&bytes, b"/Type /Pages"), 1, "one pages tree");
     // The pages tree declares Count 1.
     assert!(count(&bytes, b"/Count 1 ") == 1, "single-page document");
-    assert!(count(&bytes, b"/Type /Catalog") == 1);
+    assert_eq!(count(&bytes, b"/Type /Catalog"), 1);
 }
 
 #[test]

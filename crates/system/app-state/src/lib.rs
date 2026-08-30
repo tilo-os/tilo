@@ -951,9 +951,8 @@ mod tests {
 
         let mut reopened = DocStore::open_for("dev.qos.stamped").unwrap();
         let loaded = reopened.load().unwrap().expect("saved document");
-        assert_eq!(
+        assert!(
             loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
-            true,
             "the version has to survive the round trip, not just live in memory"
         );
         assert_eq!(schema_version_of(&loaded), SCHEMA_VERSION);

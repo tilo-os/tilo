@@ -488,7 +488,7 @@ fn assert_well_formed_xml(xml: &str) {
                     // Self-closing — no stack change.
                 } else {
                     // Opening tag.
-                    stack.push(tag_name(tag).to_string());
+                    stack.push(tag_name(tag).clone());
                 }
                 i = end + 1;
             }

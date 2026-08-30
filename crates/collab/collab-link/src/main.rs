@@ -69,7 +69,7 @@ fn parse_args() -> Option<Config> {
             "--upstream" => upstream = args.next().map(PathBuf::from),
             "--latency-ms" => latency_ms = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             "--throughput-bps" => {
-                throughput_bps = args.next().and_then(|v| v.parse().ok()).unwrap_or(u64::MAX)
+                throughput_bps = args.next().and_then(|v| v.parse().ok()).unwrap_or(u64::MAX);
             }
             "-h" | "--help" => {
                 print_usage();
@@ -90,12 +90,11 @@ fn parse_args() -> Option<Config> {
 }
 
 fn main() {
-    let cfg = match parse_args() {
-        Some(c) => c,
-        None => {
-            print_usage();
-            std::process::exit(2);
-        }
+    let cfg = if let Some(c) = parse_args() {
+        c
+    } else {
+        print_usage();
+        std::process::exit(2);
     };
     // Best-effort unlink: prior process may have left a stale socket.
     let _ = std::fs::remove_file(&cfg.listen);
@@ -235,7 +234,7 @@ fn handle_connection(id: u64, client: UnixStream, cfg: Arc<Config>) {
                             let earned = if bytes_per_sec == u64::MAX {
                                 BUCKET_BYTES
                             } else {
-                                ((bytes_per_sec as u128 * elapsed.as_nanos()) / 1_000_000_000)
+                                ((u128::from(bytes_per_sec) * elapsed.as_nanos()) / 1_000_000_000)
                                     as u64
                             };
                             tokens = (tokens.saturating_add(earned)).min(BUCKET_BYTES);
@@ -274,12 +273,11 @@ fn handle_connection(id: u64, client: UnixStream, cfg: Arc<Config>) {
     let upstream_to_client = upstream
         .try_clone()
         .and_then(|u2| client.try_clone().map(|c2| (u2, c2)));
-    let (a, b) = match (client_to_upstream, upstream_to_client) {
-        (Ok(pair_a), Ok(pair_b)) => (pair_a, pair_b),
-        _ => {
-            eprintln!("qos-collab-link[{id}]: try_clone failed; tearing down");
-            return;
-        }
+    let (a, b) = if let (Ok(pair_a), Ok(pair_b)) = (client_to_upstream, upstream_to_client) {
+        (pair_a, pair_b)
+    } else {
+        eprintln!("qos-collab-link[{id}]: try_clone failed; tearing down");
+        return;
     };
     let h1 = spawn_forwarder(
         "c2u",

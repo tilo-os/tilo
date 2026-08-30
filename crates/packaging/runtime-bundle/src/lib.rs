@@ -1165,7 +1165,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: None,
-                extra_libs: &[libstd.clone(), libruntime.clone()],
+                extra_libs: &[libstd, libruntime],
             },
         )
         .expect("build with extras");

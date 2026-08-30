@@ -46,7 +46,7 @@ fn attest(
     attestor_sk.sign(&preimage).to_bytes()
 }
 
-/// Compute the payload_root_hash for a payload directory by doing
+/// Compute the `payload_root_hash` for a payload directory by doing
 /// a throwaway pack. The signature depends only on payload bytes,
 /// so it's stable across the final pack that embeds it.
 fn payload_root_of(payload_dir: &std::path::Path, publisher_sk: &SigningKey) -> BlobHash {
@@ -78,7 +78,7 @@ fn pack_with_attestation(
         .retain(|a| a.attestor != attestor_id);
     manifest.trust.attested_by.push(TrustAttestation {
         attestor: attestor_id.into(),
-        claim_hex: "".into(),
+        claim_hex: String::new(),
         signature_hex: hex::encode(sig),
     });
 
@@ -164,7 +164,7 @@ fn revoked_publisher_returns_revoked() {
 
     let revocation = RevocationList {
         revoked: vec![RevokedKey {
-            pubkey_hex: publisher_pub_hex.clone(),
+            pubkey_hex: publisher_pub_hex,
             reason: "compromised 2026-07-05".into(),
         }],
     };
@@ -308,17 +308,17 @@ fn multiple_attestations_first_trusted_wins() {
     let sig_b = attest(&payload_root, &publisher_pk, &attestor_b_sk);
     manifest.trust.attested_by.push(TrustAttestation {
         attestor: "attestor-a/1".into(),
-        claim_hex: "".into(),
+        claim_hex: String::new(),
         signature_hex: hex::encode(sig_a),
     });
     manifest.trust.attested_by.push(TrustAttestation {
         attestor: "attestor-b/1".into(),
-        claim_hex: "".into(),
+        claim_hex: String::new(),
         signature_hex: hex::encode(sig_b),
     });
 
     let mut store = MemoryBlobStore::new();
-    let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
+    let identity = SigningIdentity::from_signing_key(publisher_sk);
     let id = pack(payload_dir.path(), &manifest, &identity, &mut store).expect("pack");
 
     let trusted = vec![TrustedAttestor {

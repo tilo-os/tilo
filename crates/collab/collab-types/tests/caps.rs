@@ -334,9 +334,8 @@ fn caps_agree_with_role_table() {
     for role in roles {
         for op in ops {
             let table = role_permits(role, ArtifactKind::Note, op);
-            let bundle = role_caps(role)
-                .map(|ceiling| ceiling.implies(verb_for_opclass(op)))
-                .unwrap_or(false);
+            let bundle =
+                role_caps(role).is_some_and(|ceiling| ceiling.implies(verb_for_opclass(op)));
             assert_eq!(
                 table, bundle,
                 "role_permits and the cap-bundle disagree for {role:?} / {op:?}"

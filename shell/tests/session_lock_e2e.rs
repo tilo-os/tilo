@@ -89,12 +89,11 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         }
     });
 
-    match rx.recv_timeout(Duration::from_secs(20)) {
-        Ok(()) => (child, socket_path),
-        Err(_) => {
-            let _ = child.kill();
-            panic!("timed out waiting for the control socket to listen");
-        }
+    if let Ok(()) = rx.recv_timeout(Duration::from_secs(20)) {
+        (child, socket_path)
+    } else {
+        let _ = child.kill();
+        panic!("timed out waiting for the control socket to listen");
     }
 }
 

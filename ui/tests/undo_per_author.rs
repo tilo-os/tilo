@@ -115,7 +115,7 @@ fn claiming_an_unattributed_entry_still_skips_another_person() {
     state.record_committed_action(before, None, None);
 
     state.doc.put(&state.root, "theirs", 1).unwrap();
-    state.commit_action_authored(None, None, Some(them.clone()));
+    state.commit_action_authored(None, None, Some(them));
 
     let popped = state
         .undo_as(Some(&me), None, None)

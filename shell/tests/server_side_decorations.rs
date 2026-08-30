@@ -31,7 +31,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
         state: &mut Self,
         _: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -51,7 +51,7 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
         _: &mut Self,
         base: &xdg_wm_base::XdgWmBase,
         event: xdg_wm_base::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -68,7 +68,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
         _: &mut Self,
         surface: &xdg_surface::XdgSurface,
         event: xdg_surface::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -83,14 +83,14 @@ impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for Cli
         state: &mut Self,
         _: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
         event: zxdg_toplevel_decoration_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
-            if let wayland_client::WEnum::Value(mode) = mode {
-                state.modes.lock().expect("modes").push(mode);
-            }
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event
+            && let wayland_client::WEnum::Value(mode) = mode
+        {
+            state.modes.lock().expect("modes").push(mode);
         }
     }
 }
@@ -289,9 +289,7 @@ fn a_client_that_asks_to_decorate_itself_is_still_given_server_side() {
          {globals:?}"
     );
     assert!(
-        !modes
-            .iter()
-            .any(|m| *m == zxdg_toplevel_decoration_v1::Mode::ClientSide),
+        !modes.contains(&zxdg_toplevel_decoration_v1::Mode::ClientSide),
         "the compositor agreed to client-side decoration; got {modes:?}. \
          qOS owns window chrome, so the answer to this request is no."
     );

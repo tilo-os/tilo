@@ -117,7 +117,7 @@ mod tests {
                 .iter()
                 .any(|r| r.title == "Projects")
         );
-        assert!(provider.search("").len() == 3);
+        assert_eq!(provider.search("").len(), 3);
     }
 
     #[test]
@@ -154,10 +154,8 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::create_dir_all(&cfg).unwrap();
 
-        let mut app = crate::files_app::FileExplorerWidget::with_persistence(
-            Some(cfg.clone()),
-            Some(home.clone()),
-        );
+        let mut app =
+            crate::files_app::FileExplorerWidget::with_persistence(Some(cfg), Some(home.clone()));
         // Move away from Home so activation demonstrably navigates back.
         app.navigate(sub.clone());
         assert_eq!(app.current_path(), sub);

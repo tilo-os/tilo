@@ -389,7 +389,7 @@ mod tests {
         );
     }
 
-    /// An error we have not special-cased still surfaces BlueZ's own detail rather than a bare
+    /// An error we have not special-cased still surfaces `BlueZ`'s own detail rather than a bare
     /// wire name.
     #[test]
     fn unmapped_errors_keep_the_daemons_own_message() {

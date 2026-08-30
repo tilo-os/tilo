@@ -187,18 +187,15 @@ impl Compositor {
         let started = Instant::now();
         while found.len() < 3 {
             let remaining = DEADLINE.saturating_sub(started.elapsed());
-            match rx.recv_timeout(remaining) {
-                Ok((key, value)) => {
-                    found.insert(key, value);
-                }
-                Err(_) => {
-                    let _ = child.kill();
-                    panic!(
-                        "compositor did not publish all three sockets within {DEADLINE:?}; \
-                         got {found:?}. Compositor log:\n{}",
-                        log.lock().map(|l| l.join("\n")).unwrap_or_default()
-                    );
-                }
+            if let Ok((key, value)) = rx.recv_timeout(remaining) {
+                found.insert(key, value);
+            } else {
+                let _ = child.kill();
+                panic!(
+                    "compositor did not publish all three sockets within {DEADLINE:?}; \
+                     got {found:?}. Compositor log:\n{}",
+                    log.lock().map(|l| l.join("\n")).unwrap_or_default()
+                );
             }
         }
 
@@ -294,8 +291,7 @@ impl Compositor {
                 groups += value
                     .get("window_groups")
                     .and_then(|g| g.as_array())
-                    .map(|g| g.len())
-                    .unwrap_or(0);
+                    .map_or(0, std::vec::Vec::len);
             }
         });
         let mut all_tabs = Vec::new();
@@ -310,11 +306,9 @@ impl Compositor {
             all_tabs.join(", "),
             tabs.join(", "),
             tree.get("active_strip")
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "?".into()),
+                .map_or_else(|| "?".into(), std::string::ToString::to_string),
             tree.get("active_group")
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "?".into()),
+                .map_or_else(|| "?".into(), std::string::ToString::to_string),
         )
     }
 
@@ -573,11 +567,11 @@ impl TestClient {
         while y < h {
             let mut x = STEP / 2;
             while x < w {
-                compositor.pointer_move(x as f64, y as f64);
+                compositor.pointer_move(f64::from(x), f64::from(y));
                 self.pump();
                 if self.state.pointer_entered {
                     self.step(&format!("receives pointer input at ({x}, {y})"));
-                    return Some((x as f64, y as f64));
+                    return Some((f64::from(x), f64::from(y)));
                 }
                 x += STEP;
             }
@@ -826,7 +820,7 @@ impl Dispatch<WlRegistry, ()> for ClientState {
         state: &mut Self,
         registry: &WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -868,7 +862,7 @@ impl Dispatch<WlSeat, ()> for ClientState {
         state: &mut Self,
         seat: &WlSeat,
         event: wl_seat::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -896,7 +890,7 @@ impl Dispatch<WlKeyboard, ()> for ClientState {
         state: &mut Self,
         _: &WlKeyboard,
         event: wl_keyboard::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -923,7 +917,7 @@ impl Dispatch<WlPointer, ()> for ClientState {
         state: &mut Self,
         _: &WlPointer,
         event: wl_pointer::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -957,7 +951,7 @@ impl Dispatch<XdgWmBase, ()> for ClientState {
         _: &mut Self,
         wm_base: &XdgWmBase,
         event: xdg_wm_base::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -972,7 +966,7 @@ impl Dispatch<XdgSurface, ()> for ClientState {
         state: &mut Self,
         xdg_surface: &XdgSurface,
         event: xdg_surface::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -988,7 +982,7 @@ impl Dispatch<XdgToplevel, ()> for ClientState {
         _: &mut Self,
         _: &XdgToplevel,
         _: xdg_toplevel::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -1000,7 +994,7 @@ impl Dispatch<WlDataDevice, ()> for ClientState {
         state: &mut Self,
         _: &WlDataDevice,
         event: wl_data_device::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -1058,7 +1052,7 @@ impl Dispatch<WlDataOffer, ()> for ClientState {
         state: &mut Self,
         offer: &WlDataOffer,
         event: wl_data_offer::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -1099,7 +1093,7 @@ impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for ClientState {
         state: &mut Self,
         _: &ZwpPrimarySelectionDeviceV1,
         event: zwp_primary_selection_device_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -1132,7 +1126,7 @@ impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for ClientState {
         state: &mut Self,
         _: &ZwpPrimarySelectionOfferV1,
         event: zwp_primary_selection_offer_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -1572,10 +1566,11 @@ impl Compositor {
     fn named_center(&self, name: &str) -> (f64, f64) {
         let started = Instant::now();
         while started.elapsed() < DEADLINE {
-            if let Some([x, y, w, h]) = self.named_rect(name) {
-                if w > 0.0 && h > 0.0 {
-                    return (x + w / 2.0, y + h / 2.0);
-                }
+            if let Some([x, y, w, h]) = self.named_rect(name)
+                && w > 0.0
+                && h > 0.0
+            {
+                return (x + w / 2.0, y + h / 2.0);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -1666,7 +1661,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     // Let the strip finish making room for the new group before reading
     // where the pills are; a pill read mid-animation is clicked where it
     // used to be.
-    std::thread::sleep(Duration::from_millis(1000));
+    std::thread::sleep(Duration::from_secs(1));
     let files_pill = compositor.named_center("tab:Files");
     compositor.click_at(files_pill.0, files_pill.1);
     std::thread::sleep(Duration::from_millis(500));
@@ -1685,7 +1680,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     compositor.pointer_button(true);
     const NARROW_BY: f64 = 1100.0;
     for i in 1..=10 {
-        compositor.pointer_move(seam.0 - NARROW_BY * (i as f64 / 10.0), seam.1);
+        compositor.pointer_move(seam.0 - NARROW_BY * (f64::from(i) / 10.0), seam.1);
         std::thread::sleep(Duration::from_millis(30));
     }
     compositor.pointer_button(false);
@@ -1711,12 +1706,12 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
                 )
             });
         let x0 = x.max(0.0);
-        let x1 = (x + w).min(compositor.size.0 as f64);
+        let x1 = (x + w).min(f64::from(compositor.size.0));
         assert!(
             x1 > x0 + 20.0,
             "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
         );
-        ((x0 + x1) / 2.0, y + h / 2.0)
+        (f64::midpoint(x0, x1), y + h / 2.0)
     };
 
     // Press on the row and carry it over to the client in small steps, so
@@ -1917,7 +1912,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     compositor.pointer_move(seam.0, seam.1);
     compositor.pointer_button(true);
     for i in 1..=10 {
-        compositor.pointer_move(seam.0 - 1100.0 * (i as f64 / 10.0), seam.1);
+        compositor.pointer_move(seam.0 - 1100.0 * (f64::from(i) / 10.0), seam.1);
         std::thread::sleep(Duration::from_millis(30));
     }
     compositor.pointer_button(false);
@@ -1951,13 +1946,10 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
 
     let started = Instant::now();
     let inserted = loop {
-        let hit = app_log
-            .lock()
-            .map(|l| {
-                l.iter()
-                    .any(|line| line.contains("word-processor: inserted image from"))
-            })
-            .unwrap_or(false);
+        let hit = app_log.lock().is_ok_and(|l| {
+            l.iter()
+                .any(|line| line.contains("word-processor: inserted image from"))
+        });
         if hit {
             break true;
         }

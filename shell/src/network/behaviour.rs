@@ -130,8 +130,8 @@ fn seed_from_libp2p_protobuf(bytes: &[u8]) -> Option<[u8; 32]> {
     Some(seed)
 }
 
-/// Convert an Ed25519 libp2p PeerId to the Iroh endpoint that uses the same
-/// public key. Only inline-public-key PeerIds are accepted.
+/// Convert an Ed25519 libp2p `PeerId` to the Iroh endpoint that uses the same
+/// public key. Only inline-public-key `PeerIds` are accepted.
 pub fn endpoint_from_legacy_peer_id(text: &str) -> Option<iroh::EndpointId> {
     let bytes = bs58::decode(text).into_vec().ok()?;
     const PREFIX: &[u8] = &[0x00, 0x24, 0x08, 0x01, 0x12, 0x20];

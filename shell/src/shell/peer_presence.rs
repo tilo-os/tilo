@@ -1047,7 +1047,7 @@ mod two_sessions {
             "and nothing may reach the wire for it",
         );
         let mut on_host = PresenceCtx::default();
-        assert!(!host.pump(&mut on_host), "so the host has nobody to paint",);
+        assert!(!host.pump(&mut on_host), "so the host has nobody to paint");
         assert!(on_host.pointers.is_empty());
 
         guest.set_cursor(640.0, 610.0);

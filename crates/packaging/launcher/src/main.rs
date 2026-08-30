@@ -167,7 +167,7 @@ fn main() -> ExitCode {
     // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
     // paths, `--` separator) doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
-    if raw_args.get(1).map(|s| s.as_str()) == Some(SANDBOX_EXEC_SUBCOMMAND) {
+    if raw_args.get(1).map(std::string::String::as_str) == Some(SANDBOX_EXEC_SUBCOMMAND) {
         run_sandbox_exec(&raw_args[2..]);
     }
 
@@ -428,7 +428,7 @@ fn run_installed(
     // once the landlock shim is fully wired.
     let landlock_enforce = !matches!(
         std::env::var("QOS_LAUNCHER_DISABLE_LANDLOCK").as_deref(),
-        Ok("1") | Ok("true")
+        Ok("1" | "true")
     );
     // CLI-flavour launches through the PATH shim default --minimal-libs
     // on: shim invocations have no place to pass launcher flags, and CLI
@@ -436,7 +436,7 @@ fn run_installed(
     let minimal_libs = minimal_libs
         || !matches!(
             std::env::var("QOS_LAUNCHER_NO_MINIMAL_LIBS").as_deref(),
-            Ok("1") | Ok("true")
+            Ok("1" | "true")
         );
     let opts = RunOptions {
         no_services,
@@ -454,7 +454,7 @@ fn run_installed(
         // out for debugging.
         allow_unsigned_runtime: matches!(
             std::env::var("QOS_LAUNCHER_ALLOW_UNSIGNED_RUNTIME").as_deref(),
-            Ok("1") | Ok("true")
+            Ok("1" | "true")
         ),
         require_runtime_publisher: std::env::var("QOS_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
             .ok()

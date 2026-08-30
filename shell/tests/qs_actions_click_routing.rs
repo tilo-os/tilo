@@ -256,7 +256,7 @@ fn brightness_slider_click_routes_to_set_brightness() {
     let (taffy, host_node) = layout_host(&mut host);
     let bar = host.quick_settings_slider_geometry(0).0;
     let click_x = bar.x0 + bar.width() / 3.0;
-    let click_y = (bar.y0 + bar.y1) / 2.0;
+    let click_y = f64::midpoint(bar.y0, bar.y1);
     click_at(&mut host, &taffy, host_node, click_x, click_y);
 
     let calls = recorder.0.calls();
@@ -282,7 +282,7 @@ fn volume_slider_click_routes_to_set_volume() {
     let (taffy, host_node) = layout_host(&mut host);
     let bar = host.quick_settings_slider_geometry(1).0;
     let click_x = bar.x0 + bar.width() / 2.0;
-    let click_y = (bar.y0 + bar.y1) / 2.0;
+    let click_y = f64::midpoint(bar.y0, bar.y1);
     click_at(&mut host, &taffy, host_node, click_x, click_y);
 
     let calls = recorder.0.calls();
@@ -362,7 +362,7 @@ fn power_profile_chip_click_routes_to_set_power_profile() {
     let (taffy, host_node) = layout_host(&mut host);
     let pp = host.quick_settings_power_profile_geometry();
     let click_x = pp.x0 + pp.width() / 2.0;
-    let click_y = (pp.y0 + pp.y1) / 2.0;
+    let click_y = f64::midpoint(pp.y0, pp.y1);
     click_at(&mut host, &taffy, host_node, click_x, click_y);
 
     let calls = recorder.0.calls();

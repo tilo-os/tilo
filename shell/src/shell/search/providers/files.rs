@@ -826,7 +826,7 @@ fn display_path(home: &Path, path: &Path) -> String {
 mod tests {
     use super::*;
 
-    /// Facts for a path with no mtime; aged_facts covers the recency signal.
+    /// Facts for a path with no mtime; `aged_facts` covers the recency signal.
     fn facts(display: &str) -> NameFacts {
         NameFacts::new(display, None)
     }

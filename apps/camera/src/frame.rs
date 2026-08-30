@@ -427,8 +427,8 @@ mod tests {
         assert_eq!(scanned.raw, payload);
         // Corners land within the frame.
         for (x, y) in scanned.corners {
-            assert!(x >= 0.0 && x <= 900.0, "corner x in range: {x}");
-            assert!(y >= 0.0 && y <= 560.0, "corner y in range: {y}");
+            assert!((0.0..=900.0).contains(&x), "corner x in range: {x}");
+            assert!((0.0..=560.0).contains(&y), "corner y in range: {y}");
         }
     }
 

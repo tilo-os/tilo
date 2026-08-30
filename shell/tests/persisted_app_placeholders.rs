@@ -28,7 +28,7 @@ fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
                 id: tab_id,
                 title: title.into(),
                 tile: TileContent::AppPlaceholder {
-                    kind: kind.clone(),
+                    kind,
                     label: title.into(),
                 },
             }],

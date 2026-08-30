@@ -1,6 +1,6 @@
 //! Fractional-scale render invariants.
 //!
-//! The live `App` renders HiDPI by keeping layout in *logical* space and
+//! The live `App` renders `HiDPI` by keeping layout in *logical* space and
 //! compositing the whole scene through `Affine::scale(scale_factor)` into
 //! a *physical*-pixel surface (see `ui/src/app.rs`). This test pins that
 //! contract deterministically for a **fractional** 1.5× factor: a shape
@@ -34,12 +34,11 @@ fn fractional_scale_maps_logical_to_physical_with_a_hard_edge() {
     let scale = 1.5_f64;
     // Logical canvas is 60×60; physical surface is logical × scale = 90×90.
     let phys = 90u32;
-    let mut renderer = match try_new_renderer(phys, phys) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter — skipping fractional-scale render test");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(phys, phys) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter — skipping fractional-scale render test");
+        return;
     };
 
     let mut scene = Scene::new();
@@ -104,12 +103,11 @@ fn different_fractional_factors_place_the_edge_proportionally() {
     // Proves the placement scales with the factor, not a fixed rounding.
     for (scale, edge_in, edge_out) in [(1.25_f64, 60u32, 65u32), (1.75_f64, 85u32, 90u32)] {
         let phys = ((60.0 * scale).round() as u32) + 4;
-        let mut renderer = match try_new_renderer(phys, phys) {
-            Some(r) => r,
-            None => {
-                eprintln!("offscreen: no wgpu adapter — skipping ({scale}x) case");
-                return;
-            }
+        let mut renderer = if let Some(r) = try_new_renderer(phys, phys) {
+            r
+        } else {
+            eprintln!("offscreen: no wgpu adapter — skipping ({scale}x) case");
+            return;
         };
 
         let mut scene = Scene::new();
@@ -130,13 +128,13 @@ fn different_fractional_factors_place_the_edge_proportionally() {
         assert!(
             inside.2 >= 200 && inside.0 < 150,
             "at {scale}x, x={edge_in} (logical {:.1}) should be inside the square",
-            edge_in as f64 / scale
+            f64::from(edge_in) / scale
         );
         assert_eq!(
             (outside.0, outside.1, outside.2),
             (0x0f, 0x17, 0x2a),
             "at {scale}x, x={edge_out} (logical {:.1}) should be past the scaled edge",
-            edge_out as f64 / scale
+            f64::from(edge_out) / scale
         );
     }
 }

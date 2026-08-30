@@ -46,9 +46,7 @@ impl SnapshotAssertion {
 
     /// See the module doc for the full behaviour matrix.
     pub fn assert(self) {
-        let update = std::env::var_os("UPDATE_SNAPSHOTS")
-            .map(|v| v == "1")
-            .unwrap_or(false);
+        let update = std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1");
         self.assert_with(update);
     }
 
@@ -57,12 +55,11 @@ impl SnapshotAssertion {
     /// it, and the environment is process-global, so reading it here would
     /// race other tests over `UPDATE_SNAPSHOTS`.
     pub fn assert_with(self, update: bool) {
-        if !self.rendered_png.exists() {
-            panic!(
-                "snapshot: rendered PNG missing at {}",
-                self.rendered_png.display()
-            );
-        }
+        assert!(
+            self.rendered_png.exists(),
+            "snapshot: rendered PNG missing at {}",
+            self.rendered_png.display()
+        );
 
         if update {
             copy_over(&self.rendered_png, &self.golden_png);
@@ -80,31 +77,29 @@ impl SnapshotAssertion {
         let rendered = decode_png(&self.rendered_png);
         let golden = decode_png(&self.golden_png);
 
-        if rendered.width != golden.width || rendered.height != golden.height {
-            panic!(
-                "snapshot dimension mismatch: rendered={} ({}x{}) golden={} ({}x{})",
-                self.rendered_png.display(),
-                rendered.width,
-                rendered.height,
-                self.golden_png.display(),
-                golden.width,
-                golden.height,
-            );
-        }
+        assert!(
+            !(rendered.width != golden.width || rendered.height != golden.height),
+            "snapshot dimension mismatch: rendered={} ({}x{}) golden={} ({}x{})",
+            self.rendered_png.display(),
+            rendered.width,
+            rendered.height,
+            self.golden_png.display(),
+            golden.width,
+            golden.height,
+        );
 
         let diff = diff_rgba(&rendered.rgba, &golden.rgba, self.tolerance);
-        if diff.mismatching_pixels > 0 {
-            panic!(
-                "snapshot diff: rendered={} golden={}\n  \
-                 {} pixels differ (max delta {} per channel; tolerance {})\n  \
-                 rerun with UPDATE_SNAPSHOTS=1 to refresh the golden",
-                self.rendered_png.display(),
-                self.golden_png.display(),
-                diff.mismatching_pixels,
-                diff.max_delta,
-                self.tolerance,
-            );
-        }
+        assert!(
+            diff.mismatching_pixels <= 0,
+            "snapshot diff: rendered={} golden={}\n  \
+             {} pixels differ (max delta {} per channel; tolerance {})\n  \
+             rerun with UPDATE_SNAPSHOTS=1 to refresh the golden",
+            self.rendered_png.display(),
+            self.golden_png.display(),
+            diff.mismatching_pixels,
+            diff.max_delta,
+            self.tolerance,
+        );
     }
 }
 
@@ -215,13 +210,15 @@ mod tests {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
         let base = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join("target")
-            })
+            .map_or_else(
+                || {
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join("target")
+                },
+                PathBuf::from,
+            )
             .join(format!("snapshot-tests/{pid}-{n}"));
         fs::create_dir_all(&base).unwrap();
         base

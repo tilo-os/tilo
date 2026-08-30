@@ -150,8 +150,7 @@ mod tests {
             let pid = std::process::id();
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
+                .map_or(0, |d| d.as_nanos());
             let path = base.join(format!("qos-identity-prov-{name}-{pid}-{nonce}"));
             fs::create_dir_all(&path).expect("tempdir");
             Self(path)
@@ -220,7 +219,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + std::time::Duration::from_secs(3600),
+            SystemTime::now() + std::time::Duration::from_hours(1),
         )
         .unwrap();
         let url = env.to_url().unwrap();

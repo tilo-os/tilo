@@ -17,7 +17,7 @@ const W: u32 = 1600;
 const H: u32 = 900;
 
 fn fade() -> Gradient {
-    Gradient::new_linear(Point::new(0.0, 0.0), Point::new(0.0, H as f64))
+    Gradient::new_linear(Point::new(0.0, 0.0), Point::new(0.0, f64::from(H)))
         .with_extend(Extend::Pad)
         .with_stops(
             &[
@@ -43,7 +43,7 @@ fn fade() -> Gradient {
 
 /// The disc's footprint: a narrow column on the left, full height.
 fn footprint() -> Rect {
-    Rect::new(0.0, 0.0, 260.0, H as f64)
+    Rect::new(0.0, 0.0, 260.0, f64::from(H))
 }
 
 fn body(scene: &mut Scene) {

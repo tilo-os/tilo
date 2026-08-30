@@ -659,7 +659,10 @@ mod tests {
     }
 
     fn window(argv: &[OsString], n: usize) -> Vec<Vec<String>> {
-        strings(argv).windows(n).map(|w| w.to_vec()).collect()
+        strings(argv)
+            .windows(n)
+            .map(<[std::string::String]>::to_vec)
+            .collect()
     }
 
     #[test]

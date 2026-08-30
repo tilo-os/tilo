@@ -55,8 +55,7 @@ fn unique_socket(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!("qos-everything-{label}-{pid}-{nanos}.sock"))
 }
 
@@ -261,15 +260,14 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         );
 
         let event = read_event(&mut bob_app, Duration::from_millis(500));
-        let event = match event {
-            Some(e) => e,
-            None => {
-                let audit = handle.audit_for(artifact);
-                panic!(
-                    "bob did not receive op #{i}; audit: {:?}",
-                    audit.iter().map(|e| &e.rejection).collect::<Vec<_>>()
-                );
-            }
+        let event = if let Some(e) = event {
+            e
+        } else {
+            let audit = handle.audit_for(artifact);
+            panic!(
+                "bob did not receive op #{i}; audit: {:?}",
+                audit.iter().map(|e| &e.rejection).collect::<Vec<_>>()
+            );
         };
         match event {
             CollabEvent::SignedCRDTIncremental { envelope, .. } => {
@@ -365,9 +363,7 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     let event = read_event(&mut bob_app, Duration::from_millis(500))
         .expect("scrollback returns after compaction");
     match event {
-        CollabEvent::ScrollbackBatch {
-            ops, exhausted: _, ..
-        } => {
+        CollabEvent::ScrollbackBatch { ops, .. } => {
             if !ops.is_empty() {
                 let audit = handle.audit_for(artifact);
                 panic!(

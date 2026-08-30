@@ -131,7 +131,7 @@ mod tests {
     fn missing_file_is_settings_defaults() {
         let p = policy_from_settings_json("");
         assert_eq!(p, default_policy());
-        assert_eq!(p.idle_suspend, Some(Duration::from_secs(15 * 60)));
+        assert_eq!(p.idle_suspend, Some(Duration::from_mins(15)));
     }
 
     #[test]
@@ -157,7 +157,7 @@ mod tests {
             }
         }"#;
         let p = policy_from_settings_json(json);
-        assert_eq!(p.idle_suspend, Some(Duration::from_secs(20 * 60)));
+        assert_eq!(p.idle_suspend, Some(Duration::from_mins(20)));
         assert_eq!(p.lid_close_action, PowerAction::Lock);
         assert_eq!(p.power_key_action, PowerAction::Ignore);
         assert_eq!(p.low_battery_percent, 20);

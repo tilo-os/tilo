@@ -11176,10 +11176,10 @@ mod tests {
             let mut byte = 0usize;
             while byte <= para.len() {
                 let (cx, cy, _ch) = layout.caret_geometry(byte);
-                let screen_y = layout_y + cy as f64;
+                let screen_y = layout_y + f64::from(cy);
                 if screen_y >= band_top - 0.5 && screen_y < band_top + band_h {
                     // A non-leading byte on this line (so click x is unambiguous).
-                    found = Some((byte, cx as f64, cy as f64));
+                    found = Some((byte, f64::from(cx), f64::from(cy)));
                     break;
                 }
                 // Advance to the next char boundary.
@@ -11355,7 +11355,7 @@ mod tests {
         // zoom 1.0, but go through the helper to be exact).
         let hb = wp.head_band_rect;
         assert!(hb.height() > 0.0, "header band rect was cached by draw");
-        let centre_content = Point::new((hb.x0 + hb.x1) / 2.0, (hb.y0 + hb.y1) / 2.0);
+        let centre_content = Point::new(f64::midpoint(hb.x0, hb.x1), f64::midpoint(hb.y0, hb.y1));
         let screen = Point::new(
             wp.content_x_to_screen(centre_content.x),
             wp.zoom_anchor.y + (centre_content.y - wp.zoom_anchor.y) * wp.zoom,
@@ -11975,7 +11975,7 @@ mod tests {
                 .iter()
                 .find(|(a, _)| *a == want)
                 .expect("zoom button present");
-            Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+            Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
         };
 
         // Click + : zoom in one step.
@@ -13206,7 +13206,10 @@ mod tests {
         assert_eq!(wp.scroll_y, 0.0, "starts scrolled to the top");
 
         // Click the entry; the production handler scrolls that heading into view.
-        let pt = Point::new((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        let pt = Point::new(
+            f64::midpoint(rect.x0, rect.x1),
+            f64::midpoint(rect.y0, rect.y1),
+        );
         left_click(&mut wp, &mut state, pt);
         assert!(
             wp.scroll_y > 0.0,
@@ -13571,7 +13574,7 @@ mod tests {
         let (mut state, mut wp) = bound();
         wp.set_recovery_dir(dir.clone());
         let doc_path = dir.join("notes.md");
-        wp.set_file(doc_path.clone(), WpFormat::Markdown);
+        wp.set_file(doc_path, WpFormat::Markdown);
 
         // Stage a recovery copy on disk (as a previous, crashed session would).
         let rp = wp.recovery_path();
@@ -13595,7 +13598,10 @@ mod tests {
         left_click(
             &mut wp,
             &mut state,
-            Point::new((rrect.x0 + rrect.x1) / 2.0, (rrect.y0 + rrect.y1) / 2.0),
+            Point::new(
+                f64::midpoint(rrect.x0, rrect.x1),
+                f64::midpoint(rrect.y0, rrect.y1),
+            ),
         );
 
         assert!(
@@ -13637,7 +13643,10 @@ mod tests {
         left_click(
             &mut wp,
             &mut state,
-            Point::new((drect.x0 + drect.x1) / 2.0, (drect.y0 + drect.y1) / 2.0),
+            Point::new(
+                f64::midpoint(drect.x0, drect.x1),
+                f64::midpoint(drect.y0, drect.y1),
+            ),
         );
 
         assert!(wp.recovery.is_none(), "Discard dismisses the banner");
@@ -13667,7 +13676,7 @@ mod tests {
         );
 
         let mut b = WordProcessorWidget::new();
-        b.set_recovery_dir(dir.clone());
+        b.set_recovery_dir(dir);
         b.set_file(std::path::PathBuf::from("/docs/b.md"), WpFormat::Markdown);
         assert_ne!(
             pa1,
@@ -13812,7 +13821,7 @@ mod tests {
             .find(|(k, _)| *k == RulerMarker::MarginLeft)
             .map(|(_, x)| *x)
             .unwrap();
-        wp.pointer = Point::new(marker_x, (wp.ruler_rect.y0 + wp.ruler_rect.y1) / 2.0);
+        wp.pointer = Point::new(marker_x, f64::midpoint(wp.ruler_rect.y0, wp.ruler_rect.y1));
         wp.ruler_press(&mut state.doc);
         assert_eq!(
             wp.ruler_drag.map(|d| d.marker),
@@ -13908,7 +13917,7 @@ mod tests {
         let tab_content_x = page_x + wp.margins.left + 200.0;
         wp.pointer = Point::new(
             wp.content_x_to_screen(tab_content_x),
-            (wp.ruler_rect.y0 + wp.ruler_rect.y1) / 2.0,
+            f64::midpoint(wp.ruler_rect.y0, wp.ruler_rect.y1),
         );
         wp.ruler_press(&mut state.doc);
         let stops = wp.model().block_tab_stops(&state.doc, &block);
@@ -13972,7 +13981,7 @@ mod tests {
             .find(|(k, _)| matches!(k, RulerMarker::Tab(0)))
             .map(|(_, x)| *x)
             .unwrap();
-        wp.pointer = Point::new(tx, (wp.ruler_rect.y0 + wp.ruler_rect.y1) / 2.0);
+        wp.pointer = Point::new(tx, f64::midpoint(wp.ruler_rect.y0, wp.ruler_rect.y1));
         wp.ruler_press(&mut state.doc);
         assert!(
             matches!(wp.ruler_drag.map(|d| d.marker), Some(RulerMarker::Tab(0))),
@@ -13983,7 +13992,7 @@ mod tests {
         wp.pointer = Point::new(tx, wp.ruler_rect.y1 + 40.0);
         wp.ruler_drag_move();
         assert!(
-            wp.ruler_drag.map(|d| d.drop_off).unwrap_or(false),
+            wp.ruler_drag.is_some_and(|d| d.drop_off),
             "dragging below the band flags drop-off"
         );
         wp.ruler_drag_release(&mut state.doc);
@@ -14120,7 +14129,7 @@ mod tests {
         );
 
         // With no `alt` attr the block's own text (a caption) is the fallback name.
-        let mut captioned = img.clone();
+        let mut captioned = img;
         captioned.attrs.remove("alt");
         captioned.text = "Figure 1".into();
         let cap_node = WordProcessorWidget::block_access_node(&captioned).unwrap();
@@ -14916,8 +14925,8 @@ mod tests {
             .expect("a 'Larger' resize control")
             .clone();
         let pt = Point::new(
-            (larger_rect.x0 + larger_rect.x1) / 2.0,
-            (larger_rect.y0 + larger_rect.y1) / 2.0,
+            f64::midpoint(larger_rect.x0, larger_rect.x1),
+            f64::midpoint(larger_rect.y0, larger_rect.y1),
         );
         left_click_state(&mut wp, &mut state, pt);
         let (w, _h) = wp
@@ -14942,8 +14951,8 @@ mod tests {
             .expect("a flip-horizontal control")
             .clone();
         let pt = Point::new(
-            (flip_rect.x0 + flip_rect.x1) / 2.0,
-            (flip_rect.y0 + flip_rect.y1) / 2.0,
+            f64::midpoint(flip_rect.x0, flip_rect.x1),
+            f64::midpoint(flip_rect.y0, flip_rect.y1),
         );
         left_click_state(&mut wp, &mut state, pt);
         let c = wp.model().containers.clone().unwrap();
@@ -14951,8 +14960,7 @@ mod tests {
             .blocks
             .iter()
             .find(|b| b.id == id)
-            .map(|b| matches!(b.attrs.get("flip_h"), Some(qdoc::AttrVal::Bool(true))))
-            .unwrap_or(false);
+            .is_some_and(|b| matches!(b.attrs.get("flip_h"), Some(qdoc::AttrVal::Bool(true))));
         assert!(
             flipped,
             "the image's flip_h attr is set after clicking Flip Horizontal"
@@ -15151,8 +15159,8 @@ mod tests {
             &mut wp,
             &mut state,
             Point::new(
-                (open_rect.x0 + open_rect.x1) / 2.0,
-                (open_rect.y0 + open_rect.y1) / 2.0,
+                f64::midpoint(open_rect.x0, open_rect.x1),
+                f64::midpoint(open_rect.y0, open_rect.y1),
             ),
         );
         assert!(
@@ -15329,8 +15337,9 @@ mod tests {
                 .panel_hits
                 .iter()
                 .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == &custom_id))
-                .map(|(r, _)| [r.x0 as f32 + 10.0, r.y1 as f32 + 2.0])
-                .unwrap_or([950.0, 240.0]);
+                .map_or([950.0, 240.0], |(r, _)| {
+                    [r.x0 as f32 + 10.0, r.y1 as f32 + 2.0]
+                });
             wp.open_style_menu(&custom_id, anchor);
             render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-custom");
         }
@@ -15342,8 +15351,9 @@ mod tests {
                 .panel_hits
                 .iter()
                 .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == "body"))
-                .map(|(r, _)| [r.x0 as f32 + 10.0, r.y1 as f32 + 2.0])
-                .unwrap_or([950.0, 240.0]);
+                .map_or([950.0, 240.0], |(r, _)| {
+                    [r.x0 as f32 + 10.0, r.y1 as f32 + 2.0]
+                });
             wp.open_style_menu("body", anchor);
             render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-builtin");
         }

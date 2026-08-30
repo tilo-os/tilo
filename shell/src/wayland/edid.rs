@@ -188,13 +188,13 @@ fn parse_cta861_data_blocks(ext: &[u8; 128], info: &mut HdrDisplayInfo) {
         };
         // Tag 7 = "Use Extended Tag". Byte 0 of the payload is the extended
         // tag; the rest is block-specific data.
-        if tag == 7 {
-            if let Some((&extended_tag, body)) = payload.split_first() {
-                match extended_tag {
-                    5 => parse_colorimetry_data_block(body, info),
-                    6 => parse_hdr_static_metadata_block(body, info),
-                    _ => {}
-                }
+        if tag == 7
+            && let Some((&extended_tag, body)) = payload.split_first()
+        {
+            match extended_tag {
+                5 => parse_colorimetry_data_block(body, info),
+                6 => parse_hdr_static_metadata_block(body, info),
+                _ => {}
             }
         }
         i = payload_end;
@@ -410,11 +410,11 @@ mod tests {
         // (±3000 tolerance for the 10-bit fixed-point round-trip).
         let (rx, ry) = info.display_primaries[0];
         assert!(
-            (rx as i64 - 708_000).abs() < 3_000,
+            (i64::from(rx) - 708_000).abs() < 3_000,
             "red x should ≈ 708_000, got {rx}"
         );
         assert!(
-            (ry as i64 - 292_000).abs() < 3_000,
+            (i64::from(ry) - 292_000).abs() < 3_000,
             "red y should ≈ 292_000, got {ry}"
         );
         assert_eq!(info.best_named_primaries, ColorPrimaries::Bt2020);
@@ -426,13 +426,13 @@ mod tests {
         let info = parse_hdr_display_info(&edid);
         // Peak ≈ 1000 cd/m² (±30 for the rounding path).
         assert!(
-            (info.max_luminance_cd_m2 as i32 - 1000).abs() < 30,
+            (i32::from(info.max_luminance_cd_m2) - 1000).abs() < 30,
             "expected ~1000 nit peak, got {}",
             info.max_luminance_cd_m2
         );
         // Frame-average ≈ 400 cd/m².
         assert!(
-            (info.max_frame_average_luminance_cd_m2 as i32 - 400).abs() < 20,
+            (i32::from(info.max_frame_average_luminance_cd_m2) - 400).abs() < 20,
             "expected ~400 nit FALL, got {}",
             info.max_frame_average_luminance_cd_m2
         );

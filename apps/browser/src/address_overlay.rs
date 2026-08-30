@@ -539,7 +539,7 @@ mod tests {
         let mut scene = Scene::new();
         shown.render(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         assert!(
-            scene.encoding().draw_tags.len() > 0,
+            !scene.encoding().draw_tags.is_empty(),
             "a visible overlay paints the panel and rows"
         );
     }

@@ -414,7 +414,7 @@ fn stacked_apply_local_is_deterministic() {
         for i in 0..6 {
             let action = Counter::Put {
                 key: format!("k{i}"),
-                value: i as i64,
+                value: i64::from(i),
             };
             let encoded = EncodedAction::encode(COUNTER_TYPE, &action).unwrap();
             let env = apply_local(&mut a, &action, encoded)

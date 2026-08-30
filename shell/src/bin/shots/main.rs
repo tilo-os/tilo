@@ -97,11 +97,11 @@ impl Args {
         let mut argv: Vec<String> = std::env::args().skip(1).collect();
         // Subcommand detection — `shots check ...` runs the baseline
         // diff path. Anything else falls through to the modes.
-        if let Some(first) = argv.first() {
-            if first == "check" {
-                subcommand = Some("check".to_string());
-                argv.remove(0);
-            }
+        if let Some(first) = argv.first()
+            && first == "check"
+        {
+            subcommand = Some("check".to_string());
+            argv.remove(0);
         }
         while let Some(arg) = argv.first().cloned() {
             argv.remove(0);
@@ -261,8 +261,7 @@ impl Args {
             // failure mode is obvious.
             if mode != Mode::Offscreen {
                 return Err(format!(
-                    "shots check: --mode {:?} is not supported (offscreen only)",
-                    mode
+                    "shots check: --mode {mode:?} is not supported (offscreen only)"
                 ));
             }
         }
@@ -288,7 +287,7 @@ impl Args {
             // Default `out` is a directory; in recording mode we write a
             // single file. Switch the default to a `.h264` path if the
             // caller didn't supply one.
-            if out == PathBuf::from("target/nirios-shots") {
+            if out == *"target/nirios-shots" {
                 out = PathBuf::from("target/nirios-shots.h264");
             }
         }
@@ -325,7 +324,7 @@ pub fn parse_sweep_list(raw: &str) -> Result<Vec<(u32, u32)>, String> {
             continue;
         }
         let (w, h) = entry
-            .split_once(|c: char| c == 'x' || c == 'X')
+            .split_once(['x', 'X'])
             .ok_or_else(|| format!("--sweep: '{entry}' is not WxH"))?;
         let w: u32 = w
             .trim()
@@ -555,7 +554,7 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                 match entry.kind {
                     diff::DiffKind::Ok => {
                         ok_count += 1;
-                        println!("OK   {}", entry.path.display())
+                        println!("OK   {}", entry.path.display());
                     }
                     diff::DiffKind::Diff(px) => {
                         // Tolerate `max_diff_pixels` per-image — the
@@ -564,11 +563,11 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                         // expected steady state.
                         if px <= args.max_diff_pixels {
                             ok_count += 1;
-                            println!("OK   {} ({} px within tolerance)", entry.path.display(), px,);
+                            println!("OK   {} ({} px within tolerance)", entry.path.display(), px);
                         } else {
                             any_diff = true;
                             diff_count += 1;
-                            println!("DIFF {} {} pixels differ", entry.path.display(), px,);
+                            println!("DIFF {} {} pixels differ", entry.path.display(), px);
                         }
                     }
                     diff::DiffKind::Missing => {
@@ -595,8 +594,8 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                     }
                 }
             }
-            println!("shots check: {} OK, {} diff(s)", ok_count, diff_count,);
-            if any_diff { 1 } else { 0 }
+            println!("shots check: {ok_count} OK, {diff_count} diff(s)");
+            i32::from(any_diff)
         }
         Err(e) => {
             eprintln!("shots check: {e}");

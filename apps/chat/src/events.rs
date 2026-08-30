@@ -1819,7 +1819,7 @@ mod tests {
         );
     }
 
-    /// ArrowUp in an empty composer loads your most recent message into the
+    /// `ArrowUp` in an empty composer loads your most recent message into the
     /// inline editor (Slack/Discord convention).
     #[test]
     fn arrow_up_in_empty_composer_edits_last_own_message() {
@@ -1840,7 +1840,7 @@ mod tests {
         );
     }
 
-    /// ArrowUp does nothing once a draft is being composed — it must not
+    /// `ArrowUp` does nothing once a draft is being composed — it must not
     /// clobber in-progress text with an edit.
     #[test]
     fn arrow_up_with_a_draft_does_not_start_editing() {
@@ -1950,7 +1950,7 @@ mod tests {
         app.dispatch_event(&ev, 1.0, &mods, doc, &mut handled);
     }
 
-    /// A `KeyboardInput` press for a named key (Enter, Backspace, ArrowUp …).
+    /// A `KeyboardInput` press for a named key (Enter, Backspace, `ArrowUp` …).
     fn key_named(k: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(k);
@@ -2249,8 +2249,7 @@ mod tests {
             ChatDoc::list_voice_members(doc, "c_standup")
                 .into_iter()
                 .find(|m| m.user == model::ME)
-                .map(|m| m.muted)
-                .unwrap_or(false)
+                .is_some_and(|m| m.muted)
         };
         assert!(!me_muted(&doc), "unmuted on join");
         app.on_hit(Hit::CallMute, &mut doc);
@@ -2267,8 +2266,7 @@ mod tests {
         ChatDoc::list_voice_members(doc, channel)
             .into_iter()
             .find(|m| m.user == model::ME)
-            .map(|m| m.sharing)
-            .unwrap_or(false)
+            .is_some_and(|m| m.sharing)
     }
 
     #[test]

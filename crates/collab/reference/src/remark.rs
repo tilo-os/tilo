@@ -123,7 +123,7 @@ impl Remark {
     ) -> Result<EncodedAction, Undeliverable> {
         let delivery = self.delivery();
         let Delivery::Private { to } = &delivery else {
-            return Err(Undeliverable::NotPrivate { delivery: delivery });
+            return Err(Undeliverable::NotPrivate { delivery });
         };
         let author = author.into();
         // The recipient must be the author's counterpart, not merely a member.

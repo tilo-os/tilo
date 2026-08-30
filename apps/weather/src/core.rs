@@ -578,7 +578,7 @@ impl Core {
     fn is_day(&self) -> bool {
         self.model
             .selected_snapshot()
-            .map_or(true, |s| s.current.is_day)
+            .is_none_or(|s| s.current.is_day)
     }
 
     // =================================================================

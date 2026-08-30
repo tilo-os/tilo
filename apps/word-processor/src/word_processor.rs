@@ -3001,7 +3001,7 @@ mod tests {
     #[test]
     fn bind_creates_initial_paragraph_and_caret() {
         let (wp, state) = bound();
-        assert_eq!(wp.block_texts(&state), vec!["".to_string()]);
+        assert_eq!(wp.block_texts(&state), vec![String::new()]);
         assert_eq!(wp.caret.offset, 0);
         assert!(!wp.caret.block.is_empty());
     }
@@ -3313,7 +3313,7 @@ mod tests {
         let snap = qdoc::model::materialize(&state, c);
         match snap.blocks[0].attrs.get("line_spacing") {
             Some(qdoc::AttrVal::Float(f)) => {
-                assert!((f - 2.0).abs() < 1e-9, "line_spacing=2.0 stored")
+                assert!((f - 2.0).abs() < 1e-9, "line_spacing=2.0 stored");
             }
             other => panic!("expected line_spacing Float attr, got {other:?}"),
         }
@@ -3679,7 +3679,7 @@ mod tests {
             other => panic!("image block missing blob attr: {other:?}"),
         };
         assert_eq!(
-            snap.blobs.get(&hash).map(|b| b.as_slice()),
+            snap.blobs.get(&hash).map(std::vec::Vec::as_slice),
             Some(TINY_PNG),
             "blob bytes round-trip"
         );
@@ -3737,7 +3737,7 @@ mod tests {
             .filter(|b| b.kind == "cell")
             .map(|b| (int(b, "row"), int(b, "col")))
             .collect();
-        g.sort();
+        g.sort_unstable();
         g
     }
 
@@ -3747,7 +3747,7 @@ mod tests {
         let mut expected: Vec<(usize, usize)> = (0..rows)
             .flat_map(|r| (0..cols).map(move |c| (r, c)))
             .collect();
-        expected.sort();
+        expected.sort_unstable();
         assert_eq!(
             grid,
             expected.as_slice(),
@@ -4093,7 +4093,7 @@ mod tests {
             vec!["ab".to_string(), "cd".to_string()]
         );
         // Body never gained a block beyond its seeded empty paragraph.
-        assert_eq!(body_texts(&wp, &state), vec!["".to_string()]);
+        assert_eq!(body_texts(&wp, &state), vec![String::new()]);
     }
 
     #[test]
@@ -4112,7 +4112,7 @@ mod tests {
         wp.backspace(&mut state);
         assert_eq!(
             header_texts(&wp, &state),
-            vec!["ab".to_string(), "".to_string()]
+            vec!["ab".to_string(), String::new()]
         );
         wp.backspace(&mut state);
         assert_eq!(header_texts(&wp, &state), vec!["ab".to_string()]);

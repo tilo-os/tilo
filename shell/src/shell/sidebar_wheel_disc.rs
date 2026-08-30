@@ -1725,7 +1725,7 @@ impl SidebarWheelDisc {
                 continue;
             };
             let key = PresenceKey::Workspace {
-                id: format!("{}", ws_id),
+                id: format!("{ws_id}"),
             };
             let peers = ctx.peers_on(&key);
             if peers.is_empty() {
@@ -1897,7 +1897,7 @@ mod tests {
         let mut d = mk(&["Home", "Research", "Design"]).with_active_idx(1);
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
-        let cy = (d.rect.y0 + d.rect.y1) / 2.0;
+        let cy = f64::midpoint(d.rect.y0, d.rect.y1);
         let placed: Vec<Rect> = d
             .spoke_hit_rects
             .iter()
@@ -1923,7 +1923,7 @@ mod tests {
         let mut d = mk(&["Home", "Research", "Design"]);
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
-        let cy = (d.rect.y0 + d.rect.y1) / 2.0;
+        let cy = f64::midpoint(d.rect.y0, d.rect.y1);
         let placed: Vec<Rect> = d
             .spoke_hit_rects
             .iter()
@@ -1989,7 +1989,7 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         // The handler ignores wheel events not over the disc.
         let cx = drag_anchor_x(&d);
-        let cy = (d.rect.y0 + d.rect.y1) / 2.0;
+        let cy = f64::midpoint(d.rect.y0, d.rect.y1);
         pump(&mut d, cursor_event(cx, cy));
 
         for dir in [-1.0_f32, 1.0] {
@@ -2137,7 +2137,7 @@ mod tests {
         // point the inner arc starts being clipped.
         let clip_at = (1.0 - BAND_TANGENT_FRACTION) / 2.0;
         // The fade ramps linearly from 0 at the edge to 1 at FADE_IN_STOP.
-        let alpha_at_clip = clip_at / FADE_IN_STOP as f64;
+        let alpha_at_clip = clip_at / f64::from(FADE_IN_STOP);
         assert!(
             alpha_at_clip <= 0.35,
             "the band gets clipped while still at {:.0}% alpha — the cut \
@@ -2153,11 +2153,11 @@ mod tests {
     #[test]
     fn sector_slots_cover_the_whole_sweep() {
         for sweep_deg in [20.0_f64, 31.0, 38.0, 44.0] {
-            let reach = slot_reach(sweep_deg.to_radians(), SPOKE_ANGLE_STEP_DEG as f64);
+            let reach = slot_reach(sweep_deg.to_radians(), f64::from(SPOKE_ANGLE_STEP_DEG));
             // The fan runs from `-reach` to `+reach` slots, and each slot
             // spans half a gap either side of its centreline.
-            let covered =
-                reach as f64 * SPOKE_ANGLE_STEP_DEG as f64 + SPOKE_ANGLE_STEP_DEG as f64 / 2.0;
+            let covered = f64::from(reach) * f64::from(SPOKE_ANGLE_STEP_DEG)
+                + f64::from(SPOKE_ANGLE_STEP_DEG) / 2.0;
             assert!(
                 covered >= sweep_deg,
                 "at a {sweep_deg}° sweep the fan only reaches {covered}° — \
@@ -2178,7 +2178,7 @@ mod tests {
     #[test]
     fn dragging_the_rim_reports_dirty_on_every_move() {
         let mut d = mk(&["Home", "Research", "Design"]);
-        let cy = (d.rect.y0 + d.rect.y1) / 2.0;
+        let cy = f64::midpoint(d.rect.y0, d.rect.y1);
         let x = drag_anchor_x(&d);
         paint(&mut d);
         assert!(
@@ -2296,7 +2296,7 @@ mod tests {
             d.rect.x1,
             pointer.x
         );
-        let centre_y = (d.rect.y0 + d.rect.y1) / 2.0;
+        let centre_y = f64::midpoint(d.rect.y0, d.rect.y1);
         assert!(
             (centre_y - pointer.y).abs() < 1.0,
             "the disc centres on the pointer vertically, got {centre_y} for pointer y={}",
@@ -2446,7 +2446,7 @@ mod tests {
         // `15/0.15 = 100px` is exactly one gap; margin lands cleanly past.
         // Dragged UPWARD: workspace 0 is the first, so pulling down pulls
         // against the top end instead of reaching a neighbour.
-        let drag_dy = (gap / DRAG_FACTOR) as f64 + 30.0;
+        let drag_dy = f64::from(gap / DRAG_FACTOR) + 30.0;
         pump(&mut d, cursor_event(cx, start_y - drag_dy));
         assert!(d.rotation_deg < 0.0);
 
@@ -2546,7 +2546,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, id)| SpokeLabel {
-                text: format!("WS-{}", i),
+                text: format!("WS-{i}"),
                 workspace_id: Some(id.0),
             })
             .collect();
@@ -2558,7 +2558,7 @@ mod tests {
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
-        let drag_dy = (d.spoke_gap_deg() / DRAG_FACTOR) as f64 + 100.0;
+        let drag_dy = f64::from(d.spoke_gap_deg() / DRAG_FACTOR) + 100.0;
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
         pump(&mut d, cursor_event(cx, start_y - drag_dy));
@@ -2590,7 +2590,7 @@ mod tests {
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
-        let drag_dy = (d.spoke_gap_deg() / DRAG_FACTOR) as f64 + 100.0;
+        let drag_dy = f64::from(d.spoke_gap_deg() / DRAG_FACTOR) + 100.0;
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
         // Upward — workspace 0 is the top of a finite list.
@@ -2607,9 +2607,9 @@ mod tests {
         // Derived from the gap rather than hardcoded, so retuning the
         // geometry keeps the drag in the same relative place.
         let mut d = mk(&["A", "B", "C", "D"]);
-        let gap = d.spoke_gap_deg() as f64;
+        let gap = f64::from(d.spoke_gap_deg());
         assert!(gap > 0.0, "degenerate gap {gap}");
-        let drag_px = 0.73 * gap / DRAG_FACTOR as f64;
+        let drag_px = 0.73 * gap / f64::from(DRAG_FACTOR);
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
@@ -2629,9 +2629,7 @@ mod tests {
         let visual_at_release = d.visual_rotation_deg();
         assert!(
             (visual_at_release - pre_snap_deg).abs() < 1e-2,
-            "follow spring should have caught up to the drag target {} (got {})",
-            pre_snap_deg,
-            visual_at_release
+            "follow spring should have caught up to the drag target {pre_snap_deg} (got {visual_at_release})"
         );
         assert!(pump(&mut d, release_event()));
 
@@ -2675,16 +2673,10 @@ mod tests {
             "settled spring must stop asking for frames"
         );
         let target = d.rotation_deg;
-        let visual = d
-            .rotation_spring
-            .as_ref()
-            .map(|s| s.value())
-            .unwrap_or(target);
+        let visual = d.rotation_spring.as_ref().map_or(target, ui::Spring::value);
         assert!(
             (visual - target).abs() < 1.0,
-            "visual rotation {} must be within 1° of target {}",
-            visual,
-            target
+            "visual rotation {visual} must be within 1° of target {target}"
         );
     }
 
@@ -2852,7 +2844,7 @@ mod tests {
         let radius = disc.diameter_px / 2.0;
         let mut visible_deg = 0i32;
         for deg in 0..360 {
-            let a = (deg as f64).to_radians();
+            let a = f64::from(deg).to_radians();
             let x = c.x + radius * a.cos();
             if x >= disc.rect.x0 - 1e-6 {
                 visible_deg += 1;
@@ -2861,15 +2853,12 @@ mod tests {
         let expected = 2.0 * (1.0 - VISIBLE_RADIUS_FRACTION).acos().to_degrees();
         let tol = 2.0;
         assert!(
-            (visible_deg as f64 - expected).abs() <= tol,
-            "visible arc must be ~{:.1}°; counted {}°",
-            expected,
-            visible_deg,
+            (f64::from(visible_deg) - expected).abs() <= tol,
+            "visible arc must be ~{expected:.1}°; counted {visible_deg}°",
         );
         assert!(
             visible_deg <= 122,
-            "visible arc must not exceed 120°; counted {}°",
-            visible_deg,
+            "visible arc must not exceed 120°; counted {visible_deg}°",
         );
     }
 
@@ -2954,12 +2943,12 @@ mod tests {
 
         // One detent is `gap / DRAG_FACTOR` px; walk three in small
         // steps, sampling the indicator continuously.
-        let px_per_detent = (gap / DRAG_FACTOR) as f64;
+        let px_per_detent = f64::from(gap / DRAG_FACTOR);
         let mut seen = vec![d.active_idx];
         let mut steps_at = Vec::new();
         let sub_steps = 60;
         for i in 1..=(3 * sub_steps) {
-            let dy = -(px_per_detent * 3.0) * (i as f64 / (3 * sub_steps) as f64);
+            let dy = -(px_per_detent * 3.0) * (f64::from(i) / f64::from(3 * sub_steps));
             drag_to(&mut d, cx, start_y, dy, 2);
             if *seen.last().expect("seeded") != d.active_idx {
                 steps_at.push((d.active_idx, d.visual_rotation_deg()));
@@ -2999,14 +2988,20 @@ mod tests {
         // Just past halfway, then release — a plain one-detent settle
         // with no fling. Stated as a fraction of the gap so retuning
         // the geometry can't turn "past halfway" into two detents.
-        let gap = d.spoke_gap_deg() as f64;
-        drag_to(&mut d, cx, start_y, -(0.6 * gap / DRAG_FACTOR as f64), 40);
+        let gap = f64::from(d.spoke_gap_deg());
+        drag_to(
+            &mut d,
+            cx,
+            start_y,
+            -(0.6 * gap / f64::from(DRAG_FACTOR)),
+            40,
+        );
         assert!(pump(&mut d, release_event()));
 
         let target = d.rotation_deg;
         let start = d.visual_rotation_deg();
         assert!(
-            (target - start).abs() as f64 > gap * 0.1,
+            f64::from((target - start).abs()) > gap * 0.1,
             "nothing to settle: start {start:.2}° target {target:.2}° \
              (gap {gap:.2}°)"
         );
@@ -3047,9 +3042,10 @@ mod tests {
     fn the_rim_trails_a_fast_drag_further_than_a_slow_one() {
         let lag_for = |gaps_per_frame: f64| -> f32 {
             let names: Vec<String> = (0..16).map(|i| format!("W{i}")).collect();
-            let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            let refs: Vec<&str> = names.iter().map(std::string::String::as_str).collect();
             let mut d = mk(&refs);
-            let px_per_frame = gaps_per_frame * d.spoke_gap_deg() as f64 / DRAG_FACTOR as f64;
+            let px_per_frame =
+                gaps_per_frame * f64::from(d.spoke_gap_deg()) / f64::from(DRAG_FACTOR);
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
             pump(&mut d, cursor_event(cx, start_y));
@@ -3089,7 +3085,8 @@ mod tests {
     fn a_flick_carries_past_the_workspace_a_slow_release_settles_on() {
         let land = |gaps_per_frame: f64, pause_frames: usize| -> usize {
             let mut d = mk(&["A", "B", "C", "D", "E", "F", "G", "H"]);
-            let px_per_frame = gaps_per_frame * d.spoke_gap_deg() as f64 / DRAG_FACTOR as f64;
+            let px_per_frame =
+                gaps_per_frame * f64::from(d.spoke_gap_deg()) / f64::from(DRAG_FACTOR);
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
             pump(&mut d, cursor_event(cx, start_y));
@@ -3133,7 +3130,7 @@ mod tests {
         let mut last_gain = f32::INFINITY;
         let mut last = 0.0f32;
         let reach = d.overscroll_reach_deg();
-        for pull_px in (1..=12).map(|i| i as f64 * 100.0) {
+        for pull_px in (1..=12).map(|i| f64::from(i) * 100.0) {
             drag_to(&mut d, cx, start_y, pull_px, 30);
             let at = d.rotation_deg;
             assert!(
@@ -3251,7 +3248,7 @@ mod tests {
         // One wheel click is 16 px; the detent is 48.
         for click in 1..=3 {
             pump(&mut d, wheel_event(-1.0));
-            let expected = if click == 3 { 1 } else { 0 };
+            let expected = usize::from(click == 3);
             assert_eq!(
                 d.selected_idx(),
                 expected,
@@ -3353,8 +3350,14 @@ mod tests {
         assert!(pump(&mut d, press_event()));
         // A clear detent and a bit, in gaps rather than pixels — pixel
         // cost per detent depends on the layout geometry.
-        let gap = d.spoke_gap_deg() as f64;
-        drag_to(&mut d, cx, start_y, -(1.3 * gap / DRAG_FACTOR as f64), 30);
+        let gap = f64::from(d.spoke_gap_deg());
+        drag_to(
+            &mut d,
+            cx,
+            start_y,
+            -(1.3 * gap / f64::from(DRAG_FACTOR)),
+            30,
+        );
         assert!(pump(&mut d, release_event()));
         assert_ne!(d.selected_idx(), 0);
         assert_ne!(

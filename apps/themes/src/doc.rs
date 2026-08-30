@@ -174,7 +174,7 @@ mod tests {
         let back = load_catalog(&doc, &root).unwrap();
         assert_eq!(back.len(), cat.len());
         assert_eq!(back[0].name, cat[0].name);
-        assert_eq!(back.last().unwrap().builtin, false);
+        assert!(!back.last().unwrap().builtin);
     }
 
     #[test]

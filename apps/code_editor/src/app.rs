@@ -3564,11 +3564,11 @@ mod tests {
         let mut found = false;
         for _ in 0..300 {
             app.sync(&mut state.doc, &state.root);
-            if let Some(t) = app.shots_terminal_grid_text() {
-                if t.contains("IDE_TERM_OK") {
-                    found = true;
-                    break;
-                }
+            if let Some(t) = app.shots_terminal_grid_text()
+                && t.contains("IDE_TERM_OK")
+            {
+                found = true;
+                break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -3908,7 +3908,7 @@ mod tests {
     /// Overwrite a buffer's whole text through the CRDT, the way an edit does.
     fn replace_buffer_text(doc: &mut AutoCommit, node: crate::model::NodeId, text: &str) {
         let obj = EditorDoc::ensure_buffer(doc, node, "");
-        let len = doc.text(&obj).map(|t| t.chars().count()).unwrap_or(0);
+        let len = doc.text(&obj).map_or(0, |t| t.chars().count());
         EditorDoc::splice(doc, &obj, 0, len, text);
     }
 

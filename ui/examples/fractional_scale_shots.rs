@@ -14,8 +14,8 @@
 //! At 1.5× the text and strokes are rasterised at 1.5× the pixels from the same
 //! vector outlines — crisp, not a blurry upscale of the 1.0× raster.
 //!
-//! Run:  cargo run -p ui --example fractional_scale_shots
-//! Out:  $FRAC_SCALE_SHOTS_OUT (default /tmp/frac_scale_shots)
+//! Run:  cargo run -p ui --example `fractional_scale_shots`
+//! Out:  $`FRAC_SCALE_SHOTS_OUT` (default /`tmp/frac_scale_shots`)
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -67,10 +67,9 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: P
                 height: AvailableSpace::Definite(LOGICAL_H as f32),
             },
             |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
             },
         )
         .unwrap();

@@ -1160,8 +1160,7 @@ mod active_tab_tests {
         let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
             panic!(
                 "grant must be keyed by the foreign client's real app-id; \
-                 grants = {:?}",
-                grants
+                 grants = {grants:?}"
             )
         });
         assert!(
@@ -1173,8 +1172,7 @@ mod active_tab_tests {
         );
         assert!(
             !grants.contains_key("Foreign"),
-            "grant must not be keyed by a display label: {:?}",
-            grants
+            "grant must not be keyed by a display label: {grants:?}"
         );
     }
 
@@ -1201,13 +1199,11 @@ mod active_tab_tests {
         assert!(
             grants.contains_key("org.nirios.Editor"),
             "built-in Editor must be keyed by its canonical app-id; \
-             grants = {:?}",
-            grants
+             grants = {grants:?}"
         );
         assert!(
             !grants.contains_key("Editor"),
-            "the display label 'Editor' must no longer be a grant key: {:?}",
-            grants
+            "the display label 'Editor' must no longer be a grant key: {grants:?}"
         );
     }
 

@@ -40,8 +40,7 @@ fn unique_socket(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!("qos-broker-{label}-{pid}-{nanos}.sock"))
 }
 
@@ -172,7 +171,7 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
     write_frame(
         &mut outsider,
         &CollabRequest::SignedSyncIncremental {
-            envelope: Box::new(invalid_op.clone()),
+            envelope: Box::new(invalid_op),
         },
     );
 
@@ -267,7 +266,7 @@ fn replay_of_same_signed_op_is_dropped() {
     write_frame(
         &mut editor,
         &CollabRequest::SignedSyncIncremental {
-            envelope: Box::new(op.clone()),
+            envelope: Box::new(op),
         },
     );
     let stray = read_event(&mut observer, Duration::from_millis(200));

@@ -898,7 +898,7 @@ mod tests {
         for md in cases {
             let inline = parse_inline(md);
             let re = serialize_inline(&inline);
-            assert_eq!(re, md, "round-trip failed for {:?}", md);
+            assert_eq!(re, md, "round-trip failed for {md:?}");
         }
     }
 

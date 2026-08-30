@@ -24,9 +24,10 @@ const W: u32 = 1600;
 const H: u32 = 900;
 
 fn shot_dir() -> std::path::PathBuf {
-    std::env::var("QOS_SHOT_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("qos-apps-shots"))
+    std::env::var("QOS_SHOT_DIR").map_or_else(
+        |_| std::env::temp_dir().join("qos-apps-shots"),
+        std::path::PathBuf::from,
+    )
 }
 
 struct Driver {
@@ -104,8 +105,7 @@ fn render_every_boot_tab() {
     let tab_count = fb
         .host_mut()
         .group_at_for_tests(strip_id, 0)
-        .map(|g| g.tabs().len())
-        .unwrap_or(0);
+        .map_or(0, |g| g.tabs().len());
 
     for idx in 0..tab_count {
         let (pill, title) = {

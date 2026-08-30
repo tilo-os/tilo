@@ -357,7 +357,7 @@ mod tests {
     }
 
     /// The prompt reaching the UI carries the passkey and the device's display name, and
-    /// accepting returns `Ok` to BlueZ.
+    /// accepting returns `Ok` to `BlueZ`.
     #[tokio::test]
     async fn confirmation_prompt_reaches_the_ui_and_accepting_unblocks_bluez() {
         let (a, mut rx) = agent();
@@ -393,7 +393,7 @@ mod tests {
         assert!(matches!(err, AgentError::Rejected(_)), "{err:?}");
     }
 
-    /// A typed passkey comes back to BlueZ as the u32 it asked for.
+    /// A typed passkey comes back to `BlueZ` as the u32 it asked for.
     #[tokio::test]
     async fn typed_passkey_is_returned_verbatim() {
         let (a, mut rx) = agent();

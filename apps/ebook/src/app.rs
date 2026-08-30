@@ -1338,8 +1338,7 @@ impl BooksApp {
         self.library
             .get(i)
             .and_then(|b| self.library_paths.get(&b.id))
-            .map(|p| is_shared(p))
-            .unwrap_or(false)
+            .is_some_and(|p| is_shared(p))
     }
 
     /// Hydrate the reader's persisted library from the document on first
@@ -9232,7 +9231,7 @@ mod interaction_tests {
     /// A point at the centre of the first laid-out word on the current page.
     fn page_point(app: &BooksApp) -> Point {
         let r = &app.sel_runs[0];
-        Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+        Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
     }
 
     /// A real double-click (two rapid presses at the same point).
@@ -9595,14 +9594,17 @@ mod interaction_tests {
 
         // Press inside the first run, then drag to a run in a *later* block.
         let r0 = app.sel_runs[0];
-        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
+        let start = Point::new(f64::midpoint(r0.x0, r0.x1), f64::midpoint(r0.y0, r0.y1));
         let later = app
             .sel_runs
             .iter()
             .find(|r| r.block > r0.block)
-            .cloned()
+            .copied()
             .expect("a run in a later paragraph");
-        let end = Point::new((later.x0 + later.x1) / 2.0, (later.y0 + later.y1) / 2.0);
+        let end = Point::new(
+            f64::midpoint(later.x0, later.x1),
+            f64::midpoint(later.y0, later.y1),
+        );
 
         ptr_move(&mut app, &mut doc, start);
         ptr_down(&mut app, &mut doc);
@@ -9645,14 +9647,17 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Make a cross-paragraph selection via drag.
         let r0 = app.sel_runs[0];
-        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
+        let start = Point::new(f64::midpoint(r0.x0, r0.x1), f64::midpoint(r0.y0, r0.y1));
         let later = app
             .sel_runs
             .iter()
             .find(|r| r.block > r0.block)
-            .cloned()
+            .copied()
             .unwrap();
-        let end = Point::new((later.x0 + later.x1) / 2.0, (later.y0 + later.y1) / 2.0);
+        let end = Point::new(
+            f64::midpoint(later.x0, later.x1),
+            f64::midpoint(later.y0, later.y1),
+        );
         ptr_move(&mut app, &mut doc, start);
         ptr_down(&mut app, &mut doc);
         ptr_move(&mut app, &mut doc, end);
@@ -9689,9 +9694,9 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Select a long span: from the first run to the last, across paragraphs.
         let r0 = app.sel_runs[0];
-        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
+        let start = Point::new(f64::midpoint(r0.x0, r0.x1), f64::midpoint(r0.y0, r0.y1));
         let last = *app.sel_runs.last().unwrap();
-        let end = Point::new(last.x1, (last.y0 + last.y1) / 2.0);
+        let end = Point::new(last.x1, f64::midpoint(last.y0, last.y1));
         ptr_move(&mut app, &mut doc, start);
         ptr_down(&mut app, &mut doc);
         ptr_move(&mut app, &mut doc, end);
@@ -9743,8 +9748,8 @@ mod interaction_tests {
 
         // Make a selection, then `c` is consumed (it drives the copy path).
         let r0 = app.sel_runs[0];
-        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
-        let end = Point::new(r0.x1, (r0.y0 + r0.y1) / 2.0);
+        let start = Point::new(f64::midpoint(r0.x0, r0.x1), f64::midpoint(r0.y0, r0.y1));
+        let end = Point::new(r0.x1, f64::midpoint(r0.y0, r0.y1));
         ptr_move(&mut app, &mut doc, start);
         ptr_down(&mut app, &mut doc);
         ptr_move(&mut app, &mut doc, end);
@@ -9763,9 +9768,9 @@ mod interaction_tests {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         // Same page, popover closed then open.
-        let closed = render_scene(&mut app, &mut doc, w as f64, h as f64);
+        let closed = render_scene(&mut app, &mut doc, f64::from(w), f64::from(h));
         app.type_popover = true;
-        let open = render_scene(&mut app, &mut doc, w as f64, h as f64);
+        let open = render_scene(&mut app, &mut doc, f64::from(w), f64::from(h));
 
         let mut ro = OffscreenRenderer::new(w, h);
         let c_px = ro.render_rgba(&closed);
@@ -9775,7 +9780,7 @@ mod interaction_tests {
         let (x, y) = (400u32, 250u32);
         let a0 = OffscreenRenderer::sample(&c_px, w, x, y);
         let a1 = OffscreenRenderer::sample(&o_px, w, x, y);
-        let d = |u: u8, v: u8| (u as i32 - v as i32).abs();
+        let d = |u: u8, v: u8| (i32::from(u) - i32::from(v)).abs();
         assert!(
             d(a0.0, a1.0) <= 3 && d(a0.1, a1.1) <= 3 && d(a0.2, a1.2) <= 3,
             "the open settings popover must not dim the page: {a0:?} vs {a1:?}",
@@ -10079,20 +10084,20 @@ mod interaction_tests {
             .sel_runs
             .iter()
             .rfind(|r| r.block == r0.block)
-            .cloned()
+            .copied()
             .unwrap();
         ptr_move(
             &mut app,
             &mut doc,
-            Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0),
+            Point::new(f64::midpoint(r0.x0, r0.x1), f64::midpoint(r0.y0, r0.y1)),
         );
         ptr_down(&mut app, &mut doc);
         ptr_move(
             &mut app,
             &mut doc,
             Point::new(
-                (end_run.x0 + end_run.x1) / 2.0,
-                (end_run.y0 + end_run.y1) / 2.0,
+                f64::midpoint(end_run.x0, end_run.x1),
+                f64::midpoint(end_run.y0, end_run.y1),
             ),
         );
         ptr_up(&mut app, &mut doc);
@@ -10137,10 +10142,13 @@ mod interaction_tests {
             .sel_runs
             .iter()
             .find(|r| r.block != src_block)
-            .cloned()
+            .copied()
             .expect("another paragraph is visible on the page");
         let target_block = target.block;
-        let target_pt = Point::new((target.x0 + target.x1) / 2.0, (target.y0 + target.y1) / 2.0);
+        let target_pt = Point::new(
+            f64::midpoint(target.x0, target.x1),
+            f64::midpoint(target.y0, target.y1),
+        );
 
         // Grab the marker and drag it onto the target paragraph.
         ptr_move(&mut app, &mut doc, marker_rect.center());
@@ -10190,20 +10198,20 @@ mod interaction_tests {
             .sel_runs
             .iter()
             .rfind(|r| r.block == r0.block)
-            .cloned()
+            .copied()
             .unwrap();
         ptr_move(
             &mut app,
             &mut doc,
-            Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0),
+            Point::new(f64::midpoint(r0.x0, r0.x1), f64::midpoint(r0.y0, r0.y1)),
         );
         ptr_down(&mut app, &mut doc);
         ptr_move(
             &mut app,
             &mut doc,
             Point::new(
-                (end_run.x0 + end_run.x1) / 2.0,
-                (end_run.y0 + end_run.y1) / 2.0,
+                f64::midpoint(end_run.x0, end_run.x1),
+                f64::midpoint(end_run.y0, end_run.y1),
             ),
         );
         ptr_up(&mut app, &mut doc);
@@ -10313,7 +10321,7 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // The gap midpoint between the two words must be inside a drawn band —
         // proving the band is continuous, not per-glyph.
-        let gap_mid = Point::new((a.x1 + b.x0) / 2.0, (a.y0 + a.y1) / 2.0);
+        let gap_mid = Point::new(f64::midpoint(a.x1, b.x0), f64::midpoint(a.y0, a.y1));
         assert!(
             app.hi_bands.iter().any(|band| band.contains(gap_mid)),
             "a continuous highlight band covers the inter-word gap"
@@ -10835,7 +10843,7 @@ mod interaction_tests {
     // ---- single source of truth: affordance == palette ActionSpec -----------
 
     /// The comment-overlay Delete (×) button dispatches the byte-identical
-    /// `EncodedAction` the palette's "Delete comment" ActionSpec exports — proof
+    /// `EncodedAction` the palette's "Delete comment" `ActionSpec` exports — proof
     /// the two are one code path, not two. Drives the real click through
     /// `handle_event` and compares against the live resource tree.
     #[test]
@@ -10910,7 +10918,7 @@ mod interaction_tests {
 
     /// The selection-toolbar swatch, toggling an existing highlight off, dispatches
     /// the byte-identical `EncodedAction` the book resource's "Highlight selection"
-    /// ActionSpec exports — the swatch and the palette are one source of truth.
+    /// `ActionSpec` exports — the swatch and the palette are one source of truth.
     /// Drives the real `SetColor` dispatch arm a swatch click invokes.
     #[test]
     fn selection_swatch_dispatches_the_same_action_as_the_palette() {
@@ -11474,19 +11482,22 @@ mod interaction_tests {
             .sel_runs
             .iter()
             .find(|r| r.block == r0.block && r.cs > 0)
-            .cloned()
+            .copied()
             .expect("a non-first run in the first block");
         let later = app
             .sel_runs
             .iter()
             .find(|r| r.block > start_run.block)
-            .cloned()
+            .copied()
             .expect("a run in a later paragraph");
         let start = Point::new(
-            (start_run.x0 + start_run.x1) / 2.0,
-            (start_run.y0 + start_run.y1) / 2.0,
+            f64::midpoint(start_run.x0, start_run.x1),
+            f64::midpoint(start_run.y0, start_run.y1),
         );
-        let end = Point::new((later.x0 + later.x1) / 2.0, (later.y0 + later.y1) / 2.0);
+        let end = Point::new(
+            f64::midpoint(later.x0, later.x1),
+            f64::midpoint(later.y0, later.y1),
+        );
         ptr_move(&mut app, &mut doc, start);
         ptr_down(&mut app, &mut doc);
         ptr_move(&mut app, &mut doc, end);
@@ -11539,12 +11550,12 @@ mod interaction_tests {
             .sel_runs
             .iter()
             .rfind(|r| r.block == r0.block)
-            .cloned()
+            .copied()
             .unwrap();
-        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
+        let start = Point::new(f64::midpoint(r0.x0, r0.x1), f64::midpoint(r0.y0, r0.y1));
         let end = Point::new(
-            (end_run.x0 + end_run.x1) / 2.0,
-            (end_run.y0 + end_run.y1) / 2.0,
+            f64::midpoint(end_run.x0, end_run.x1),
+            f64::midpoint(end_run.y0, end_run.y1),
         );
         ptr_move(&mut app, &mut doc, start);
         ptr_down(&mut app, &mut doc);
@@ -11740,16 +11751,16 @@ mod interaction_tests {
                         .iter()
                         .any(|r| r.block == r0.block && r.cs > r0.cs + r0.cl)
             })
-            .cloned()
+            .copied()
             .expect("a multi-char word with a later word after it");
         let far = runs
             .iter()
             .filter(|r| r.block == r0.block && r.cs > r0.cs + r0.cl)
             .min_by_key(|r| r.cs)
-            .cloned()
+            .copied()
             .expect("a later word in the same paragraph");
-        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
-        let far_p = Point::new((far.x0 + far.x1) / 2.0, (far.y0 + far.y1) / 2.0);
+        let start = Point::new(f64::midpoint(r0.x0, r0.x1), f64::midpoint(r0.y0, r0.y1));
+        let far_p = Point::new(f64::midpoint(far.x0, far.x1), f64::midpoint(far.y0, far.y1));
 
         // First click, then a second press at the same spot (a double-click) that
         // stays DOWN — this is where the word gets selected and the word-drag arms.
@@ -11843,13 +11854,13 @@ mod interaction_tests {
             .expect("the family is now a registered reading font");
 
         // Select it as the reading font → the body font resolves to that family.
-        app.dispatch(Action::SetFont(entry.id.clone()), &mut doc);
+        app.dispatch(Action::SetFont(entry.id), &mut doc);
         app.refresh_from_doc(&doc);
         assert_eq!(app.active_font().kind, FontKind::Named(fam.clone()));
         let (choice, _mult, _sig, mono) = app.body_font();
         assert_eq!(
             choice,
-            FontChoice::Named(fam.clone()),
+            FontChoice::Named(fam),
             "the book body re-renders in the chosen installed family",
         );
         assert!(!mono, "a named proportional family is not monospace");
@@ -11884,7 +11895,7 @@ mod interaction_tests {
         app.refresh_from_doc(&doc);
         let dark = app.resolve_palette(&theme);
         assert!(dark.dark);
-        let warm = dark.page.r() as i32 - dark.page.b() as i32;
+        let warm = i32::from(dark.page.r()) - i32::from(dark.page.b());
         assert!(
             (0..=8).contains(&warm),
             "dark page is a neutral charcoal, not brown (Δrb={warm})"

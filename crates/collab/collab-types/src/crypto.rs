@@ -229,9 +229,9 @@ mod tests {
     #[test]
     fn debug_does_not_panic() {
         let (_, pk) = generate_keypair();
-        let _ = format!("{:?}", pk);
+        let _ = format!("{pk:?}");
         let sig = Signature::from_bytes([7u8; 64]);
-        let _ = format!("{:?}", sig);
+        let _ = format!("{sig:?}");
     }
 
     #[test]

@@ -323,7 +323,7 @@ mod tests {
 
         let mut status = 0i32;
         // SAFETY: `pid` is our own child.
-        unsafe { libc::waitpid(pid, &mut status, 0) };
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
         assert!(libc::WIFEXITED(status), "child died: {status:#x}");
         libc::WEXITSTATUS(status)
     }

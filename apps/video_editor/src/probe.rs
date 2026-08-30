@@ -510,7 +510,7 @@ fn stsz_count(body: &[u8]) -> Option<u32> {
     if body.len() < 12 {
         return None;
     }
-    Some(be_u32(body, 8)?)
+    be_u32(body, 8)
 }
 
 // ---- Matroska / WebM (EBML) ----------------------------------------------

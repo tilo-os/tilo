@@ -542,7 +542,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             MailDoc::get_folder_for(&state.doc, id),
@@ -676,7 +676,7 @@ mod tests {
             .find(|a| a.id == "new-folder")
             .unwrap();
         let encoded = prompted_encode(spec, "Receipts");
-        let mut doc = state.doc.clone();
+        let mut doc = state.doc;
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
@@ -736,7 +736,7 @@ mod tests {
             .find(|a| a.id == "add-label")
             .unwrap();
         let from_spec = prompted_encode(label_spec, "work");
-        let from_builder = encode(&add_label_action(vec![id.clone()], "work"));
+        let from_builder = encode(&add_label_action(vec![id], "work"));
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "add-label is one source of truth"

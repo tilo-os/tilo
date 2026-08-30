@@ -77,7 +77,7 @@ fn played_child_role(role: &str, write: impl FnOnce()) -> bool {
 #[test]
 fn eprintln_aborts_the_app_when_the_reader_of_stderr_is_gone() {
     if played_child_role("eprintln", || {
-        eprintln!("[app] broadcast doc delta {}B", 128)
+        eprintln!("[app] broadcast doc delta {}B", 128);
     }) {
         return;
     }
@@ -145,7 +145,9 @@ fn with_stderr_pointed_at<R>(writer_fd: i32, body: impl FnOnce() -> R) -> R {
 
 #[test]
 fn diag_writes_the_line_when_stderr_works() {
-    let _guard = STDERR_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = STDERR_SLOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (mut reader, writer) = std::io::pipe().expect("pipe for the stand-in stderr");
 
     with_stderr_pointed_at(writer.as_raw_fd(), || {
@@ -165,7 +167,9 @@ fn diag_writes_the_line_when_stderr_works() {
 /// the other way an application loses the reader of its stderr.
 #[test]
 fn a_diagnostic_line_reaches_the_pipe_whole() {
-    let _guard = STDERR_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = STDERR_SLOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (mut reader, writer) = std::io::pipe().expect("pipe for the stand-in stderr");
     let writer_fd = writer.into_raw_fd();
 

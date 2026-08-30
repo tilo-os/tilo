@@ -98,7 +98,7 @@ fn main() {
         versions: vec![RegistryVersion {
             // What the package says it is, not a number chosen here —
             // the entry and the manifest have to agree.
-            version: version,
+            version,
             qpkg_url: format!("{base_url}/app.qpkg"),
             qpkg_root_hash_hex: hex::encode([0u8; 32]),
             qpkg_size_bytes: advertised_len as u64,
