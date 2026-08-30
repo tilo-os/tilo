@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
-use os_actions::printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
+use os_actions::printing::{
+    DiscoveredPrinter, JobState, PrintJob, PrinterQueue, QueueState, Scanner,
+};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
@@ -254,7 +256,8 @@ impl PrintersPane {
                 Some(&remove_key),
             )))
         };
-        let detail = if let Some(reason) = &printer.reason {
+        let ipp_reason = printer.telemetry.state_reasons.first();
+        let detail = if let Some(reason) = printer.reason.as_ref().or(ipp_reason) {
             format!(
                 "{} · {}",
                 if printer.default {
@@ -271,6 +274,24 @@ impl PrintersPane {
         } else {
             "Accepting jobs".to_string()
         };
+        let supplies = match &printer.telemetry.supplies {
+            Some(supplies) if supplies.is_empty() => "Supplies: none installed".to_string(),
+            Some(supplies) => format!(
+                "Supplies: {}",
+                supplies
+                    .iter()
+                    .map(|supply| match supply.level_percent {
+                        Some(level) => format!("{} {level}%", supply.name),
+                        None => format!("{} — level not reported", supply.name),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            ),
+            None if printer.telemetry.available => {
+                "Supply levels not reported by this printer".to_string()
+            }
+            None => "Live IPP details unavailable".to_string(),
+        };
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -278,6 +299,11 @@ impl PrintersPane {
                 .push(Box::new(top))
                 .push(Box::new(
                     Text::new(&detail)
+                        .with_size(11.0)
+                        .with_color(Theme::dark().text_dim),
+                ))
+                .push(Box::new(
+                    Text::new(&supplies)
                         .with_size(11.0)
                         .with_color(Theme::dark().text_dim),
                 )),
@@ -345,6 +371,22 @@ fn job_row(job: &PrintJob) -> El {
     } else {
         format!("{} KB", job.size_bytes.div_ceil(1024))
     };
+    let state = job
+        .state
+        .map(job_state_label)
+        .unwrap_or("State not reported");
+    let progress = match (job.impressions_completed, job.impressions_total) {
+        (Some(done), Some(total)) if total > 0 => format!(
+            "{done} of {total} impressions · {}%",
+            job.progress_percent().unwrap_or(0)
+        ),
+        (Some(done), _) => format!("{done} impressions completed"),
+        _ => "Page progress not reported".to_string(),
+    };
+    let reason = job
+        .state_reasons
+        .first()
+        .map_or(String::new(), |reason| format!(" · {reason}"));
     Box::new(
         Column::new()
             .with_no_padding()
@@ -362,8 +404,26 @@ fn job_row(job: &PrintJob) -> El {
                 Text::new(&format!("{} · {} · {}", job.owner, size, job.submitted))
                     .with_size(11.0)
                     .with_color(Theme::dark().text_dim),
+            ))
+            .push(Box::new(
+                Text::new(&format!("{state} · {progress}{reason}"))
+                    .with_size(11.0)
+                    .with_color(Theme::dark().text_dim),
             )),
     )
+}
+
+fn job_state_label(state: JobState) -> &'static str {
+    match state {
+        JobState::Pending => "Waiting",
+        JobState::Held => "Held",
+        JobState::Processing => "Printing",
+        JobState::Stopped => "Stopped",
+        JobState::Canceled => "Canceled",
+        JobState::Aborted => "Failed",
+        JobState::Completed => "Completed",
+        JobState::Unknown => "Unknown state",
+    }
 }
 
 fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
@@ -574,6 +634,7 @@ mod tests {
             default: false,
             accepting_jobs: true,
             reason: None,
+            telemetry: os_actions::printing::PrinterTelemetry::default(),
         }
     }
     fn job() -> PrintJob {
@@ -583,6 +644,10 @@ mod tests {
             size_bytes: 2048,
             submitted: "now".into(),
             destination: "Office".into(),
+            state: Some(JobState::Processing),
+            state_reasons: vec!["job-printing".into()],
+            impressions_completed: Some(1),
+            impressions_total: Some(4),
         }
     }
     impl PrintService for RecordingService {

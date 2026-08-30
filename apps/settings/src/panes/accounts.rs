@@ -563,9 +563,7 @@ impl AccountsPane {
             if vault.remove(&account_id) {
                 vault.save();
             }
-            let mut statuses = accounts::AccountSyncStatusStore::load();
-            statuses.remove(&account_id);
-            if let Err(error) = statuses.save() {
+            if let Err(error) = accounts::AccountSyncReporter::new(account_id).remove() {
                 warn!(target: "qos::settings", op = "account_status_remove", %error, "failed to remove account sync status");
             }
         }

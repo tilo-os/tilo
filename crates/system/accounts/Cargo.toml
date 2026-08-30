@@ -13,6 +13,7 @@ atomic-file = { path = "../../../crates/system/atomic-file" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+libc.workspace = true
 # Resolves the per-user config root ($XDG_CONFIG_HOME/qos) the same way the
 # Settings app does, so every app agrees on one directory.
 dirs.workspace = true
