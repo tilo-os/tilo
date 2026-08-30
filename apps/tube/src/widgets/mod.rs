@@ -13,7 +13,6 @@ pub mod image_box;
 pub mod player_host;
 pub mod seek_bar;
 pub mod thumbnail;
-pub mod video_surface;
 
 pub use channel_avatar::ChannelAvatar;
 pub use controls::{Icon, IconKind, Switch};
@@ -22,7 +21,6 @@ pub use image_box::ImageBox;
 pub use player_host::{PlayerHost, SharedPlayer};
 pub use seek_bar::SeekBar;
 pub use thumbnail::Thumbnail;
-pub use video_surface::VideoSurface;
 
 use ui::theme::Theme;
 use ui::widget::Text;
