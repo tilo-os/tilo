@@ -44,7 +44,7 @@ RUN curl -fsSL https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --profile minimal \
           --default-toolchain "${RUST_CHANNEL}" \
           --component rustfmt --component clippy \
-          --component rust-analyzer \
+          --component rust-src --component rust-analyzer \
     && cargo --version && rustc --version && rust-analyzer --version
 
 # Remote compiler caching is part of the build environment rather than a
