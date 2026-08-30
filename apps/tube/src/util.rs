@@ -44,6 +44,11 @@ fn channel_u8(x: f32) -> u8 {
 }
 
 /// Convert HSL (h in [0,360), s,l in [0,1]) to an sRGB [`Color`].
+#[allow(
+    clippy::many_single_char_names,
+    reason = "h/s/l/c/x are the standard HSL-to-RGB algorithm variable names from the CSS \
+              Color spec this implements"
+)]
 pub fn hsl(h: f32, s: f32, l: f32) -> Color {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let hp = (h.rem_euclid(360.0)) / 60.0;
