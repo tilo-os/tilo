@@ -190,7 +190,7 @@ pub(super) fn highlight_name_to_hex(name: &str) -> Option<String> {
 }
 
 #[derive(Default, Clone)]
-pub(super) struct ParaStyle {
+pub(crate) struct ParaStyle {
     pub parent: Option<String>,
     pub align: Option<String>,
     pub outline_level: Option<i64>,
@@ -227,14 +227,14 @@ pub(super) fn map_num_format(v: &str) -> Option<&'static str> {
 
 /// The captured level-0 numbering of a `w:numId`, for fidelity preservation of ordered lists.
 #[derive(Clone, Default)]
-pub(super) struct NumDef {
+pub(crate) struct NumDef {
     pub ordered: bool,
     pub num_format: Option<&'static str>,
     pub num_start: Option<i64>,
 }
 
 #[derive(Default)]
-pub(super) struct StyleRegistry {
+pub(crate) struct StyleRegistry {
     /// `character`-family style id → inline marks.
     pub text: HashMap<String, Vec<(String, MarkValue)>>,
     /// `paragraph`-family style id → paragraph style.
