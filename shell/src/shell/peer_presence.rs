@@ -23,6 +23,10 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};
 use crate::shell::network::ShellNetwork;
 
+/// A room's last-published cursor position and when it went out, keyed
+/// by room — what [`should_publish_cursor`] rate-limits against.
+type CursorPublishHistory = HashMap<String, ((f64, f64), Instant)>;
+
 /// Bridges the session's collaboration broker and its peers for
 /// pointer presence. Held by the compositor for the life of the session.
 pub struct PeerPresence {
@@ -38,7 +42,7 @@ pub struct PeerPresence {
     rooms: Mutex<Vec<String>>,
     /// What this session last put on the wire, per room: position and
     /// when. Read by [`should_publish_cursor`].
-    last_published: Mutex<HashMap<String, ((f64, f64), Instant)>>,
+    last_published: Mutex<CursorPublishHistory>,
     net: Arc<ShellNetwork>,
 }
 
@@ -149,7 +153,7 @@ impl PeerPresence {
             if let Ok(mut last) = self.last_published.lock() {
                 last.retain(|room, _| rooms.iter().any(|r| r == room));
             }
-            *g = rooms.clone();
+            g.clone_from(&rooms);
         }
         self.subscription.set_rooms(rooms);
     }
@@ -235,12 +239,16 @@ impl PeerPresence {
     /// Returns whether the list changed, a reason to repaint.
     pub fn refresh_roster(&self, presence: &PresenceCtx) -> bool {
         let local = self.net.local_peer_id_hash();
-        let Ok(replica) = self.net.replica.lock() else {
-            return false;
-        };
         // Written only on change — a lock every frame would contend
-        // with the network thread.
+        // with the network thread. `replica` is locked once to compute
+        // `rows` and dropped before re-locking to write it, rather than
+        // held across both — the network thread's own use of the lock
+        // is short, and holding it through an unrelated write extends
+        // every contending wait by however long that write takes.
         let rows = {
+            let Ok(replica) = self.net.replica.lock() else {
+                return false;
+            };
             let tree = replica.tree.read();
             let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
                 return false;
@@ -257,6 +265,9 @@ impl PeerPresence {
                 return false;
             }
             rows
+        };
+        let Ok(replica) = self.net.replica.lock() else {
+            return false;
         };
         replica.tree.write().collaborators = rows;
         true
@@ -291,6 +302,17 @@ fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTre
 /// frames identify their sender by.
 pub type PeerLabels = std::collections::BTreeMap<u64, String>;
 
+/// Narrows a peer's cursor coordinate (desktop pixel space) to the `f32`
+/// [`PresencePayload::Pointer`] takes. Screen coordinates never approach
+/// a magnitude where this loses meaningful precision.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "desktop pixel coordinates stay well within f32's precision"
+)]
+fn cursor_coord_to_f32(v: f64) -> f32 {
+    v as f32
+}
+
 /// Fold inbound presence into `presence`, returning whether anything
 /// landed. Split from [`PeerPresence::pump`] so it can be tested without
 /// a network; `labels` is a parameter for the same reason (production
@@ -318,12 +340,14 @@ pub fn fold_inbound(
         let user = format!("peer@{}", entry.peer);
 
         if let PresenceKey::Workspace { id: room } = &key {
-            let known = match &resolved {
-                Some((seen, map)) if seen == room => map,
-                _ => {
-                    resolved = Some((room.clone(), labels(room)));
-                    &resolved.as_ref().expect("just set").1
-                }
+            if !matches!(&resolved, Some((seen, _)) if seen == room) {
+                resolved = Some((room.clone(), labels(room)));
+            }
+            let Some((_, known)) = &resolved else {
+                // Unreachable — the branch above always sets `resolved`
+                // when it isn't already fresh for `room` — but skipping
+                // this one entry costs nothing next tick, unlike a panic.
+                continue;
             };
             if let Some(name) = known.get(&entry.peer) {
                 presence.set_display_name(ui::permissions::UserId(user.clone()), name.clone());
@@ -334,8 +358,8 @@ pub fn fold_inbound(
             user,
             key,
             PresencePayload::Pointer {
-                x: entry.point.0 as f32,
-                y: entry.point.1 as f32,
+                x: cursor_coord_to_f32(entry.point.0),
+                y: cursor_coord_to_f32(entry.point.1),
             },
         );
         any = true; // Not on loop entry: a `continue` above is a rejected frame.
@@ -696,7 +720,6 @@ mod tests {
 
     #[test]
     fn naming_a_peer_does_not_conjure_a_cursor() {
-        let _room = "3f2b1c00-0000-4000-8000-000000000001";
         let mut presence = PresenceCtx::default();
         assert!(!fold_inbound(
             Vec::new(),
@@ -1113,12 +1136,9 @@ mod two_sessions {
         let mut on_host = PresenceCtx::default();
         assert!(!host.pump(&mut on_host), "so the host has nobody to paint");
         assert!(
-            on_host
-                .pointers
-                .get(&PresenceKey::Workspace {
-                    id: room.to_string()
-                })
-                .is_none(),
+            !on_host.pointers.contains_key(&PresenceKey::Workspace {
+                id: room.to_string()
+            }),
             "and no pill is drawn for a participant who never pointed at anything",
         );
 
