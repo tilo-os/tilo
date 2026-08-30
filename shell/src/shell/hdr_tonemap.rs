@@ -46,12 +46,26 @@ impl Default for HdrTonemapConfig {
     }
 }
 
+/// Convert a mastering-luminance value (`1/10000 cd/m²`, per the HDR10
+/// stream metadata encoding) to nits. Stream values top out around
+/// `40_000_000` (4000 cd/m²), far inside `f32`'s 24-bit exact-integer
+/// range, so the precision loss this cast could otherwise cause cannot
+/// happen for real content, and the tone-mapper only needs an
+/// approximate peak anyway.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "mastering luminance stays well under 2^24 for real streams; exact precision isn't needed for a tone-map peak"
+)]
+fn mastering_luminance_to_nits(raw: u32) -> f32 {
+    raw as f32 / 10_000.0
+}
+
 impl HdrTonemapConfig {
     /// Derive from the stream's HDR10 static metadata. Absent metadata
     /// falls back to the 1000-nit default.
     pub fn from_metadata(md: Option<Hdr10Metadata>) -> Self {
         let source_peak = md
-            .map(|m| m.mastering.max_display_mastering_luminance as f32 / 10_000.0)
+            .map(|m| mastering_luminance_to_nits(m.mastering.max_display_mastering_luminance))
             .filter(|nits| nits.is_finite() && *nits > 0.0)
             .unwrap_or(1000.0);
         Self {
@@ -67,10 +81,11 @@ impl HdrTonemapConfig {
 /// `y_stride` / `uv_stride` are in `u16` units, not bytes. The chroma
 /// plane is 4:2:0 (half-res both axes); this function subsamples nearest.
 ///
-/// # Panics
-///
-/// Panics if `y.len() < y_stride * height` — the caller hands tight
-/// buffers per the [`crate::network::decoder::HevcDecoder`] output contract.
+/// The caller hands tight buffers per the
+/// [`crate::network::decoder::HevcDecoder`] output contract
+/// (`y.len() >= y_stride * height`); a shorter buffer never panics —
+/// pixels whose sample would fall outside `y`/`uv` are left as
+/// transparent black instead.
 #[allow(clippy::too_many_arguments)]
 pub fn tonemap_p010_to_rgba8(
     y: &[u16],
@@ -82,21 +97,30 @@ pub fn tonemap_p010_to_rgba8(
     colorimetry: Colorimetry,
     cfg: HdrTonemapConfig,
 ) -> Vec<u8> {
-    let mut out = vec![0u8; (width * height * 4) as usize];
+    let pixel_count = (width as usize).saturating_mul(height as usize);
+    let mut out = vec![0u8; pixel_count.saturating_mul(4)];
     let is_hdr = colorimetry.transfer.is_hdr();
     let is_limited = matches!(colorimetry.range, ColorRange::Limited);
 
     for row in 0..height {
         for col in 0..width {
-            let y_idx = (row * y_stride + col) as usize;
+            let y_idx = plane_index(row, y_stride, col);
             let uv_row = row / 2;
             let uv_col = col / 2;
             // Interleaved UV: [U0, V0, U1, V1, ...] per row.
-            let uv_pair_idx = (uv_row * uv_stride + uv_col * 2) as usize;
+            let uv_pair_idx = plane_index(uv_row, uv_stride, uv_col.saturating_mul(2));
 
-            let y_raw = y[y_idx];
-            let u_raw = uv[uv_pair_idx];
-            let v_raw = uv[uv_pair_idx + 1];
+            // A malformed or truncated decoder buffer (shorter than its
+            // stride implies) leaves this pixel as the zero-initialised
+            // transparent black `out` already has, rather than panicking
+            // this panic=abort process.
+            let (Some(&y_raw), Some(&u_raw), Some(&v_raw)) = (
+                y.get(y_idx),
+                uv.get(uv_pair_idx),
+                uv.get(uv_pair_idx.saturating_add(1)),
+            ) else {
+                continue;
+            };
 
             let y_norm = unpack_p010_sample(y_raw, is_limited, true);
             let u_norm = unpack_p010_sample(u_raw, is_limited, false);
@@ -134,14 +158,25 @@ pub fn tonemap_p010_to_rgba8(
             let g8 = to_srgb_u8(g_norm);
             let b8 = to_srgb_u8(b_norm);
 
-            let out_idx = ((row * width + col) * 4) as usize;
-            out[out_idx] = r8;
-            out[out_idx + 1] = g8;
-            out[out_idx + 2] = b8;
-            out[out_idx + 3] = 0xFF;
+            let out_idx = plane_index(row, width, col).saturating_mul(4);
+            if let Some(px) = out.get_mut(out_idx..out_idx.saturating_add(4)) {
+                px.copy_from_slice(&[r8, g8, b8, 0xFF]);
+            }
         }
     }
     out
+}
+
+/// Row-major linear index into a stride-`stride` plane at (`row`,
+/// `col`). Computed in `u64` so a large `row`/`stride`/`col` combination
+/// saturates instead of wrapping, then saturated into `usize` — an
+/// out-of-range result simply misses every `.get()` bounds check at the
+/// call site instead of panicking.
+fn plane_index(row: u32, stride: u32, col: u32) -> usize {
+    let idx = u64::from(row)
+        .saturating_mul(u64::from(stride))
+        .saturating_add(u64::from(col));
+    usize::try_from(idx).unwrap_or(usize::MAX)
 }
 
 /// Unpack a P010 10-bit sample (top 10 bits of a u16) into a normalised
@@ -176,7 +211,7 @@ fn bt2020_ycbcr_to_rgb(y: f32, cb: f32, cr: f32) -> (f32, f32, f32) {
 fn pq_eotf(e_prime: f32) -> f32 {
     const M1: f32 = 0.159_301_76; // 2610/16384
     const M2: f32 = 78.84375; // 2523/32
-    const C1: f32 = 0.8359375; // 3424/4096
+    const C1: f32 = 0.835_937_5; // 3424/4096
     const C2: f32 = 18.851_563; // 2413/128
     const C3: f32 = 18.6875; // 2392/128
     let e = e_prime.max(0.0);
@@ -190,8 +225,8 @@ fn pq_eotf(e_prime: f32) -> f32 {
 /// ITU-R BT.2100 HLG EOTF (system function). Input `[0, 1]`, output
 /// cd/m² assuming a 1000-nit reference display.
 fn hlg_eotf(e_prime: f32) -> f32 {
-    const A: f32 = 0.17883277;
-    const B: f32 = 0.28466892;
+    const A: f32 = 0.178_832_77;
+    const B: f32 = 0.284_668_92;
     const C: f32 = 0.559_910_7;
     let e = e_prime.max(0.0);
     let linear = if e <= 0.5 {
@@ -231,12 +266,24 @@ fn hable(x: f32) -> f32 {
 /// Linear-light `[0, 1]` → 8-bit sRGB code value (piecewise sRGB OETF).
 fn to_srgb_u8(v: f32) -> u8 {
     let v = v.clamp(0.0, 1.0);
-    let encoded = if v <= 0.0031308 {
+    let encoded = if v <= 0.003_130_8 {
         v * 12.92
     } else {
         1.055 * v.powf(1.0 / 2.4) - 0.055
     };
-    (encoded * 255.0).round().clamp(0.0, 255.0) as u8
+    clamped_f32_to_u8((encoded * 255.0).round().clamp(0.0, 255.0))
+}
+
+/// `v` is clamped into `[0.0, 255.0]` by every caller immediately before
+/// this is called, so the truncation and sign-loss this cast could
+/// otherwise cause cannot happen.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "callers clamp v into [0.0, 255.0] right before calling"
+)]
+fn clamped_f32_to_u8(v: f32) -> u8 {
+    v as u8
 }
 
 #[cfg(test)]
@@ -283,7 +330,7 @@ mod tests {
             colorimetry,
             cfg,
         );
-        assert_eq!(rgba.len() as u32, width * height * 4);
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
         for (i, chunk) in rgba.chunks_exact(4).enumerate() {
             assert_eq!(chunk[3], 0xFF, "pixel {i} has non-full alpha");
         }
@@ -335,8 +382,8 @@ mod tests {
     #[test]
     fn hable_is_monotonic_and_bounded() {
         let mut prev = -1.0f32;
-        for i in 0..20 {
-            let x = i as f32 / 10.0;
+        for i in 0..20_i16 {
+            let x = f32::from(i) / 10.0;
             let y = hable(x);
             assert!((0.0..=1.0).contains(&y), "hable({x}) out of range: {y}");
             assert!(y >= prev, "hable not monotonic at {x}: prev={prev} y={y}");
