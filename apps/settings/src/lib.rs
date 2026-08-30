@@ -1,5 +1,7 @@
-//! Library root for the qOS native Settings app — the coherent OS
-//! settings hub.
+//! Library root for the qOS native Personal Settings app — the device and
+//! account settings hub. Workspace-owned policy stays in the shell's
+//! contextual Workspace Settings surface; cross-cutting domains share a
+//! resolver instead of letting either UI write the other's state.
 //!
 //! `SettingsApp` (in [`settings_app`]) is the root widget: a categorized
 //! sidebar plus a content pane per category, responsive between a two-pane

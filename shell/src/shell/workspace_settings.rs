@@ -1,5 +1,5 @@
 //! `WorkspaceSettings` — the modal opened from the `TopBar`'s
-//! workspace-name button, with General / Members / Permissions tabs.
+//! workspace-name button, with General / Members / Privacy & Security tabs.
 //!
 //! Members and Permissions are both views of [`Workspace::capabilities`]
 //! — the single list `decide_capability` consults, the sandbox turns
@@ -57,7 +57,7 @@ impl WsTab {
         match self {
             WsTab::General => "General",
             WsTab::Members => "Members",
-            WsTab::Permissions => "Permissions",
+            WsTab::Permissions => "Privacy & Security",
         }
     }
 
