@@ -28,6 +28,7 @@ pub mod actions;
 mod find_bar;
 pub mod history_panel;
 pub mod i18n;
+mod style_color_picker;
 pub use ui::num;
 pub mod styles;
 pub mod widget;

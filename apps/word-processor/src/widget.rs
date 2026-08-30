@@ -28,7 +28,6 @@ use ui::theme::Theme;
 use ui::ColorCompat;
 use ui::icons::Icon;
 use ui::permissions::UserId;
-use ui::widget::ColorPicker;
 use ui::widget::Widget;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{PathSegment, PresenceCtx, PresenceKey};
@@ -37,6 +36,7 @@ use crate::WpFormat;
 use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
+use crate::style_color_picker::StyleColorPicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use ui::portal;
 
@@ -308,10 +308,6 @@ const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
 /// How close (px) the pointer must be to a guide line to grab it.
 const GUIDE_GRAB: f64 = 7.0;
 
-/// Colour-picker popover size (a compact instance of the shared `ColorPicker`).
-const CP_W: f64 = 236.0;
-const CP_H: f64 = 176.0;
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ToolAction {
     Bold,
@@ -579,7 +575,7 @@ enum PanelHit {
     ToggleBold,
     ToggleItalic,
     SetColor([u8; 3]),
-    /// Open the shared [`ColorPicker`] popover to choose an arbitrary colour for
+    /// Open the shared colour-picker popover to choose an arbitrary colour for
     /// the focused style (beyond the quick-preset swatches).
     OpenColorPicker,
     /// The value box of a numeric field — click to type, drag to scrub.
@@ -1788,10 +1784,9 @@ pub struct WordProcessorWidget {
     /// A transient confirmation message (e.g. "Table of contents updated"),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Option<String>,
-    /// The shared [`ColorPicker`] overlay popover from the style inspector's
-    /// "Custom…" affordance; a committed colour applies to the focused style.
-    /// hue strip / RGB sliders); replaces hand-rolling a bespoke colour control.
-    color_picker: Option<ColorPicker>,
+    /// The style inspector's shared color-picker popover. It owns its lifecycle,
+    /// layout, drawing, and modal input routing; this editor applies its result.
+    color_picker: StyleColorPicker,
 }
 
 /// A crash-recovery offer: a recovery copy exists on disk for the open document
@@ -1921,7 +1916,7 @@ impl WordProcessorWidget {
             style_menu: ContextMenu::new(),
             style_menu_actions: Vec::new(),
             toast: None,
-            color_picker: None,
+            color_picker: StyleColorPicker::default(),
         }
     }
 
@@ -4071,7 +4066,7 @@ impl WordProcessorWidget {
                 &cc,
                 btn,
                 &t("panel-colour-custom"),
-                self.color_picker.is_some(),
+                self.color_picker.is_open(),
                 true,
             );
             self.panel_hits.push((btn, PanelHit::OpenColorPicker));
@@ -6601,7 +6596,7 @@ impl Widget for WordProcessorWidget {
         // While the colour-picker popover is open it captures input (modal-ish):
         // route drags to it, apply committed colours, and let an outside-click /
         // Escape dismiss it before any page/panel hit-testing.
-        if self.color_picker.is_some()
+        if self.color_picker.is_open()
             && self.pump_color_picker(event, scale_factor, modifiers, state, _path, handled)
         {
             return;
@@ -7457,7 +7452,18 @@ impl Widget for WordProcessorWidget {
                 presence,
             );
         }
-        self.draw_color_picker(scene, transform, text_renderer, theme, presence);
+        let cc = self.chrome;
+        self.color_picker.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            self.rect,
+            self.panel_rect,
+            cc.bar,
+            cc.border,
+        );
     }
 
     /// Outbound collaboration presence: while focused, broadcast the local caret
@@ -8125,93 +8131,8 @@ impl WordProcessorWidget {
         let seed = self
             .focused_style_key()
             .map_or([0x1c, 0x1c, 0x20], |k| self.sheet.get(&k).color);
-        self.color_picker = Some(ColorPicker::new(Color::from_rgb8(
-            seed[0], seed[1], seed[2],
-        )));
+        self.color_picker.open(seed, self.pointer);
         self.dirty = true;
-    }
-
-    /// Top-left anchor of the colour-picker popover: floated just left of the
-    /// styles panel so it overlays the page, never the panel controls.
-    fn color_picker_anchor(&self) -> Point {
-        let x = (self.panel_rect.x0 - CP_W - 12.0).max(self.rect.x0 + 12.0);
-        let y =
-            (self.panel_rect.y0 + 150.0).min((self.rect.y1 - CP_H - 48.0).max(self.rect.y0 + 60.0));
-        Point::new(x, y)
-    }
-
-    /// Lay the picker out at its anchor (a throwaway taffy pass), so its internal
-    /// SV / hue / slider / hex rects are current for both draw and hit-testing.
-    fn layout_color_picker(&mut self) {
-        if self.color_picker.is_none() {
-            return;
-        }
-        let anchor = self.color_picker_anchor();
-        let cp = self.color_picker.as_mut().unwrap();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = cp.build_layout(&mut taffy, &theme, &mut nm);
-        let _ = taffy.set_style(
-            node,
-            Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_f64(CP_W)),
-                    height: Dimension::length(num::f32_of_f64(CP_H)),
-                },
-                ..Default::default()
-            },
-        );
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(num::f32_of_f64(CP_W)),
-                    height: taffy::AvailableSpace::Definite(num::f32_of_f64(CP_H)),
-                },
-            )
-            .unwrap();
-        cp.apply_layout(&taffy, node, anchor);
-    }
-
-    /// Draw the colour-picker popover (a bordered card behind the shared widget).
-    fn draw_color_picker(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if self.color_picker.is_none() {
-            return;
-        }
-        self.layout_color_picker();
-        let cc = self.chrome;
-        let cp = self.color_picker.as_mut().unwrap();
-        let r = cp.get_rect();
-        let pad = 10.0;
-        let card = Rect::new(r.x0 - pad, r.y0 - pad, r.x1 + pad, r.y1 + pad);
-        let shape = vello::kurbo::RoundedRect::from_rect(card, 8.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            with_alpha(Color::BLACK, 0x30),
-            None,
-            &vello::kurbo::RoundedRect::from_rect(
-                Rect::new(card.x0, card.y0 + 3.0, card.x1, card.y1 + 3.0),
-                8.0,
-            ),
-        );
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &shape);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            cc.border,
-            None,
-            &shape,
-        );
-        cp.draw(scene, transform, tr, theme, presence);
     }
 
     /// While the colour picker is open, route input to it (drag the SV square /
@@ -8227,93 +8148,26 @@ impl WordProcessorWidget {
         root: &ObjId,
         handled: &mut bool,
     ) -> bool {
-        if self.color_picker.is_none() {
-            return false;
-        }
-        self.layout_color_picker();
-        let rect = self
-            .color_picker
-            .as_ref()
-            .map_or(Rect::ZERO, ui::Widget::get_rect);
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale, position.y / scale);
-                self.forward_to_color_picker(event, scale, mods, state, root, handled);
-                self.dirty = true;
-                *handled = true;
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if rect.contains(self.pointer) {
-                    self.forward_to_color_picker(event, scale, mods, state, root, handled);
-                } else {
-                    // A click anywhere outside dismisses the popover.
-                    self.color_picker = None;
-                }
-                self.dirty = true;
-                *handled = true;
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.forward_to_color_picker(event, scale, mods, state, root, handled);
-                *handled = true;
-                true
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                self.color_picker = None;
-                self.dirty = true;
-                *handled = true;
-                true
-            }
-            // Modal-ish: swallow other events while the popover is up.
-            _ => true,
-        }
-    }
-
-    /// Forward one event to the open picker and apply any committed colour to the
-    /// focused style (a live preview on every drag).
-    fn forward_to_color_picker(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        mods: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-    ) {
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        let mut ft: Option<NodeId> = None;
-        if let Some(cp) = self.color_picker.as_mut() {
-            cp.handle_event(
-                event, scale, mods, state, root, handled, &mut ft, node, &taffy,
-            );
-        }
-        let changed = self
-            .color_picker
-            .as_mut()
-            .and_then(ui::widget::ColorPicker::take_changed);
-        if let Some(col) = changed {
-            let rgb = [col.r(), col.g(), col.b()];
+        let result = self.color_picker.handle_event(
+            event,
+            scale,
+            mods,
+            state,
+            root,
+            self.rect,
+            self.panel_rect,
+        );
+        if let Some(rgb) = result.changed {
             self.edit_focused_style(state, true, |st| st.color = rgb);
-            self.dirty = true;
         }
+        if result.consumed {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.pointer = Point::new(position.x / scale, position.y / scale);
+            }
+            self.dirty = true;
+            *handled = true;
+        }
+        result.consumed
     }
 
     /// The next/previous cell id within the caret cell's table, if any.
@@ -14696,14 +14550,14 @@ mod tests {
             ),
         );
         assert!(
-            wp.color_picker.is_some(),
+            wp.color_picker.is_open(),
             "the shared ColorPicker popover opened"
         );
 
         // Lay the picker out and drive a press into the top-left of its SV square
         // (high value, some saturation) so it commits a fresh colour.
-        wp.layout_color_picker();
-        let pr = wp.color_picker.as_ref().unwrap().get_rect();
+        wp.color_picker.layout(wp.rect, wp.panel_rect);
+        let pr = wp.color_picker.rect();
         let sv_pt = Point::new(pr.x0 + 20.0, pr.y0 + 20.0);
         let style_before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         // CursorMoved (to set the picker's internal cursor) then press.
@@ -14756,12 +14610,12 @@ mod tests {
         wp.styles_panel_open = true;
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         wp.open_color_picker();
-        assert!(wp.color_picker.is_some());
+        assert!(wp.color_picker.is_open());
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         // Click far away from the popover (top-left corner of the canvas).
         left_click(&mut wp, &mut state, Point::new(80.0, 400.0));
         assert!(
-            wp.color_picker.is_none(),
+            !wp.color_picker.is_open(),
             "an outside click closes the colour picker"
         );
     }
