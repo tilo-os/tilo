@@ -119,6 +119,15 @@ impl Action {
             },
         ),
         chrome(
+            "projection.open",
+            "Project to a display",
+            "Miracast, Google Cast, AirPlay, or FCast",
+            |st, _| {
+                st.overlays.projection = true;
+                Ok(())
+            },
+        ),
+        chrome(
             "collaborators.open",
             "Show collaborators",
             "Peers currently editing this workspace",
