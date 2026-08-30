@@ -93,18 +93,20 @@ mod tests {
         fn type_str(&mut self, doc: &mut AutoCommit, s: &str) {
             self.host.sync(doc, &automerge::ROOT);
             for c in s.chars() {
-                let event = key_press(Key::Character(winit::keyboard::SmolStr::new(c.to_string())));
-                self.dispatch(doc, &event, &Modifiers::default());
+                let event = key_press(&Key::Character(winit::keyboard::SmolStr::new(
+                    c.to_string(),
+                )));
+                self.dispatch(doc, &event, Modifiers::default());
             }
         }
 
-        fn dispatch(&mut self, doc: &mut AutoCommit, event: &WindowEvent, mods: &Modifiers) {
+        fn dispatch(&mut self, doc: &mut AutoCommit, event: &WindowEvent, mods: Modifiers) {
             let mut handled = false;
             let mut focus_target = None;
             self.host.handle_event(
                 event,
                 1.0,
-                mods,
+                &mods,
                 doc,
                 &automerge::ROOT,
                 &mut handled,
@@ -118,7 +120,7 @@ mod tests {
     /// A `KeyboardInput` winit itself would have delivered. `KeyEvent`'s
     /// platform payload is `pub(crate)` in winit, so this is the same
     /// zero-init workaround `ui::headless` and the shots driver use.
-    fn key_press(key: Key) -> WindowEvent {
+    fn key_press(key: &Key) -> WindowEvent {
         // SAFETY: every field the read paths touch is overwritten below;
         // the platform payload is an all-zero-valid Option-shaped struct
         // on Linux and nothing downstream of `handle_event` reads it.
@@ -130,7 +132,7 @@ mod tests {
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
-        ev.text = match &key {
+        ev.text = match key {
             Key::Character(c) => Some(c.clone()),
             _ => None,
         };
@@ -254,8 +256,8 @@ mod tests {
         b.host.update(&mut shared, &automerge::ROOT);
 
         let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let z = key_press(Key::Character(winit::keyboard::SmolStr::new("z")));
-        b.dispatch(&mut shared, &z, &ctrl);
+        let z = key_press(&Key::Character(winit::keyboard::SmolStr::new("z")));
+        b.dispatch(&mut shared, &z, ctrl);
 
         assert_eq!(
             tab_body(&store, TAB_B, BODY_KEY).as_deref(),
@@ -285,8 +287,8 @@ mod tests {
         b.host.update(&mut shared, &automerge::ROOT);
 
         let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let z = key_press(Key::Character(winit::keyboard::SmolStr::new("z")));
-        a.dispatch(&mut shared, &z, &ctrl);
+        let z = key_press(&Key::Character(winit::keyboard::SmolStr::new("z")));
+        a.dispatch(&mut shared, &z, ctrl);
 
         assert_eq!(
             tab_body(&store, TAB_A, BODY_KEY).as_deref(),
@@ -307,6 +309,8 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn both_tabs_come_back_with_their_own_content_after_a_restart() {
+        const PACKAGE: &str = "dev.qos.test-tab-documents";
+
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`; no other thread reads
         // these between the writes here and the reads below.
@@ -314,7 +318,6 @@ mod tests {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
             std::env::remove_var("QOS_PACKAGE_ID");
         }
-        const PACKAGE: &str = "dev.qos.test-tab-documents";
 
         {
             let store = RecordStore::open(PACKAGE);
@@ -356,13 +359,14 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn a_frame_offers_every_open_tab_to_its_writer() {
+        const PACKAGE: &str = "dev.qos.test-frame-writeback";
+
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
             std::env::remove_var("QOS_PACKAGE_ID");
         }
-        const PACKAGE: &str = "dev.qos.test-frame-writeback";
 
         let store = RecordStore::open(PACKAGE);
         let (mut host, _chrome) = crate::shell::build_nirios_overlay_host_with_records(

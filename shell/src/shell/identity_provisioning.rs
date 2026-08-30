@@ -36,6 +36,11 @@ pub struct DiskIdentityStore {
 impl DiskIdentityStore {
     /// Resolves the config dir the same way `firstboot::run` does, so
     /// the boot chain is self-consistent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity directory can't be resolved or
+    /// created.
     pub fn from_env() -> Result<Self, io::Error> {
         let base = resolve_identity_dir()?;
         fs::create_dir_all(&base)?;
@@ -121,6 +126,11 @@ pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
 
 /// Wraps `InviteEnvelope::from_url` plus the signature check so a
 /// caller doesn't need to remember both steps.
+///
+/// # Errors
+///
+/// Returns an error if `url` doesn't parse as an invite envelope, or if
+/// its signature doesn't verify.
 pub fn parse_invite_url(url: &str) -> Result<InviteEnvelope, IdentityFlowError> {
     let env = InviteEnvelope::from_url(url)?;
     env.verify_signature()?;
@@ -169,7 +179,9 @@ mod tests {
             &id,
             "alice",
             [248, 113, 113],
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
+            SystemTime::UNIX_EPOCH
+                .checked_add(std::time::Duration::from_secs(100))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
         )
         .unwrap()
     }

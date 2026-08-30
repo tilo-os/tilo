@@ -17,6 +17,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 
@@ -498,23 +499,21 @@ impl<Row: 'static> Widget for DataTable<Row> {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let height = HEADER_HEIGHT + ROW_HEIGHT * self.view.len().max(1) as f64;
-        let node = taffy
-            .new_leaf(Style {
-                // A bare `auto` leaf with no measure collapses to zero
-                // under compute_layout_with_measure.
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(height as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            // A bare `auto` leaf with no measure collapses to zero
+            // under compute_layout_with_measure.
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(height as f32),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -1126,20 +1125,18 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let theme = Theme::dark();
         let tnode = table.build_layout(&mut tree, &theme, &mut node_map);
-        let root = tree
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::length(300.0),
-                        height: Dimension::length(400.0),
-                    },
-                    ..Default::default()
+        let root = tree.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                size: Size {
+                    width: Dimension::length(300.0),
+                    height: Dimension::length(400.0),
                 },
-                &[tnode],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[tnode],
+        );
         tree.compute_layout(
             root,
             Size {

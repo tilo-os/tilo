@@ -27,18 +27,22 @@ pub fn tile_hosts_app(tile: &TileContent, app: &str) -> bool {
 /// [`crate::shell::search::SearchProvider::owns_tab`] for a text app.
 pub fn owns_tab_of(chrome: &ChromeState, tab_id: u64, app: &str) -> bool {
     let tree = chrome.tree();
-    for w in &tree.workspaces {
-        for s in &w.strips {
-            for g in &s.window_groups {
-                for t in &g.tabs {
-                    if t.id == tab_id {
-                        return tile_hosts_app(&t.tile, app);
+    let found = 'search: {
+        for w in &tree.workspaces {
+            for s in &w.strips {
+                for g in &s.window_groups {
+                    for t in &g.tabs {
+                        if t.id == tab_id {
+                            break 'search tile_hosts_app(&t.tile, app);
+                        }
                     }
                 }
             }
         }
-    }
-    false
+        false
+    };
+    drop(tree);
+    found
 }
 
 /// [`crate::shell::search::SearchProvider::query`] for a text app.
@@ -50,9 +54,9 @@ pub fn query_text_app(
     app: &str,
     body_key: &str,
     provider_id: &'static str,
-    kind: ResourceKind,
+    kind: &ResourceKind,
 ) -> Vec<SearchResult> {
-    if !ctx.wanted.contains(&kind) {
+    if !ctx.wanted.contains(kind) {
         return Vec::new();
     }
     let needle_lower = ctx.needle.to_lowercase();
@@ -128,13 +132,20 @@ fn snippet_around(body_raw: &str, body_lower: &str, needle: &str) -> Option<Stri
     let hit = body_lower.find(needle)?;
     let radius = 30usize;
     let start = ceil_char_boundary(body_raw, hit.saturating_sub(radius));
-    let end = ceil_char_boundary(body_raw, (hit + needle.len() + radius).min(body_raw.len()));
+    let end = ceil_char_boundary(
+        body_raw,
+        hit.saturating_add(needle.len())
+            .saturating_add(radius)
+            .min(body_raw.len()),
+    );
     let mut s = String::new();
     if start > 0 {
         s.push('…');
     }
     s.push_str(
-        &body_raw[start..end]
+        &body_raw
+            .get(start..end)
+            .unwrap_or_default()
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" "),
@@ -147,7 +158,7 @@ fn snippet_around(body_raw: &str, body_lower: &str, needle: &str) -> Option<Stri
 
 fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
     while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
+        i = i.saturating_add(1);
     }
     i
 }

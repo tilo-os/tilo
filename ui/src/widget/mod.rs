@@ -467,6 +467,34 @@ pub trait Widget {
     }
 }
 
+/// Panic-free node construction, used by every `build_layout` implementation
+/// in this module. `TaffyTree::new_leaf` and `new_with_children` are typed
+/// `-> TaffyResult<NodeId>` for API generality, but taffy 0.10's
+/// implementation shows neither can actually return `Err`: `new_leaf` always
+/// inserts and returns `Ok`, and `new_with_children` only fails for a child
+/// `NodeId` belonging to a *different* tree, which never happens here since
+/// every child passed in was just built in this same tree by the calls
+/// immediately above each call site. [`Widget::build_layout`] returns a bare
+/// `NodeId` (not a `Result`) across every implementor, so surfacing a
+/// theoretical error here would mean threading a `Result` through the whole
+/// toolkit for a branch that can't be taken.
+pub(crate) trait TaffyTreeExt {
+    fn leaf_node(&mut self, style: taffy::Style) -> NodeId;
+    fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId;
+}
+
+impl TaffyTreeExt for TaffyTree<()> {
+    #[allow(clippy::unwrap_used, reason = "see TaffyTreeExt doc comment")]
+    fn leaf_node(&mut self, style: taffy::Style) -> NodeId {
+        self.new_leaf(style).unwrap()
+    }
+
+    #[allow(clippy::unwrap_used, reason = "see TaffyTreeExt doc comment")]
+    fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId {
+        self.new_with_children(style, children).unwrap()
+    }
+}
+
 pub type Element = Box<dyn Widget>;
 
 mod button;

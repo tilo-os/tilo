@@ -23,6 +23,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{DEFAULT_STRIP_USABLE_PX, Widget, max_group_px, min_group_px};
 
 pub const HANDLE_VISIBLE_PX: f64 = 2.0;
@@ -189,17 +190,15 @@ impl Widget for ResizeHandle {
         // `flex_shrink: 0.0` / `flex_grow: 0.0` keep the handle pinned at
         // exactly 8 px regardless of the row's child-sum overflow
         // behaviour; the hit area extends beyond it via `self.rect`.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(HANDLE_SLOT_PX as f32),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 0.0,
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(HANDLE_SLOT_PX as f32),
+                height: Dimension::percent(1.0),
+            },
+            flex_grow: 0.0,
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

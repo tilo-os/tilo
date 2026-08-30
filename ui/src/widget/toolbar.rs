@@ -20,6 +20,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Approximate per-character width used by `build_layout` to size button
@@ -219,16 +220,14 @@ impl Widget for Toolbar {
             Orientation::Horizontal => (Dimension::auto(), Dimension::length(cross_axis_size)),
             Orientation::Vertical => (Dimension::length(cross_axis_size), Dimension::auto()),
         };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: w,
-                    height: h,
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: w,
+                height: h,
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         // Measure against whatever axis extent the last layout gave us.
         // On the very first pass `self.rect` is empty, so fall back to
@@ -247,7 +246,7 @@ impl Widget for Toolbar {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

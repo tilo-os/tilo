@@ -26,6 +26,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Fixed banner height. Matches the activity-timeline filter strip
@@ -232,21 +233,19 @@ impl Widget for ConflictBanner {
         } else {
             BANNER_HEIGHT as f32
         };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(h),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -481,7 +480,7 @@ mod tests {
 
     fn dispatch(b: &mut ConflictBanner, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();

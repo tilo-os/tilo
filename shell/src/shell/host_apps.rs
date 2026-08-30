@@ -108,12 +108,24 @@ pub fn build_launch_command(
 
 /// Returns as soon as the launch is handed to its worker thread; `Ok`
 /// is the resolved app so callers can name it without a second lookup.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::HostAppNotFound`] when `desktop_id` isn't
+/// registered, or [`LaunchError::NoDisplay`]/a launcher-resolution error
+/// when the compositor or `qos-launcher` binary can't be reached.
 pub fn launch(desktop_id: &str) -> Result<HostApp, LaunchError> {
     launch_with_document(desktop_id, None)
 }
 
 /// Unlike a qOS launch there's no grant to make alongside it — the app
 /// already has the user's filesystem, which is what makes it a host app.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::HostAppNotFound`] when `desktop_id` isn't
+/// registered, or [`LaunchError::NoDisplay`]/a launcher-resolution error
+/// when the compositor or `qos-launcher` binary can't be reached.
 pub fn launch_with_document(
     desktop_id: &str,
     document: Option<&Path>,

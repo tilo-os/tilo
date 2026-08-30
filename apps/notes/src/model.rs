@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use crate::num;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -166,14 +167,14 @@ impl Workspace {
         // Siblings sorted by order; find where `id` sits.
         let siblings: Vec<PageId> = self.children_of(parent).iter().map(|p| p.id).collect();
         let pos = match siblings.iter().position(|s| *s == id) {
-            Some(p) => p as i32,
+            Some(p) => num::i32_of_usize(p),
             None => return false,
         };
         let target = pos + delta.signum();
-        if target < 0 || target as usize >= siblings.len() {
+        if target < 0 || num::usize_of_i32(target) >= siblings.len() {
             return false;
         }
-        let other = siblings[target as usize];
+        let other = siblings[num::usize_of_i32(target)];
         // Swap the two pages' order values, then re-densify to keep the
         // "contiguous from 0" invariant even if orders were sparse.
         let (id_order, other_order) = match (self.get(id), self.get(other)) {
@@ -257,7 +258,7 @@ impl Workspace {
         }
         for (i, sid) in siblings.iter().enumerate() {
             if let Some(p) = self.get_mut(*sid) {
-                p.order = i as u32;
+                p.order = num::u32_of_usize(i);
             }
         }
         // If the page left a different group, re-densify the one it left.
@@ -351,7 +352,7 @@ impl Workspace {
         let new_orders: HashMap<PageId, u32> = siblings
             .into_iter()
             .enumerate()
-            .map(|(i, (id, _))| (id, i as u32))
+            .map(|(i, (id, _))| (id, num::u32_of_usize(i)))
             .collect();
         for p in &mut self.data.pages {
             if let Some(new) = new_orders.get(&p.id) {

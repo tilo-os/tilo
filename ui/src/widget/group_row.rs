@@ -15,6 +15,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::TileContent;
 use crate::widget::{
     DEFAULT_STRIP_USABLE_PX, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor, TileHost, Widget,
@@ -1143,7 +1144,7 @@ impl Widget for GroupRow {
         // 1.0` was tried and rejected — it silently shrinks siblings on
         // every spawn, violating the infinite-strip invariant.
         for (i, &node) in group_nodes.iter().enumerate() {
-            let mut style = taffy.style(node).unwrap().clone();
+            let mut style = taffy.style(node).cloned().unwrap_or_default();
             style.flex_shrink = 0.0;
             if let Some(max_i) = maximized_idx {
                 if i == max_i {
@@ -1157,7 +1158,7 @@ impl Widget for GroupRow {
                     style.display = Display::None;
                 }
             }
-            taffy.set_style(node, style).unwrap();
+            let _ = taffy.set_style(node, style);
         }
         // Row must fill remaining vertical space so each child's
         // `height: percent(1.0)` resolves — otherwise the row measures
@@ -1165,42 +1166,40 @@ impl Widget for GroupRow {
         // Children beyond `rect.x1` are still walked and shifted into
         // screen-space by `scroll_x`; still hit-testable since
         // `gap_index_for` uses each group's stored post-shift `Rect`.
-        let node = taffy
-            .new_with_children(
-                Style {
-                    // A strip owning no part of the current fullscreen
-                    // surface collapses away entirely, so the promoted
-                    // group in another strip is the only thing painted.
-                    display: if self.hidden {
-                        Display::None
-                    } else {
-                        Display::Flex
-                    },
-                    flex_direction: FlexDirection::Row,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::auto(),
-                    },
-                    flex_grow: 1.0,
-                    // Zero here: the inter-group `ResizeHandle` widgets
-                    // supply the visible 8-px footprint per gap, so a
-                    // non-zero gap on top of that would double the
-                    // inter-group distance.
-                    gap: Size {
-                        width: taffy::LengthPercentage::length(0.0),
-                        height: taffy::LengthPercentage::length(0.0),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                // A strip owning no part of the current fullscreen
+                // surface collapses away entirely, so the promoted
+                // group in another strip is the only thing painted.
+                display: if self.hidden {
+                    Display::None
+                } else {
+                    Display::Flex
                 },
-                &children,
-            )
-            .unwrap();
+                flex_direction: FlexDirection::Row,
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
+                flex_grow: 1.0,
+                // Zero here: the inter-group `ResizeHandle` widgets
+                // supply the visible 8-px footprint per gap, so a
+                // non-zero gap on top of that would double the
+                // inter-group distance.
+                gap: Size {
+                    width: taffy::LengthPercentage::length(0.0),
+                    height: taffy::LengthPercentage::length(0.0),
+                },
+                ..Default::default()
+            },
+            &children,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -1220,7 +1219,7 @@ impl Widget for GroupRow {
         let spans_aligned = self.node_ids.len() == self.groups.len();
         let mut spans: Vec<(u64, f64, f64)> = Vec::with_capacity(self.node_ids.len());
         for (i, &cn) in self.node_ids.iter().enumerate() {
-            let cl = taffy.layout(cn).unwrap();
+            let cl = taffy.layout(cn).copied().unwrap_or_default();
             edges.push(self.leading_inset + f64::from(cl.location.x));
             local_x.push(f64::from(cl.location.x));
             let left = self.leading_inset + f64::from(cl.location.x);
@@ -2084,18 +2083,16 @@ mod tests {
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
         let root = row.build_layout(&mut taffy, &theme, &mut node_map);
 
-        let viewport = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(2000.0),
-                        height: Dimension::length(600.0),
-                    },
-                    ..Default::default()
+        let viewport = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(2000.0),
+                    height: Dimension::length(600.0),
                 },
-                &[root],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[root],
+        );
         taffy
             .compute_layout_with_measure(
                 viewport,
@@ -2157,18 +2154,16 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
         let root = row.build_layout(&mut taffy, &theme, &mut node_map);
-        let viewport = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(viewport_w as f32),
-                        height: Dimension::length(600.0),
-                    },
-                    ..Default::default()
+        let viewport = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(viewport_w as f32),
+                    height: Dimension::length(600.0),
                 },
-                &[root],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[root],
+        );
         taffy
             .compute_layout_with_measure(
                 viewport,
@@ -2205,18 +2200,16 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
         let root = row.build_layout(&mut taffy, &theme, &mut node_map);
-        let viewport = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(viewport_w as f32),
-                        height: Dimension::length(600.0),
-                    },
-                    ..Default::default()
+        let viewport = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(viewport_w as f32),
+                    height: Dimension::length(600.0),
                 },
-                &[root],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[root],
+        );
         taffy
             .compute_layout_with_measure(
                 viewport,
@@ -3122,18 +3115,16 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
         let root = row.build_layout(&mut taffy, &theme, &mut node_map);
-        let viewport = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(viewport_w as f32),
-                        height: Dimension::length(600.0),
-                    },
-                    ..Default::default()
+        let viewport = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(viewport_w as f32),
+                    height: Dimension::length(600.0),
                 },
-                &[root],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[root],
+        );
         taffy
             .compute_layout_with_measure(
                 viewport,
@@ -3228,18 +3219,16 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
         let root = row.build_layout(&mut taffy, &theme, &mut node_map);
-        let viewport = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(viewport_w as f32),
-                        height: Dimension::length(1080.0),
-                    },
-                    ..Default::default()
+        let viewport = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(viewport_w as f32),
+                    height: Dimension::length(1080.0),
                 },
-                &[root],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[root],
+        );
         taffy
             .compute_layout_with_measure(
                 viewport,
@@ -3667,18 +3656,16 @@ mod tests {
         let mut new_taffy: TaffyTree<()> = TaffyTree::new();
         let mut new_node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let new_root_child = row.build_layout(&mut new_taffy, &theme, &mut new_node_map);
-        let new_root = new_taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(2000.0),
-                        height: Dimension::length(600.0),
-                    },
-                    ..Default::default()
+        let new_root = new_taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(2000.0),
+                    height: Dimension::length(600.0),
                 },
-                &[new_root_child],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[new_root_child],
+        );
         new_taffy
             .compute_layout_with_measure(
                 new_root,
@@ -3782,18 +3769,16 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let root = row.build_layout(&mut taffy, &theme, &mut node_map);
-        let viewport = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(2000.0),
-                        height: Dimension::length(600.0),
-                    },
-                    ..Default::default()
+        let viewport = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(2000.0),
+                    height: Dimension::length(600.0),
                 },
-                &[root],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[root],
+        );
         taffy
             .compute_layout_with_measure(
                 viewport,
@@ -4112,18 +4097,16 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let new_root = row.build_layout(&mut taffy_new, &theme, &mut node_map);
         use taffy::AvailableSpace;
-        let viewport = taffy_new
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(2000.0),
-                        height: Dimension::length(600.0),
-                    },
-                    ..Default::default()
+        let viewport = taffy_new.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(2000.0),
+                    height: Dimension::length(600.0),
                 },
-                &[new_root],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[new_root],
+        );
         taffy_new
             .compute_layout_with_measure(
                 viewport,
@@ -4180,18 +4163,16 @@ mod tests {
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let root = row.build_layout(&mut taffy, &theme, &mut node_map);
             use taffy::AvailableSpace;
-            let viewport = taffy
-                .new_with_children(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(2000.0),
-                            height: Dimension::length(600.0),
-                        },
-                        ..Default::default()
+            let viewport = taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(2000.0),
+                        height: Dimension::length(600.0),
                     },
-                    &[root],
-                )
-                .unwrap();
+                    ..Default::default()
+                },
+                &[root],
+            );
             taffy
                 .compute_layout_with_measure(
                     viewport,
@@ -4233,18 +4214,16 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let root = row.build_layout(&mut taffy, &theme, &mut node_map);
         use taffy::AvailableSpace;
-        let viewport = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(2000.0),
-                        height: Dimension::length(600.0),
-                    },
-                    ..Default::default()
+        let viewport = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(2000.0),
+                    height: Dimension::length(600.0),
                 },
-                &[root],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[root],
+        );
         taffy
             .compute_layout_with_measure(
                 viewport,

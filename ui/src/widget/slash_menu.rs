@@ -47,6 +47,7 @@ use crate::query_text::{QueryComposition, QueryEventChange};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::block_editor::BlockKind;
 
@@ -531,7 +532,7 @@ impl Widget for SlashMenu {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // Leaf with zero size — the popover lives in overlay space.
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

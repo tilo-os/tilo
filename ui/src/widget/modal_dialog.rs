@@ -18,6 +18,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 pub const MAX_DIALOG_WIDTH: f64 = 480.0;
@@ -372,24 +373,22 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // join the host's keyboard focus order (and the focus trap), even
         // though `place_content` re-lays it out separately for drawing.
         let content_node = self.content.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
                 },
-                &[content_node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[content_node],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         // The resolved node rect: the screen-sized parent under a stack
         // overlay, or the window itself when wired directly under `App`.
         self.viewport = Rect::new(
@@ -636,7 +635,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.new_leaf(Style::default()).unwrap();
+            let node = taffy.leaf_node(Style::default());
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -688,15 +687,13 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(200.0),
-                        height: Dimension::length(40.0),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Default::default()
+            });
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -793,7 +790,7 @@ mod tests {
     /// handled — needed to assert the modal-blocking contract.
     fn dispatch_handled<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) -> bool {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();

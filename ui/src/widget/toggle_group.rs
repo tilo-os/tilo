@@ -17,6 +17,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 pub struct Segment {
@@ -409,21 +410,19 @@ impl Widget for ToggleGroup {
         // 120px per segment, 36px tall; segments always share the
         // available width equally in `apply_layout`.
         let width = (self.segments.len().max(1) as f32) * 120.0;
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(width),
-                    height: Dimension::length(36.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(width),
+                height: Dimension::length(36.0),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let x0 = origin.x + f64::from(layout.location.x);
         let y0 = origin.y + f64::from(layout.location.y);
         let x1 = x0 + f64::from(layout.size.width);
@@ -709,7 +708,7 @@ mod tests {
 
     fn dispatch(g: &mut ToggleGroup, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -767,7 +766,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -807,7 +806,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = g.build_layout(&mut taffy, theme, &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();

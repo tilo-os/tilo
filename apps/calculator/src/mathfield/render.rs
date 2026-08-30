@@ -6,7 +6,7 @@
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 
 use crate::draw;
@@ -117,9 +117,9 @@ fn draw_box(
             let scale = (b.h / nat_h).clamp(1.0, 3.0);
             let pos = Point::new(ox + b.x, oy + b.y + b.baseline);
             let xf = t
-                * Affine::translate((pos.x, pos.y))
-                * Affine::scale_non_uniform(1.0, scale)
-                * Affine::translate((0.0, -f64::from(*size) * 1.0));
+                .pre_translate(Vec2::new(pos.x, pos.y))
+                .pre_scale_non_uniform(1.0, scale)
+                .pre_translate(Vec2::new(0.0, -f64::from(*size)));
             tr.draw_text_weighted(
                 scene,
                 glyph,

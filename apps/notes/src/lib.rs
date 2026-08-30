@@ -10,6 +10,7 @@ pub mod doc;
 pub mod main_panel;
 pub mod markdown;
 pub mod model;
+pub mod num;
 pub mod search_provider;
 pub mod shortcuts_overlay;
 pub mod shots;

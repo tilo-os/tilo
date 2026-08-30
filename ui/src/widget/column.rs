@@ -2,6 +2,7 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -188,69 +189,67 @@ impl Widget for Column {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
 
-        let node = taffy
-            .new_with_children(
-                Style {
-                    // Intrinsic-height columns run as a Block stack: flex layout
-                    // in taffy 0.9 silently truncates children once the
-                    // container's main-axis budget runs out (even with
-                    // flex_shrink: 0.0), leaving an outer Scrollable thinking
-                    // content stops where taffy stopped. Block has no axis
-                    // budget, so content grows to its true sum.
-                    display: if self.intrinsic_height {
-                        taffy::Display::Block
-                    } else {
-                        taffy::Display::Flex
-                    },
-                    flex_direction: taffy::FlexDirection::Column,
-                    align_items: Some(taffy::AlignItems::FlexStart),
-                    flex_shrink: 0.0, // Prevent vertical squashing
-                    gap: taffy::Size {
-                        width: length(0.0_f32),
-                        height: length(self.gap_override.unwrap_or(theme.gap_standard)),
-                    },
-                    padding: {
-                        let base = if self.no_padding {
-                            0.0
-                        } else {
-                            theme.padding_standard * 2.0
-                        };
-                        let vert = self.vertical_padding_override.unwrap_or(base);
-                        let (left, right) = self
-                            .horizontal_padding_override
-                            .unwrap_or((base + self.extra_left_padding, base));
-                        taffy::Rect {
-                            left: length(left),
-                            right: length(right),
-                            top: length(vert + self.extra_top_padding),
-                            bottom: length(vert + self.extra_bottom_padding),
-                        }
-                    },
-                    size: taffy::Size {
-                        width: percent(1.0_f32),
-                        height: if self.intrinsic_height || self.fill_remaining_height {
-                            taffy::Dimension::auto()
-                        } else {
-                            percent(1.0_f32)
-                        },
-                    },
-                    flex_basis: if self.fill_remaining_height {
-                        taffy::Dimension::length(0.0)
-                    } else {
-                        taffy::Dimension::auto()
-                    },
-                    flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                // Intrinsic-height columns run as a Block stack: flex layout
+                // in taffy 0.9 silently truncates children once the
+                // container's main-axis budget runs out (even with
+                // flex_shrink: 0.0), leaving an outer Scrollable thinking
+                // content stops where taffy stopped. Block has no axis
+                // budget, so content grows to its true sum.
+                display: if self.intrinsic_height {
+                    taffy::Display::Block
+                } else {
+                    taffy::Display::Flex
                 },
-                &child_nodes,
-            )
-            .unwrap();
+                flex_direction: taffy::FlexDirection::Column,
+                align_items: Some(taffy::AlignItems::FlexStart),
+                flex_shrink: 0.0, // Prevent vertical squashing
+                gap: taffy::Size {
+                    width: length(0.0_f32),
+                    height: length(self.gap_override.unwrap_or(theme.gap_standard)),
+                },
+                padding: {
+                    let base = if self.no_padding {
+                        0.0
+                    } else {
+                        theme.padding_standard * 2.0
+                    };
+                    let vert = self.vertical_padding_override.unwrap_or(base);
+                    let (left, right) = self
+                        .horizontal_padding_override
+                        .unwrap_or((base + self.extra_left_padding, base));
+                    taffy::Rect {
+                        left: length(left),
+                        right: length(right),
+                        top: length(vert + self.extra_top_padding),
+                        bottom: length(vert + self.extra_bottom_padding),
+                    }
+                },
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: if self.intrinsic_height || self.fill_remaining_height {
+                        taffy::Dimension::auto()
+                    } else {
+                        percent(1.0_f32)
+                    },
+                },
+                flex_basis: if self.fill_remaining_height {
+                    taffy::Dimension::length(0.0)
+                } else {
+                    taffy::Dimension::auto()
+                },
+                flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
+                ..Default::default()
+            },
+            &child_nodes,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         // The larger of own size and content bounds: taffy can clamp a
         // Block container's reported size to its parent's available main
         // axis (notably inside a Scrollable), and `layout.size` alone would
@@ -267,7 +266,7 @@ impl Widget for Column {
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
-        let children = taffy.children(node).unwrap();
+        let children = taffy.children(node).unwrap_or_default();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
             child_widget.apply_layout(taffy, *child_node, new_origin);
         }
@@ -298,7 +297,7 @@ impl Widget for Column {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let child_nodes = taffy.children(node_id).unwrap();
+        let child_nodes = taffy.children(node_id).unwrap_or_default();
         // A child with a latched drag (e.g. a slider's knob) gets ALL
         // events exclusively for the frame, so the drag survives the
         // cursor crossing a peer widget's rect — otherwise the peer's

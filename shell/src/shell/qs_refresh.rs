@@ -10,7 +10,8 @@
 //! open. A worker owns no `Rc` and sends plain data over a channel,
 //! keeping it safe alongside the shell's single-threaded `RefCell` tree.
 
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::collections::HashSet;
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::shell::qs_actions as qs;
 
@@ -31,7 +32,7 @@ pub enum QsReading {
 
 /// Tracked so a second open while a read is running doesn't pile up
 /// another worker behind it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Tier {
     Fast,
     Wifi,
@@ -41,9 +42,8 @@ enum Tier {
 pub struct QsRefresh {
     tx: Sender<QsReading>,
     rx: Receiver<QsReading>,
-    fast_in_flight: bool,
-    wifi_in_flight: bool,
-    bt_in_flight: bool,
+    /// Which tiers currently have a worker outstanding.
+    in_flight: HashSet<Tier>,
     /// Turned off when the host's action dispatcher has been replaced,
     /// so a seeded Wi-Fi list can't get overwritten by a real scan.
     enabled: bool,
@@ -61,9 +61,7 @@ impl QsRefresh {
         Self {
             tx,
             rx,
-            fast_in_flight: false,
-            wifi_in_flight: false,
-            bt_in_flight: false,
+            in_flight: HashSet::new(),
             enabled: true,
         }
     }
@@ -71,7 +69,7 @@ impl QsRefresh {
     /// Feeds `needs_animation_frame` so a reading landing after the
     /// open animation settles still reaches the screen.
     pub fn is_in_flight(&self) -> bool {
-        self.fast_in_flight || self.wifi_in_flight || self.bt_in_flight
+        !self.in_flight.is_empty()
     }
 
     pub fn disable_os_reads(&mut self) {
@@ -85,15 +83,9 @@ impl QsRefresh {
         if !self.enabled {
             return;
         }
-        let busy = match tier {
-            Tier::Fast => &mut self.fast_in_flight,
-            Tier::Wifi => &mut self.wifi_in_flight,
-            Tier::Bt => &mut self.bt_in_flight,
-        };
-        if *busy {
+        if !self.in_flight.insert(tier) {
             return;
         }
-        *busy = true;
         let tx = self.tx.clone();
         // Detached: bounded by `os_actions::DEFAULT_TIMEOUT`, and a
         // send into a dropped receiver is a no-op.
@@ -130,18 +122,14 @@ impl QsRefresh {
     /// Every reading arrived since the last call. Never blocks.
     pub fn drain(&mut self) -> Vec<QsReading> {
         let mut out = Vec::new();
-        loop {
-            match self.rx.try_recv() {
-                Ok(reading) => {
-                    match &reading {
-                        QsReading::Fast { .. } => self.fast_in_flight = false,
-                        QsReading::WifiNetworks(_) => self.wifi_in_flight = false,
-                        QsReading::BtDevices(_) => self.bt_in_flight = false,
-                    }
-                    out.push(reading);
-                }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(reading) = self.rx.try_recv() {
+            let tier = match &reading {
+                QsReading::Fast { .. } => Tier::Fast,
+                QsReading::WifiNetworks(_) => Tier::Wifi,
+                QsReading::BtDevices(_) => Tier::Bt,
+            };
+            self.in_flight.remove(&tier);
+            out.push(reading);
         }
         out
     }

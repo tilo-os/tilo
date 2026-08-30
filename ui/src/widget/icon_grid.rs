@@ -22,6 +22,7 @@ use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -208,7 +209,7 @@ impl Widget for IconGrid {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -238,7 +239,7 @@ impl Widget for IconGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -569,7 +570,7 @@ mod tests {
         g.columns = 3;
 
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mods = winit::event::Modifiers::default();
         let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
         let mut doc = AutoCommit::new();
@@ -622,7 +623,7 @@ mod tests {
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
         let node = g.build_layout(&mut taffy, theme, &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();

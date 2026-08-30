@@ -42,7 +42,7 @@ impl SearchProvider for NotesProvider {
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "notes", ResourceKind::Note)
+        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "notes", &ResourceKind::Note)
     }
 }
 

@@ -224,6 +224,10 @@ mod tests {
     }
 
     /// Even spans, 100 wide each, for a strip of `ids`.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "test fixture: ids.len() is a handful of groups, nowhere near f64's precision limit"
+    )]
     fn viewport(strip: StripId, ids: &[GroupId], visible: (f64, f64)) -> StripViewport {
         StripViewport {
             strip,

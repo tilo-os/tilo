@@ -35,6 +35,7 @@ use ui::{PathSegment, PresenceCtx, PresenceKey};
 
 use crate::WpFormat;
 use crate::i18n::{arg, t, t_args};
+use crate::num;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use ui::portal;
 
@@ -681,7 +682,7 @@ struct ScrubState {
 /// Format a style value: integer when whole, else one decimal.
 fn fmt_num(v: f32) -> String {
     if (v - v.round()).abs() < 0.05 {
-        format!("{}", v.round() as i64)
+        format!("{}", num::i64_of_f32(v.round()))
     } else {
         format!("{v:.1}")
     }
@@ -808,8 +809,8 @@ fn is_word_match(chars: &[char], s: usize, e: usize) -> bool {
 fn swatch_reserve_width() -> f64 {
     let sw = 20.0;
     let gap = 5.0;
-    let n_color = (STYLE_PALETTE.len() + 1) as f64; // +1 neutral/default swatch
-    let n_hl = (HIGHLIGHT_PALETTE.len() + 1) as f64; // +1 "no highlight" swatch
+    let n_color = num::f64_of_usize(STYLE_PALETTE.len() + 1); // +1 neutral/default swatch
+    let n_hl = num::f64_of_usize(HIGHLIGHT_PALETTE.len() + 1); // +1 "no highlight" swatch
     let color = n_color * sw + (n_color - 1.0) * gap;
     let hl = n_hl * sw + (n_hl - 1.0) * gap;
     // right edge margin + colour strip + inter-strip gap + highlight strip
@@ -874,7 +875,7 @@ fn char_font_size(i: usize, marks: &[MarkSpan]) -> Option<f32> {
         .iter()
         .find(|m| (m.name == "size" || m.name == "fontSize") && i >= m.start && i < m.end)
         .and_then(|m| m.value.as_int())
-        .map(|n| n as f32)
+        .map(|n| num::f32_of_i64(n))
 }
 
 /// The font-family run mark covering char `i`, if any. The editor writes the
@@ -953,8 +954,8 @@ fn block_page_break_before(b: &BlockView) -> bool {
 /// scaling the line advance (1.5 = one-and-a-half, 2.0 = double).
 fn block_line_spacing(b: &BlockView) -> f32 {
     match b.attrs.get("line_spacing") {
-        Some(AttrVal::Float(f)) if *f > 0.0 => *f as f32,
-        Some(AttrVal::Int(n)) if *n > 0 => *n as f32,
+        Some(AttrVal::Float(f)) if *f > 0.0 => num::f32_of_f64(*f),
+        Some(AttrVal::Int(n)) if *n > 0 => num::f32_of_i64(*n),
         _ => 1.0,
     }
 }
@@ -984,7 +985,7 @@ fn next_line_spacing(cur: f64) -> f64 {
 /// A short label for a line-spacing multiplier (the toolbar chip text).
 fn line_spacing_label(mult: f64) -> String {
     if (mult - mult.round()).abs() < 0.005 {
-        format!("⇕ {}", mult.round() as i64)
+        format!("⇕ {}", num::i64_of_f64(mult.round()))
     } else {
         format!("⇕ {mult:.2}")
     }
@@ -995,7 +996,7 @@ fn line_spacing_label(mult: f64) -> String {
 fn block_indent_attr(b: &BlockView) -> f64 {
     match b.attrs.get("indent") {
         Some(AttrVal::Float(f)) => *f,
-        Some(AttrVal::Int(n)) => *n as f64,
+        Some(AttrVal::Int(n)) => num::f64_of_i64(*n),
         _ => 0.0,
     }
 }
@@ -1028,7 +1029,7 @@ fn image_wrap(b: &BlockView) -> &str {
 /// decoded intrinsic size. Accepts `Int` or `Float`.
 fn image_explicit_size(b: &BlockView) -> Option<(f64, f64)> {
     let dim = |key: &str| match b.attrs.get(key) {
-        Some(AttrVal::Int(n)) if *n > 0 => Some(*n as f64),
+        Some(AttrVal::Int(n)) if *n > 0 => Some(num::f64_of_i64(*n)),
         Some(AttrVal::Float(f)) if *f > 0.0 => Some(*f),
         _ => None,
     };
@@ -1619,7 +1620,7 @@ struct RegionLaid {
 /// A list item's 0-based nesting level (absent attr → 0).
 fn list_level(b: &BlockView) -> usize {
     match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) if *n > 0 => *n as usize,
+        Some(AttrVal::Int(n)) if *n > 0 => num::usize_of_i64(*n),
         _ => 0,
     }
 }
@@ -1649,7 +1650,7 @@ fn cell_table(b: &BlockView) -> Option<String> {
 
 fn cell_rc(b: &BlockView) -> (usize, usize) {
     let get = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) if *n >= 0 => *n as usize,
+        Some(AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
         _ => 0,
     };
     (get("row"), get("col"))
@@ -2739,8 +2740,8 @@ impl WordProcessorWidget {
         if self.find_matches.is_empty() {
             return;
         }
-        let n = self.find_matches.len() as i32;
-        self.find_idx = (((self.find_idx as i32 + delta) % n + n) % n) as usize;
+        let n = num::i32_of_usize(self.find_matches.len());
+        self.find_idx = num::usize_of_i32(((num::i32_of_usize(self.find_idx) + delta) % n + n) % n);
         self.select_current_match(state);
     }
 
@@ -2859,7 +2860,7 @@ impl WordProcessorWidget {
                 None,
                 &vello::kurbo::RoundedRect::from_rect(r, 5.0),
             );
-            let tx = r.x0 + (w - label.chars().count() as f64 * 7.2).max(4.0) / 2.0;
+            let tx = r.x0 + (w - num::f64_of_usize(label.chars().count()) * 7.2).max(4.0) / 2.0;
             tr.draw_text(
                 scene,
                 label,
@@ -2898,8 +2899,8 @@ impl WordProcessorWidget {
                 t_args(
                     "find-count",
                     &[
-                        arg("cur", (self.find_idx + 1) as i64),
-                        arg("total", self.find_matches.len() as i64),
+                        arg("cur", num::i64_of_usize(self.find_idx + 1)),
+                        arg("total", num::i64_of_usize(self.find_matches.len())),
                     ],
                 ),
                 cc.text_dim,
@@ -2931,7 +2932,7 @@ impl WordProcessorWidget {
                 None,
                 &vello::kurbo::RoundedRect::from_rect(r, 5.0),
             );
-            let tx = r.x0 + (w - label.chars().count() as f64 * 7.2).max(6.0) / 2.0;
+            let tx = r.x0 + (w - num::f64_of_usize(label.chars().count()) * 7.2).max(6.0) / 2.0;
             tr.draw_text(
                 scene,
                 &label,
@@ -3026,9 +3027,10 @@ impl WordProcessorWidget {
         for rl in &self.region_laid {
             let h = f64::from(rl.layout.height());
             if p.y >= rl.origin.y && p.y < rl.origin.y + h {
-                let byte = rl
-                    .layout
-                    .hit((p.x - rl.origin.x) as f32, (p.y - rl.origin.y) as f32);
+                let byte = rl.layout.hit(
+                    num::f32_of_f64(p.x - rl.origin.x),
+                    num::f32_of_f64(p.y - rl.origin.y),
+                );
                 hit = Some((rl.id.clone(), byte_to_char(&rl.text, byte)));
                 break;
             }
@@ -3046,7 +3048,7 @@ impl WordProcessorWidget {
             {
                 let byte = rl
                     .layout
-                    .hit((p.x - rl.origin.x) as f32, rl.layout.height() - 1.0);
+                    .hit(num::f32_of_f64(p.x - rl.origin.x), rl.layout.height() - 1.0);
                 hit = Some((rl.id.clone(), byte_to_char(&rl.text, byte)));
             }
         }
@@ -3084,7 +3086,10 @@ impl WordProcessorWidget {
                 // internal y of the line under the pointer (correct even when the
                 // line lives in a page-split slice whose band starts mid-layout).
                 let byte = self.layout_cache.get(&l.id).map_or(0, |(_, lay)| {
-                    lay.hit((p.x - l.text_x) as f32, (p.y - l.layout_y) as f32)
+                    lay.hit(
+                        num::f32_of_f64(p.x - l.text_x),
+                        num::f32_of_f64(p.y - l.layout_y),
+                    )
                 });
                 hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 break;
@@ -3104,7 +3109,7 @@ impl WordProcessorWidget {
                 // the layout's own bottom (not the slice band height, which for a
                 // split last slice covers only its carried-over lines).
                 let byte = self.layout_cache.get(&l.id).map_or(0, |(_, lay)| {
-                    lay.hit((p.x - l.text_x) as f32, lay.height() - 1.0)
+                    lay.hit(num::f32_of_f64(p.x - l.text_x), lay.height() - 1.0)
                 });
                 hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
             }
@@ -3216,7 +3221,7 @@ impl WordProcessorWidget {
         if blocks.is_empty() || band.height() <= 2.0 {
             return (false, Vec::new());
         }
-        let wrap_w = band.width().max(40.0) as f32;
+        let wrap_w = num::f32_of_f64(band.width().max(40.0));
         // Header/footer run text is a touch smaller and muted, so it reads as
         // chrome rather than body copy (LibreOffice-style running heads).
         let size = 12.0f32;
@@ -3312,7 +3317,7 @@ impl WordProcessorWidget {
         } else {
             t("band-footer")
         };
-        let approx = label.chars().count() as f64 * 6.4 + 12.0;
+        let approx = num::f64_of_usize(label.chars().count()) * 6.4 + 12.0;
         let tab = Rect::new(
             band.x0 - 2.0,
             band.y0 - 15.0,
@@ -3481,7 +3486,7 @@ impl WordProcessorWidget {
                     .map(|l| l.y_top + l.height);
                 let key = self.focused_style_key();
                 if let (Some(bottom), Some(key)) = (bottom, key) {
-                    let after = (2.0 * (p.y - bottom)).clamp(0.0, 80.0) as f32;
+                    let after = num::f32_of_f64((2.0 * (p.y - bottom)).clamp(0.0, 80.0));
                     if let Some(st) = self.sheet.styles.get_mut(&key) {
                         st.space_after = after;
                     }
@@ -3527,7 +3532,7 @@ impl WordProcessorWidget {
             .find(|b| b.id == block)
             .map_or(0.0, |b| match b.attrs.get(key) {
                 Some(AttrVal::Float(f)) => *f,
-                Some(AttrVal::Int(n)) => *n as f64,
+                Some(AttrVal::Int(n)) => num::f64_of_i64(*n),
                 _ => 0.0,
             })
     }
@@ -3652,7 +3657,7 @@ impl WordProcessorWidget {
         let unit_px = PX_PER_INCH; // ticks per inch
         let text_left_cx = page_x + self.margins.left;
         let text_right_cx = page_x + page_w - self.margins.right;
-        let max_in = ((text_right_cx - text_left_cx) / unit_px).ceil() as i32;
+        let max_in = num::i32_of_f64(((text_right_cx - text_left_cx) / unit_px).ceil());
         for i in 0..=max_in {
             let cx = text_left_cx + f64::from(i) * unit_px;
             let sx = self.content_x_to_screen(cx);
@@ -4027,7 +4032,7 @@ impl WordProcessorWidget {
                     &vello::kurbo::Circle::new((gx, gy), 4.0),
                 );
                 // value label, offset inside the page
-                let label = format!("{}", e.get(side).round() as i64);
+                let label = format!("{}", num::i64_of_f64(e.get(side).round()));
                 let (lx, ly) = if vert {
                     (c + 6.0, page.y0 + 16.0)
                 } else {
@@ -4053,7 +4058,7 @@ impl WordProcessorWidget {
                 None,
                 &vello::kurbo::RoundedRect::from_rect(pill, 3.0),
             );
-            let label = format!("{} px", self.focused_space_after().round() as i64);
+            let label = format!("{} px", num::i64_of_f64(self.focused_space_after().round()));
             tr.draw_text(
                 scene,
                 &label,
@@ -4091,7 +4096,7 @@ impl WordProcessorWidget {
             (LayoutMode::Margins, t("layout-margins")),
             (LayoutMode::Spacing, t("layout-spacing")),
         ] {
-            let w = 16.0 + label.chars().count() as f64 * 7.6;
+            let w = 16.0 + num::f64_of_usize(label.chars().count()) * 7.6;
             let r = Rect::new(x, bar.y0 + 5.0, x + w, bar.y1 - 5.0);
             let active = self.layout_mode == mode;
             let bg = if active { cc.accent } else { cc.chip };
@@ -4119,10 +4124,10 @@ impl WordProcessorWidget {
             LayoutMode::Margins => t_args(
                 "layout-margins-readout",
                 &[
-                    arg("l", self.margins.left.round() as i64),
-                    arg("t", self.margins.top.round() as i64),
-                    arg("r", self.margins.right.round() as i64),
-                    arg("b", self.margins.bottom.round() as i64),
+                    arg("l", num::i64_of_f64(self.margins.left.round())),
+                    arg("t", num::i64_of_f64(self.margins.top.round())),
+                    arg("r", num::i64_of_f64(self.margins.right.round())),
+                    arg("b", num::i64_of_f64(self.margins.bottom.round())),
                 ],
             ),
             LayoutMode::Spacing => {
@@ -4134,7 +4139,7 @@ impl WordProcessorWidget {
                     "layout-spacing-readout",
                     &[
                         arg("name", name),
-                        arg("px", self.focused_space_after().round() as i64),
+                        arg("px", num::i64_of_f64(self.focused_space_after().round())),
                     ],
                 )
             }
@@ -4212,7 +4217,7 @@ impl WordProcessorWidget {
                 12.5,
                 cc.text_dim,
                 transform * Affine::translate((x0, y)),
-                Some(inner_w as f32),
+                Some(num::f32_of_f64(inner_w)),
             );
             scene.pop_layer();
             return;
@@ -4256,7 +4261,7 @@ impl WordProcessorWidget {
             .iter()
             .enumerate()
             {
-                let rx = strip_left + i as f64 * (bw + gap);
+                let rx = strip_left + num::f64_of_usize(i) * (bw + gap);
                 let r = Rect::new(rx, y, rx + bw, y + 24.0);
                 draw_btn(scene, transform, tr, &cc, r, label, cur == *val, true);
                 self.panel_hits.push((r, PanelHit::ParaAlign(val)));
@@ -4304,7 +4309,7 @@ impl WordProcessorWidget {
             18.0,
             cc.text,
             transform * Affine::translate((x0, y)),
-            Some(inner_w as f32),
+            Some(num::f32_of_f64(inner_w)),
         );
         y += 24.0;
         // Caption: name the preset semantics explicitly so this section reads as
@@ -4316,7 +4321,7 @@ impl WordProcessorWidget {
             11.0,
             cc.text_dim,
             transform * Affine::translate((x0, y)),
-            Some(inner_w as f32),
+            Some(num::f32_of_f64(inner_w)),
         );
         y += 22.0;
 
@@ -4326,8 +4331,8 @@ impl WordProcessorWidget {
         let col_w = (inner_w - gap) / 2.0;
         let chip_h = 24.0;
         for (i, id) in order.iter().enumerate() {
-            let col = (i % 2) as f64;
-            let row = (i / 2) as f64;
+            let col = num::f64_of_usize(i % 2);
+            let row = num::f64_of_usize(i / 2);
             let cx = x0 + col * (col_w + gap);
             let cy = y + row * (chip_h + gap);
             let r = Rect::new(cx, cy, cx + col_w, cy + chip_h);
@@ -4335,7 +4340,7 @@ impl WordProcessorWidget {
             draw_btn(scene, transform, tr, &cc, r, &name, id == &key, false);
             self.panel_hits.push((r, PanelHit::Pick(id.clone())));
         }
-        let rows = order.len().div_ceil(2) as f64;
+        let rows = num::f64_of_usize(order.len().div_ceil(2));
         y += rows * (chip_h + gap) + 6.0;
         panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
@@ -4419,10 +4424,10 @@ impl WordProcessorWidget {
             let sw_gap = 5.0;
             // Leave room on the left for the "Colour" label.
             let strip_w = (inner_w - 54.0).clamp(120.0, 196.0);
-            let sw = (strip_w - sw_gap * (n as f64 - 1.0)) / n as f64;
+            let sw = (strip_w - sw_gap * (num::f64_of_usize(n) - 1.0)) / num::f64_of_usize(n);
             let sx0 = right - strip_w;
             for (i, c) in STYLE_PALETTE.iter().enumerate() {
-                let sx = sx0 + i as f64 * (sw + sw_gap);
+                let sx = sx0 + num::f64_of_usize(i) * (sw + sw_gap);
                 let r = Rect::new(sx, y, sx + sw, y + 22.0);
                 let col = Color::from_rgb8(c[0], c[1], c[2]);
                 scene.fill(
@@ -4539,7 +4544,11 @@ impl WordProcessorWidget {
 
         // Current display dimensions (from this frame's laid geometry).
         let (dw, dh) = self.selected_image_dims().unwrap_or((0.0, 0.0));
-        let dims = format!("{} × {} px", dw.round() as i64, dh.round() as i64);
+        let dims = format!(
+            "{} × {} px",
+            num::i64_of_f64(dw.round()),
+            num::i64_of_f64(dh.round())
+        );
         tr.draw_text(
             scene,
             &dims,
@@ -4690,7 +4699,7 @@ impl WordProcessorWidget {
         } else {
             fmt_num(value)
         };
-        let approx = text.chars().count() as f64 * 7.0;
+        let approx = num::f64_of_usize(text.chars().count()) * 7.0;
         let tx = f64::midpoint(vb.x0, vb.x1) - approx / 2.0;
         tr.draw_text(
             scene,
@@ -4811,7 +4820,7 @@ impl WordProcessorWidget {
                 12.5,
                 cc.text_dim,
                 transform * Affine::translate((x0, y)),
-                Some(inner_w as f32),
+                Some(num::f32_of_f64(inner_w)),
             );
             scene.pop_layer();
             return;
@@ -4853,7 +4862,7 @@ impl WordProcessorWidget {
                 size,
                 ink,
                 transform * Affine::translate((x0 + indent, y + 4.0)),
-                Some((inner_w - indent).max(20.0) as f32),
+                Some(num::f32_of_f64((inner_w - indent).max(20.0))),
             );
             self.outline_hits.push((r, h.id.clone()));
             y += row_h;
@@ -4898,7 +4907,10 @@ impl WordProcessorWidget {
         // Scroll the freshly-inserted TOC (always at the document top) into view
         // and surface a confirmation toast, so the action has a visible result.
         self.scroll_y = 0.0;
-        self.toast = Some(t_args("toast-toc-updated", &[arg("n", n as i64)]));
+        self.toast = Some(t_args(
+            "toast-toc-updated",
+            &[arg("n", num::i64_of_usize(n))],
+        ));
     }
 
     /// Draw the transient status toast (a rounded pill just above the status bar)
@@ -4909,7 +4921,7 @@ impl WordProcessorWidget {
             return;
         };
         let cc = self.chrome;
-        let approx = msg.chars().count() as f64 * 7.4 + 32.0;
+        let approx = num::f64_of_usize(msg.chars().count()) * 7.4 + 32.0;
         let w = approx.clamp(160.0, (self.rect.width() - 40.0).max(160.0));
         let h = 34.0;
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
@@ -4928,7 +4940,7 @@ impl WordProcessorWidget {
             ),
         );
         scene.fill(Fill::NonZero, transform, cc.accent, None, &shape);
-        let tw = msg.chars().count() as f64 * 7.0;
+        let tw = num::f64_of_usize(msg.chars().count()) * 7.0;
         tr.draw_text(
             scene,
             &msg,
@@ -4980,7 +4992,7 @@ fn draw_btn(
         None,
         &vello::kurbo::RoundedRect::from_rect(r, 6.0),
     );
-    let approx = label.chars().count() as f64 * 6.6;
+    let approx = num::f64_of_usize(label.chars().count()) * 6.6;
     let tx = if center {
         (f64::midpoint(r.x0, r.x1) - approx / 2.0).max(r.x0 + 4.0)
     } else {
@@ -4993,7 +5005,7 @@ fn draw_btn(
         12.5,
         fg,
         transform * Affine::translate((tx, ty)),
-        Some((r.width() - 6.0) as f32),
+        Some(num::f32_of_f64(r.width() - 6.0)),
     );
 }
 
@@ -5077,7 +5089,7 @@ impl WordProcessorWidget {
     /// `level` attr is absent or non-positive).
     fn block_heading_level(b: &BlockView) -> u8 {
         match b.attrs.get("level") {
-            Some(AttrVal::Int(n)) if *n >= 1 => (*n).min(255) as u8,
+            Some(AttrVal::Int(n)) if *n >= 1 => num::u8_of_i64((*n).min(255)),
             _ => 1,
         }
     }
@@ -5394,7 +5406,7 @@ impl Widget for WordProcessorWidget {
         let page_x = canvas.x0 + ((canvas.width() - page_w) / 2.0).max(0.0);
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
-        let content_w = (page_w - m.left - m.right).max(80.0) as f32;
+        let content_w = num::f32_of_f64((page_w - m.left - m.right).max(80.0));
 
         // Horizontal ruler band (drawn unscaled, above the canvas). Reads the
         // page edge geometry just computed, plus the caret paragraph's indent +
@@ -5418,8 +5430,9 @@ impl Widget for WordProcessorWidget {
         // so a page-end never crosses a line of text.
         let letter_h = page_w * LETTER_RATIO;
         let page_pitch = letter_h + PAGE_GAP;
-        let page_content_top = |i: usize| page_top + i as f64 * page_pitch + m.top;
-        let page_content_bottom = |i: usize| page_top + i as f64 * page_pitch + letter_h - m.bottom;
+        let page_content_top = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + m.top;
+        let page_content_bottom =
+            |i: usize| page_top + num::f64_of_usize(i) * page_pitch + letter_h - m.bottom;
 
         // Pass 1: shape blocks top-to-bottom. Runs of consecutive `cell` blocks
         // sharing a table id lay out as a grid; everything else stacks normally.
@@ -5473,7 +5486,7 @@ impl Widget for WordProcessorWidget {
                 let cells = &blocks[start..bi];
                 let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
                 let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
-                let col_w = f64::from(content_w) / ncols as f64;
+                let col_w = f64::from(content_w) / num::f64_of_usize(ncols);
                 // Measure every row first so the whole table can paginate as one
                 // unit (it is never split mid-row across a page boundary).
                 // A measured table row: `(row_height, cells)`, each cell as
@@ -5487,7 +5500,7 @@ impl Widget for WordProcessorWidget {
                         if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
                             let (runs, underlines, strikes) =
                                 block_runs_markup(cell, self.show_markup);
-                            let wrap_w = (col_w - 2.0 * cell_pad).max(24.0) as f32;
+                            let wrap_w = num::f32_of_f64((col_w - 2.0 * cell_pad).max(24.0));
                             let align = block_align(cell, TextAlign::Left);
                             let key = shape_key(
                                 &runs,
@@ -5557,7 +5570,7 @@ impl Widget for WordProcessorWidget {
                     }
                     row_on_page = true;
                     for (c, cell_h, cell) in row_items {
-                        let cell_x = content_x + c as f64 * col_w;
+                        let cell_x = content_x + num::f64_of_usize(c) * col_w;
                         let cbox = Rect::new(cell_x, ry, cell_x + col_w, ry + row_h);
                         laid.push(Laid {
                             id: cell.id.clone(),
@@ -5726,7 +5739,7 @@ impl Widget for WordProcessorWidget {
                 // left of the text. Ordered items number per level.
                 let (indent, bullet) = if b.kind == "list_item" {
                     let level = list_level(b);
-                    let indent = f64::from(st.indent) + level as f64 * LIST_INDENT_STEP;
+                    let indent = f64::from(st.indent) + num::f64_of_usize(level) * LIST_INDENT_STEP;
                     // Keep the ordered counters sized to the current depth; entering
                     // a shallower level drops the deeper counters so they restart.
                     ol_counts.truncate(level + 1);
@@ -5763,7 +5776,8 @@ impl Widget for WordProcessorWidget {
                     }
                     _ => (0.0, 0.0),
                 };
-                let wrap_w = (content_w - indent as f32 - float_reserve as f32).max(40.0);
+                let wrap_w = (content_w - num::f32_of_f64(indent) - num::f32_of_f64(float_reserve))
+                    .max(40.0);
                 let (runs, underlines, strikes) = block_runs_markup(b, self.show_markup);
                 let align = block_align(b, style_align(&st.align));
                 let family = parse_font(&st.font);
@@ -5953,7 +5967,8 @@ impl Widget for WordProcessorWidget {
         // Total document extent below `page_top`: the stacked page sheets + gaps,
         // widened if an over-tall block overflowed its page's text band.
         let num_pages = cur_page + 1;
-        let pages_extent = num_pages as f64 * letter_h + cur_page as f64 * PAGE_GAP;
+        let pages_extent =
+            num::f64_of_usize(num_pages) * letter_h + num::f64_of_usize(cur_page) * PAGE_GAP;
         let extent = pages_extent.max(y - page_top);
 
         // Scrolling: clamp the offset to the overflow, then shift the laid-out
@@ -6002,7 +6017,7 @@ impl Widget for WordProcessorWidget {
         let edit_region = self.inner.region();
         self.region_laid.clear();
         for i in 0..num_pages {
-            let ptop = page_top + i as f64 * page_pitch - sy;
+            let ptop = page_top + num::f64_of_usize(i) * page_pitch - sy;
             let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
             chrome::page::draw(
                 scene,
@@ -6063,8 +6078,8 @@ impl Widget for WordProcessorWidget {
             }
             // Default page indicator in the gap — only when no footer was drawn.
             if !drew_footer && !foot_editing {
-                let label = t_args("page-indicator", &[arg("n", page_no as i64)]);
-                let approx = label.chars().count() as f64 * 6.4;
+                let label = t_args("page-indicator", &[arg("n", num::i64_of_usize(page_no))]);
+                let approx = num::f64_of_usize(label.chars().count()) * 6.4;
                 let lx = f64::midpoint(sheet.x0, sheet.x1) - approx / 2.0;
                 let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
                 // Drawn in the inter-page gap on the canvas — chrome, so themed.
@@ -6577,7 +6592,7 @@ impl Widget for WordProcessorWidget {
                         .collect();
                     parts.join(" ")
                 };
-                let inner_w = (COMMENT_CARD_W - 16.0) as f32;
+                let inner_w = num::f32_of_f64(COMMENT_CARD_W - 16.0);
                 let body_layout = RichTextLayout::shape(
                     &mut text_renderer.font_system,
                     &[RichSpan::new(&body)],
@@ -6791,9 +6806,10 @@ impl Widget for WordProcessorWidget {
                     continue;
                 }
                 let line_h = (f64::from(NOTE_FONT) * 1.4).ceil();
-                let area_h = nums.len() as f64 * line_h;
+                let area_h = num::f64_of_usize(nums.len()) * line_h;
                 // Bottom of the text band on this page (above the footer margin).
-                let band_bottom = page_top + *page as f64 * page_pitch + letter_h - m.bottom - sy;
+                let band_bottom =
+                    page_top + num::f64_of_usize(*page) * page_pitch + letter_h - m.bottom - sy;
                 let sep_y = band_bottom - area_h - NOTE_AREA_GAP;
                 let left = page_x + m.left;
                 let right = page_x + page_w - m.right;
@@ -6847,7 +6863,7 @@ impl Widget for WordProcessorWidget {
         // body but the band + its caret stay crisp on top.
         if self.inner.in_running_region() {
             for i in 0..num_pages {
-                let ptop = page_top + i as f64 * page_pitch - sy;
+                let ptop = page_top + num::f64_of_usize(i) * page_pitch - sy;
                 let body_top = ptop + m.top;
                 let body_bot = ptop + letter_h - m.bottom;
                 let veil = Rect::new(
@@ -7090,7 +7106,7 @@ impl Widget for WordProcessorWidget {
                         }
                         let v = sc
                             .field
-                            .clamp(sc.start_val + dx as f32 * sc.field.scrub_factor());
+                            .clamp(sc.start_val + num::f32_of_f64(dx) * sc.field.scrub_factor());
                         if let Some(key) = self.focused_style_key()
                             && let Some(st) = self.sheet.styles.get_mut(&key)
                         {
@@ -7138,7 +7154,10 @@ impl Widget for WordProcessorWidget {
                 // "panel is chrome, ignore" rule kicks in.
                 if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
                     if let Some(id) = self.style_chip_at(self.pointer) {
-                        let pos = [self.pointer.x as f32, self.pointer.y as f32];
+                        let pos = [
+                            num::f32_of_f64(self.pointer.x),
+                            num::f32_of_f64(self.pointer.y),
+                        ];
                         self.open_style_menu(&id, pos);
                         *handled = true;
                     }
@@ -7150,7 +7169,10 @@ impl Widget for WordProcessorWidget {
                     || (self.outline_open && self.outline_rect.contains(self.pointer));
                 if !in_chrome {
                     let cp = self.pointer_to_content(self.pointer);
-                    let pos = [self.pointer.x as f32, self.pointer.y as f32];
+                    let pos = [
+                        num::f32_of_f64(self.pointer.x),
+                        num::f32_of_f64(self.pointer.y),
+                    ];
                     self.open_context_menu(state, cp, pos);
                     *handled = true;
                 }
@@ -8254,11 +8276,13 @@ impl WordProcessorWidget {
             ToolAction::Super => self.dispatch_exclusive_mark(state, "super", "sub"),
             ToolAction::Sub => self.dispatch_exclusive_mark(state, "sub", "super"),
             ToolAction::FontSizeInc => {
-                let next = (self.current_font_size() + 1.0).round().clamp(6.0, 200.0) as i64;
+                let next =
+                    num::i64_of_f32((self.current_font_size() + 1.0).round().clamp(6.0, 200.0));
                 self.dispatch_set_mark_value(state, "size", crate::actions::MarkVal::Int(next));
             }
             ToolAction::FontSizeDec => {
-                let next = (self.current_font_size() - 1.0).round().clamp(6.0, 200.0) as i64;
+                let next =
+                    num::i64_of_f32((self.current_font_size() - 1.0).round().clamp(6.0, 200.0));
                 self.dispatch_set_mark_value(state, "size", crate::actions::MarkVal::Int(next));
             }
             ToolAction::FontCycle => {
@@ -8526,8 +8550,8 @@ impl WordProcessorWidget {
             node,
             Style {
                 size: Size {
-                    width: Dimension::length(CP_W as f32),
-                    height: Dimension::length(CP_H as f32),
+                    width: Dimension::length(num::f32_of_f64(CP_W)),
+                    height: Dimension::length(num::f32_of_f64(CP_H)),
                 },
                 ..Default::default()
             },
@@ -8536,8 +8560,8 @@ impl WordProcessorWidget {
             .compute_layout(
                 node,
                 taffy::Size {
-                    width: taffy::AvailableSpace::Definite(CP_W as f32),
-                    height: taffy::AvailableSpace::Definite(CP_H as f32),
+                    width: taffy::AvailableSpace::Definite(num::f32_of_f64(CP_W)),
+                    height: taffy::AvailableSpace::Definite(num::f32_of_f64(CP_H)),
                 },
             )
             .unwrap();
@@ -9102,7 +9126,7 @@ impl WordProcessorWidget {
             .first()
             .map_or(self.rect.x0 + 8.0, |(_, r)| r.x0);
         let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
-        menu.open_at([anchor_x as f32, anchor_y as f32]);
+        menu.open_at([num::f32_of_f64(anchor_x), num::f32_of_f64(anchor_y)]);
         self.new_menu = menu;
         self.new_menu_templates = templates;
         self.dirty = true;
@@ -9309,7 +9333,7 @@ impl WordProcessorWidget {
                 None,
                 &vello::kurbo::RoundedRect::from_rect(r, 6.0),
             );
-            let tx = r.x0 + (w - label.chars().count() as f64 * 7.4).max(6.0) / 2.0;
+            let tx = r.x0 + (w - num::f64_of_usize(label.chars().count()) * 7.4).max(6.0) / 2.0;
             tr.draw_text(
                 scene,
                 &label,
@@ -9381,7 +9405,10 @@ impl WordProcessorWidget {
         let chars: usize = self.blocks.iter().map(|b| b.text.chars().count()).sum();
         let count = t_args(
             "status-count",
-            &[arg("words", words as i64), arg("chars", chars as i64)],
+            &[
+                arg("words", num::i64_of_usize(words)),
+                arg("chars", num::i64_of_usize(chars)),
+            ],
         );
         let untitled = t("status-untitled");
         let fname = self
@@ -9473,7 +9500,7 @@ impl WordProcessorWidget {
         let bw = 18.0;
         let bh = 18.0;
         let y0 = cy - bh / 2.0;
-        let pct = format!("{}%", (self.zoom * 100.0).round() as i32);
+        let pct = format!("{}%", num::i32_of_f64((self.zoom * 100.0).round()));
         // Layout: [−] [ 100% ] [+]  — right-aligned in the row (its width is
         // `ZOOM_CLUSTER_W`), matching the swatch strip's edge margin.
         let val_w = 44.0;
@@ -9489,7 +9516,7 @@ impl WordProcessorWidget {
                 None,
                 &vello::kurbo::RoundedRect::from_rect(r, 4.0),
             );
-            let tx = r.x0 + (bw - label.chars().count() as f64 * 6.5).max(2.0) / 2.0;
+            let tx = r.x0 + (bw - num::f64_of_usize(label.chars().count()) * 6.5).max(2.0) / 2.0;
             tr.draw_text(
                 scene,
                 label,
@@ -9507,7 +9534,7 @@ impl WordProcessorWidget {
 
         // The percentage chip doubles as a reset target (click to return to 100%).
         let vr = Rect::new(x, y0, x + val_w, y0 + bh);
-        let pw = pct.chars().count() as f64 * 6.8;
+        let pw = num::f64_of_usize(pct.chars().count()) * 6.8;
         tr.draw_text(
             scene,
             &pct,
@@ -9669,7 +9696,7 @@ impl WordProcessorWidget {
         let row_h = TOOLBAR_H;
         let mut all_rects: Vec<Rect> = Vec::with_capacity(items.len());
         for (ri, (s, e)) in rows.iter().enumerate() {
-            let ry0 = tb.y0 + ri as f64 * row_h;
+            let ry0 = tb.y0 + num::f64_of_usize(ri) * row_h;
             let row_rect = Rect::new(tb.x0, ry0, tb.x1, ry0 + row_h);
             // The trailing swatch reservation is a phantom (index == items.len()),
             // drawn separately below — clamp it out of the real button slice.
@@ -9703,7 +9730,7 @@ impl WordProcessorWidget {
         // squares are painted directly here (and registered as `TextColor` click
         // targets) — no `ui` change needed. The leading neutral swatch clears the
         // run colour.
-        let last_row_y = tb.y0 + (rows.len() as f64 - 1.0) * row_h;
+        let last_row_y = tb.y0 + (num::f64_of_usize(rows.len()) - 1.0) * row_h;
         // Zoom stepper: right-aligned on the last toolbar row (its width reserved
         // as part of the trailing packer phantom below, so buttons never run under
         // it). The colour/highlight swatch strips pack to its left.
@@ -9744,7 +9771,7 @@ impl WordProcessorWidget {
         let widths: Vec<f64> = self.toolbar_item_widths();
         let starts: Vec<bool> = self.toolbar_item_group_starts();
         let rows = pack_toolbar_rows(&widths, &starts, width);
-        rows.len() as f64 * TOOLBAR_H
+        num::f64_of_usize(rows.len()) * TOOLBAR_H
     }
 
     /// The per-item widths fed to the toolbar packer. Mirrors the `add(...)`
@@ -9817,7 +9844,7 @@ impl WordProcessorWidget {
         let sw = 20.0;
         let gap = 5.0;
         let n = STYLE_PALETTE.len() + 1; // +1 for the neutral default
-        let total = n as f64 * sw + (n as f64 - 1.0) * gap;
+        let total = num::f64_of_usize(n) * sw + (num::f64_of_usize(n) - 1.0) * gap;
         // Right-align the strip, leaving a small margin from the toolbar's edge.
         let strip_left = (tb.x1 - 14.0 - total).max(tb.x0 + 14.0);
         let mut x = strip_left;
@@ -9894,7 +9921,7 @@ impl WordProcessorWidget {
         let sw = 20.0;
         let gap = 5.0;
         let n = HIGHLIGHT_PALETTE.len() + 1; // +1 for the neutral "no highlight"
-        let total = n as f64 * sw + (n as f64 - 1.0) * gap;
+        let total = num::f64_of_usize(n) * sw + (num::f64_of_usize(n) - 1.0) * gap;
         // Not enough room beside the text-colour strip: skip (the buttons + Styles
         // panel remain the path to highlight). Avoids overlapping the chrome.
         if tb.width() < total + 14.0 {
@@ -10035,8 +10062,8 @@ mod tests {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
+                        width: Dimension::length(num::f32_of_u32(w)),
+                        height: Dimension::length(num::f32_of_u32(h)),
                     },
                     ..Default::default()
                 },
@@ -10050,8 +10077,8 @@ mod tests {
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
+                        width: AvailableSpace::Definite(num::f32_of_u32(w)),
+                        height: AvailableSpace::Definite(num::f32_of_u32(h)),
                     },
                     |known, available, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
@@ -11009,9 +11036,9 @@ mod tests {
         // (on by default) — the real offset the pagination cursor starts from.
         let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
         let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
-        let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
-        let pcb = |i: usize| page_top + i as f64 * page_pitch + letter_h - mar; // bottom margin
-        let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
+        let pct = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + mar; // page content top
+        let pcb = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + letter_h - mar; // bottom margin
+        let page_of = |y: f64| num::i64_of_f64(((y - page_top) / page_pitch).floor());
 
         // The content spans more than one page.
         let max_page = wp.laid.iter().map(|l| page_of(l.y_top)).max().unwrap();
@@ -11023,7 +11050,7 @@ mod tests {
         // No laid block crosses a page boundary: each sits wholly within its page's
         // text band, so a page-end never bisects a line of text.
         for l in &wp.laid {
-            let i = page_of(l.y_top).max(0) as usize;
+            let i = num::usize_of_i64(page_of(l.y_top).max(0));
             assert!(
                 l.y_top >= pct(i) - 1.0,
                 "block starts at/below its page's top margin"
@@ -11078,9 +11105,9 @@ mod tests {
 
         let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
         let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
-        let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
-        let pcb = |i: usize| page_top + i as f64 * page_pitch + letter_h - mar; // bottom margin
-        let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
+        let pct = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + mar; // page content top
+        let pcb = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + letter_h - mar; // bottom margin
+        let page_of = |y: f64| num::i64_of_f64(((y - page_top) / page_pitch).floor());
 
         // The one paragraph produced multiple laid slices, all sharing its id.
         let bid = wp.blocks[0].id.clone();
@@ -11208,9 +11235,9 @@ mod tests {
             wp.inner.caret.block, bid,
             "hit resolves to the one logical block"
         );
-        let got = wp.inner.caret.offset as i64;
+        let got = num::i64_of_usize(wp.inner.caret.offset);
         assert!(
-            (got - expected_char as i64).abs() <= 1,
+            (got - num::i64_of_usize(expected_char)).abs() <= 1,
             "carried-line hit resolves to the right offset: got {got}, expected ~{expected_char}"
         );
     }
@@ -11445,8 +11472,8 @@ mod tests {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
+                        width: Dimension::length(num::f32_of_u32(w)),
+                        height: Dimension::length(num::f32_of_u32(h)),
                     },
                     ..Default::default()
                 },
@@ -11460,8 +11487,8 @@ mod tests {
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
+                        width: AvailableSpace::Definite(num::f32_of_u32(w)),
+                        height: AvailableSpace::Definite(num::f32_of_u32(h)),
                     },
                     |known, available, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
@@ -11530,8 +11557,8 @@ mod tests {
 
         let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
         let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
-        let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
-        let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
+        let pct = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + mar; // page content top
+        let page_of = |y: f64| num::i64_of_f64(((y - page_top) / page_pitch).floor());
 
         let broken = wp
             .laid
@@ -12361,7 +12388,11 @@ mod tests {
 
         // Right-click on the first word.
         let pt = first_block_start_point(&wp);
-        wp.open_context_menu(&state.doc, pt, [pt.x as f32, pt.y as f32]);
+        wp.open_context_menu(
+            &state.doc,
+            pt,
+            [num::f32_of_f64(pt.x), num::f32_of_f64(pt.y)],
+        );
         let labels = wp.context_menu_labels();
         assert!(
             labels.iter().any(|l| l == "Add to dictionary"),
@@ -12404,7 +12435,11 @@ mod tests {
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
         let pt = first_block_start_point(&wp);
-        wp.open_context_menu(&state.doc, pt, [pt.x as f32, pt.y as f32]);
+        wp.open_context_menu(
+            &state.doc,
+            pt,
+            [num::f32_of_f64(pt.x), num::f32_of_f64(pt.y)],
+        );
         // Find a suggestion row whose action replaces [0,3) with "the".
         let the_idx = wp.context_actions.iter().position(|a| {
             matches!(a, Some(CtxAction::ApplySuggestion { replacement, .. }) if replacement == "the")
@@ -12442,7 +12477,11 @@ mod tests {
         );
 
         let pt = first_block_start_point(&wp);
-        wp.open_context_menu(&state.doc, pt, [pt.x as f32, pt.y as f32]);
+        wp.open_context_menu(
+            &state.doc,
+            pt,
+            [num::f32_of_f64(pt.x), num::f32_of_f64(pt.y)],
+        );
         // The clicked-word fallback selected "hello".
         assert!(
             wp.model().has_selection(),
@@ -15261,8 +15300,8 @@ mod tests {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
+                        width: Dimension::length(num::f32_of_u32(w)),
+                        height: Dimension::length(num::f32_of_u32(h)),
                     },
                     ..Default::default()
                 },
@@ -15276,8 +15315,8 @@ mod tests {
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
+                        width: AvailableSpace::Definite(num::f32_of_u32(w)),
+                        height: AvailableSpace::Definite(num::f32_of_u32(h)),
                     },
                     |known, available, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
@@ -15338,7 +15377,7 @@ mod tests {
                 .iter()
                 .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == &custom_id))
                 .map_or([950.0, 240.0], |(r, _)| {
-                    [r.x0 as f32 + 10.0, r.y1 as f32 + 2.0]
+                    [num::f32_of_f64(r.x0) + 10.0, num::f32_of_f64(r.y1) + 2.0]
                 });
             wp.open_style_menu(&custom_id, anchor);
             render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-custom");
@@ -15352,7 +15391,7 @@ mod tests {
                 .iter()
                 .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == "body"))
                 .map_or([950.0, 240.0], |(r, _)| {
-                    [r.x0 as f32 + 10.0, r.y1 as f32 + 2.0]
+                    [num::f32_of_f64(r.x0) + 10.0, num::f32_of_f64(r.y1) + 2.0]
                 });
             wp.open_style_menu("body", anchor);
             render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-builtin");
