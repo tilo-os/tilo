@@ -20,6 +20,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::compositor::foreign::ForeignSurfaceWidget;
 use crate::shell::build_nirios_overlay_host_with_chrome;
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::overlay_host::ShellOverlayHost;
@@ -87,6 +88,11 @@ pub struct FrameBuilder {
     /// Source that fills [`Self::presence`]. `None` in a session with
     /// no peer sync, which paints no peers because there are none.
     peer_presence: Option<crate::shell::peer_presence::PeerPresence>,
+    /// Compositor-authorised OSK, deliberately outside the workspace/tile
+    /// tree. Its widget only mirrors pixels; protocol trust lives in State.
+    osk_overlay: Option<ForeignSurfaceWidget>,
+    osk_anchor_x: Option<f64>,
+    osk_active: bool,
 }
 
 impl FrameBuilder {
@@ -196,6 +202,9 @@ impl FrameBuilder {
                 ctx
             },
             peer_presence: None,
+            osk_overlay: None,
+            osk_anchor_x: None,
+            osk_active: false,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -290,6 +299,31 @@ impl FrameBuilder {
             )
             .expect("frame-builder compute_layout");
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
+        self.layout_osk_overlay();
+    }
+
+    fn layout_osk_overlay(&mut self) {
+        if self.osk_overlay.is_none() {
+            return;
+        }
+        let outputs = self.effective_outputs();
+        let anchor = self.osk_anchor_x.unwrap_or(0.0);
+        let output = outputs
+            .iter()
+            .find(|o| anchor >= o.x && anchor < o.x + o.width)
+            .or_else(|| outputs.first());
+        let Some(output) = output else { return };
+
+        let margin = 20.0_f64.min(output.width / 20.0);
+        let width = (output.width - margin * 2.0).clamp(1.0, 960.0);
+        let height = (output.height * 0.40)
+            .clamp(220.0, 380.0)
+            .min((output.height - margin * 2.0).max(1.0));
+        let x0 = output.x + (output.width - width) / 2.0;
+        let y0 = (output.height - height - margin).max(0.0);
+        if let Some(keyboard) = self.osk_overlay.as_mut() {
+            keyboard.place_floating(Rect::new(x0, y0, x0 + width, y0 + height));
+        }
     }
 
     /// Run the widget tree's per-frame pump (`sync` then `update`).
@@ -398,6 +432,18 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        if self.osk_active
+            && let Some(keyboard) = self.osk_overlay.as_mut()
+            && keyboard.is_mapped()
+        {
+            keyboard.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+                &self.presence,
+            );
+        }
         if self.watch_configured_theme && self.night_light {
             let (w, h) = self.viewport;
             let bounds = Rect::new(0.0, 0.0, w, h);
@@ -557,6 +603,10 @@ impl FrameBuilder {
     /// it can idle instead of burning a core on an unchanged scene.
     pub fn needs_animation_frame(&self) -> bool {
         self.host.needs_animation_frame()
+            || self
+                .osk_overlay
+                .as_ref()
+                .is_some_and(Widget::needs_animation_frame)
     }
 
     /// Whether any tab is still holding a place for an app that hasn't drawn
@@ -582,6 +632,47 @@ impl FrameBuilder {
     /// wayland surface `surface_id`, or `None` if no visible tile hosts it.
     pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<vello::kurbo::Rect> {
         self.host.foreign_surface_rect(surface_id)
+    }
+
+    /// Install/remove the trusted keyboard mirror and anchor it to the output
+    /// containing the currently focused field.
+    pub fn set_osk_surface(
+        &mut self,
+        surface_id: Option<u64>,
+        focused_surface: Option<u64>,
+        active: bool,
+    ) {
+        let anchor = focused_surface
+            .and_then(|id| self.host.foreign_surface_rect(id))
+            .map(|rect| rect.center().x);
+        self.osk_anchor_x = anchor;
+        self.osk_active = active;
+        match surface_id {
+            Some(id)
+                if self
+                    .osk_overlay
+                    .as_ref()
+                    .map(ForeignSurfaceWidget::surface_id)
+                    != Some(id) =>
+            {
+                self.osk_overlay = Some(ForeignSurfaceWidget::new(
+                    id,
+                    crate::compositor::state::OSK_APP_ID.to_string(),
+                ));
+            }
+            None => self.osk_overlay = None,
+            _ => {}
+        }
+        self.layout_osk_overlay();
+    }
+
+    /// Hit-test the mapped keyboard. An unmapped/hidden surface never steals
+    /// clicks from the application beneath it.
+    pub fn osk_surface_hit(&self, point: (f64, f64)) -> Option<(u64, Rect)> {
+        let keyboard = self.osk_overlay.as_ref()?;
+        let rect = keyboard.get_rect();
+        (self.osk_active && keyboard.is_mapped() && rect.contains(Point::new(point.0, point.1)))
+            .then_some((keyboard.surface_id(), rect))
     }
 
     pub fn theme(&self) -> &Theme {
@@ -865,6 +956,28 @@ mod tests {
         assert!(!fb.chrome().overlays.overview);
         fb.with_chrome(|st| st.overlays.overview = true);
         assert!(fb.chrome().overlays.overview);
+    }
+
+    #[test]
+    fn osk_overlay_is_bottom_anchored_and_active_only() {
+        const SURFACE: u64 = 9_900_701;
+        crate::compositor::foreign::store().publish_rgba(SURFACE, &[0, 0, 0, 255], 1, 1);
+        let mut fb = FrameBuilder::new((1600, 900));
+
+        fb.set_osk_surface(Some(SURFACE), None, false);
+        assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
+
+        fb.set_osk_surface(Some(SURFACE), None, true);
+        let (id, rect) = fb
+            .osk_surface_hit((800.0, 700.0))
+            .expect("active keyboard is hit-testable");
+        assert_eq!(id, SURFACE);
+        assert_eq!(rect.width(), 960.0);
+        assert_eq!(rect.y1, 880.0);
+
+        fb.set_osk_surface(Some(SURFACE), None, false);
+        assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
+        crate::compositor::foreign::store().forget(SURFACE);
     }
 
     /// A window from a peer must reach the widget tree, not just the

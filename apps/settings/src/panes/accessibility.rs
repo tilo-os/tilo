@@ -48,6 +48,20 @@ pub const OSK_KEY: &str = "a11y.on_screen_keyboard";
 // Hearing + screen reader.
 pub const VISUAL_ALERTS_KEY: &str = "a11y.visual_alerts";
 pub const SCREEN_READER_KEY: &str = "a11y.screen_reader";
+const OSK_PACKAGE_ID: &str = "dev.qos.osk";
+const OSK_PACKAGE_KIND: &str = "service";
+
+fn osk_service_installed() -> bool {
+    launcher::registry::list_installed()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| launcher::manifest::read_manifest(&entry.manifest_path).ok())
+        .any(|manifest| {
+            manifest.package_id == OSK_PACKAGE_ID
+                && manifest.kind == OSK_PACKAGE_KIND
+                && manifest.entrypoint.gui_bin().is_some()
+        })
+}
 
 pub struct AccessibilityPane {
     appearance: AppearancePrefs,
@@ -139,6 +153,18 @@ impl AccessibilityPane {
         );
 
         // --- Typing.
+        let osk_row = if osk_service_installed() {
+            setting_row_described(
+                "On-screen keyboard",
+                "Show the keyboard automatically for focused text fields",
+                Self::toggle("a11y.on_screen_keyboard", OSK_KEY),
+            )
+        } else {
+            value_row(
+                "On-screen keyboard",
+                "Not installed — add the signed dev.qos.osk system package",
+            )
+        };
         let typing_card = card(
             "Typing",
             rows(vec![
@@ -152,10 +178,7 @@ impl AccessibilityPane {
                     "Ignore brief, accidental key presses",
                     Self::toggle("a11y.slow_keys", SLOW_KEYS_KEY),
                 ),
-                value_row(
-                    "On-screen keyboard",
-                    "Unavailable until the secure compositor overlay is installed",
-                ),
+                osk_row,
             ]),
         );
 
@@ -205,7 +228,10 @@ impl AccessibilityPane {
                  offers — changing them here or there updates one shared value. \
                  Pointer sizing, sticky keys and slow keys are applied by the \
                  compositor's input layer. The screen reader reloads in every \
-                 qOS app and visual alerts are rendered by shell chrome. \
+                 qOS app and visual alerts are rendered by shell chrome. The \
+                 on-screen keyboard is a sandboxed system service: the \
+                 compositor starts it on a private input-method socket and \
+                 keeps its surface out of workspace tiles. \
                  Unsupported capabilities are identified explicitly instead \
                  of being stored as inert toggles.",
             )]),
