@@ -333,6 +333,21 @@ pub struct App {
 
 impl App {
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
+        Self::with_collaboration_manager(state, root_widget, CollaborationManager::new())
+    }
+
+    /// Construct an app with an explicitly connected collaboration manager.
+    ///
+    /// Launchers normally use [`Self::new`], which discovers the inherited
+    /// runtime service. Headless hosts and integration harnesses already own
+    /// a connected endpoint, so accepting it here avoids process-global
+    /// environment mutation and keeps those callers on the production typed
+    /// transport.
+    pub fn with_collaboration_manager(
+        state: State,
+        root_widget: Box<dyn Widget>,
+        collab_manager: CollaborationManager,
+    ) -> Self {
         let configured_theme = Theme::configured();
         let mut app = Self {
             state,
@@ -361,7 +376,7 @@ impl App {
             modifiers: winit::event::Modifiers::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
-            collab_manager: CollaborationManager::new(),
+            collab_manager,
             local_author: crate::collaboration::local_user_id(),
             presence_ctx: {
                 // Own identity, in preference order: the handle announced on
