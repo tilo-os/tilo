@@ -21,6 +21,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
+use os_actions::{TOOL_CONTEXT_ENV, ToolIntent};
 
 /// How long an installed-package enumeration is reused before re-reading
 /// the registry. Short enough that an app installed elsewhere shows up
@@ -551,6 +552,22 @@ pub fn launch_with_document(
     room: RoomId,
     document: Option<&Path>,
 ) -> Result<InstalledApp, LaunchError> {
+    launch_with_context(package_id, room, document, None)
+}
+
+/// Launch the only package owned by a typed tool intent and pass that exact
+/// context through the trusted launcher. The request format cannot smuggle an
+/// executable, package id, or extra arguments into this path.
+pub fn launch_tool_intent(intent: &ToolIntent, room: RoomId) -> Result<InstalledApp, LaunchError> {
+    launch_with_context(intent.package_id(), room, None, Some(intent))
+}
+
+fn launch_with_context(
+    package_id: &str,
+    room: RoomId,
+    document: Option<&Path>,
+    tool_intent: Option<&ToolIntent>,
+) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
         .into_iter()
         .find(|a| a.package_id == package_id)
@@ -581,7 +598,7 @@ pub fn launch_with_document(
         }
     };
 
-    let command = build_launch_command(
+    let mut command = build_launch_command(
         &app,
         &launcher_bin,
         &socket,
@@ -590,6 +607,20 @@ pub fn launch_with_document(
         crate::compositor::render_node::resolved(),
         document,
     );
+    if let Some(intent) = tool_intent {
+        // Validation happens at the service boundary too; repeat it here so
+        // this public launcher helper remains safe when called elsewhere.
+        intent
+            .validate()
+            .map_err(|detail| LaunchError::RegistryUnreadable {
+                detail: format!("invalid tool context: {detail}"),
+            })?;
+        let encoded =
+            serde_json::to_string(intent).map_err(|e| LaunchError::RegistryUnreadable {
+                detail: format!("serialising tool context: {e}"),
+            })?;
+        command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded));
+    }
     remember_launch(&app);
     spawn_detached(app.clone(), command);
     Ok(app)

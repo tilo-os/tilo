@@ -157,6 +157,16 @@ pub struct QuickSettingsState {
     pub volume: f32,
     pub wifi: bool,
     pub bluetooth: bool,
+    /// Primary NetworkManager Ethernet interface. `None` means no adapter.
+    pub wired: Option<os_actions::WiredInfo>,
+    /// Read-only kernel battery snapshot for the quick status row.
+    pub battery: os_actions::BatteryInfo,
+    /// `None` when fwupd is unavailable, otherwise the offered update count.
+    pub firmware_updates: Option<usize>,
+    pub radios: os_actions::RadioState,
+    pub vpns: Vec<os_actions::VpnConnectionInfo>,
+    pub privacy: os_actions::PrivacyStatus,
+    pub night_light: bool,
     /// The renderer dispatches on `nav_stack.last()` (always at least
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
@@ -180,6 +190,16 @@ impl Default for QuickSettingsState {
             volume: 0.4,
             wifi: true,
             bluetooth: false,
+            wired: None,
+            battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
+                "/nonexistent/qos-power-supply",
+            )),
+            firmware_updates: None,
+            radios: os_actions::RadioState::default(),
+            vpns: Vec::new(),
+            privacy: os_actions::get_privacy_status(),
+            night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
+                .unwrap_or(false),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.

@@ -11,6 +11,7 @@
 //! builder and their pixel output is byte-identical.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -57,6 +58,9 @@ pub struct FrameBuilder {
     root_node: Option<NodeId>,
     text_renderer: TextRenderer,
     theme: Theme,
+    watch_configured_theme: bool,
+    theme_store_stamp: Option<SystemTime>,
+    last_theme_store_check: Instant,
     viewport: (f64, f64),
     /// The displays behind `viewport`, when known. The viewport is the
     /// *bounding box* of every output, so on multi-monitor it isn't a
@@ -161,6 +165,10 @@ impl FrameBuilder {
             text_renderer: TextRenderer::new(),
             last_room_epoch: 0,
             theme,
+            watch_configured_theme: false,
+            theme_store_stamp: settings_store::settings_path()
+                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+            last_theme_store_check: Instant::now(),
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
             presence: {
@@ -365,6 +373,7 @@ impl FrameBuilder {
     /// Render the current frame into a fresh Vello scene. Caller hands it to
     /// a renderer (offscreen/live/compositor backend).
     pub fn paint(&mut self) -> Scene {
+        self.refresh_configured_theme();
         let mut scene = Scene::new();
         self.host.draw(
             &mut scene,
@@ -374,6 +383,37 @@ impl FrameBuilder {
             &self.presence,
         );
         scene
+    }
+
+    fn refresh_configured_theme(&mut self) {
+        if !self.watch_configured_theme
+            || std::env::var_os("QOS_SHOTS_THEME").is_some()
+            || self.last_theme_store_check.elapsed() < Duration::from_millis(750)
+        {
+            return;
+        }
+        self.last_theme_store_check = Instant::now();
+        let stamp = settings_store::settings_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        if stamp == self.theme_store_stamp {
+            return;
+        }
+        self.theme_store_stamp = stamp;
+        self.theme = Theme::configured();
+        self.rebuild_layout_tree();
+        self.relayout();
+    }
+
+    /// Enable the session-wide configured theme and live settings watcher.
+    /// Offscreen builders stay deterministic unless the shots override asks
+    /// for a specific palette.
+    pub fn enable_configured_theme(&mut self) {
+        self.watch_configured_theme = true;
+        self.theme = Theme::configured();
+        self.theme_store_stamp = settings_store::settings_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        self.rebuild_layout_tree();
+        self.relayout();
     }
 
     /// Attach the session's peer-presence relay. Called once the

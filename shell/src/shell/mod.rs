@@ -73,6 +73,7 @@ pub mod tab_documents;
 pub mod test_support;
 pub mod text_entry;
 pub mod tile;
+pub mod tool_intents;
 pub mod topbar;
 pub mod topbar_chrome;
 pub mod window_actions;
