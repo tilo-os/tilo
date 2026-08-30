@@ -9318,6 +9318,8 @@ name = "os-actions"
 version = "0.1.0"
 dependencies = [
  "qos-bluez",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
@@ -14880,6 +14882,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "serial_test",
+ "settings-store",
  "sha2 0.10.9",
  "skrifa 0.40.0",
  "smithay-clipboard",
@@ -15321,6 +15324,7 @@ version = "0.1.0"
 dependencies = [
  "ashpd",
  "automerge",
+ "os-actions",
  "qos-actions",
  "serde",
  "serial_test",
