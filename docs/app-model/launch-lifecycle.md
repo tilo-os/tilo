@@ -9,11 +9,11 @@ viewport.
 
 ## Adopted
 
-The following 15 applications use the shared lifecycle:
+The following 16 applications use the shared lifecycle:
 
 `api_tester`, `backups`, `containers`, `db_client`, `diffmerge`, `feeds`,
 `firewall`, `hex_editor`, `logs`, `mail`, `remote`, `slides`, `snippets`,
-`themes`, and `vpn`.
+`themes`, `totp`, and `vpn`.
 
 Their `main.rs` files now contain only app-specific root selection and action
 registration. Screenshot argument parsing and the duplicated
@@ -50,7 +50,6 @@ one of these concrete reasons:
 | `sheets` | Stages menus and editing states after the sample spreadsheet has synced into its document. |
 | `store` | Owns a background Flatpak worker whose event-loop wake and shutdown lifetime is tied to the live app. |
 | `terminal` | Owns PTY/session wake integration installed through `run_with_setup`. |
-| `totp` | Retains the public value-taking `--screen` screenshot interface, which `LaunchSpec` intentionally does not model. |
 | `tube` | Has extraction/network/media probes, live shots, and benchmark modes in addition to its window. |
 | `typst_editor` | Supports an explicit per-shot theme argument and a separate compiled-document capture pipeline. |
 | `video-player` | Accepts a media path and pumps asynchronous decode until the first real frame is ready. |
