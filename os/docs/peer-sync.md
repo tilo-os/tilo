@@ -13,6 +13,20 @@ Invites carry a signed Iroh `EndpointAddr`; no multicast discovery or fixed
 TCP port is required. The inviter and invitee authenticate the endpoint id
 embedded in the token before room state is accepted.
 
+For a persistent opt-in, enable the user marker unit and start a new desktop
+session:
+
+```sh
+systemctl --user enable --now shell-peer-sync.service
+```
+
+To return to the default-off posture, remove the marker and start a new
+session:
+
+```sh
+systemctl --user disable --now shell-peer-sync.service
+```
+
 ## Persistent host
 
 Set `QOS_COLLAB_HOST` to the host's Iroh endpoint id (or the JSON representation
@@ -41,6 +55,7 @@ key.
 journalctl --user -u graphical-session.target | grep -Ei 'iroh|gossip|workspace host'
 stat -c '%a %U:%G %n' /var/lib/qos/device/keypair.bin
 systemctl --user status qos-identity.service
+systemctl --user status shell-peer-sync.service
 ```
 
 An unreadable or mismatched key is not repaired by generating a replacement;
