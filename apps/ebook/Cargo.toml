@@ -42,6 +42,7 @@ roxmltree = "0.20"
 # rather than a generated spine. Already in the workspace graph, so no new
 # compilation beyond feature unification.
 image = { workspace = true, features = ["jpeg", "png"] }
+unicode-bidi = "0.3.18"
 
 [dev-dependencies]
 # Serialises the handful of tests that set the process-wide `EBOOK_LIBRARY_DIR`

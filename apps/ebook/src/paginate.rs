@@ -10,7 +10,11 @@
 //! recomputes when the chapter, content width, or a typography setting changes.
 
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
-use ui::{ParagraphBox, ParagraphOptions, compose_paragraph, discretionary_hyphen_breaks};
+use ui::{
+    ParagraphBox, ParagraphOptions, compose_paragraph, discretionary_hyphen_breaks,
+    line_break_opportunities,
+};
+use unicode_bidi::{BidiInfo, Level};
 
 use crate::model::{Block, FontKind, Settings};
 
@@ -50,6 +54,11 @@ pub struct LineRun {
 #[derive(Clone, Debug)]
 pub struct LaidLine {
     pub y: f32,
+    /// Microtypographic horizontal glyph scale chosen by the paragraph
+    /// compositor. It remains within two percent of natural width.
+    pub glyph_scale: f32,
+    pub adjustment_ratio: f32,
+    pub rtl: bool,
     pub runs: Vec<LineRun>,
 }
 
@@ -216,10 +225,16 @@ struct Word {
     /// Char offset of this word's first char within the block's canonical text.
     char_start: usize,
     char_len: usize,
+    source_byte_start: usize,
     /// This fragment continues the preceding source word and may begin a line
     /// only by exercising a discretionary hyphen.
     hyphen_break_before: bool,
     hyphen_width_before: f32,
+    natural_break_before: bool,
+    stretch_before: f32,
+    shrink_before: f32,
+    start_protrusion: f32,
+    end_protrusion: f32,
 }
 
 fn weight(bold: bool) -> TextWeight {
@@ -228,6 +243,72 @@ fn weight(bold: bool) -> TextWeight {
     } else {
         TextWeight::Regular
     }
+}
+
+fn punctuation_protrusion(character: char) -> f32 {
+    match character {
+        '.' | ',' | '、' | '。' => 0.7,
+        ':' | ';' | '!' | '?' => 0.5,
+        '”' | '’' | '"' | '\'' | ')' | ']' | '}' | '»' | '›' | '」' | '』' => 0.45,
+        '-' | '‐' | '–' | '—' => 0.35,
+        _ => 0.0,
+    }
+}
+
+fn opening_punctuation_protrusion(character: char) -> f32 {
+    match character {
+        '“' | '‘' | '"' | '\'' | '(' | '[' | '{' | '«' | '‹' | '「' | '『' => 0.45,
+        _ => 0.0,
+    }
+}
+
+fn is_cjk(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x2E80..=0x2FFF
+            | 0x3000..=0x30FF
+            | 0x31F0..=0x31FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+            | 0x20000..=0x323AF
+    )
+}
+
+fn is_southeast_asian(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x0E00..=0x0EFF | 0x1000..=0x109F | 0x1780..=0x17FF
+    )
+}
+
+fn script_stretch_before(text: &str, byte: usize, size: f32) -> f32 {
+    let before = text[..byte].chars().next_back();
+    let after = text[byte..].chars().next();
+    match (before, after) {
+        (Some(left), Some(right)) if is_cjk(left) && is_cjk(right) => size * 0.25,
+        (Some(left), Some(right)) if is_southeast_asian(left) || is_southeast_asian(right) => {
+            size * 0.08
+        }
+        _ => 0.0,
+    }
+}
+
+fn visual_order(words: &[Word], start: usize, end: usize, bidi: &BidiInfo<'_>) -> Vec<usize> {
+    let levels: Vec<Level> = words[start..end]
+        .iter()
+        .map(|word| {
+            bidi.levels
+                .get(word.source_byte_start)
+                .copied()
+                .unwrap_or_else(Level::ltr)
+        })
+        .collect();
+    BidiInfo::reorder_visual(&levels)
+        .into_iter()
+        .map(|logical| start + logical)
+        .collect()
 }
 
 /// Lay out one chapter into positioned lines + page breaks. `base_family` is
@@ -269,7 +350,13 @@ pub fn layout_chapter(
                 size: st.size,
                 line_height: h,
                 indent: 0.0,
-                lines: vec![LaidLine { y, runs: vec![] }],
+                lines: vec![LaidLine {
+                    y,
+                    glyph_scale: 1.0,
+                    adjustment_ratio: 0.0,
+                    rtl: false,
+                    runs: vec![],
+                }],
                 bullet: None,
                 text: String::new(),
                 char_len: 0,
@@ -305,12 +392,31 @@ pub fn layout_chapter(
                     canon.push(' ');
                     char_pos += 1;
                 }
+                let source_byte_start = canon.len();
                 let char_start = char_pos;
                 let char_len = w.chars().count();
                 canon.push_str(w);
                 char_pos += char_len;
-                let mut boundaries = discretionary_hyphen_breaks(w, language);
+                let hyphen_boundaries = discretionary_hyphen_breaks(w, language);
+                let unicode_boundaries: Vec<_> = line_break_opportunities(w)
+                    .map(|(byte, _)| byte)
+                    .filter(|&byte| byte > 0 && byte < w.len())
+                    .collect();
+                let mut boundaries = hyphen_boundaries.clone();
+                boundaries.extend(unicode_boundaries.iter().copied());
+                let opening_fraction = w
+                    .chars()
+                    .next()
+                    .map(opening_punctuation_protrusion)
+                    .unwrap_or(0.0);
+                if opening_fraction > 0.0
+                    && let Some(first_end) = w.char_indices().nth(1).map(|(byte, _)| byte)
+                {
+                    boundaries.push(first_end);
+                }
                 boundaries.push(w.len());
+                boundaries.sort_unstable();
+                boundaries.dedup();
                 let hyphen_width = tr
                     .measure_font("-", st.size, None, weight(bold), italic, word_family)
                     .0;
@@ -318,10 +424,57 @@ pub fn layout_chapter(
                 let mut chars_before = 0;
                 for (fragment_index, byte_end) in boundaries.into_iter().enumerate() {
                     let fragment = &w[byte_start..byte_end];
+                    let hyphen_break_before =
+                        fragment_index != 0 && hyphen_boundaries.binary_search(&byte_start).is_ok();
+                    let natural_break_before = fragment_index != 0
+                        && unicode_boundaries.binary_search(&byte_start).is_ok();
+                    let stretch_before = if natural_break_before {
+                        script_stretch_before(w, byte_start, st.size)
+                    } else {
+                        0.0
+                    };
                     let fragment_chars = fragment.chars().count();
                     let fragment_width = tr
                         .measure_font(fragment, st.size, None, weight(bold), italic, word_family)
                         .0;
+                    let end_protrusion = if byte_end == w.len() {
+                        fragment
+                            .chars()
+                            .last()
+                            .map(|character| {
+                                let fraction = punctuation_protrusion(character);
+                                if fraction == 0.0 {
+                                    0.0
+                                } else {
+                                    tr.measure_font(
+                                        &character.to_string(),
+                                        st.size,
+                                        None,
+                                        weight(bold),
+                                        italic,
+                                        word_family,
+                                    )
+                                    .0 * fraction
+                                }
+                            })
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+                    let start_protrusion = if fragment_index == 0 && opening_fraction > 0.0 {
+                        let character = fragment.chars().next().unwrap();
+                        tr.measure_font(
+                            &character.to_string(),
+                            st.size,
+                            None,
+                            weight(bold),
+                            italic,
+                            word_family,
+                        )
+                        .0 * opening_fraction
+                    } else {
+                        0.0
+                    };
                     words.push(Word {
                         text: fragment.to_string(),
                         bold,
@@ -331,12 +484,18 @@ pub fn layout_chapter(
                         space_before: fragment_index == 0 && space_before,
                         char_start: char_start + chars_before,
                         char_len: fragment_chars,
-                        hyphen_break_before: fragment_index != 0,
-                        hyphen_width_before: if fragment_index == 0 {
+                        source_byte_start: source_byte_start + byte_start,
+                        hyphen_break_before,
+                        hyphen_width_before: if !hyphen_break_before {
                             0.0
                         } else {
                             hyphen_width
                         },
+                        natural_break_before,
+                        stretch_before,
+                        shrink_before: 0.0,
+                        start_protrusion,
+                        end_protrusion,
                     });
                     byte_start = byte_end;
                     chars_before += fragment_chars;
@@ -350,15 +509,25 @@ pub fn layout_chapter(
         // benefiting from paragraph-wide break selection.
         let mut lines: Vec<LaidLine> = Vec::new();
         let block_top = y;
+        let bidi = BidiInfo::new(&canon, None);
+        let paragraph_rtl = bidi
+            .paragraphs
+            .first()
+            .is_some_and(|paragraph| paragraph.level.is_rtl());
         let boxes: Vec<_> = words
             .iter()
             .map(|word| ParagraphBox {
                 width: word.w,
                 glue_before: if word.space_before { space_w } else { 0.0 },
-                break_before: word.space_before || word.hyphen_break_before,
+                stretch_before: word.stretch_before,
+                shrink_before: word.shrink_before,
+                break_before: word.space_before
+                    || word.natural_break_before
+                    || word.hyphen_break_before,
                 break_penalty: if word.hyphen_break_before { 50 } else { 0 },
                 flagged_break: word.hyphen_break_before,
                 break_width: word.hyphen_width_before,
+                end_protrusion: word.end_protrusion,
             })
             .collect();
         let mut options = ParagraphOptions::new(text_width);
@@ -367,11 +536,32 @@ pub fn layout_chapter(
         for (line_idx, line) in composed.iter().enumerate() {
             let mut runs: Vec<LineRun> = Vec::with_capacity(line.end - line.start);
             let mut x = 0.0;
-            for (offset, word) in words[line.start..line.end].iter().enumerate() {
-                if offset != 0 && word.space_before {
-                    x += space_w * line.glue_scale;
+            let order = visual_order(&words, line.start, line.end, &bidi);
+            let mut previous_index = None;
+            for (offset, word_index) in order.into_iter().enumerate() {
+                let word = &words[word_index];
+                if offset == 0 {
+                    x -= word.start_protrusion * line.glyph_scale;
+                } else if let Some(previous_index) = previous_index {
+                    // Glue belongs to the logical boundary between visually
+                    // adjacent items. In an RTL run that boundary is carried
+                    // by the item with the greater logical index.
+                    let boundary = &words[word_index.max(previous_index)];
+                    if boundary.space_before {
+                        x += space_w * line.glue_scale;
+                    } else if boundary.natural_break_before {
+                        let adjustment = if line.adjustment_ratio >= 0.0 {
+                            boundary.stretch_before * line.adjustment_ratio
+                        } else {
+                            boundary.shrink_before * line.adjustment_ratio
+                        };
+                        x += adjustment;
+                    }
                 }
-                if word.hyphen_break_before
+                let rejoins_source_word = word.hyphen_break_before
+                    || (word.natural_break_before && word.stretch_before == 0.0);
+                if rejoins_source_word
+                    && previous_index.is_some_and(|previous| previous + 1 == word_index)
                     && let Some(previous) = runs.last_mut()
                     && previous.bold == word.bold
                     && previous.italic == word.italic
@@ -395,7 +585,8 @@ pub fn layout_chapter(
                             word.italic,
                             family,
                         )
-                        .0;
+                        .0 * line.glyph_scale;
+                    previous_index = Some(word_index);
                     continue;
                 }
                 runs.push(LineRun {
@@ -408,22 +599,39 @@ pub fn layout_chapter(
                     char_start: word.char_start,
                     char_len: word.char_len,
                 });
-                x += word.w;
+                x += word.w * line.glyph_scale;
+                previous_index = Some(word_index);
             }
             if line.end < words.len()
                 && words[line.end].hyphen_break_before
-                && let Some(last) = runs.last_mut()
+                && let Some(source) = words.get(line.end - 1)
+                && let Some(last) = runs.iter_mut().find(|run| {
+                    run.char_start <= source.char_start
+                        && run.char_start + run.char_len == source.char_start + source.char_len
+                })
             {
                 last.display_text.push('-');
             }
+            if paragraph_rtl && (line.end == words.len() || !options.justify) {
+                let offset = (text_width - x).max(0.0);
+                for run in &mut runs {
+                    run.x += offset;
+                }
+            }
             lines.push(LaidLine {
                 y: block_top + line_idx as f32 * line_height,
+                glyph_scale: line.glyph_scale,
+                adjustment_ratio: line.adjustment_ratio,
+                rtl: paragraph_rtl,
                 runs,
             });
         }
         if lines.is_empty() {
             lines.push(LaidLine {
                 y: block_top,
+                glyph_scale: 1.0,
+                adjustment_ratio: 0.0,
+                rtl: paragraph_rtl,
                 runs: Vec::new(),
             });
         }
@@ -727,6 +935,93 @@ mod tests {
         );
     }
 
+    #[test]
+    fn opening_punctuation_hangs_into_the_margin_without_changing_source() {
+        let mut tr = TextRenderer::new();
+        let blocks = vec![para("“Typography begins at the edge.”")];
+        let layout = layout_chapter(
+            &mut tr,
+            &blocks,
+            600.0,
+            400.0,
+            &Settings::default(),
+            0,
+            "en-US",
+            &FontChoice::Serif,
+            1.0,
+            0,
+        );
+        let block = &layout.blocks[0];
+        let line = &block.lines[0];
+        assert!(line.runs[0].x < 0.0, "opening quote protrudes left");
+        for run in &line.runs {
+            let source: String = block
+                .text
+                .chars()
+                .skip(run.char_start)
+                .take(run.char_len)
+                .collect();
+            assert_eq!(source, run.text);
+        }
+    }
+
+    #[test]
+    fn unspaced_cjk_uses_unicode_breaks_and_inter_character_justification() {
+        let mut tr = TextRenderer::new();
+        let text = "天地玄黃宇宙洪荒日月盈昃辰宿列張寒來暑往秋收冬藏";
+        let layout = layout_chapter(
+            &mut tr,
+            &[para(text)],
+            120.0,
+            500.0,
+            &Settings::default(),
+            0,
+            "zh-Hant",
+            &FontChoice::Serif,
+            1.0,
+            0,
+        );
+        let block = &layout.blocks[0];
+        assert!(block.lines.len() >= 2, "CJK wraps without ASCII spaces");
+        assert_eq!(block.text, text);
+        assert!(
+            block.lines[..block.lines.len() - 1]
+                .iter()
+                .any(|line| line.runs.len() > 1 && line.adjustment_ratio != 0.0),
+            "non-final CJK lines participate in micro-justification"
+        );
+    }
+
+    #[test]
+    fn rtl_paragraphs_use_visual_bidi_order_and_right_align_the_final_line() {
+        let mut tr = TextRenderer::new();
+        let layout = layout_chapter(
+            &mut tr,
+            &[para("مرحبا بالعالم 123")],
+            500.0,
+            400.0,
+            &Settings::default(),
+            0,
+            "ar",
+            &FontChoice::Serif,
+            1.0,
+            0,
+        );
+        let line = &layout.blocks[0].lines[0];
+        assert!(line.rtl);
+        assert!(line.runs.windows(2).all(|pair| pair[0].x < pair[1].x));
+        let logical_first = line
+            .runs
+            .iter()
+            .find(|run| run.char_start == 0)
+            .expect("first Arabic word");
+        assert!(
+            logical_first.x > line.runs[0].x,
+            "logical first word is visually rightmost"
+        );
+        assert!(line.runs[0].x > 100.0, "short RTL final line aligns right");
+    }
+
     fn block_with_lines(kind: LayoutKind, top: f32, line_count: usize) -> LaidBlock {
         let line_height = 20.0;
         LaidBlock {
@@ -740,6 +1035,9 @@ mod tests {
             lines: (0..line_count)
                 .map(|line| LaidLine {
                     y: top + line as f32 * line_height,
+                    glyph_scale: 1.0,
+                    adjustment_ratio: 0.0,
+                    rtl: false,
                     runs: Vec::new(),
                 })
                 .collect(),
