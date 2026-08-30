@@ -1,11 +1,11 @@
 //! Offscreen renders of the [`Scrollable`] overlay scrollbar in a long list,
 //! in **both** light and dark, for self-inspection without opening a window.
-//! Drives the real five-pass pipeline (sync → `build_layout` → `compute_layout` →
-//! `apply_layout` → draw) plus a real `CursorMoved` event to exercise the
+//! Drives the real five-pass pipeline (sync → build_layout → compute_layout →
+//! apply_layout → draw) plus a real `CursorMoved` event to exercise the
 //! hovered/active thumb state.
 //!
-//! Run:  cargo run -p ui --example `scrollbar_shots`
-//! Out:  $`SCROLLBAR_SHOTS_OUT` (default /`tmp/scrollbar_shots`) —
+//! Run:  cargo run -p ui --example ui-shots -- scrollbar_shots
+//! Out:  $SCROLLBAR_SHOTS_OUT (default /tmp/scrollbar_shots) —
 //!       scrollbar-{dark,light}-{idle,active,both}.png
 //!
 //! Each shot scrolls the list a little so the thumb sits mid-track:
@@ -85,9 +85,10 @@ fn shoot(theme: &Theme, out: PathBuf, active: bool, both: bool) {
                 height: AvailableSpace::Definite(HEIGHT as f32),
             },
             |known, available, node_id, _, _| {
-                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                    (*p).measure(known, available, &mut tr)
-                })
+                node_map
+                    .get(&node_id)
+                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
+                    .unwrap_or(Size::ZERO)
             },
         )
         .unwrap();
@@ -107,10 +108,7 @@ fn shoot(theme: &Theme, out: PathBuf, active: bool, both: bool) {
         // Park the pointer on the vertical thumb so it renders in its
         // brightened, track-revealed state (the real hover path).
         if let Some(thumb) = scroll.thumb_rect(ScrollAxis::Vertical) {
-            let c = Point::new(
-                f64::midpoint(thumb.x0, thumb.x1),
-                f64::midpoint(thumb.y0, thumb.y1),
-            );
+            let c = Point::new((thumb.x0 + thumb.x1) / 2.0, (thumb.y0 + thumb.y1) / 2.0);
             let mut handled = false;
             let mut ft = None;
             scroll.handle_event(
@@ -136,7 +134,7 @@ fn shoot(theme: &Theme, out: PathBuf, active: bool, both: bool) {
     println!("wrote {}", out.display());
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
     let dir =
         std::env::var("SCROLLBAR_SHOTS_OUT").unwrap_or_else(|_| "/tmp/scrollbar_shots".to_string());

@@ -13,8 +13,8 @@
 //!      empty column has appeared between the
 //!      originals (asserted on the model too).
 //!
-//! Run:  cargo run -p ui --example `table_shots`
-//! Out:  $`TABLE_SHOTS_OUT` (default /`tmp/table_shots`)
+//! Run:  cargo run -p ui --example ui-shots -- table_shots
+//! Out:  $TABLE_SHOTS_OUT (default /tmp/table_shots)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -61,7 +61,7 @@ fn seed(doc: &mut AutoCommit, t: &ObjId) {
     }
 }
 
-/// sync → `build_layout` → `compute_layout` → `apply_layout` at the table's natural
+/// sync → build_layout → compute_layout → apply_layout at the table's natural
 /// size, positioned at `(MARGIN, MARGIN)`.
 fn frame(
     table: &mut Table,
@@ -83,9 +83,9 @@ fn frame(
                 height: AvailableSpace::MaxContent,
             },
             |known, available, node_id, _, _| {
-                nm.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                    (*p).measure(known, available, &mut tr)
-                })
+                nm.get(&node_id)
+                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
+                    .unwrap_or(Size::ZERO)
             },
         )
         .unwrap();
@@ -145,7 +145,7 @@ fn shoot(table: &mut Table, size: (f64, f64), out: &Path) {
     println!("wrote {}", out.display());
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let dir = std::env::var("TABLE_SHOTS_OUT").unwrap_or_else(|_| "/tmp/table_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);

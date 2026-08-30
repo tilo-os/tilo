@@ -7,8 +7,8 @@
 //! caret come from the production `draw` path, not private pokes (only
 //! `set_selection`, a public API, arms the highlight for the still frame).
 //!
-//! Run:  cargo run -p ui --example `textinput_ext_shots`
-//! Out:  $`TEXTINPUT_EXT_SHOTS_OUT` (default `target/textinput_ext_shots`)
+//! Run:  cargo run -p ui --example ui-shots -- textinput_ext_shots
+//! Out:  $TEXTINPUT_EXT_SHOTS_OUT (default target/textinput_ext_shots)
 
 use std::path::PathBuf;
 
@@ -35,7 +35,7 @@ fn label(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, s: &str, x: f6
     );
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let dir = std::env::var("TEXTINPUT_EXT_SHOTS_OUT")
         .unwrap_or_else(|_| "target/textinput_ext_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
