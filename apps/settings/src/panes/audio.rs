@@ -55,11 +55,15 @@ use media::audio::{
     AudioEnumerator, AudioGraph, AudioStream, GraphControl, NoopGraphControl, RealEnumerator,
     RealGraphControl,
 };
+use media::audio_runtime::{
+    AudioRuntimeControl, BoundedSession, MicrophoneMeterSession, RealAudioRuntime,
+    RuntimeCapabilities,
+};
 use os_actions::Dispatcher;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Dropdown, Slider, Toggle, Widget};
+use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -105,6 +109,35 @@ pub const CHAT_LEAVE_KEY: &str = "audio.chat_leave_sound";
 pub const OUTPUT_DEVICE_KEY: &str = "audio.output_device";
 /// CRDT key the input-device (source) dropdown writes the chosen name into.
 pub const INPUT_DEVICE_KEY: &str = "audio.input_device";
+pub const BALANCE_KEY: &str = "audio.balance";
+pub const MONO_KEY: &str = "audio.mono";
+const ADVANCED_KEY: &str = "audio.advanced";
+const TEST_LEFT_KEY: &str = "audio.test.left";
+const TEST_RIGHT_KEY: &str = "audio.test.right";
+const MIC_TEST_KEY: &str = "audio.mic_test";
+
+struct NoopAudioRuntime;
+impl AudioRuntimeControl for NoopAudioRuntime {
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities::default()
+    }
+    fn set_balance(&self, _: &str, _: f32, _: f32) -> Result<(), String> {
+        Err("balance unavailable".into())
+    }
+    fn start_mono(&self, _: &str) -> Result<Box<dyn BoundedSession>, String> {
+        Err("mono unavailable".into())
+    }
+    fn start_channel_test(&self, _: &str, _: bool) -> Result<Box<dyn BoundedSession>, String> {
+        Err("channel test unavailable".into())
+    }
+    fn start_microphone_meter(
+        &self,
+        _: &str,
+        _: Duration,
+    ) -> Result<Box<dyn MicrophoneMeterSession>, String> {
+        Err("microphone test unavailable".into())
+    }
+}
 
 /// Side-effect interface for the microphone (default *source*) gain.
 /// `os_actions::Dispatcher` only covers the sink, so the pane carries this
@@ -347,6 +380,17 @@ pub struct AudioPane {
     last_stream_vol: HashMap<u32, f32>,
     last_stream_mute: HashMap<u32, bool>,
     last_device_profile: HashMap<u32, String>,
+    runtime: Arc<dyn AudioRuntimeControl>,
+    runtime_caps: RuntimeCapabilities,
+    balance: f32,
+    mono_enabled: bool,
+    advanced: bool,
+    runtime_notice: Option<String>,
+    channel_test: Option<Box<dyn BoundedSession>>,
+    mono_session: Option<Box<dyn BoundedSession>>,
+    mic_session: Option<Box<dyn MicrophoneMeterSession>>,
+    mic_level: f32,
+    structure_dirty: bool,
     initial_volume: f32,
     initial_input: f32,
     initial_prefs: AudioPrefs,
@@ -412,6 +456,8 @@ impl AudioPane {
         // devices they route to). Empty on a host with no PipeWire, so the
         // Applications card simply shows its empty state.
         let mut graph = media::audio::enumerate();
+        let runtime: Arc<dyn AudioRuntimeControl> = Arc::new(RealAudioRuntime);
+        let runtime_caps = runtime.capabilities();
         // Re-apply a remembered physical route when it is present. The action
         // is made against the current PipeWire node id; the persisted value is
         // only a preference, never treated as proof that hardware exists.
@@ -455,6 +501,17 @@ impl AudioPane {
             last_stream_vol: HashMap::new(),
             last_stream_mute: HashMap::new(),
             last_device_profile: HashMap::new(),
+            runtime,
+            runtime_caps,
+            balance: 0.5,
+            mono_enabled: false,
+            advanced: false,
+            runtime_notice: None,
+            channel_test: None,
+            mono_session: None,
+            mic_session: None,
+            mic_level: 0.0,
+            structure_dirty: false,
             initial_volume: initial,
             initial_input,
             initial_prefs: prefs.clone(),
@@ -502,6 +559,17 @@ impl AudioPane {
             last_stream_vol: HashMap::new(),
             last_stream_mute: HashMap::new(),
             last_device_profile: HashMap::new(),
+            runtime: Arc::new(NoopAudioRuntime),
+            runtime_caps: RuntimeCapabilities::default(),
+            balance: 0.5,
+            mono_enabled: false,
+            advanced: false,
+            runtime_notice: None,
+            channel_test: None,
+            mono_session: None,
+            mic_session: None,
+            mic_level: 0.0,
+            structure_dirty: false,
             initial_volume,
             initial_input,
             initial_prefs: AudioPrefs::default(),
@@ -538,6 +606,12 @@ impl AudioPane {
         self.enumerator = Arc::new(StaticEnumerator(graph.clone()));
         self.graph = graph;
         self.gctl = gctl;
+        self
+    }
+
+    pub fn with_runtime(mut self, runtime: Arc<dyn AudioRuntimeControl>) -> Self {
+        self.runtime_caps = runtime.capabilities();
+        self.runtime = runtime;
         self
     }
 
@@ -582,6 +656,57 @@ impl AudioPane {
             "Mute",
             Box::new(Toggle::new("settings.audio.mute", MUTED_KEY).with_id("audio.mute")),
         ));
+        let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
+        if self.runtime_caps.balance && stereo_sink.is_some() {
+            output_rows.push(setting_row(
+                "Balance",
+                Box::new(
+                    Slider::new("settings.audio.balance", BALANCE_KEY).with_id("audio.balance"),
+                ),
+            ));
+        }
+        if self.runtime_caps.mono_output && stereo_sink.is_some() {
+            output_rows.push(setting_row(
+                "Mono audio",
+                Box::new(Toggle::new("settings.audio.mono", MONO_KEY).with_id("audio.mono")),
+            ));
+            output_rows.push(caption("Combines left and right while this Sound pane is open. The temporary PipeWire route is removed on exit."));
+        }
+        if self.runtime_caps.channel_test && stereo_sink.is_some() {
+            output_rows.push(Box::new(
+                Row::new()
+                    .push(Box::new(Button::new(
+                        "settings.audio.advanced",
+                        if self.advanced {
+                            "Hide speaker test"
+                        } else {
+                            "Test speakers…"
+                        },
+                        Some(ADVANCED_KEY),
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ));
+            if self.advanced {
+                output_rows.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new(
+                            "settings.audio.test.left",
+                            "Left",
+                            Some(TEST_LEFT_KEY),
+                        )))
+                        .push(Box::new(Button::new(
+                            "settings.audio.test.right",
+                            "Right",
+                            Some(TEST_RIGHT_KEY),
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ));
+                output_rows.push(caption("Plays a short, quiet tone only on the selected channel. Tests stop automatically."));
+            }
+        }
+        if let Some(notice) = &self.runtime_notice {
+            output_rows.push(caption(notice));
+        }
         let output = card("Output", rows(output_rows));
 
         // --- Input card: an optional source picker, then the mic level.
@@ -606,6 +731,32 @@ impl AudioPane {
                     .with_id("audio.input_volume"),
             ),
         ));
+        if self.runtime_caps.microphone_meter && self.graph.default_source().is_some() {
+            let running = self.mic_session.is_some();
+            let activity = if running {
+                format!(
+                    "Input activity: {}%",
+                    (self.mic_level * 100.0).round() as u32
+                )
+            } else {
+                "Microphone test records no audio".to_string()
+            };
+            input_rows.push(Box::new(
+                Row::new()
+                    .push(Box::new(Text::new(&activity).with_size(12.0)))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(Button::new(
+                        "settings.audio.mic_test",
+                        if running {
+                            "Stop test"
+                        } else {
+                            "Test microphone"
+                        },
+                        Some(MIC_TEST_KEY),
+                    ))),
+            ));
+            input_rows.push(caption("The test reads an eight-second level meter in memory. It never stores audio or routes the microphone to speakers."));
+        }
         let input = card("Input", rows(input_rows));
 
         let mut hardware_rows = Vec::new();
@@ -872,6 +1023,15 @@ impl AudioPane {
         self.last_stream_sink.retain(|id, _| present.contains(id));
         self.last_stream_vol.retain(|id, _| present.contains(id));
         self.last_stream_mute.retain(|id, _| present.contains(id));
+        // A diagnostic process or virtual mono route is bound to the old node
+        // name. Tear it down before adopting a changed hardware graph.
+        self.channel_test = None;
+        self.mic_session = None;
+        if self.mono_session.take().is_some() {
+            self.mono_enabled = false;
+            self.runtime_notice =
+                Some("Audio hardware changed; the temporary mono route was removed.".into());
+        }
         // Refresh the sink/source pickers from the same enumeration so a new
         // headset is selectable, keeping the current default marker.
         self.devices = devices_from_graph(&fresh);
@@ -898,6 +1058,27 @@ pub fn build() -> Box<dyn Widget> {
 
 impl Widget for AudioPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if self
+            .channel_test
+            .as_mut()
+            .is_some_and(|session| !session.running())
+        {
+            self.channel_test = None;
+            self.runtime_notice = Some("Speaker test finished.".into());
+            self.structure_dirty = true;
+        }
+        if let Some(session) = &mut self.mic_session {
+            let level = session.level();
+            if (level - self.mic_level).abs() >= 0.02 {
+                self.mic_level = level;
+                self.structure_dirty = true;
+            }
+            if !session.running() {
+                self.mic_session = None;
+                self.runtime_notice = Some("Microphone test finished; no audio was saved.".into());
+                self.structure_dirty = true;
+            }
+        }
         // Re-read the PipeWire graph on the hotplug throttle so a device
         // plugged in or an app that just started playing appears live.
         self.poll_hotplug();
@@ -908,6 +1089,11 @@ impl Widget for AudioPane {
                 automerge::ScalarValue::F64(f64::from(self.initial_volume)),
             );
             let _ = state.put(root, MUTED_KEY, automerge::ScalarValue::Boolean(false));
+            let _ = state.put(root, BALANCE_KEY, automerge::ScalarValue::F64(0.5));
+            let _ = state.put(root, MONO_KEY, false);
+            for key in [ADVANCED_KEY, TEST_LEFT_KEY, TEST_RIGHT_KEY, MIC_TEST_KEY] {
+                let _ = state.put(root, key, false);
+            }
             let _ = state.put(
                 root,
                 INPUT_VOLUME_KEY,
@@ -974,6 +1160,119 @@ impl Widget for AudioPane {
             if let Err(e) = self.dispatcher.toggle_mute() {
                 warn!(target: "qos::settings", op = "toggle_mute", error = %e, "audio pane dispatch failed");
             }
+        }
+        if let Some(value) = read_f64(state, root, BALANCE_KEY).map(|v| v as f32)
+            && (value - self.balance).abs() > 0.001
+            && let Some(sink) = self.graph.default_sink().filter(|sink| sink.channels == 2)
+            && self.runtime_caps.balance
+        {
+            match self.runtime.set_balance(
+                &sink.name,
+                sink.volume.unwrap_or(self.last_volume),
+                value * 2.0 - 1.0,
+            ) {
+                Ok(()) => self.balance = value,
+                Err(error) => {
+                    self.runtime_notice = Some(format!("Could not change balance: {error}"));
+                    let _ = state.put(root, BALANCE_KEY, f64::from(self.balance));
+                    self.structure_dirty = true;
+                }
+            }
+        }
+        if let Some(enabled) = read_bool(state, root, MONO_KEY)
+            && enabled != self.mono_enabled
+        {
+            if enabled {
+                let result = self
+                    .graph
+                    .default_sink()
+                    .filter(|sink| sink.channels == 2)
+                    .ok_or_else(|| "Mono output requires a stereo PipeWire sink".to_string())
+                    .and_then(|sink| self.runtime.start_mono(&sink.name));
+                match result {
+                    Ok(session) => {
+                        self.mono_session = Some(session);
+                        self.mono_enabled = true;
+                        self.runtime_notice =
+                            Some("Mono output is active for this Sound session.".into());
+                    }
+                    Err(error) => {
+                        self.runtime_notice =
+                            Some(format!("Could not enable mono output: {error}"));
+                        let _ = state.put(root, MONO_KEY, false);
+                    }
+                }
+            } else {
+                self.mono_session = None;
+                self.mono_enabled = false;
+                self.runtime_notice =
+                    Some("Mono output stopped and the previous output was restored.".into());
+            }
+            self.structure_dirty = true;
+        }
+        if read_bool(state, root, ADVANCED_KEY) == Some(true) {
+            let _ = state.put(root, ADVANCED_KEY, false);
+            self.advanced = !self.advanced;
+            if !self.advanced {
+                self.channel_test = None;
+            }
+            self.structure_dirty = true;
+        }
+        for (key, left, label) in [
+            (TEST_LEFT_KEY, true, "left"),
+            (TEST_RIGHT_KEY, false, "right"),
+        ] {
+            if read_bool(state, root, key) != Some(true) {
+                continue;
+            }
+            let _ = state.put(root, key, false);
+            self.channel_test = None;
+            let result = self
+                .graph
+                .default_sink()
+                .filter(|sink| sink.channels == 2)
+                .ok_or_else(|| "Speaker test requires a stereo PipeWire sink".to_string())
+                .and_then(|sink| self.runtime.start_channel_test(&sink.name, left));
+            match result {
+                Ok(session) => {
+                    self.channel_test = Some(session);
+                    self.runtime_notice = Some(format!("Playing a short {label}-channel tone…"));
+                }
+                Err(error) => {
+                    self.runtime_notice =
+                        Some(format!("Could not test the {label} speaker: {error}"))
+                }
+            }
+            self.structure_dirty = true;
+        }
+        if read_bool(state, root, MIC_TEST_KEY) == Some(true) {
+            let _ = state.put(root, MIC_TEST_KEY, false);
+            if self.mic_session.is_some() {
+                self.mic_session = None;
+                self.runtime_notice = Some("Microphone test stopped; no audio was saved.".into());
+            } else {
+                let result = self
+                    .graph
+                    .default_source()
+                    .ok_or_else(|| "No PipeWire microphone is available".to_string())
+                    .and_then(|source| {
+                        self.runtime
+                            .start_microphone_meter(&source.name, Duration::from_secs(8))
+                    });
+                match result {
+                    Ok(session) => {
+                        self.mic_session = Some(session);
+                        self.mic_level = 0.0;
+                        self.runtime_notice =
+                            Some("Microphone level test started for eight seconds.".into());
+                    }
+                    Err(error) => {
+                        self.runtime_notice =
+                            Some(format!("Could not test the microphone: {error}"))
+                    }
+                }
+            }
+            self.structure_dirty = true;
         }
         // System-sound preferences → persist to the shared store on change.
         if let Some(b) = read_bool(state, root, EVENT_SOUNDS_KEY)
@@ -1174,6 +1473,14 @@ impl Widget for AudioPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+            || self
+                .composed
+                .as_mut()
+                .is_some_and(|child| child.take_structure_dirty())
+    }
 }
 
 /// Read an `f64` scalar at `key`.
@@ -1216,12 +1523,99 @@ mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Records the microphone gains the input slider forwards, so the test
     /// can assert the source volume actually reached the backend.
     #[derive(Default)]
     struct RecordingInput {
         calls: Mutex<Vec<f32>>,
+    }
+
+    struct FakeSession {
+        drops: Arc<AtomicUsize>,
+    }
+    impl BoundedSession for FakeSession {
+        fn running(&mut self) -> bool {
+            true
+        }
+        fn stop(&mut self) {}
+    }
+    impl Drop for FakeSession {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct FakeMeter {
+        session: FakeSession,
+    }
+    impl BoundedSession for FakeMeter {
+        fn running(&mut self) -> bool {
+            self.session.running()
+        }
+        fn stop(&mut self) {
+            self.session.stop();
+        }
+    }
+    impl MicrophoneMeterSession for FakeMeter {
+        fn level(&mut self) -> f32 {
+            0.42
+        }
+        fn remaining(&self) -> Duration {
+            Duration::from_secs(4)
+        }
+    }
+    struct RecordingRuntime {
+        calls: Mutex<Vec<String>>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl AudioRuntimeControl for RecordingRuntime {
+        fn capabilities(&self) -> RuntimeCapabilities {
+            RuntimeCapabilities {
+                balance: true,
+                mono_output: true,
+                channel_test: true,
+                microphone_meter: true,
+            }
+        }
+        fn set_balance(&self, sink: &str, base: f32, balance: f32) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("balance({sink},{base:.2},{balance:.2})"));
+            Ok(())
+        }
+        fn start_mono(&self, sink: &str) -> Result<Box<dyn BoundedSession>, String> {
+            self.calls.lock().unwrap().push(format!("mono({sink})"));
+            Ok(Box::new(FakeSession {
+                drops: self.drops.clone(),
+            }))
+        }
+        fn start_channel_test(
+            &self,
+            sink: &str,
+            left: bool,
+        ) -> Result<Box<dyn BoundedSession>, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("test({sink},{left})"));
+            Ok(Box::new(FakeSession {
+                drops: self.drops.clone(),
+            }))
+        }
+        fn start_microphone_meter(
+            &self,
+            source: &str,
+            _: Duration,
+        ) -> Result<Box<dyn MicrophoneMeterSession>, String> {
+            self.calls.lock().unwrap().push(format!("meter({source})"));
+            Ok(Box::new(FakeMeter {
+                session: FakeSession {
+                    drops: self.drops.clone(),
+                },
+            }))
+        }
     }
     impl InputControl for RecordingInput {
         fn set_input_volume(&self, pct: f32) -> Result<(), String> {
@@ -1498,6 +1892,55 @@ Video
             0.75,
         )
         .with_graph(graph_two_sinks_one_stream(), gctl)
+    }
+
+    #[test]
+    fn runtime_controls_are_real_actions_and_sessions_drop_with_pane() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Mutex::new(vec![]),
+            drops: drops.clone(),
+        });
+        let mut graph = graph_two_sinks_one_stream();
+        graph.sources.push(media::audio::AudioDevice {
+            id: 52,
+            serial: 52,
+            name: "alsa_input.mic".into(),
+            description: "Microphone".into(),
+            is_default: true,
+            volume: Some(0.7),
+            muted: Some(false),
+            channels: 1,
+            codec: None,
+        });
+        let disp = Arc::new(RecordingDispatcher::default());
+        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
+            .with_graph(graph, Arc::new(NoopGraphControl))
+            .with_runtime(runtime.clone());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, BALANCE_KEY, 0.75);
+        let _ = doc.put(&root, MONO_KEY, true);
+        let _ = doc.put(&root, TEST_LEFT_KEY, true);
+        let _ = doc.put(&root, MIC_TEST_KEY, true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(
+            runtime.calls.lock().unwrap().as_slice(),
+            [
+                "balance(alsa_speakers,0.80,0.50)",
+                "mono(alsa_speakers)",
+                "test(alsa_speakers,true)",
+                "meter(alsa_input.mic)",
+            ]
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(pane);
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            3,
+            "mono, tone and mic owners all tear down on navigation"
+        );
     }
 
     #[test]

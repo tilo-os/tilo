@@ -31,9 +31,27 @@ objects supply `EnumProfile`; only available profiles are shown and changes use
 read-only when the node exposes `api.bluez5.codec`. A separate codec picker is
 not shown unless the backend exposes codecs as selectable profiles.
 
-Balance, channel playback tests, microphone loopback/monitoring and mono
-routing are intentionally not represented by inert controls. They require a
-session audio service with owned process/node lifecycle (especially to prevent
-feedback and to tear capture down when Settings closes). The current graph
-abstraction does not yet provide that lifecycle, so these remain explicit
-follow-up work rather than UI that only stores a value.
+Short-lived diagnostics and transforms live in `media::audio_runtime`, separate
+from graph enumeration. Controls appear only when the corresponding standard
+host API is reachable:
+
+- stereo balance writes the two channel volumes through the PipeWire Pulse
+  server (`pactl`);
+- mono loads one temporary `module-remap-sink`, switches the default to it,
+  then restores the physical sink and unloads the module on stop or Drop;
+- left/right tests send a bounded, low-volume generated PCM tone directly to
+  the selected PipeWire node with `pw-play`;
+- microphone test captures raw samples from the selected source with
+  `pw-record`, reduces them immediately to a peak meter, and retains no audio.
+
+Every process is killed and waited, every capture reader is joined, and every
+temporary module is unloaded when the control stops, hardware changes, the
+pane is hidden, or Settings exits. The microphone path has no playback node,
+so testing cannot silently become microphone monitoring or create feedback.
+The microphone test is capped at eight seconds in Settings (and the backend
+rejects unbounded durations).
+
+Mono is intentionally session-scoped rather than a misleading persistent
+preference: a durable accessibility route belongs in a compositor/session
+audio service that can survive Settings. Codec selection remains read-only
+unless WirePlumber advertises concrete selectable profiles.
