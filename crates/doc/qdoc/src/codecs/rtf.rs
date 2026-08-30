@@ -187,7 +187,7 @@ fn skip_one_fallback(chars: &[char], mut i: usize, n: usize) -> usize {
         i = i.saturating_add(1);
         if i < n && at(chars, i) == '\'' {
             i = i.saturating_add(1);
-            let mut k = 0;
+            let mut k: usize = 0;
             while i < n && k < 2 && at(chars, i).is_ascii_hexdigit() {
                 i = i.saturating_add(1);
                 k = k.saturating_add(1);
