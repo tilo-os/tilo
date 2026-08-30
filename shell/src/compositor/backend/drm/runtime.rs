@@ -1807,6 +1807,7 @@ mod tests {
                 connector,
             },
             id: OutputId(id),
+            connector_name: format!("TEST-{connector}"),
             size,
             physical_mm: mm,
             crtc: crtc(id + 1),
