@@ -118,7 +118,7 @@ impl CursorInterpolator {
     pub fn gc(&mut self, t: Instant) {
         self.peers.retain(|_, state| {
             let age = t.saturating_duration_since(state.latest.t);
-            age < FADE_AFTER + FADE_DURATION
+            age < FADE_AFTER.saturating_add(FADE_DURATION)
         });
     }
 
@@ -171,8 +171,12 @@ fn interpolated_at(uid: &str, state: &PeerState, now: Instant) -> Option<Interpo
         if age <= FADE_AFTER {
             1.0
         } else {
-            let fade_progress =
-                age.checked_sub(FADE_AFTER).unwrap().as_secs_f32() / FADE_DURATION.as_secs_f32();
+            // `age > FADE_AFTER` is guaranteed by the branch above.
+            let fade_progress = age
+                .checked_sub(FADE_AFTER)
+                .unwrap_or(Duration::ZERO)
+                .as_secs_f32()
+                / FADE_DURATION.as_secs_f32();
             if fade_progress >= 1.0 {
                 return None;
             }
@@ -363,15 +367,15 @@ mod tests {
     fn apply_to_uses_the_shared_palette_not_a_private_one() {
         let t0 = Instant::now();
         let mut ctx = PresenceCtx::empty();
-        let mut i = CursorInterpolator::new();
-        i.push_sample("alice", "Alice", [1.0, 2.0], t0);
-        i.apply_to(&mut ctx, t0);
+        let mut interp = CursorInterpolator::new();
+        interp.push_sample("alice", "Alice", [1.0, 2.0], t0);
+        interp.apply_to(&mut ctx, t0);
 
-        let (r, g, b) = ui::presence::user_color("alice");
-        let c = &ctx.remote_cursors[0];
-        assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
-        assert!((c.color[1] - f32::from(g) / 255.0).abs() < 1e-3);
-        assert!((c.color[2] - f32::from(b) / 255.0).abs() < 1e-3);
+        let (red, green, blue) = ui::presence::user_color("alice");
+        let cursor = &ctx.remote_cursors[0];
+        assert!((cursor.color[0] - f32::from(red) / 255.0).abs() < 1e-3);
+        assert!((cursor.color[1] - f32::from(green) / 255.0).abs() < 1e-3);
+        assert!((cursor.color[2] - f32::from(blue) / 255.0).abs() < 1e-3);
     }
 
     #[test]
