@@ -47,15 +47,11 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
             && !txt.is_empty()
         {
             doc.splice_text_in(region, b, *cur_len, 0, txt);
-            *cur_len += txt.chars().count();
+            *cur_len = cur_len.saturating_add(txt.chars().count());
         }
     };
 
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 n if n == tag.as_bytes() => in_region = true,
@@ -114,7 +110,14 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
 
     // Apply page-number fields now that all text is present.
     for (b, start) in field_marks {
-        doc.add_mark_in(region, &b, start, start + 1, MARK_FIELD, FIELD_PAGE_NUMBER);
+        doc.add_mark_in(
+            region,
+            &b,
+            start,
+            start.saturating_add(1),
+            MARK_FIELD,
+            FIELD_PAGE_NUMBER,
+        );
     }
 }
 
@@ -132,7 +135,7 @@ fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     b.marks.iter().any(|m| {
         m.name == MARK_FIELD
             && m.start == i
-            && m.end == i + 1
+            && m.end == i.saturating_add(1)
             && m.value.as_str() == Some(FIELD_PAGE_NUMBER)
     })
 }
@@ -212,13 +215,13 @@ fn splice_into_master(styles_xml: &[u8], regions: &str) -> Vec<u8> {
     let s = String::from_utf8_lossy(styles_xml).into_owned();
     if let Some((open_end, mp_inner_start, mp_inner_end)) = first_master_page_span(&s) {
         // Drop existing header/footer from the master-page's inner content; keep everything else (page-layout refs etc.) verbatim.
-        let inner = &s[mp_inner_start..mp_inner_end];
+        let inner = s.get(mp_inner_start..mp_inner_end).unwrap_or_default();
         let cleaned = strip_regions(inner);
-        let mut out = String::with_capacity(s.len() + regions.len());
-        out.push_str(&s[..open_end]);
+        let mut out = String::with_capacity(s.len().saturating_add(regions.len()));
+        out.push_str(s.get(..open_end).unwrap_or_default());
         out.push_str(regions);
         out.push_str(&cleaned);
-        out.push_str(&s[mp_inner_end..]);
+        out.push_str(s.get(mp_inner_end..).unwrap_or_default());
         return out.into_bytes();
     }
     // No master-page: inject a fresh master-styles section, preferring to place it before the document-styles close.
@@ -226,10 +229,10 @@ fn splice_into_master(styles_xml: &[u8], regions: &str) -> Vec<u8> {
         r#"<office:master-styles><style:master-page style:name="Standard">{regions}</style:master-page></office:master-styles>"#
     );
     if let Some(pos) = s.rfind("</office:document-styles>") {
-        let mut out = String::with_capacity(s.len() + section.len());
-        out.push_str(&s[..pos]);
+        let mut out = String::with_capacity(s.len().saturating_add(section.len()));
+        out.push_str(s.get(..pos).unwrap_or_default());
         out.push_str(&section);
-        out.push_str(&s[pos..]);
+        out.push_str(s.get(pos..).unwrap_or_default());
         out.into_bytes()
     } else {
         let mut out = s;
@@ -242,12 +245,12 @@ fn splice_into_master(styles_xml: &[u8], regions: &str) -> Vec<u8> {
 /// for the first `style:master-page` element, or `None` if absent / self-closing.
 fn first_master_page_span(s: &str) -> Option<(usize, usize, usize)> {
     let open = s.find("<style:master-page")?;
-    let gt = s[open..].find('>')? + open;
+    let gt = open.checked_add(s.get(open..)?.find('>')?)?;
     if s.as_bytes().get(gt.wrapping_sub(1)) == Some(&b'/') {
         return None;
     }
-    let inner_start = gt + 1;
-    let close = s[inner_start..].find("</style:master-page>")? + inner_start;
+    let inner_start = gt.checked_add(1)?;
+    let close = inner_start.checked_add(s.get(inner_start..)?.find("</style:master-page>")?)?;
     Some((inner_start, inner_start, close))
 }
 
@@ -257,38 +260,38 @@ fn strip_regions(inner: &str) -> String {
     let mut reader = Reader::from_str(inner);
     let mut skip_depth = 0usize;
     loop {
-        let pos = reader.buffer_position() as usize;
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
+        let pos = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let Ok(ev) = reader.read_event() else {
+            break;
         };
-        let after = reader.buffer_position() as usize;
+        let after = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let span = inner.get(pos..after).unwrap_or_default();
         match &ev {
             Event::Start(e) => {
                 if skip_depth > 0 {
-                    skip_depth += 1;
+                    skip_depth = skip_depth.saturating_add(1);
                 } else if is_region_tag(e.name().as_ref()) {
                     skip_depth = 1;
                 } else {
-                    out.push_str(&inner[pos..after]);
+                    out.push_str(span);
                 }
             }
             Event::Empty(e) => {
                 if skip_depth == 0 && !is_region_tag(e.name().as_ref()) {
-                    out.push_str(&inner[pos..after]);
+                    out.push_str(span);
                 }
             }
             Event::End(_) => {
                 if skip_depth > 0 {
-                    skip_depth -= 1;
+                    skip_depth = skip_depth.saturating_sub(1);
                 } else {
-                    out.push_str(&inner[pos..after]);
+                    out.push_str(span);
                 }
             }
             Event::Eof => break,
             _ => {
                 if skip_depth == 0 {
-                    out.push_str(&inner[pos..after]);
+                    out.push_str(span);
                 }
             }
         }
