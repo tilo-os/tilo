@@ -47,7 +47,7 @@ impl From<&automerge::ScalarValue> for MarkValue {
         match v {
             ScalarValue::Boolean(b) => MarkValue::Bool(*b),
             ScalarValue::Int(i) => MarkValue::Int(*i),
-            ScalarValue::Uint(u) => MarkValue::Int(*u as i64),
+            ScalarValue::Uint(u) => MarkValue::Int(i64::try_from(*u).unwrap_or(i64::MAX)),
             ScalarValue::Str(s) => MarkValue::Str(s.to_string()),
             _ => MarkValue::Bool(true),
         }
@@ -109,6 +109,9 @@ impl Document {
         }
     }
 
+    /// # Errors
+    /// Returns [`DocError`] if `bytes` is not a valid automerge document, or if it does not
+    /// carry a qdoc schema `open` recognises.
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = crate::model::open(&doc, &ROOT)?;
@@ -567,6 +570,10 @@ impl Document {
     }
 
     /// Reconstruct the document as of `version` (time-travel).
+    ///
+    /// # Errors
+    /// Returns [`DocError`] if `version` is out of range or the historical state cannot be
+    /// replayed.
     pub fn materialize_at(
         &mut self,
         version: usize,
@@ -576,6 +583,9 @@ impl Document {
 
     /// Structural diff between two points on this document's own timeline (`from` → `to`, indices
     /// into [`Self::versions`]); block ids are stable across history, so the diff aligns by identity.
+    ///
+    /// # Errors
+    /// Returns [`DocError`] if either `from` or `to` is out of range.
     pub fn diff_versions(
         &mut self,
         from: usize,
@@ -592,6 +602,19 @@ impl Document {
     }
 
     /// Independent replica with a fresh actor id (distinct edit lineage).
+    ///
+    /// # Panics
+    /// Panics if reloading this document's own just-saved bytes fails. `bytes` is this
+    /// process's own valid in-memory document round-tripped through `save`/`load`, not
+    /// anything read from disk or a peer, so automerge failing to parse it back would mean
+    /// `save`/`load` themselves are broken — a library invariant, not bad input. `fork`'s
+    /// only real external caller (`fs::docstore`) depends on this infallible signature, so
+    /// surfacing a `Result` here is a public-API change out of scope for a lint-only pass.
+    #[must_use]
+    #[allow(
+        clippy::expect_used,
+        reason = "reloads this process's own just-saved bytes; see the panics note above"
+    )]
     pub fn fork(&mut self) -> Document {
         let bytes = self.save();
         let mut doc = AutoCommit::load(&bytes).expect("fork load");
@@ -609,6 +632,18 @@ impl Document {
     /// Merge another replica's changes into this one. Done via the low-level `Automerge` (no patch
     /// log) to sidestep an automerge-0.8 `AutoCommit::merge` panic (`PatchLogMismatch`) that can fire
     /// when concurrent **mark** ops are reconciled; the merged result is reloaded and containers/ids re-resolved.
+    ///
+    /// # Panics
+    /// Panics if reloading either side's own just-saved bytes, or the merged result, fails.
+    /// Both `self` and `other` are already-valid in-memory documents (never raw peer bytes —
+    /// those go through the fallible `Document::load`), so a failure here means `save`/`load`
+    /// disagree with each other, a library invariant rather than untrusted input. `merge`'s
+    /// only real external caller (`fs::docstore`) depends on this infallible signature, so
+    /// surfacing a `Result` here is a public-API change out of scope for a lint-only pass.
+    #[allow(
+        clippy::expect_used,
+        reason = "reloads this process's own just-saved/merged bytes; see the panics note above"
+    )]
     pub fn merge(&mut self, other: &mut Document) {
         let merged = {
             let mut a = automerge::Automerge::load(&self.doc.save()).expect("merge: load self");
