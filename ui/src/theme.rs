@@ -111,6 +111,10 @@ pub struct Theme {
     /// per-output device scale: physical size = logical × `ui_scale` ×
     /// device-scale, text additionally × `text_scale`.
     pub ui_scale: f32,
+    /// Width of an insertion caret in logical pixels. The configured theme
+    /// folds in the accessibility preference once, keeping file I/O out of
+    /// widget draw paths.
+    pub caret_width: f64,
 }
 
 impl Default for Theme {
@@ -184,6 +188,7 @@ impl Theme {
             reduce_motion: false,
             text_scale: 1.0,
             ui_scale: 1.0,
+            caret_width: 2.0,
             tokens,
         }
     }
@@ -560,11 +565,16 @@ impl Theme {
     /// machine with no preference and one whose settings file is corrupt
     /// both want a desktop that starts.
     pub fn configured() -> Self {
-        settings_store::settings_path()
+        let text = settings_store::settings_path()
             .and_then(|path| std::fs::read_to_string(path).ok())
-            .as_deref()
-            .and_then(Self::from_settings_json)
-            .unwrap_or_else(Self::dark)
+            .unwrap_or_default();
+        let mut theme = Self::from_settings_json(&text).unwrap_or_else(Self::dark);
+        let thick = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("accessibility")?.get("thick_text_caret")?.as_bool())
+            .unwrap_or(false);
+        theme.caret_width = if thick { 4.0 } else { 2.0 };
+        theme
     }
 
     /// Pure parser shared by runtime loading and hermetic tests.

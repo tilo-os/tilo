@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 use winit::event::{Modifiers, WindowEvent};
 
@@ -40,6 +40,59 @@ fn night_light_multiplier(kelvin: u32) -> Color {
     let green = (255.0 - 52.0 * warmth).round() as u8;
     let blue = (255.0 - 132.0 * warmth).round() as u8;
     Color::from_rgb8(255, green, blue)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DesktopColorFilter {
+    #[default]
+    None,
+    Grayscale,
+    Inverted,
+    GrayscaleInverted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct VisualAccessibility {
+    color_filter: DesktopColorFilter,
+    magnifier_zoom: u8,
+    cursor_crosshair: bool,
+}
+
+impl Default for VisualAccessibility {
+    fn default() -> Self {
+        Self {
+            color_filter: DesktopColorFilter::None,
+            magnifier_zoom: 1,
+            cursor_crosshair: false,
+        }
+    }
+}
+
+impl VisualAccessibility {
+    fn load() -> Self {
+        let section = settings_store::load_section("accessibility");
+        Self {
+            color_filter: match section
+                .get("color_filter")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("grayscale") => DesktopColorFilter::Grayscale,
+                Some("inverted") => DesktopColorFilter::Inverted,
+                Some("grayscale_inverted") => DesktopColorFilter::GrayscaleInverted,
+                _ => DesktopColorFilter::None,
+            },
+            magnifier_zoom: section
+                .get("magnifier_zoom")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u8::try_from(v).ok())
+                .unwrap_or(1)
+                .clamp(1, 3),
+            cursor_crosshair: section
+                .get("cursor_crosshair")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        }
+    }
 }
 
 use crate::shell::overlay_host::OutputGeometry;
@@ -76,6 +129,7 @@ pub struct FrameBuilder {
     last_theme_store_check: Instant,
     night_light: bool,
     night_light_temperature: u32,
+    visual_accessibility: VisualAccessibility,
     viewport: (f64, f64),
     /// The displays behind `viewport`, when known. The viewport is the
     /// *bounding box* of every output, so on multi-monitor it isn't a
@@ -191,6 +245,7 @@ impl FrameBuilder {
             last_theme_store_check: Instant::now(),
             night_light: false,
             night_light_temperature: 3_700,
+            visual_accessibility: VisualAccessibility::default(),
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
             presence: {
@@ -467,7 +522,97 @@ impl FrameBuilder {
             );
             scene.pop_layer();
         }
+        if self.watch_configured_theme {
+            self.apply_visual_accessibility(&mut scene);
+        }
         scene
+    }
+
+    fn apply_color_filter(&self, scene: &mut Scene, bounds: Rect) {
+        let mut overlay = |mix: Mix, color: Color| {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::new(mix, Compose::SrcOver),
+                1.0,
+                Affine::IDENTITY,
+                &bounds,
+            );
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &bounds);
+            scene.pop_layer();
+        };
+        if matches!(
+            self.visual_accessibility.color_filter,
+            DesktopColorFilter::Grayscale | DesktopColorFilter::GrayscaleInverted
+        ) {
+            // W3C `color` blend with an achromatic source preserves the
+            // backdrop luminosity while replacing hue/saturation: true
+            // grayscale, not a translucent grey veil.
+            overlay(Mix::Color, Color::WHITE);
+        }
+        if matches!(
+            self.visual_accessibility.color_filter,
+            DesktopColorFilter::Inverted | DesktopColorFilter::GrayscaleInverted
+        ) {
+            // Difference against white is the exact per-channel inverse.
+            overlay(Mix::Difference, Color::WHITE);
+        }
+    }
+
+    fn apply_visual_accessibility(&self, scene: &mut Scene) {
+        let bounds = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
+        self.apply_color_filter(scene, bounds);
+        let pointer = self.host.pointer_position();
+        if self.visual_accessibility.magnifier_zoom > 1
+            && let Some(pointer) = pointer
+        {
+            // A lens deliberately leaves the underlying coordinate space
+            // untouched: its centre is the real hardware pointer and hence
+            // the target under the centre remains exactly clickable.
+            let source = scene.clone();
+            let lens_w = 420.0_f64.min(self.viewport.0 * 0.7);
+            let lens_h = 280.0_f64.min(self.viewport.1 * 0.7);
+            let lens = Rect::from_center_size(pointer, (lens_w, lens_h));
+            let clip = RoundedRect::from_rect(lens, 18.0);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                Affine::IDENTITY,
+                &clip,
+            );
+            let z = f64::from(self.visual_accessibility.magnifier_zoom);
+            let magnify = Affine::translate((pointer.x, pointer.y))
+                * Affine::scale(z)
+                * Affine::translate((-pointer.x, -pointer.y));
+            scene.append(&source, Some(magnify));
+            scene.pop_layer();
+            scene.stroke(
+                &Stroke::new(3.0),
+                Affine::IDENTITY,
+                self.theme.border_focus,
+                None,
+                &clip,
+            );
+        }
+        if self.visual_accessibility.cursor_crosshair
+            && let Some(pointer) = pointer
+        {
+            let color = self.theme.border_focus;
+            scene.stroke(
+                &Stroke::new(2.0),
+                Affine::IDENTITY,
+                color,
+                None,
+                &vello::kurbo::Line::new((0.0, pointer.y), (self.viewport.0, pointer.y)),
+            );
+            scene.stroke(
+                &Stroke::new(2.0),
+                Affine::IDENTITY,
+                color,
+                None,
+                &vello::kurbo::Line::new((pointer.x, 0.0), (pointer.x, self.viewport.1)),
+            );
+        }
     }
 
     fn refresh_display_comfort(&mut self) {
@@ -481,6 +626,7 @@ impl FrameBuilder {
             2_000.0..=6_500.0,
             3_700.0,
         ) as u32;
+        self.visual_accessibility = VisualAccessibility::load();
     }
 
     fn refresh_configured_theme(&mut self) {

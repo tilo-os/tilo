@@ -73,7 +73,22 @@ printer which answered but omitted supplies. Settings says "not reported" or
   contacts remain unavailable until there is a verified Contacts identity
   source.
 - accessibility controls are writable only when a compositor or service applies
-  them. High contrast, reduced motion, text size, large cursor, sticky keys and
-  slow keys have consumers. Colour filters, magnification, caret aids, switch
-  control, captions, visual alerts, screen reader and OSK are capability rows
-  until their secure end-to-end paths exist.
+  them. The compositor owns grayscale/invert output filters, the pointer-centred
+  magnifier lens, pointer guides, large cursor, sticky/slow keys and configurable
+  two-switch scanning. The shared toolkit owns exact wider text carets. Apps own
+  semantic narration and apply the selected speech rate/voice through Speech
+  Dispatcher or eSpeak NG; shell chrome owns visual alerts; the signed OSK owns
+  its private input-method client. Settings is policy UI for all of these, not a
+  second runtime.
+- the magnifier is deliberately labelled a **lens**. Its centre follows the real
+  hardware pointer and the unscaled scene remains the hit-test authority, so the
+  item at the lens centre is exactly the item clicked. Full-screen zoom is not
+  offered until every client/shell coordinate and hardware cursor can share an
+  inverse transform.
+- Vello's final-scene blend modes provide exact W3C grayscale and white-difference
+  inversion, but no general colour matrix. Protan/deutan/tritan filters therefore
+  remain absent rather than shipping approximate or misleading transforms.
+- live captions remain a read-only unavailable capability until the image ships a
+  local speech-to-text engine and model lifecycle. No caption preference is
+  persisted today. Arbitrary Wayland-client caret/focus highlighting likewise
+  awaits a trusted geometry protocol; qOS toolkit text carets already work.

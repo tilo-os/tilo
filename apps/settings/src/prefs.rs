@@ -510,10 +510,168 @@ pub struct AccessibilityPrefs {
     /// Flash the screen instead of (or alongside) an audible alert.
     #[serde(default)]
     pub visual_alerts: bool,
+    /// Whole-desktop colour transform owned by the compositor.
+    #[serde(default)]
+    pub color_filter: ColorFilter,
+    /// Pointer-following lens magnification. `1` means disabled.
+    #[serde(default = "default_magnifier_zoom")]
+    pub magnifier_zoom: u8,
+    /// Paint full-screen guide lines through the hardware pointer.
+    #[serde(default)]
+    pub cursor_crosshair: bool,
+    /// Make text insertion carets wider in every qOS toolkit application.
+    #[serde(default)]
+    pub thick_text_caret: bool,
+    /// Turn F6/F7 switch signals into standard scan-next/activate actions.
+    #[serde(default)]
+    pub switch_control: bool,
+    /// Which ordinary function-key pair a two-switch device emits.
+    #[serde(default)]
+    pub switch_key_pair: SwitchKeyPair,
+    /// Automatic scan period in milliseconds; zero means manual two-switch scanning.
+    #[serde(default)]
+    pub switch_scan_ms: u16,
+    /// Normalised screen-reader speech rate, where 100 is engine default.
+    #[serde(default = "default_screen_reader_rate")]
+    pub screen_reader_rate: u16,
+    /// Backend-neutral voice/language preset.
+    #[serde(default)]
+    pub screen_reader_voice: ScreenReaderVoice,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorFilter {
+    #[default]
+    None,
+    Grayscale,
+    Inverted,
+    GrayscaleInverted,
+}
+
+impl ColorFilter {
+    pub const OPTIONS: &'static [&'static str] =
+        &["Off", "Grayscale", "Inverted", "Grayscale + inverted"];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "Off",
+            Self::Grayscale => "Grayscale",
+            Self::Inverted => "Inverted",
+            Self::GrayscaleInverted => "Grayscale + inverted",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Some(match label {
+            "Off" => Self::None,
+            "Grayscale" => Self::Grayscale,
+            "Inverted" => Self::Inverted,
+            "Grayscale + inverted" => Self::GrayscaleInverted,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenReaderVoice {
+    #[default]
+    System,
+    EnglishUs,
+    EnglishGb,
+    German,
+    French,
+    Spanish,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwitchKeyPair {
+    #[default]
+    F6F7,
+    F9F10,
+    Digits12,
+}
+
+impl SwitchKeyPair {
+    pub const OPTIONS: &'static [&'static str] = &["F6 / F7", "F9 / F10", "1 / 2"];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::F6F7 => "F6 / F7",
+            Self::F9F10 => "F9 / F10",
+            Self::Digits12 => "1 / 2",
+        }
+    }
+    pub fn from_label(label: &str) -> Option<Self> {
+        Some(match label {
+            "F6 / F7" => Self::F6F7,
+            "F9 / F10" => Self::F9F10,
+            "1 / 2" => Self::Digits12,
+            _ => return None,
+        })
+    }
+}
+
+impl ScreenReaderVoice {
+    pub const OPTIONS: &'static [&'static str] = &[
+        "System voice",
+        "English (US)",
+        "English (UK)",
+        "German",
+        "French",
+        "Spanish",
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System voice",
+            Self::EnglishUs => "English (US)",
+            Self::EnglishGb => "English (UK)",
+            Self::German => "German",
+            Self::French => "French",
+            Self::Spanish => "Spanish",
+        }
+    }
+
+    pub fn backend_id(self) -> &'static str {
+        match self {
+            Self::System => "",
+            Self::EnglishUs => "en-us",
+            Self::EnglishGb => "en-gb",
+            Self::German => "de",
+            Self::French => "fr",
+            Self::Spanish => "es",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::OPTIONS
+            .iter()
+            .position(|item| *item == label)
+            .map(|i| {
+                [
+                    Self::System,
+                    Self::EnglishUs,
+                    Self::EnglishGb,
+                    Self::German,
+                    Self::French,
+                    Self::Spanish,
+                ][i]
+            })
+    }
 }
 
 fn default_cursor_size() -> u32 {
     24
+}
+
+fn default_magnifier_zoom() -> u8 {
+    1
+}
+
+fn default_screen_reader_rate() -> u16 {
+    100
 }
 
 impl Default for AccessibilityPrefs {
@@ -526,6 +684,15 @@ impl Default for AccessibilityPrefs {
             sticky_keys: false,
             slow_keys: false,
             visual_alerts: false,
+            color_filter: ColorFilter::None,
+            magnifier_zoom: default_magnifier_zoom(),
+            cursor_crosshair: false,
+            thick_text_caret: false,
+            switch_control: false,
+            switch_key_pair: SwitchKeyPair::F6F7,
+            switch_scan_ms: 0,
+            screen_reader_rate: default_screen_reader_rate(),
+            screen_reader_voice: ScreenReaderVoice::System,
         }
     }
 }
