@@ -483,6 +483,15 @@ impl ShellNetwork {
         self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
     }
 
+    fn publish_shell_checkpoint(&self, msg: NeighbourMsg) -> bool {
+        let ws = self.topic_for_message(&msg);
+        self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::PublishCheckpoint { ws, msg })
+                .is_ok()
+    }
+
     /// Shared handle to the inbound-presence buffer. The shell's
     /// per-frame drainer swaps the `Vec` out under the lock and writes
     /// each entry into `PresenceCtx::remote_cursors`.
@@ -1163,7 +1172,7 @@ impl ShellNetwork {
                         })
                         .unwrap_or_default();
                     if !changes.is_empty() {
-                        let _ = self.publish_message(NeighbourMsg::SyncResp {
+                        let _ = self.publish_shell_checkpoint(NeighbourMsg::SyncResp {
                             changes,
                             room: room.to_string(),
                         });
@@ -1622,7 +1631,7 @@ mod tests {
 
         assert!(matches!(
             cmd_rx.try_recv(),
-            Ok(NetCmd::Publish {
+            Ok(NetCmd::PublishCheckpoint {
                 ws,
                 msg: NeighbourMsg::SyncResp { ref room, .. },
             }) if ws == topic && room == &room_id.to_string()
