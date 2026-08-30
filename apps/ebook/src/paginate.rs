@@ -118,6 +118,7 @@ pub struct LayoutKey {
     pub height_q: i32,
     pub scale_q: i32,
     pub spacing_q: i32,
+    pub composition: bool,
     /// Signature of the selected font (family + per-face size multiplier), so a
     /// font change relays out.
     pub font_sig: u64,
@@ -137,6 +138,7 @@ impl LayoutKey {
             height_q: content_h.round() as i32,
             scale_q: (s.font_scale * 100.0).round() as i32,
             spacing_q: (s.line_spacing * 100.0).round() as i32,
+            composition: s.composition.justified(),
             font_sig,
         }
     }
@@ -397,7 +399,11 @@ pub fn layout_chapter(
                 let char_len = w.chars().count();
                 canon.push_str(w);
                 char_pos += char_len;
-                let hyphen_boundaries = discretionary_hyphen_breaks(w, language);
+                let hyphen_boundaries = if settings.composition.justified() {
+                    discretionary_hyphen_breaks(w, language)
+                } else {
+                    Vec::new()
+                };
                 let unicode_boundaries: Vec<_> = line_break_opportunities(w)
                     .map(|(byte, _)| byte)
                     .filter(|&byte| byte > 0 && byte < w.len())
@@ -428,7 +434,8 @@ pub fn layout_chapter(
                         fragment_index != 0 && hyphen_boundaries.binary_search(&byte_start).is_ok();
                     let natural_break_before = fragment_index != 0
                         && unicode_boundaries.binary_search(&byte_start).is_ok();
-                    let stretch_before = if natural_break_before {
+                    let stretch_before = if natural_break_before && settings.composition.justified()
+                    {
                         script_stretch_before(w, byte_start, st.size)
                     } else {
                         0.0
@@ -442,7 +449,11 @@ pub fn layout_chapter(
                             .chars()
                             .last()
                             .map(|character| {
-                                let fraction = punctuation_protrusion(character);
+                                let fraction = if settings.composition.justified() {
+                                    punctuation_protrusion(character)
+                                } else {
+                                    0.0
+                                };
                                 if fraction == 0.0 {
                                     0.0
                                 } else {
@@ -461,7 +472,10 @@ pub fn layout_chapter(
                     } else {
                         0.0
                     };
-                    let start_protrusion = if fragment_index == 0 && opening_fraction > 0.0 {
+                    let start_protrusion = if settings.composition.justified()
+                        && fragment_index == 0
+                        && opening_fraction > 0.0
+                    {
                         let character = fragment.chars().next().unwrap();
                         tr.measure_font(
                             &character.to_string(),
@@ -531,7 +545,11 @@ pub fn layout_chapter(
             })
             .collect();
         let mut options = ParagraphOptions::new(text_width);
-        options.justify = matches!(st.kind, LayoutKind::Paragraph | LayoutKind::Quote);
+        options.justify = settings.composition.justified()
+            && matches!(st.kind, LayoutKind::Paragraph | LayoutKind::Quote);
+        if !settings.composition.justified() {
+            options.max_glyph_expansion = 0.0;
+        }
         let composed = compose_paragraph(&boxes, options);
         for (line_idx, line) in composed.iter().enumerate() {
             let mut runs: Vec<LineRun> = Vec::with_capacity(line.end - line.start);
@@ -783,7 +801,7 @@ fn measure_space(tr: &mut TextRenderer, size: f32, family: &FontChoice) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Block, Span};
+    use crate::model::{Block, CompositionStyle, Span};
 
     fn para(text: &str) -> Block {
         Block::Paragraph {
@@ -866,6 +884,52 @@ mod tests {
         // A different font signature (family/size-mult) also relays out.
         let c = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 99);
         assert_ne!(a, c, "font change relays out");
+        let ragged = Settings {
+            composition: CompositionStyle::Ragged,
+            ..Default::default()
+        };
+        let d = LayoutKey::new(0, 300.0, 200.0, &ragged, 0);
+        assert_ne!(a, d, "composition change relays out");
+    }
+
+    #[test]
+    fn ragged_composition_disables_book_microtypography() {
+        let mut tr = TextRenderer::new();
+        let settings = Settings {
+            composition: CompositionStyle::Ragged,
+            ..Default::default()
+        };
+        let layout = layout_chapter(
+            &mut tr,
+            &[para(
+                "“Characteristically typographic paragraphs demonstrate hyphenation and spacing.”",
+            )],
+            145.0,
+            600.0,
+            &settings,
+            0,
+            "en-US",
+            &FontChoice::Serif,
+            1.0,
+            0,
+        );
+        let lines = &layout.blocks[0].lines;
+        assert!(
+            lines.len() >= 2,
+            "fixture wraps across several ragged lines"
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| &line.runs)
+                .all(|run| !run.display_text.ends_with('-')),
+            "ragged composition inserts no discretionary hyphens"
+        );
+        assert!(
+            lines.iter().all(|line| line.glyph_scale == 1.0),
+            "ragged composition does not expand or condense glyphs"
+        );
+        assert_eq!(lines[0].runs[0].x, 0.0, "opening punctuation does not hang");
     }
 
     #[test]
