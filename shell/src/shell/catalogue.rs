@@ -73,6 +73,23 @@ static REFRESHING: AtomicBool = AtomicBool::new(false);
 /// Per package, so the frame thread can retire it when the app starts.
 static PENDING_NOTICES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
+/// Lock [`CATALOGUE`], recovering from poisoning instead of panicking:
+/// a panic while holding this lock doesn't corrupt the cached listing
+/// it protects, so a poisoned lock is treated the same as a healthy
+/// one rather than wedging every future caller in this process.
+fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>, Instant)>> {
+    CATALOGUE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// [`lock_catalogue`], for [`PENDING_NOTICES`].
+fn lock_pending_notices() -> std::sync::MutexGuard<'static, Vec<(String, u64)>> {
+    PENDING_NOTICES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The same search the launcher does for `qos-launcher`.
 fn catalogue_bin_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -99,6 +116,11 @@ pub fn resolve_catalogue_bin() -> Option<PathBuf> {
 
 /// Split out from the subprocess so the wire contract is assertable
 /// without spawning anything.
+///
+/// # Errors
+///
+/// Returns the underlying parse error (as a message) if `stdout` is
+/// not valid JSON or doesn't match [`CatalogueListing`]'s shape.
 pub fn parse_listing(stdout: &str) -> Result<CatalogueListing, String> {
     serde_json::from_str(stdout).map_err(|e| e.to_string())
 }
@@ -107,7 +129,7 @@ pub fn parse_listing(stdout: &str) -> Result<CatalogueListing, String> {
 /// answers with whatever it currently holds.
 pub fn available_apps() -> Vec<CatalogueApp> {
     let (apps, needs_refresh) = {
-        let cache = CATALOGUE.lock().expect("CATALOGUE poisoned");
+        let cache = lock_catalogue();
         match cache.as_ref() {
             Some((apps, at)) => (apps.clone(), at.elapsed() >= CATALOGUE_TTL),
             None => (Vec::new(), true),
@@ -123,12 +145,12 @@ pub fn available_apps() -> Vec<CatalogueApp> {
 /// Called after an install so the app that just arrived stops being
 /// offered as available.
 pub fn invalidate() {
-    *CATALOGUE.lock().expect("CATALOGUE poisoned") = None;
+    *lock_catalogue() = None;
 }
 
 /// For tests, which must not depend on a registry being reachable.
 pub fn seed_for_test(apps: Vec<CatalogueApp>) {
-    *CATALOGUE.lock().expect("CATALOGUE poisoned") = Some((apps, Instant::now()));
+    *lock_catalogue() = Some((apps, Instant::now()));
 }
 
 /// A failure caches an *empty* list rather than leaving the cache cold
@@ -140,7 +162,7 @@ fn schedule_refresh() {
         return;
     }
     let Some(bin) = resolve_catalogue_bin() else {
-        *CATALOGUE.lock().expect("CATALOGUE poisoned") = Some((Vec::new(), Instant::now()));
+        *lock_catalogue() = Some((Vec::new(), Instant::now()));
         REFRESHING.store(false, Ordering::SeqCst);
         return;
     };
@@ -192,7 +214,7 @@ fn schedule_refresh() {
                     .checked_sub(CATALOGUE_TTL.saturating_sub(FAILED_REFRESH_BACKOFF))
                     .unwrap_or_else(Instant::now)
             };
-            *CATALOGUE.lock().expect("CATALOGUE poisoned") = Some((apps, stamped));
+            *lock_catalogue() = Some((apps, stamped));
             REFRESHING.store(false, Ordering::SeqCst);
         });
     if spawned.is_err() {
@@ -205,7 +227,7 @@ fn schedule_refresh() {
 // ---------------------------------------------------------------------
 
 pub fn note_pending_notice(package_id: &str, notification_id: u64) {
-    let mut pending = PENDING_NOTICES.lock().expect("PENDING_NOTICES poisoned");
+    let mut pending = lock_pending_notices();
     pending.retain(|(id, _)| id != package_id);
     pending.push((package_id.to_string(), notification_id));
 }
@@ -213,15 +235,12 @@ pub fn note_pending_notice(package_id: &str, notification_id: u64) {
 /// A peek, not a take — the frame thread walks this every frame.
 /// Retirement goes through [`take_pending_notice`].
 pub fn pending_notices() -> Vec<(String, u64)> {
-    PENDING_NOTICES
-        .lock()
-        .expect("PENDING_NOTICES poisoned")
-        .clone()
+    lock_pending_notices().clone()
 }
 
 /// So the "opening" toast is retired by the app appearing, not a timer.
 pub fn take_pending_notice(package_id: &str) -> Option<u64> {
-    let mut pending = PENDING_NOTICES.lock().expect("PENDING_NOTICES poisoned");
+    let mut pending = lock_pending_notices();
     let idx = pending.iter().position(|(id, _)| id == package_id)?;
     Some(pending.remove(idx).1)
 }
