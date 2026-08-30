@@ -11,7 +11,7 @@ use quick_xml::reader::Reader;
 /// Parse one `<text:note>` element into a fresh note, importing its body paragraphs
 /// into blocks; returns the new note id. Citation text is recomputed by renderers,
 /// not modeled here.
-pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
+pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> String {
     let kind = note_class(raw).map_or(NoteKind::Footnote, |c| NoteKind::from_str(&c));
     let note_id = doc.insert_note(kind);
 
@@ -37,15 +37,11 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
             && !txt.is_empty()
         {
             doc.splice_note_text(&note_id, b, *cur_len, 0, txt);
-            *cur_len += txt.chars().count();
+            *cur_len = cur_len.saturating_add(txt.chars().count());
         }
     };
 
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"text:note-body" => in_body = true,
@@ -80,9 +76,7 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
             Event::Text(t) if in_body && cur.is_some() => {
                 if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
-                    if !txt.is_empty()
-                        && !(txt.chars().all(char::is_whitespace) && txt.contains(['\n', '\r']))
-                    {
+                    if !txt.is_empty() && !super::content::is_layout_whitespace(&txt) {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
                 }
@@ -96,7 +90,7 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> Option<String> {
             _ => {}
         }
     }
-    Some(note_id)
+    note_id
 }
 
 /// Read the `text:note-class` attribute from a raw `<text:note …>` open tag.

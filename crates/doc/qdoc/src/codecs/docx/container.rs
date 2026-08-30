@@ -18,6 +18,10 @@ pub struct DocxContainer {
 impl DocxContainer {
     /// Read an untrusted `.docx` package, bounded against zip bombs and rejecting
     /// DTD-bearing XML parts (XXE) via [`read_zip_parts`].
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if `bytes` are not a readable zip archive, if the
+    /// archive exceeds [`ZipLimits`], or if an XML part declares a DTD.
     pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
         let parts = read_zip_parts(bytes, &ZipLimits::default())?;
         Ok(Self { parts })
@@ -39,6 +43,11 @@ impl DocxContainer {
         }
     }
 
+    /// Serialise the parts back into a package.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if the zip writer rejects a part name or fails to
+    /// write its bytes.
     pub fn write(&self) -> Result<Vec<u8>, CodecError> {
         let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
         let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);

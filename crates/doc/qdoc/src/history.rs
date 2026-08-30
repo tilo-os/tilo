@@ -30,7 +30,7 @@ pub struct VersionMeta {
 pub fn commit_stamped(doc: &mut AutoCommit) -> Option<ChangeHash> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
     commit_stamped_at(doc, secs)
 }
 
@@ -69,8 +69,9 @@ pub fn is_schema_genesis(meta: &VersionMeta) -> bool {
 /// a dependency). Lets a caller address a historical version with `AutoCommit::diff` instead of only with `materialize_at`.
 pub fn prefix_heads(doc: &mut AutoCommit, upto: usize) -> Vec<ChangeHash> {
     let changes = doc.get_changes(&[]);
-    let take = (upto + 1).min(changes.len());
-    let prefix = &changes[..take];
+    let take = upto.saturating_add(1).min(changes.len());
+    // `take` is clamped to the length, so the prefix always exists.
+    let prefix = changes.get(..take).unwrap_or(&[]);
     let depended_on: std::collections::HashSet<ChangeHash> = prefix
         .iter()
         .flat_map(|c| c.deps().iter().copied())
@@ -83,9 +84,13 @@ pub fn prefix_heads(doc: &mut AutoCommit, upto: usize) -> Vec<ChangeHash> {
 }
 
 /// Reconstruct the document as of `version` by replaying the first `version + 1` changes into a fresh replica (`get_changes` returns a valid causal order, so any prefix is dependency-closed).
+///
+/// # Errors
+/// Returns [`DocError`] if automerge rejects the replayed prefix, or if the
+/// rebuilt replica has no readable document root.
 pub fn materialize_at(doc: &mut AutoCommit, version: usize) -> Result<DocSnapshot, DocError> {
     let changes = doc.get_changes(&[]);
-    let take = (version + 1).min(changes.len());
+    let take = version.saturating_add(1).min(changes.len());
     let mut rebuilt = AutoCommit::new();
     rebuilt
         .apply_changes(changes.into_iter().take(take))
