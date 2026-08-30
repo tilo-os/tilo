@@ -36,6 +36,8 @@ use ui::widget::{
 use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
+use crate::shell::file_picker_overlay::FilePickerOverlay;
+pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::notification::NotificationStack;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
@@ -225,13 +227,10 @@ pub struct ShellOverlayHost {
     /// The portal's prompt queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
-    /// The portal's file-picker queue. Drained every frame into
-    /// [`Self::file_picker`].
-    portal_pickers: Option<crate::portal::FilePickerQueue>,
-    /// The live file-chooser dialog, and the request it answers. One at
-    /// a time: a second `OpenFile` while a dialog is up queues instead
-    /// of stacking two modals.
-    file_picker: Option<Box<ActiveFilePicker>>,
+    /// Owns the portal file chooser's queue, modal state, rendering and
+    /// exclusive input routing. Keeping those together prevents the host
+    /// from growing another set of loosely-coupled modal fields.
+    file_picker_overlay: FilePickerOverlay,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
     /// surfaced. Off by default; set via `--enable-peer-sync` or
     /// [`Self::with_peer_sync_enabled`].
@@ -950,8 +949,7 @@ impl ShellOverlayHost {
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
             portal_prompts: None,
-            portal_pickers: None,
-            file_picker: None,
+            file_picker_overlay: FilePickerOverlay::default(),
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
@@ -2913,91 +2911,24 @@ impl ShellOverlayHost {
         pickers: crate::portal::FilePickerQueue,
     ) {
         self.portal_prompts = Some(prompts);
-        self.portal_pickers = Some(pickers);
+        self.file_picker_overlay.set_queue(pickers);
     }
 
     /// The live file-chooser dialog, if one is up. For the frame
     /// builder's widget walk and for tests.
     pub fn file_picker(&self) -> Option<&ui::widget::FilePicker> {
-        self.file_picker.as_ref().map(|a| &a.widget)
+        self.file_picker_overlay.widget()
     }
 
     pub fn file_picker_mut(&mut self) -> Option<&mut ui::widget::FilePicker> {
-        self.file_picker.as_mut().map(|a| &mut a.widget)
+        self.file_picker_overlay.widget_mut()
     }
 
     /// Mounts queued file-chooser dialogs and resolves whichever one the
     /// user just finished. Returns whether anything changed, so the caller
     /// can repaint.
     pub fn pump_file_picker(&mut self) -> bool {
-        let mut dirty = false;
-
-        // Step 1 — resolve a finished dialog. `take_outcome` drains, so
-        // this runs at most once per decision.
-        if let Some(active) = self.file_picker.as_mut()
-            && let Some(outcome) = active.widget.take_outcome()
-        {
-            let mut active = self.file_picker.take().expect("just checked");
-            let picked = match outcome {
-                ui::widget::FilePickerOutcome::Selected(paths) => Some(paths),
-                ui::widget::FilePickerOutcome::Cancelled => None,
-            };
-            active.answer(picked);
-            dirty = true;
-        }
-
-        // Step 2 — mount the next queued request, if the floor is free.
-        let Some(queue) = self.portal_pickers.as_ref() else {
-            return dirty;
-        };
-        let queued = queue.drain();
-        if queued.is_empty() {
-            return dirty;
-        }
-        for req in queued {
-            if self.file_picker.is_some() {
-                // Already showing a dialog — answer cancelled rather than
-                // queue a modal the user would meet minutes later with no
-                // idea what asked for it.
-                let _ = req.reply.send(None);
-                continue;
-            }
-            let scope = self.picker_scope_for(&req.caller);
-            let active = ActiveFilePicker::mount(req, scope);
-            // Logged so a file dialog with no record of who asked for it
-            // isn't undebuggable after the fact.
-            tracing::info!(
-                app = %active.app_id,
-                dir = %active.widget.current_dir().display(),
-                "portal: file dialog opened"
-            );
-            self.file_picker = Some(Box::new(active));
-            dirty = true;
-        }
-        dirty
-    }
-
-    /// Where the dialog for `caller` may browse: user directories plus any
-    /// filesystem paths this workspace already granted the app.
-    fn picker_scope_for(&self, caller: &crate::portal::PortalCaller) -> crate::portal::PickerScope {
-        let base = crate::portal::PickerScope::for_user();
-        let Some(chrome) = self.chrome.as_ref() else {
-            return base;
-        };
-        let st = chrome.borrow();
-        let tree = st.tree();
-        let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
-            return base;
-        };
-        let granted: Vec<std::path::PathBuf> = ws
-            .app_capabilities(&caller.app_id)
-            .into_iter()
-            .filter_map(|cap| match &cap.scope {
-                collab_types::caps::Scope::FsPath(p) => Some(std::path::PathBuf::from(p)),
-                _ => None,
-            })
-            .collect();
-        base.with_granted_paths(granted)
+        self.file_picker_overlay.pump(self.chrome.as_ref())
     }
 
     /// Moves buffered portal prompts onto the chrome's queue for
@@ -5778,13 +5709,8 @@ impl Widget for ShellOverlayHost {
         // answer, and `handle_event` absorbs every event), and drawn by
         // the compositor rather than the requesting app so it can't be
         // drawn over, read, or dismissed by that app.
-        if let Some(active) = self.file_picker.as_mut() {
-            fill_scrim(scene, transform, self.rect, MODAL_SCRIM_ALPHA, theme);
-            active.widget.set_rect(file_picker_rect(self.rect));
-            active
-                .widget
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.file_picker_overlay
+            .draw(self.rect, scene, transform, text_renderer, theme, presence);
 
         // Above everything, including modals — a physical key works
         // while a modal is up, so its readout must too.
@@ -5832,25 +5758,16 @@ impl Widget for ShellOverlayHost {
         // Runs before everything and absorbs every event: genuinely
         // modal (a D-Bus method in another process is parked on the
         // answer), and a typed filename shares characters with chords.
-        if self.file_picker.is_some() {
-            let picker_rect = file_picker_rect(self.rect);
-            if let Some(active) = self.file_picker.as_mut() {
-                active.widget.set_rect(picker_rect);
-                let mut tmp_taffy = TaffyTree::<()>::new();
-                let tmp_node = tmp_taffy.new_leaf(Default::default()).unwrap();
-                active.widget.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    tmp_node,
-                    &tmp_taffy,
-                );
-            }
-            *handled = true;
+        if self.file_picker_overlay.handle_event(
+            self.rect,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+        ) {
             return;
         }
 
@@ -7707,24 +7624,6 @@ fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
     (alpha, dy, scale)
 }
 
-/// Centre the file-chooser dialog in `viewport`, sized as a clamped
-/// fraction so it stays usable small and doesn't wall a large output.
-pub fn file_picker_rect(viewport: Rect) -> Rect {
-    const MIN_W: f64 = 420.0;
-    const MIN_H: f64 = 320.0;
-    const MAX_W: f64 = 900.0;
-    const MAX_H: f64 = 640.0;
-    let w = (viewport.width() * 0.62)
-        .clamp(MIN_W, MAX_W)
-        .min(viewport.width());
-    let h = (viewport.height() * 0.72)
-        .clamp(MIN_H, MAX_H)
-        .min(viewport.height());
-    let x0 = viewport.x0 + (viewport.width() - w) / 2.0;
-    let y0 = viewport.y0 + (viewport.height() - h) / 2.0;
-    Rect::new(x0, y0, x0 + w, y0 + h)
-}
-
 /// Map the prompt widget's choice onto the portal's outcome vocabulary.
 /// Two enums for one decision because they belong to different layers;
 /// keeping the mapping in one place stops them drifting.
@@ -7735,85 +7634,6 @@ fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcom
         PromptChoice::Session => PromptOutcome::AllowSession,
         PromptChoice::Always => PromptOutcome::AllowAlways,
         PromptChoice::Deny => PromptOutcome::Deny,
-    }
-}
-
-/// A file-chooser dialog on screen, and the portal request it answers.
-/// The reply channel is the point: dropping this without calling
-/// [`Self::answer`] drops the sender, which the `FileChooser` backend
-/// reads as "cancelled" — so a dialog that disappears for any reason
-/// fails closed and releases the caller instead of stranding it.
-pub(crate) struct ActiveFilePicker {
-    pub(crate) widget: ui::widget::FilePicker,
-    /// Who asked, kept for logging/attribution without re-reading the
-    /// consumed request.
-    pub(crate) app_id: crate::shell::state::AppId,
-    /// Whether the app asked for more than one path. Enforced here, not
-    /// in the widget, since `OpenFile` vs `OpenFiles` is a portal-level
-    /// distinction and the widget is shared with non-portal callers.
-    multiple: bool,
-    reply: Option<tokio::sync::oneshot::Sender<Option<Vec<std::path::PathBuf>>>>,
-}
-
-impl ActiveFilePicker {
-    /// Build the dialog for `req`. Title, filters and suggested filename
-    /// are the app's to choose (presentation); where the dialog opens
-    /// and how far it can browse come from
-    /// [`crate::portal::PickerScope`] instead — an app that could aim
-    /// the dialog could use it to learn what exists outside its sandbox.
-    fn mount(req: crate::portal::FilePickerRequest, scope: crate::portal::PickerScope) -> Self {
-        use ui::widget::file_picker::FileFilter;
-        use ui::widget::{FilePicker, FilePickerMode};
-
-        let mut filters: Vec<FileFilter> = req
-            .filters
-            .iter()
-            .filter(|f| !f.is_catch_all())
-            .map(|f| {
-                let exts: Vec<&str> = f
-                    .extensions
-                    .iter()
-                    .map(std::string::String::as_str)
-                    .collect();
-                FileFilter::new(f.label.clone(), &exts)
-            })
-            .collect();
-        // "All files" always last: a filter list with no escape hatch
-        // can't open a file whose extension the app didn't anticipate.
-        filters.push(FileFilter::all());
-
-        let mode = if req.save {
-            FilePickerMode::Save
-        } else {
-            FilePickerMode::Open
-        };
-        let mut widget = FilePicker::new(req.title.clone(), &scope.initial_dir, scope.roots)
-            .with_mode(mode)
-            .with_filters(filters);
-        if let Some(name) = req.current_name.as_deref() {
-            widget = widget.with_filename(name);
-        }
-        Self {
-            widget,
-            app_id: req.caller.app_id.clone(),
-            multiple: req.multiple,
-            reply: Some(req.reply),
-        }
-    }
-
-    /// Release the blocked portal call. An `OpenFile` caller gets one
-    /// path even if the user ctrl-clicked several, since the dialog is
-    /// shared and permits multi-select regardless of what was asked.
-    fn answer(&mut self, picked: Option<Vec<std::path::PathBuf>>) {
-        let picked = picked.map(|mut paths| {
-            if !self.multiple {
-                paths.truncate(1);
-            }
-            paths
-        });
-        if let Some(tx) = self.reply.take() {
-            let _ = tx.send(picked);
-        }
     }
 }
 
@@ -8100,7 +7920,13 @@ fn draw_modal_scrim_at(
 /// Paint `rect` in the theme's scrim hue at `strength`. Uses
 /// `surfaces.scrim` rather than a literal black, since a light theme's
 /// scrim is a different colour from a dark theme's.
-fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, theme: &Theme) {
+pub(crate) fn fill_scrim(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    strength: f32,
+    theme: &Theme,
+) {
     let alpha = (strength.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8;
     if alpha == 0 {
         return;
