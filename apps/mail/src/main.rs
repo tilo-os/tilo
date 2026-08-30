@@ -23,6 +23,12 @@ fn scenario(args: &LaunchArgs) -> &str {
     args.scenario.as_deref().unwrap_or("wide")
 }
 
+// The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
+// genuinely can fail, so the alias is fallible even where this one isn't.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(mail::app_root_scenario(scenario(args)))
 }
@@ -50,5 +56,5 @@ pub fn main() {
             ])
             .shot_viewport(shot_viewport)
             .configure_app(|app| mail::actions::register(app.action_registry_mut())),
-    )
+    );
 }
