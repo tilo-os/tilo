@@ -22,6 +22,13 @@ const KNOB_RADIUS: f64 = 10.0;
 const KNOB_RADIUS_HOVER_SCALE: f64 = 1.08;
 const KNOB_RADIUS_PRESS_SCALE: f64 = 1.15;
 
+// Four independent widget-state flags (hover, drag, focus, enabled) that
+// can co-occur in any combination — not a state machine an enum would
+// clarify.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent widget-state flags, not related toggles"
+)]
 pub struct Slider {
     _id: String,
     rect: Rect,
@@ -75,6 +82,7 @@ impl Slider {
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
@@ -84,12 +92,14 @@ impl Slider {
     /// custom id the slider reports `"slider"` (the role-style default);
     /// callers with more than one slider in the same frame can disambiguate
     /// them with `with_id("volume")` etc.
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id_override = Some(id.to_string());
         self
     }
 
     /// Gate this widget behind a permission scope.
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -97,6 +107,7 @@ impl Slider {
 
     /// Set the enabled state at build time. A disabled slider is skipped
     /// by focus, rejects input and renders dimmed. Default `true`.
+    #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -104,6 +115,7 @@ impl Slider {
 
     /// Give a label-less slider a spoken name so a screen reader announces
     /// what it adjusts alongside the value.
+    #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
@@ -133,94 +145,9 @@ impl Slider {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_hovered_for_test(&mut self, hovered: bool) {
-        self.is_hovered = hovered;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_dragging_for_test(&mut self, dragging: bool) {
-        self.is_dragging = dragging;
-    }
-
-    /// Commit a new value to the CRDT iff it differs from the cached
-    /// `value` by more than a frame-of-noise epsilon. Returns `true` if
-    /// the commit happened so callers can flag the event as handled.
-    fn commit_value(&mut self, new_value: f64, state: &mut AutoCommit, root: &ObjId) -> bool {
-        if (new_value - self.value).abs() <= 0.001 {
-            return false;
-        }
-        self.value = new_value;
-        let _ = state.put(
-            root,
-            self.on_change_path.as_str(),
-            automerge::ScalarValue::F64(self.value),
-        );
-        true
-    }
-}
-
-impl Widget for Slider {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
-            && let Value::Scalar(s) = val
-        {
-            match s.as_ref() {
-                automerge::ScalarValue::F64(f) => self.value = *f,
-                automerge::ScalarValue::Int(i) => self.value = *i as f64,
-                automerge::ScalarValue::Uint(u) => self.value = *u as f64,
-                _ => {}
-            }
-        }
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(30.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
-        // Disabled widgets paint their (forced-idle) look under a reduced
-        // group opacity so they read as non-interactive.
-        let disabled = !self.enabled;
-        if disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &self.rect,
-            );
-        }
+    /// Paints the track (background + active fill) and returns its rect,
+    /// so `draw_knob` can position the knob along it.
+    fn draw_track(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Rect {
         let track_height = 6.0;
         let track_rect = Rect::new(
             self.rect.x0 + TRACK_PADDING,
@@ -259,8 +186,13 @@ impl Widget for Slider {
             &active_track_shape,
         );
 
-        // Radius scales with state so hover/press are obvious even before
-        // you read the colours.
+        track_rect
+    }
+
+    /// Paints the knob (fill/border, drag halo, focus ring) at its position
+    /// along `track_rect`. Radius scales with state so hover/press are
+    /// obvious even before you read the colours.
+    fn draw_knob(&self, scene: &mut Scene, transform: Affine, theme: &Theme, track_rect: Rect) {
         let knob_radius = self.knob_radius_for_state();
         let knob_x = track_rect.x0 + self.value * track_rect.width();
         let knob_y = self.rect.y0 + self.rect.height() / 2.0;
@@ -324,7 +256,110 @@ impl Widget for Slider {
                 &focus_ring,
             );
         }
+    }
 
+    #[cfg(test)]
+    pub(crate) fn set_hovered_for_test(&mut self, hovered: bool) {
+        self.is_hovered = hovered;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_dragging_for_test(&mut self, dragging: bool) {
+        self.is_dragging = dragging;
+    }
+
+    /// Commit a new value to the CRDT iff it differs from the cached
+    /// `value` by more than a frame-of-noise epsilon. Returns `true` if
+    /// the commit happened so callers can flag the event as handled.
+    fn commit_value(&mut self, new_value: f64, state: &mut AutoCommit, root: &ObjId) -> bool {
+        if (new_value - self.value).abs() <= 0.001 {
+            return false;
+        }
+        self.value = new_value;
+        let _ = state.put(
+            root,
+            self.on_change_path.as_str(),
+            automerge::ScalarValue::F64(self.value),
+        );
+        true
+    }
+}
+
+impl Widget for Slider {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
+            && let Value::Scalar(s) = val
+        {
+            // A slider's value is a 0..1 fraction; an Int/Uint scalar in the
+            // doc is out-of-range input (or a stale write), not a value
+            // this widget can represent — ignore rather than let a huge
+            // i64/u64 silently lose precision through the f64 conversion.
+            match s.as_ref() {
+                automerge::ScalarValue::F64(f) => self.value = *f,
+                automerge::ScalarValue::Int(i) => {
+                    if let Ok(i) = i32::try_from(*i) {
+                        self.value = f64::from(i);
+                    }
+                }
+                automerge::ScalarValue::Uint(u) => {
+                    if let Ok(u) = u32::try_from(*u) {
+                        self.value = f64::from(u);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(30.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        // Disabled widgets paint their (forced-idle) look under a reduced
+        // group opacity so they read as non-interactive.
+        let disabled = !self.enabled;
+        if disabled {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &self.rect,
+            );
+        }
+        let track_rect = self.draw_track(scene, transform, theme);
+        self.draw_knob(scene, transform, theme, track_rect);
         if disabled {
             scene.pop_layer();
         }
@@ -425,6 +460,12 @@ impl Widget for Slider {
         use crate::a11y::{AccessNode, AccessState, Role};
         // The slider models a normalized 0..1 value; expose it as a percentage
         // so a screen reader announces something meaningful ("50 percent").
+        // Clamped to 0.0..=1.0 above, so the rounded percentage is always
+        // in 0..=100 — the `i64` cast cannot truncate or flip sign.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "value is clamped to 0.0..=1.0, so the rounded percentage is always 0..=100"
+        )]
         let pct = (self.value.clamp(0.0, 1.0) * 100.0).round() as i64;
         let name = self
             .accessible_name
@@ -461,10 +502,10 @@ impl Widget for Slider {
         path: &ObjId,
     ) -> bool {
         use crate::a11y::Action;
+        const STEP: f64 = 0.05;
         if !self.enabled {
             return false;
         }
-        const STEP: f64 = 0.05;
         match action {
             Action::Increment => {
                 self.commit_value((self.value + STEP).clamp(0.0, 1.0), state, path)
@@ -612,12 +653,10 @@ mod tests {
         s.set_dragging_for_test(true);
         let r2 = s.knob_radius_for_state();
 
-        assert!(r0 < r1, "hover must grow knob: idle={}, hover={}", r0, r1);
+        assert!(r0 < r1, "hover must grow knob: idle={r0}, hover={r1}");
         assert!(
             r1 < r2,
-            "press must grow knob further: hover={}, press={}",
-            r1,
-            r2
+            "press must grow knob further: hover={r1}, press={r2}"
         );
     }
 
