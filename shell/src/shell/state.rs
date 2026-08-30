@@ -4699,10 +4699,13 @@ impl WorkspaceTree {
             .iter()
             .position(|w| w.id == self.active)
             .unwrap_or(0);
-        if idx == 0 {
+        let Some(prev_idx) = idx.checked_sub(1) else {
             return false;
-        }
-        self.active = self.workspaces[idx - 1].id;
+        };
+        let Some(prev) = self.workspaces.get(prev_idx) else {
+            return false;
+        };
+        self.active = prev.id;
         let _ = self
             .doc
             .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
@@ -4716,10 +4719,10 @@ impl WorkspaceTree {
             .iter()
             .position(|w| w.id == self.active)
             .unwrap_or(0);
-        if idx + 1 >= self.workspaces.len() {
+        let Some(next) = self.workspaces.get(idx.saturating_add(1)) else {
             return false;
-        }
-        self.active = self.workspaces[idx + 1].id;
+        };
+        self.active = next.id;
         let _ = self
             .doc
             .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
@@ -4761,19 +4764,28 @@ impl WorkspaceTree {
             .flat_map(|w| w.strips.iter())
             .find(|s| s.id == strip_id)?;
         let recorded = self.active_group.get(&strip_id).copied();
-        // Helper: first non-closing group in the strip starting at
-        // `idx`, walking right (`step = 1`) or left (`step = -1`).
-        let scan_from = |start: isize, step: isize| -> Option<GroupId> {
-            let n = strip.window_groups.len() as isize;
-            let mut i = start;
-            while i >= 0 && i < n {
-                let g = &strip.window_groups[i as usize];
-                if !is_closing(g.id) {
-                    return Some(g.id);
-                }
-                i += step;
-            }
-            None
+        // First non-closing group in the strip scanning right
+        // (increasing index) from — and including — `from`.
+        let scan_right = |from: usize| -> Option<GroupId> {
+            strip
+                .window_groups
+                .get(from..)
+                .unwrap_or(&[])
+                .iter()
+                .find(|g| !is_closing(g.id))
+                .map(|g| g.id)
+        };
+        // Same, scanning left (decreasing index) from — and including —
+        // `from`.
+        let scan_left = |from: usize| -> Option<GroupId> {
+            strip
+                .window_groups
+                .get(..=from)
+                .unwrap_or(&[])
+                .iter()
+                .rev()
+                .find(|g| !is_closing(g.id))
+                .map(|g| g.id)
         };
         match recorded {
             Some(id) => {
@@ -4782,19 +4794,14 @@ impl WorkspaceTree {
                 }
                 // Recorded group is closing — find its index, then
                 // scan right for a survivor; if none, scan left.
-                let idx = strip
-                    .window_groups
-                    .iter()
-                    .position(|g| g.id == id)
-                    .map_or(-1, |i| i as isize);
-                if idx < 0 {
+                let Some(idx) = strip.window_groups.iter().position(|g| g.id == id) else {
                     // Recorded group no longer in the strip; fall
                     // through to "first non-closing" as a default.
-                    return scan_from(0, 1);
-                }
-                scan_from(idx + 1, 1).or_else(|| scan_from(idx - 1, -1))
+                    return scan_right(0);
+                };
+                scan_right(idx.saturating_add(1)).or_else(|| idx.checked_sub(1).and_then(scan_left))
             }
-            None => scan_from(0, 1),
+            None => scan_right(0),
         }
     }
 
@@ -4849,9 +4856,18 @@ impl WorkspaceTree {
         }
         let Some(moved) = moved_tab else { return false };
         if let Some((ws_idx, strip_idx, group_idx)) = prune_group_at {
-            self.workspaces[ws_idx].strips[strip_idx]
-                .window_groups
-                .remove(group_idx);
+            // `ws_idx`/`strip_idx` were captured in the scan just above and
+            // nothing has mutated `self.workspaces` since, but a `.get_mut()`
+            // chain costs nothing and can't panic if that ever changes.
+            if let Some(groups) = self
+                .workspaces
+                .get_mut(ws_idx)
+                .and_then(|w| w.strips.get_mut(strip_idx))
+                .map(|s| &mut s.window_groups)
+                && group_idx < groups.len()
+            {
+                groups.remove(group_idx);
+            }
         }
         let new_group_id = next_id();
         let active_tab = moved.id;
@@ -4905,11 +4921,21 @@ impl WorkspaceTree {
         let Some((ws_idx, strip_idx, cur_idx)) = located else {
             return false;
         };
-        let groups = &mut self.workspaces[ws_idx].strips[strip_idx].window_groups;
+        // `ws_idx`/`strip_idx` were captured in the scan just above and
+        // nothing has mutated `self.workspaces` since, but `.get_mut()`
+        // costs nothing and can't panic if that ever changes.
+        let Some(groups) = self
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|w| w.strips.get_mut(strip_idx))
+            .map(|s| &mut s.window_groups)
+        else {
+            return false;
+        };
         // Clamp into the post-removal index space so a raw gap index
         // (which can equal `len`, "append") lands on the last slot.
         let dest = new_index.min(groups.len().saturating_sub(1));
-        if dest == cur_idx {
+        if dest == cur_idx || cur_idx >= groups.len() {
             return false;
         }
         let moved = groups.remove(cur_idx);
@@ -4939,7 +4965,17 @@ impl WorkspaceTree {
         let Some((ws_idx, strip_idx, g_idx)) = located else {
             return false;
         };
-        let group = &mut self.workspaces[ws_idx].strips[strip_idx].window_groups[g_idx];
+        // `ws_idx`/`strip_idx`/`g_idx` were captured in the scan just
+        // above and nothing has mutated `self.workspaces` since, but
+        // `.get_mut()` costs nothing and can't panic if that ever changes.
+        let Some(group) = self
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|w| w.strips.get_mut(strip_idx))
+            .and_then(|s| s.window_groups.get_mut(g_idx))
+        else {
+            return false;
+        };
         if from >= group.tabs.len() {
             return false;
         }
