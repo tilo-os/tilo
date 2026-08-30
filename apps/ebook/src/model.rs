@@ -111,6 +111,13 @@ pub enum Block {
         ordered: bool,
         index: usize,
     },
+    /// Presentation MathML lowered into the toolkit's shared expression tree.
+    Math {
+        expr: ui::math::MathExpr,
+        /// Linear fallback used for search, accessibility, and annotations.
+        source: String,
+        display: bool,
+    },
     /// `<hr/>` — a section break.
     Separator,
 }
@@ -122,13 +129,16 @@ impl Block {
             | Block::Paragraph { spans }
             | Block::Quote { spans }
             | Block::ListItem { spans, .. } => spans,
-            Block::Separator => &[],
+            Block::Math { .. } | Block::Separator => &[],
         }
     }
 
     pub fn plain_text(&self) -> String {
         // Spans are trimmed; a word break at a style boundary is carried by the
         // next span's `space_before` flag, so re-insert those spaces here.
+        if let Block::Math { source, .. } = self {
+            return source.clone();
+        }
         let mut out = String::new();
         for (i, s) in self.spans().iter().enumerate() {
             if i > 0 && s.space_before {
@@ -154,6 +164,8 @@ impl Block {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {
     pub text: String,
+    /// Structured inline MathML. `text` remains its accessible linear form.
+    pub math: Option<ui::math::MathExpr>,
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
@@ -166,6 +178,7 @@ impl Span {
     pub fn plain(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            math: None,
             bold: false,
             italic: false,
             code: false,
@@ -1072,6 +1085,7 @@ mod tests {
                 Span::plain("Hello "),
                 Span {
                     text: "world".into(),
+                    math: None,
                     bold: true,
                     italic: false,
                     code: false,
