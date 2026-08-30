@@ -284,7 +284,7 @@ impl PageJumpPalette {
     /// The query input box and its composed text. Returns the input's
     /// `Rect` so the result list can lay out below it.
     fn draw_input_field(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
