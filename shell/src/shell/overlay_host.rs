@@ -397,6 +397,97 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
 /// Gap between a segmented control's outer track and its segments.
 const SEGMENT_INSET_PX: f64 = 2.0;
 
+// -- Lossy numeric casts, named and scoped one lint at a time --------
+//
+// This file's layout math is all in `f64` (to match `kurbo`), but
+// `taffy`/`vello`/`cosmic-text` want `f32`, and row/slot/count indices
+// are `usize`. Every value that flows through these conversions is a
+// screen-space pixel, row count, or millisecond duration — nowhere near
+// the magnitude where the narrowing would actually lose a representable
+// value. Same convention as `sidebar_wheel_disc.rs`'s lossy-cast
+// helpers: name the conversion, scope the `#[allow]` to it alone, and
+// use the named function everywhere instead of a bare `as`.
+
+/// Lossy but bounded: UI row/slot/element counts never approach f64's
+/// 53-bit exact-integer range.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "row/slot/element counts stay far below f64's exact-integer range"
+)]
+fn usize_to_f64_lossy(n: usize) -> f64 {
+    n as f64
+}
+
+/// Narrows an `f64` pixel/width/alpha value to the `f32` that
+/// `taffy`/`vello`/`cosmic-text`'s own APIs take. Screen-space geometry
+/// in this UI never approaches a magnitude where this loses meaningful
+/// precision.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen-space geometry stays well within f32's precision for this UI"
+)]
+fn f64_to_f32_lossy(v: f64) -> f32 {
+    v as f32
+}
+
+/// Same rationale as [`usize_to_f64_lossy`], for the millisecond
+/// durations `Instant::elapsed().as_millis()` and this file's transition
+/// constants use.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "transition durations are always tiny millisecond counts"
+)]
+fn millis_to_f32_lossy(ms: u128) -> f32 {
+    ms as f32
+}
+
+/// A workspace/overview-selection index, `usize -> isize`, for the
+/// ring-wraparound arithmetic in [`ShellOverlayHost::handle_event`]. The
+/// tree never holds anywhere near `isize::MAX` workspaces.
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "workspace counts stay far below isize::MAX"
+)]
+fn usize_to_isize_lossy(n: usize) -> isize {
+    n as isize
+}
+
+/// The inverse of [`usize_to_isize_lossy`], used only on the result of
+/// `isize::rem_euclid` with a positive divisor — which is defined to
+/// always return a non-negative value, so this never actually discards a
+/// sign.
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "only called on rem_euclid's result with a positive divisor, which is never negative"
+)]
+fn isize_to_usize_lossy(n: isize) -> usize {
+    n as usize
+}
+
+/// Clamps an alpha/colour-channel value into `u8`'s range before the
+/// (otherwise saturating but silently-wrong-looking) narrowing cast.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "explicitly clamped into u8's range on the line above"
+)]
+fn f32_to_u8_saturating(v: f32) -> u8 {
+    v.clamp(0.0, 255.0) as u8
+}
+
+/// Floors a row-count computation into `usize`. Rust's `f64 as usize`
+/// cast already saturates a negative input to `0` rather than wrapping
+/// or panicking (defined since Rust 1.45), so this is memory-safe for
+/// any `v`; callers additionally `.max(1)` the result.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "float-to-usize casts saturate; a negative input already floors to 0"
+)]
+fn f64_floor_to_usize_saturating(v: f64) -> usize {
+    v.floor() as usize
+}
+
 /// Shortens an invite token to fit one line: head and tail with the
 /// middle elided, so a person sees the field is holding a token (and
 /// that it changed) without six lines of base64. The fingerprint
@@ -513,7 +604,7 @@ fn draw_invite_person_row(
     let text_x = center.x + 16.0 + 14.0;
     let name_size = (tokens.typography.scale.sm).max(12.0);
     let sub_size = (tokens.typography.scale.xs).max(10.0);
-    let who = text_renderer.elide_to_width(who, name_size, (rect.x1 - text_x) as f32);
+    let who = text_renderer.elide_to_width(who, name_size, f64_to_f32_lossy(rect.x1 - text_x));
     text_renderer.draw_text(
         scene,
         &who,
@@ -522,7 +613,7 @@ fn draw_invite_person_row(
         transform.pre_translate((text_x, rect.y0 + 2.0).into()),
         None,
     );
-    let sub = text_renderer.elide_to_width(sub, sub_size, (rect.x1 - text_x) as f32);
+    let sub = text_renderer.elide_to_width(sub, sub_size, f64_to_f32_lossy(rect.x1 - text_x));
     text_renderer.draw_text(
         scene,
         &sub,
@@ -663,14 +754,7 @@ fn lay_out_chip_strip(
 
     let mut rects = vec![Rect::ZERO; natural.len()];
     let place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
-        // `row` is always a small on-screen row count (never remotely
-        // near 2^53), so the usize -> f64 conversion below is exact.
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "row is a UI row index, always tiny; f64 represents it exactly"
-        )]
-        let row_f = row as f64;
-        let cy = band.y0 + row_f * row_h + row_h / 2.0;
+        let cy = band.y0 + usize_to_f64_lossy(row) * row_h + row_h / 2.0;
         let mut x = band.x0;
         for (slot, &id) in ids.iter().enumerate() {
             // `widths` is built alongside `ids` by every caller below, so
@@ -726,7 +810,7 @@ fn share_row(natural: &[f64], available: f64) -> Vec<f64> {
     if natural.is_empty() {
         return Vec::new();
     }
-    let n = natural.len() as f64;
+    let n = usize_to_f64_lossy(natural.len());
     let gaps = CHIP_GAP_PX * (n - 1.0);
     let total: f64 = natural.iter().sum();
     if total + gaps <= available {
@@ -740,7 +824,7 @@ fn share_row(natural: &[f64], available: f64) -> Vec<f64> {
         .sum();
     let over = natural.iter().filter(|w| **w >= base).count();
     let share_over = if over > 0 {
-        base + spare / over as f64
+        base + spare / usize_to_f64_lossy(over)
     } else {
         base
     };
@@ -1324,8 +1408,8 @@ impl ShellOverlayHost {
             self.overview_scroll_y = 0.0;
         }
         if let Some(started) = self.transition_started {
-            let elapsed = started.elapsed().as_millis() as f32;
-            let duration = OVERVIEW_TRANSITION_MS as f32;
+            let elapsed = millis_to_f32_lossy(started.elapsed().as_millis());
+            let duration = millis_to_f32_lossy(u128::from(OVERVIEW_TRANSITION_MS));
             if elapsed >= duration {
                 self.overview_t = self.overview_target;
                 self.transition_started = None;
@@ -1784,7 +1868,8 @@ impl ShellOverlayHost {
             .map(|o| {
                 let hosts_chrome = strip_left >= o.x && strip_left < o.x + o.width;
                 let leading = if hosts_chrome && self.sidebar.is_some() {
-                    f64::from(sidebar_width_for_viewport(o.height as f32)) + WHEEL_TO_STRIP_GAP_PX
+                    f64::from(sidebar_width_for_viewport(f64_to_f32_lossy(o.height)))
+                        + WHEEL_TO_STRIP_GAP_PX
                 } else {
                     0.0
                 };
@@ -3343,7 +3428,10 @@ impl ShellOverlayHost {
             WsTab::Members => 1,
             WsTab::Permissions => 2,
         };
-        self.ws_settings_tab_pill_rects[idx]
+        self.ws_settings_tab_pill_rects
+            .get(idx)
+            .copied()
+            .unwrap_or(Rect::ZERO)
     }
 
     /// The workspace-settings name field's rect, for harnesses that
@@ -4261,7 +4349,7 @@ impl ShellOverlayHost {
             .chrome
             .as_ref()
             .map_or(0, |c| collaborator_roster_rows(&c.borrow().tree()).len());
-        let rows = members.max(1) as f64;
+        let rows = usize_to_f64_lossy(members.max(1));
         // Room for the broker warning when there is one *and* rows under
         // it — with no rows the warning sits in the space the empty-state
         // line would have used.
@@ -4527,8 +4615,8 @@ impl ShellOverlayHost {
         }
         let count = self.search_scope_list().len().max(1);
         let track = self.search_scope_track_rect();
-        let seg_w = (track.width() - 2.0 * SEGMENT_INSET_PX) / count as f64;
-        let x0 = track.x0 + SEGMENT_INSET_PX + idx as f64 * seg_w;
+        let seg_w = (track.width() - 2.0 * SEGMENT_INSET_PX) / usize_to_f64_lossy(count);
+        let x0 = track.x0 + SEGMENT_INSET_PX + usize_to_f64_lossy(idx) * seg_w;
         Rect::new(
             x0,
             track.y0 + SEGMENT_INSET_PX,
@@ -4545,7 +4633,7 @@ impl ShellOverlayHost {
             return Rect::ZERO;
         }
         let count = self.search_scope_list().len().max(1);
-        let w = (Self::SCOPE_SEGMENT_WIDTH_PX * count as f64 + 2.0 * SEGMENT_INSET_PX)
+        let w = (Self::SCOPE_SEGMENT_WIDTH_PX * usize_to_f64_lossy(count) + 2.0 * SEGMENT_INSET_PX)
             .min(b.width() * 0.55);
         let h = Self::FILTER_CONTROL_HEIGHT_PX;
         // Anchored to the *first* row of the band, not to the middle of
@@ -4585,30 +4673,32 @@ impl ShellOverlayHost {
     fn overview_share_rows(card: &crate::shell::overview::RoomCard) -> usize {
         let shown = card.shares.len().min(OVERVIEW_SHARES_MAX_ROWS);
         let overflow = usize::from(card.shares.len() > shown);
-        (shown + overflow).max(1)
+        shown.saturating_add(overflow).max(1)
     }
 
     /// Height of the "you are here" block, including its share list.
     fn overview_here_block_height(&self) -> f64 {
-        let rows = match self.overview_here_index() {
-            Some(i) => Self::overview_share_rows(&self.overview_cards()[i]),
+        let cards = self.overview_cards();
+        let rows = match self.overview_here_index().and_then(|i| cards.get(i)) {
+            Some(card) => Self::overview_share_rows(card),
             None => 1,
         };
         OVERVIEW_HERE_HEIGHT_PX
             + OVERVIEW_CAPTION_HEIGHT_PX
-            + rows as f64 * OVERVIEW_SHARE_ROW_HEIGHT_PX
+            + usize_to_f64_lossy(rows) * OVERVIEW_SHARE_ROW_HEIGHT_PX
     }
 
     /// How many rows the "go to" list holds: every room but the one you
     /// are in, plus the trailing "New room" row.
     fn overview_list_slots(&self) -> usize {
         let n = self.overview_cards().len();
-        n.saturating_sub(usize::from(self.overview_here_index().is_some())) + 1
+        n.saturating_sub(usize::from(self.overview_here_index().is_some()))
+            .saturating_add(1)
     }
 
     /// Height the list would take if nothing clipped it.
     fn overview_content_height(&self) -> f64 {
-        let k = self.overview_list_slots() as f64;
+        let k = usize_to_f64_lossy(self.overview_list_slots());
         (k * (OVERVIEW_ROOM_ROW_HEIGHT_PX + OVERVIEW_ROOM_ROW_GAP_PX) - OVERVIEW_ROOM_ROW_GAP_PX)
             .max(0.0)
     }
@@ -4674,7 +4764,7 @@ impl ShellOverlayHost {
     fn overview_list_slot_rect(&self, slot: usize) -> Rect {
         let c = self.overview_content_rect();
         let y0 = self.overview_list_top() - self.overview_scroll_y
-            + slot as f64 * (OVERVIEW_ROOM_ROW_HEIGHT_PX + OVERVIEW_ROOM_ROW_GAP_PX);
+            + usize_to_f64_lossy(slot) * (OVERVIEW_ROOM_ROW_HEIGHT_PX + OVERVIEW_ROOM_ROW_GAP_PX);
         Rect::new(c.x0, y0, c.x1, y0 + OVERVIEW_ROOM_ROW_HEIGHT_PX)
     }
 
@@ -4683,7 +4773,7 @@ impl ShellOverlayHost {
     fn overview_slot_of(&self, idx: usize) -> Option<usize> {
         match self.overview_here_index() {
             Some(here) if here == idx => None,
-            Some(here) if idx > here => Some(idx - 1),
+            Some(here) if idx > here => Some(idx.saturating_sub(1)),
             _ => Some(idx),
         }
     }
@@ -4717,7 +4807,7 @@ impl ShellOverlayHost {
             return;
         };
         let step = OVERVIEW_ROOM_ROW_HEIGHT_PX + OVERVIEW_ROOM_ROW_GAP_PX;
-        let top = slot as f64 * step;
+        let top = usize_to_f64_lossy(slot) * step;
         let bottom = top + OVERVIEW_ROOM_ROW_HEIGHT_PX;
         let view = self.overview_viewport_height();
         let max = self.overview_max_scroll_y();
@@ -4881,15 +4971,17 @@ impl ShellOverlayHost {
                             !self.projection.options.stream_policy.adaptive;
                     }
                     Key::Character(s) if s.eq_ignore_ascii_case("q") => {
-                        let current = crate::shell::projection::DisplayResolutionLimit::ALL
+                        let limits = crate::shell::projection::DisplayResolutionLimit::ALL;
+                        let current = limits
                             .iter()
                             .position(|limit| {
                                 *limit == self.projection.options.stream_policy.resolution_limit
                             })
                             .unwrap_or(0);
-                        self.projection.options.stream_policy.resolution_limit =
-                            crate::shell::projection::DisplayResolutionLimit::ALL
-                                [(current + 1) % 5];
+                        let next = current.wrapping_add(1) % limits.len().max(1);
+                        if let Some(&limit) = limits.get(next) {
+                            self.projection.options.stream_policy.resolution_limit = limit;
+                        }
                     }
                     Key::Character(s) if s.eq_ignore_ascii_case("f") => {
                         self.projection.options.stream_policy.max_fps =
@@ -4900,7 +4992,7 @@ impl ShellOverlayHost {
                             };
                     }
                     Key::Character(s) if matches!(s.as_str(), "1" | "2" | "3") => {
-                        let i = s.parse::<usize>().unwrap_or(1) - 1;
+                        let i = s.parse::<usize>().unwrap_or(1).saturating_sub(1);
                         if let Some(mode) = ProjectionMode::ALL.get(i)
                             && self.projection.selected_device_supports(*mode)
                         {
@@ -4939,8 +5031,10 @@ impl ShellOverlayHost {
                             *limit == self.projection.options.stream_policy.resolution_limit
                         })
                         .unwrap_or(0);
-                    self.projection.options.stream_policy.resolution_limit =
-                        limits[(current + 1) % limits.len()];
+                    let next = current.wrapping_add(1) % limits.len().max(1);
+                    if let Some(&limit) = limits.get(next) {
+                        self.projection.options.stream_policy.resolution_limit = limit;
+                    }
                 } else if self.projection_fps_rect.contains(p) {
                     self.projection.options.stream_policy.max_fps =
                         if self.projection.options.stream_policy.max_fps == 60 {
@@ -4953,8 +5047,9 @@ impl ShellOverlayHost {
                     .iter()
                     .position(|rect| rect.area() > 0.0 && rect.contains(p))
                 {
-                    let mode = ProjectionMode::ALL[i];
-                    if self.projection.selected_device_supports(mode) {
+                    if let Some(&mode) = ProjectionMode::ALL.get(i)
+                        && self.projection.selected_device_supports(mode)
+                    {
                         self.projection.options.mode = mode;
                     }
                 } else if let Some(i) = self
@@ -4973,7 +5068,11 @@ impl ShellOverlayHost {
                     {
                         self.projection.disconnect();
                     } else if !selection_changed
-                        || self.projection.devices[i].protocol != ProjectionProtocol::AirPlay
+                        || self
+                            .projection
+                            .devices
+                            .get(i)
+                            .is_none_or(|d| d.protocol != ProjectionProtocol::AirPlay)
                     {
                         self.projection.connect_selected();
                         self.projection_credential_input.set_text("");
@@ -5163,7 +5262,7 @@ impl Widget for ShellOverlayHost {
             // last one bleeding into the close glyph.
             let palette_target_w = (self.rect.width() * 0.7).clamp(560.0, 640.0);
             palette_style.size = Size {
-                width: Dimension::length(palette_target_w as f32),
+                width: Dimension::length(f64_to_f32_lossy(palette_target_w)),
                 height: palette_style.size.height,
             };
             palette_style.margin = TaffyRect {
@@ -5205,7 +5304,9 @@ impl Widget for ShellOverlayHost {
                     bottom: LengthPercentageAuto::length(0.0),
                 };
                 style.size = Size {
-                    width: Dimension::length(sidebar_width_for_viewport(self.rect.height() as f32)),
+                    width: Dimension::length(sidebar_width_for_viewport(f64_to_f32_lossy(
+                        self.rect.height(),
+                    ))),
                     height: Dimension::auto(),
                 };
                 style.flex_grow = 0.0;
@@ -5268,7 +5369,9 @@ impl Widget for ShellOverlayHost {
         // room for the wheel and a wallpaper gutter beside it. No sidebar
         // means no gutter to reserve.
         let wheel_w = if self.sidebar.is_some() {
-            f64::from(sidebar_width_for_viewport(self.rect.height() as f32)) + WHEEL_TO_STRIP_GAP_PX
+            f64::from(sidebar_width_for_viewport(f64_to_f32_lossy(
+                self.rect.height(),
+            ))) + WHEEL_TO_STRIP_GAP_PX
         } else {
             0.0
         };
@@ -5865,7 +5968,7 @@ impl Widget for ShellOverlayHost {
                 WindowEvent::CursorMoved { .. } => {
                     if let (Some(p), Some(chrome)) = (self.last_cursor, self.chrome.clone()) {
                         let (bar, _) = self.quick_settings_slider_geometry(drag_i);
-                        let t = ((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0) as f32;
+                        let t = f64_to_f32_lossy(((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0));
                         let mut st = chrome.borrow_mut();
                         if drag_i == 0 {
                             st.quick_settings.brightness = t;
@@ -6161,12 +6264,20 @@ impl Widget for ShellOverlayHost {
                         } else {
                             -1
                         };
-                        let cur = self
-                            .overview_selection
-                            .or_else(|| self.overview_here_index())
-                            .unwrap_or(0) as isize;
+                        let cur = usize_to_isize_lossy(
+                            self.overview_selection
+                                .or_else(|| self.overview_here_index())
+                                .unwrap_or(0),
+                        );
                         // A ring: the room after the last one is the first.
-                        let next = (cur + step).rem_euclid(count as isize) as usize;
+                        // `count > 0` is checked above, so the divisor is
+                        // never zero; `wrapping_add` means an (unreachable
+                        // in practice) isize overflow still lands on some
+                        // in-range selection instead of panicking.
+                        let next = isize_to_usize_lossy(
+                            cur.wrapping_add(step)
+                                .rem_euclid(usize_to_isize_lossy(count)),
+                        );
                         self.overview_selection = Some(next);
                         self.scroll_overview_selection_into_view();
                     }
@@ -6535,7 +6646,7 @@ impl Widget for ShellOverlayHost {
                         Key::Named(NamedKey::Space) => {
                             let r = sel.range();
                             buf.replace_range(r.clone(), " ");
-                            sel = Selection::collapsed(r.start + 1);
+                            sel = Selection::collapsed(r.start.saturating_add(1));
                         }
                         Key::Character(s) if ctrl => match s.as_str() {
                             "a" | "A" => {
@@ -6545,8 +6656,8 @@ impl Widget for ShellOverlayHost {
                             }
                             "c" | "C" => {
                                 let r = sel.range();
-                                if !r.is_empty() {
-                                    clipboard_copy(&buf[r]);
+                                if let Some(selected) = buf.get(r) {
+                                    clipboard_copy(selected);
                                 }
                                 needs_bump = false;
                             }
@@ -6554,17 +6665,19 @@ impl Widget for ShellOverlayHost {
                                 let r = sel.range();
                                 if r.is_empty() {
                                     needs_bump = false;
-                                } else {
-                                    clipboard_copy(&buf[r.clone()]);
+                                } else if let Some(selected) = buf.get(r.clone()) {
+                                    clipboard_copy(selected);
                                     buf.replace_range(r.clone(), "");
                                     sel = Selection::collapsed(r.start);
+                                } else {
+                                    needs_bump = false;
                                 }
                             }
                             "v" | "V" => {
                                 if let Some(paste) = clipboard_paste() {
                                     let r = sel.range();
                                     buf.replace_range(r.clone(), &paste);
-                                    sel = Selection::collapsed(r.start + paste.len());
+                                    sel = Selection::collapsed(r.start.saturating_add(paste.len()));
                                 } else {
                                     needs_bump = false;
                                 }
@@ -6582,7 +6695,7 @@ impl Widget for ShellOverlayHost {
                             } else {
                                 let r = sel.range();
                                 buf.replace_range(r.clone(), &filtered);
-                                sel = Selection::collapsed(r.start + filtered.len());
+                                sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
                             }
                         }
                         _ => {
@@ -6782,7 +6895,7 @@ impl Widget for ShellOverlayHost {
                             .map(|c| c.borrow().quick_settings.wifi_networks.clone())
                             .unwrap_or_default();
                         for (i, net) in nets.iter().enumerate() {
-                            let row_y = list_y0 + i as f64 * row_h;
+                            let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
                             let row_rect = Rect::new(
                                 rect.x0 + 12.0,
                                 row_y,
@@ -6900,7 +7013,8 @@ impl Widget for ShellOverlayHost {
                         let hit =
                             Rect::new(bar.x0 - 4.0, bar.y0 - 12.0, bar.x1 + 4.0, bar.y1 + 12.0);
                         if hit.contains(p) {
-                            let t = ((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0) as f32;
+                            let t =
+                                f64_to_f32_lossy(((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0));
                             if i == 0 {
                                 st.quick_settings.brightness = t;
                             } else {
@@ -7354,7 +7468,7 @@ impl Widget for ShellOverlayHost {
         if !*handled && let WindowEvent::MouseWheel { delta, .. } = event {
             let dx = match *delta {
                 winit::event::MouseScrollDelta::LineDelta(x, _) => x,
-                winit::event::MouseScrollDelta::PixelDelta(p) => (p.x as f32) / 40.0,
+                winit::event::MouseScrollDelta::PixelDelta(p) => f64_to_f32_lossy(p.x) / 40.0,
             };
             if dx.abs() > 0.5 {
                 let dir = if dx > 0.0 { 1 } else { -1 };
@@ -7460,7 +7574,7 @@ impl Widget for ShellOverlayHost {
 /// on screen, dimmed by the scrim, for the whole gesture.
 fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
     let o = ui::ease_out(f64::from(t.clamp(0.0, 1.0)));
-    let alpha = o as f32;
+    let alpha = f64_to_f32_lossy(o);
     let dy = OVERVIEW_PANEL_RISE_PX * (1.0 - o);
     let scale = OVERVIEW_PANEL_START_SCALE + (1.0 - OVERVIEW_PANEL_START_SCALE) * o;
     (alpha, dy, scale)
@@ -7860,7 +7974,7 @@ fn draw_modal_scrim_at(
 /// `surfaces.scrim` rather than a literal black, since a light theme's
 /// scrim is a different colour from a dark theme's.
 fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, theme: &Theme) {
-    let alpha = (strength.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8;
+    let alpha = f32_to_u8_saturating((strength.clamp(0.0, 1.0) * 255.0).round());
     if alpha == 0 {
         return;
     }
@@ -7940,9 +8054,7 @@ fn mix_toward(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let (a, b) = (a.to_rgba8(), b.to_rgba8());
     let m = |x: u8, y: u8| {
-        (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
-            .round()
-            .clamp(0.0, 255.0) as u8
+        f32_to_u8_saturating((f32::from(x) + (f32::from(y) - f32::from(x)) * t).round())
     };
     Color::from_rgb8(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
 }
@@ -8015,13 +8127,13 @@ impl ShellOverlayHost {
         let step = OVERVIEW_FACE_STEP_PX;
         let shown = people.len().min(OVERVIEW_FACES_MAX);
         let overflow = people.len().saturating_sub(shown);
-        let slots = shown + usize::from(overflow > 0);
+        let slots = shown.saturating_add(usize::from(overflow > 0));
         if slots == 0 {
             return right_x;
         }
         let right = right_x - r;
         for (idx, person) in people.iter().take(shown).enumerate() {
-            let cx = right - (slots - 1 - idx) as f64 * step;
+            let cx = right - usize_to_f64_lossy(slots.saturating_sub(1).saturating_sub(idx)) * step;
             let (cr, cg, cb) = colors_for
                 .get(&person.id)
                 .copied()
@@ -8069,7 +8181,7 @@ impl ShellOverlayHost {
                 text_renderer,
             );
         }
-        right - (slots - 1) as f64 * step - r
+        right - usize_to_f64_lossy(slots.saturating_sub(1)) * step - r
     }
 
     /// Per-identity avatar colours for one room, matching that person's
@@ -8151,7 +8263,7 @@ impl ShellOverlayHost {
         let name = text_renderer.elide_to_width_weighted(
             &card.name,
             name_size,
-            text_w as f32,
+            f64_to_f32_lossy(text_w),
             TextWeight::Semibold,
         );
         let (_, name_h) =
@@ -8164,7 +8276,7 @@ impl ShellOverlayHost {
         if let Some(shares) = crate::shell::overview::room_shares_label(card) {
             sub = format!("{sub} · {shares}");
         }
-        let sub = text_renderer.elide_to_width(&sub, sub_size, text_w as f32);
+        let sub = text_renderer.elide_to_width(&sub, sub_size, f64_to_f32_lossy(text_w));
         let (_, sub_h) = text_renderer.measure(&sub, sub_size, None);
         let stack_h = f64::from(name_h) + 2.0 + f64::from(sub_h);
         let top = rect.center().y - stack_h / 2.0;
@@ -8230,9 +8342,7 @@ impl ShellOverlayHost {
         let here_rect = self.overview_here_rect();
         let name_size = Self::overview_header_font_size_for(tokens);
         let caption_size = tokens.typography.scale.sm;
-        if let Some(hi) = here_idx {
-            let card = &cards[hi];
-
+        if let Some((hi, card)) = here_idx.and_then(|hi| cards.get(hi).map(|card| (hi, card))) {
             // The keyboard target lands here on open, so the current room
             // carries the same accent selection a list row does — without
             // it the first arrow press would seem to come from nowhere.
@@ -8290,7 +8400,7 @@ impl ShellOverlayHost {
             let name = text_renderer.elide_to_width_weighted(
                 &card.name,
                 name_size,
-                name_avail as f32,
+                f64_to_f32_lossy(name_avail),
                 TextWeight::Bold,
             );
             let (name_w, name_h) =
@@ -8364,7 +8474,7 @@ impl ShellOverlayHost {
             people: Vec::new(),
             shares: Vec::new(),
         };
-        let here_card = here_idx.map_or(&empty_card, |i| &cards[i]);
+        let here_card = here_idx.and_then(|i| cards.get(i)).unwrap_or(&empty_card);
         // One vertical rule for the section: glyph and text centre on
         // the row's middle line.
         let body_size = tokens.typography.scale.base;
@@ -8410,10 +8520,18 @@ impl ShellOverlayHost {
                     ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
                 // Who holds it sits right; what's shared elides against it.
-                let with = match share.with.len() {
-                    1 => share.with[0].clone(),
-                    2 => format!("{} and {}", share.with[0], share.with[1]),
-                    n => format!("{} and {} others", share.with[0], n - 1),
+                let with = match (share.with.first(), share.with.len()) {
+                    (Some(first), 1) => first.clone(),
+                    (Some(first), 2) => {
+                        format!(
+                            "{first} and {}",
+                            share.with.get(1).map_or("", String::as_str)
+                        )
+                    }
+                    (Some(first), n) => {
+                        format!("{first} and {} others", n.saturating_sub(1))
+                    }
+                    (None, _) => String::new(),
                 };
                 let with = if share.writable {
                     format!("{with} · can edit")
@@ -8438,7 +8556,11 @@ impl ShellOverlayHost {
                 );
                 let what_x = content.x0 + glyph + 8.0;
                 let what_avail = (content.x1 - f64::from(with_w) - 12.0 - what_x).max(40.0);
-                let what = text_renderer.elide_to_width(&share.what, body_size, what_avail as f32);
+                let what = text_renderer.elide_to_width(
+                    &share.what,
+                    body_size,
+                    f64_to_f32_lossy(what_avail),
+                );
                 text_renderer.draw_text(
                     scene,
                     &what,
@@ -8449,7 +8571,7 @@ impl ShellOverlayHost {
                 );
                 sy += row_h;
             }
-            let hidden = here_card.shares.len() - shown;
+            let hidden = here_card.shares.len().saturating_sub(shown);
             if hidden > 0 {
                 let more = format!("and {hidden} more");
                 let (_, more_h) = text_renderer.measure(&more, tokens.typography.scale.sm, None);
@@ -8670,7 +8792,9 @@ impl ShellOverlayHost {
                 tx + f64::from(w) + 8.0,
                 ty + f64::from(h) + 4.0,
             );
-            pill_rects[i] = pill_rect;
+            if let Some(slot) = pill_rects.get_mut(i) {
+                *slot = pill_rect;
+            }
             let pill = RoundedRect::from_rect(pill_rect, f64::from(tokens.radii.md));
             if active {
                 // Pinned by `tests::ws_settings_active_tab_pill_uses_white_overlay`.
@@ -8956,7 +9080,7 @@ impl ShellOverlayHost {
         let tile_gap = 12.0_f64;
         let row_y = collab_y + 20.0;
         for (i, (name, is_self)) in tiles.iter().take(3).enumerate() {
-            let tx = rect.x0 + 24.0 + (tile_w + tile_gap) * i as f64;
+            let tx = rect.x0 + 24.0 + (tile_w + tile_gap) * usize_to_f64_lossy(i);
             // No tile fill/stroke — keeps the solid-colour fill count
             // under the threshold the Roles spec test pins.
             text_renderer.draw_text(
@@ -9228,7 +9352,8 @@ impl ShellOverlayHost {
                 None,
                 &RoundedRect::from_rect(field, f64::from(tokens.radii.sm)),
             );
-            let shown = text_renderer.elide_to_width(typed, name_size, (avail - 40.0) as f32);
+            let shown =
+                text_renderer.elide_to_width(typed, name_size, f64_to_f32_lossy(avail - 40.0));
             let (tw, th) = text_renderer.measure(&shown, name_size, None);
             let ty = f64::midpoint(field.y0, field.y1) - f64::from(th) / 2.0;
             if typed.is_empty() {
@@ -9271,7 +9396,7 @@ impl ShellOverlayHost {
             let note = text_renderer.elide_to_width(
                 "The room will call them this, beside their cursor.",
                 body_size,
-                avail as f32,
+                f64_to_f32_lossy(avail),
             );
             text_renderer.draw_text(
                 scene,
@@ -9351,7 +9476,7 @@ impl ShellOverlayHost {
                         typed.chars().count()
                     )
                 };
-                let line = text_renderer.elide_to_width(&line, name_size, avail as f32);
+                let line = text_renderer.elide_to_width(&line, name_size, f64_to_f32_lossy(avail));
                 text_renderer.draw_text(
                     scene,
                     &line,
@@ -9380,7 +9505,7 @@ impl ShellOverlayHost {
         }
 
         if let Some(status) = status.as_deref() {
-            let status = text_renderer.elide_to_width(status, body_size, avail as f32);
+            let status = text_renderer.elide_to_width(status, body_size, f64_to_f32_lossy(avail));
             text_renderer.draw_text(
                 scene,
                 &status,
@@ -9509,8 +9634,11 @@ impl ShellOverlayHost {
                 );
             }
             let text = self.search_scope_pill_label(*scope);
-            let text =
-                text_renderer.elide_to_width(&text, chip_text_size, (seg.width() - 10.0) as f32);
+            let text = text_renderer.elide_to_width(
+                &text,
+                chip_text_size,
+                f64_to_f32_lossy(seg.width() - 10.0),
+            );
             let (tw, th) = text_renderer.measure(&text, chip_text_size, None);
             text_renderer.draw_text(
                 scene,
@@ -9551,16 +9679,19 @@ impl ShellOverlayHost {
 
         let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
         for (i, label) in labels.iter().enumerate() {
-            let rect = strip.rects[i];
+            let rect = strip.rects.get(i).copied().unwrap_or(Rect::ZERO);
             let is_active = match i {
                 0 => self.active_kind_filter.is_empty(),
-                _ => self.active_kind_filter.contains(&kinds[i - 1]),
+                _ => i
+                    .checked_sub(1)
+                    .and_then(|k| kinds.get(k))
+                    .is_some_and(|kind| self.active_kind_filter.contains(kind)),
             };
             // Only a chip that had to be squeezed loses any of its label.
             let label = text_renderer.elide_to_width(
                 label,
                 chip_text_size,
-                (rect.width() - CHIP_PAD_PX / 2.0).max(1.0) as f32,
+                f64_to_f32_lossy((rect.width() - CHIP_PAD_PX / 2.0).max(1.0)),
             );
             draw_filter_chip(
                 scene,
@@ -9741,7 +9872,8 @@ impl ShellOverlayHost {
                 None,
                 &track_rr,
             );
-            let fill_w = bar.width() * f64::from(slider_values[i].clamp(0.0, 1.0));
+            let fill_w = bar.width()
+                * f64::from(slider_values.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0));
             if fill_w > 0.0 {
                 let filled = Rect::new(bar.x0, bar.y0, bar.x0 + fill_w, bar.y1);
                 let filled_rr = RoundedRect::from_rect(filled, 3.0);
@@ -9909,7 +10041,7 @@ impl ShellOverlayHost {
 
     fn projection_row_rect(&self, index: usize) -> Rect {
         let r = self.projection_rect();
-        let y0 = self.projection_device_rows_top() + index as f64 * 64.0;
+        let y0 = self.projection_device_rows_top() + usize_to_f64_lossy(index) * 64.0;
         Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 56.0)
     }
 
@@ -9977,7 +10109,7 @@ impl ShellOverlayHost {
             type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
-            Some((r.width() - 88.0) as f32),
+            Some(f64_to_f32_lossy(r.width() - 88.0)),
         );
 
         self.projection_close_rect = Rect::new(r.x1 - 48.0, r.y0 + 12.0, r.x1 - 12.0, r.y0 + 48.0);
@@ -9997,12 +10129,14 @@ impl ShellOverlayHost {
         let cell_w = (r.width() - 40.0 - gap * 2.0) / 3.0;
         for (i, mode) in ProjectionMode::ALL.iter().enumerate() {
             let cell = Rect::new(
-                r.x0 + 20.0 + i as f64 * (cell_w + gap),
+                r.x0 + 20.0 + usize_to_f64_lossy(i) * (cell_w + gap),
                 modes_top,
-                r.x0 + 20.0 + i as f64 * (cell_w + gap) + cell_w,
+                r.x0 + 20.0 + usize_to_f64_lossy(i) * (cell_w + gap) + cell_w,
                 modes_top + 66.0,
             );
-            self.projection_mode_rects[i] = cell;
+            if let Some(slot) = self.projection_mode_rects.get_mut(i) {
+                *slot = cell;
+            }
             let selected = self.projection.options.mode == *mode;
             let supported = self.projection.selected_device_supports(*mode);
             scene.fill(
@@ -10054,7 +10188,7 @@ impl ShellOverlayHost {
                     colors.text_dim.with_alpha_factor(0.52)
                 },
                 transform.pre_translate((cell.x0 + 12.0, cell.y0 + 39.0).into()),
-                Some((cell.width() - 18.0) as f32),
+                Some(f64_to_f32_lossy(cell.width() - 18.0)),
                 TextWeight::Medium,
             );
         }
@@ -10192,7 +10326,7 @@ impl ShellOverlayHost {
                 type_scale.xs,
                 colors.text_dim,
                 transform.pre_translate((r.x0 + 20.0, r.y0 + 324.0).into()),
-                Some((r.width() - 40.0) as f32),
+                Some(f64_to_f32_lossy(r.width() - 40.0)),
             );
         } else {
             self.projection_credential_rect = Rect::ZERO;
@@ -10226,7 +10360,7 @@ impl ShellOverlayHost {
 
         self.projection_device_rects.clear();
         let rows_top = self.projection_device_rows_top();
-        let max_rows = (((r.y1 - rows_top - 58.0) / 64.0).floor() as usize).max(1);
+        let max_rows = f64_floor_to_usize_saturating((r.y1 - rows_top - 58.0) / 64.0).max(1);
         if self.projection.devices.is_empty() {
             let (message, detail) = match &self.projection.status {
                 ProjectionStatus::Scanning => (
@@ -10263,8 +10397,11 @@ impl ShellOverlayHost {
                 None,
                 TextWeight::Medium,
             );
-            let detail =
-                text_renderer.elide_to_width(detail, type_scale.xs, (r.width() - 56.0) as f32);
+            let detail = text_renderer.elide_to_width(
+                detail,
+                type_scale.xs,
+                f64_to_f32_lossy(r.width() - 56.0),
+            );
             let (dw, _) = text_renderer.measure(&detail, type_scale.xs, None);
             text_renderer.draw_text(
                 scene,
@@ -10307,7 +10444,7 @@ impl ShellOverlayHost {
                 let name = text_renderer.elide_to_width(
                     &device.name,
                     type_scale.sm,
-                    (row.width() - 142.0) as f32,
+                    f64_to_f32_lossy(row.width() - 142.0),
                 );
                 text_renderer.draw_text_weighted(
                     scene,
@@ -10337,7 +10474,7 @@ impl ShellOverlayHost {
                         colors.text_dim
                     },
                     transform.pre_translate((row.x0 + 46.0, row.y0 + 31.0).into()),
-                    Some((row.width() - 142.0) as f32),
+                    Some(f64_to_f32_lossy(row.width() - 142.0)),
                 );
                 let action = Rect::new(row.x1 - 86.0, row.y0 + 11.0, row.x1 - 10.0, row.y1 - 11.0);
                 scene.fill(
@@ -10514,7 +10651,7 @@ impl ShellOverlayHost {
         let row_h = 56.0_f64;
         let list_y0 = rect.y0 + 56.0;
         for (i, net) in qs.wifi_networks.iter().enumerate() {
-            let row_y = list_y0 + i as f64 * row_h;
+            let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
             let row_rect = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
             // First row reads as "primary" with a subtle wash; the rest
             // stay transparent until there's hover tracking.
@@ -10834,13 +10971,19 @@ impl ShellOverlayHost {
         // is proportional to how many characters precede it — which is
         // the only thing a masked field can honestly show.
         let chars = prompt.password.chars().count();
-        let caret_chars = prompt.password[..prompt.selection.cursor.min(prompt.password.len())]
-            .chars()
+        // Counts complete characters before the cursor byte offset instead
+        // of slicing at it, so a cursor that (impossibly, but not provably
+        // so to the compiler) landed mid-character can't panic.
+        let caret_chars = prompt
+            .password
+            .char_indices()
+            .filter(|&(i, _)| i < prompt.selection.cursor)
             .count();
         let caret_x = if chars == 0 {
             text_x
         } else {
-            text_x + f64::from(mask_w) * (caret_chars as f64 / chars as f64)
+            text_x
+                + f64::from(mask_w) * (usize_to_f64_lossy(caret_chars) / usize_to_f64_lossy(chars))
         };
         scene.fill(
             Fill::NonZero,
@@ -10980,7 +11123,7 @@ impl ShellOverlayHost {
         let row_h = 56.0_f64;
         let list_y0 = rect.y0 + 56.0;
         for (i, dev) in qs.bt_devices.iter().enumerate() {
-            let row_y = list_y0 + i as f64 * row_h;
+            let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
             let row_rect = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
             if i == 0 {
                 scene.fill(
@@ -11137,7 +11280,7 @@ impl ShellOverlayHost {
             rect.y0 + 48.0
         };
         for (i, row) in rows.iter().enumerate() {
-            let row_y = list_top + i as f64 * 36.0;
+            let row_y = list_top + usize_to_f64_lossy(i) * 36.0;
             let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
             let avatar_rect = Rect::new(
                 center.x - 11.0,
@@ -11358,7 +11501,7 @@ impl ShellOverlayHost {
     pub fn quick_settings_slider_geometry(&self, i: usize) -> (Rect, f64) {
         let r = self.quick_settings_rect();
         let card_y = r.y0 + 88.0;
-        let row_y = card_y + 12.0 + i as f64 * 36.0;
+        let row_y = card_y + 12.0 + usize_to_f64_lossy(i) * 36.0;
         let bar_y_mid = row_y + 12.0;
         let bar_x0 = r.x0 + 16.0 + 16.0 + 12.0;
         let bar_x1 = r.x1 - 16.0;
@@ -11375,7 +11518,7 @@ impl ShellOverlayHost {
         let grid_h = 88.0;
         let inner_w = r.width() - 32.0; // 16 px outer padding each side.
         let card_w = (inner_w - 8.0) / 2.0; // 8 px gap between cards.
-        let x0 = r.x0 + 16.0 + i as f64 * (card_w + 8.0);
+        let x0 = r.x0 + 16.0 + usize_to_f64_lossy(i) * (card_w + 8.0);
         Rect::new(x0, grid_y, x0 + card_w, grid_y + grid_h)
     }
 
@@ -11387,7 +11530,7 @@ impl ShellOverlayHost {
         let row_h = 56.0;
         let inner_w = r.width() - 32.0;
         let tile_w = (inner_w - 16.0) / 3.0; // 8 px gap × 2.
-        let x0 = r.x0 + 16.0 + i as f64 * (tile_w + 8.0);
+        let x0 = r.x0 + 16.0 + usize_to_f64_lossy(i) * (tile_w + 8.0);
         Rect::new(x0, row_y, x0 + tile_w, row_y + row_h)
     }
 
