@@ -77,10 +77,14 @@ Do not hide expert capability behind a global “advanced mode.” Prefer a stab
   person select an explicit active identity, and protects active/final records
   from removal.
 - The selector contains only a validated identity id. The launcher resolves it
-  on the host and read-only binds exactly that regular file into a new app.
-  Apps never receive the identity directory and cannot enumerate or select
-  another key. Running apps keep the identity they started with, so an authored
-  operation cannot silently change person halfway through.
+  on the host and gives a new app one connected signing capability. Apps never
+  receive a key file or the identity directory and cannot enumerate, export or
+  select another key. Running apps keep the capability they started with, so an
+  authored operation cannot silently change person halfway through.
+- Legacy records migrate atomically to public schema-2 metadata. Private
+  material prefers freedesktop Secret Service and otherwise lives in a private
+  host-only broker file. Settings reports the actual backend; TPM-backed is
+  shown only when a real provider sealed that identity.
 - Identity creation, device enrolment, backup and key rotation remain one
   identity ceremony shared with onboarding. Settings hosts/launches that
   ceremony; it must not implement cryptography or copy secret fields into its

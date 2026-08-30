@@ -437,11 +437,13 @@ the 256-bit key is stored as `vault.key` in the same directory as `vault.enc`, b
 doc is honest about it: *"a local reader with access to the config directory sees both the key and
 the ciphertext."* `apps/totp/src/storage.rs` repeats the pattern.
 
-The threshold identity itself is plaintext JSON at `~/.config/qos/identity/primary.json`
-(`shell/src/shell/identity_provisioning.rs:39-47`), 0600 in a 0700 dir.
+The identity defect is closed: schema-1 plaintext records migrate to public
+metadata plus Secret Service storage (or a truthful host-only 0600 fallback),
+and apps receive an app-scoped signing socket rather than a mounted key file.
+The vault/TOTP defects above remain separate work.
 
-A Secret Service wrapper exists (`crates/runtime/runtime-portal-xdg/src/lib.rs:354-370`) with no
-caller in any app.
+Identity storage uses the standard libsecret `secret-tool` client when an
+unlocked freedesktop Secret Service is available.
 
 ---
 

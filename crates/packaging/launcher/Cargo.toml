@@ -52,9 +52,8 @@ collab-types = { path = "../../collab/collab-types" }
 # packaging — it is the freedesktop format, and the compositor's search
 # providers read it directly too.
 desktop-entry = { package = "qos-desktop-entry", path = "../../system/desktop-entry" }
-# Resolves the explicit active identity selector.  The launcher still binds
-# exactly one record read-only into the sandbox; it never exposes the identity
-# directory or lets apps choose a different person.
+# Resolves the explicit active identity selector and hosts its per-app signing
+# broker. Private records are never mounted into the sandbox.
 runtime-identity = { path = "../../runtime/runtime-identity" }
 
 [dev-dependencies]
@@ -63,6 +62,7 @@ tempfile.workspace = true
 # have to be serialised against each other across modules. Same pattern
 # (and same crate) the shell uses for its static-state tests.
 serial_test.workspace = true
+ed25519-dalek.workspace = true
 
 [[test]]
 name = "it"

@@ -22,8 +22,8 @@ fn main() {
         std::env::var("QOS_WORKSPACE_ID").unwrap_or_else(|_| "(unset)".into())
     );
     println!(
-        "  QOS_USER_IDENTITY  : {}",
-        std::env::var("QOS_USER_IDENTITY").unwrap_or_else(|_| "(unset)".into())
+        "  QOS identity broker: {}",
+        std::env::var("QOS_IDENTITY_BROKER_FD").unwrap_or_else(|_| "(unset)".into())
     );
     println!();
 

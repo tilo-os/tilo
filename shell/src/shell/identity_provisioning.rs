@@ -2,10 +2,10 @@
 //! (`~/.config/qos/identity/primary.json`, `0600`), the first-run
 //! trigger, invite-URL parsing, and the in-memory pairing-channel shim.
 //!
-//! The on-disk format is plaintext-JSON matching
-//! [`ui::widget::identity_flow::IdentityRecord`] — pending work wraps
-//! the blob with libsecret or keyutils; for now the file mode is the
-//! only mitigation.
+//! New ceremonies emit schema-1 JSON matching
+//! [`ui::widget::identity_flow::IdentityRecord`] in memory, then the runtime
+//! lifecycle store atomically imports it as public schema-2 metadata backed by
+//! Secret Service or a host-only broker file before the ceremony returns.
 //!
 //! Intentionally thin: cryptographic logic stays in
 //! `threshold-identity`, visual logic stays in `ui`.
@@ -22,27 +22,24 @@ use ui::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PairingHandshake,
 };
 
-/// Writes to `$XDG_CONFIG_HOME/qos/identity/primary.json` (falling
-/// back to `$HOME/.config/...`), `0600` mode.
-///
-/// TODO: the blob is currently plaintext JSON. Replace with a
-/// libsecret-encrypted envelope so a hostile process reading
-/// `/proc/<pid>/maps` of the compositor can't trivially exfiltrate the
-/// secret share.
+/// Writes public metadata to `$XDG_CONFIG_HOME/qos/identity/primary.json`
+/// (falling back to `$HOME/.config/...`) and imports its private share into
+/// the runtime identity provider before returning.
 pub struct DiskIdentityStore {
     path: PathBuf,
 }
 
 impl DiskIdentityStore {
-    /// Resolves the config dir the same way `firstboot::run` does, so
-    /// the boot chain is self-consistent.
+    /// Uses the canonical runtime resolver shared by Settings, first boot,
+    /// and the launcher, so the boot chain cannot disagree because of a
+    /// relative XDG path.
     ///
     /// # Errors
     ///
     /// Returns an error if the identity directory can't be resolved or
     /// created.
     pub fn from_env() -> Result<Self, io::Error> {
-        let base = resolve_identity_dir()?;
+        let base = runtime_identity::identity_dir_from_env()?;
         fs::create_dir_all(&base)?;
         // The contents will be 0600, but a world-listable directory
         // still leaks "identity exists" / atime.
@@ -81,34 +78,37 @@ impl IdentityStore for DiskIdentityStore {
 
     fn save(&self, record: &IdentityRecord) -> Result<(), IdentityFlowError> {
         let bytes = record.to_json_bytes()?;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(IdentityFlowError::Io)?;
-        }
-        // 0600 lands on the temp file, so the record is never readable by
-        // anyone else at its final path.
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600).map_err(IdentityFlowError::Io)?;
+        let parent = self.path.parent().ok_or_else(|| {
+            IdentityFlowError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "identity path has no parent",
+            ))
+        })?;
+        let id = self
+            .path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                IdentityFlowError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "identity path has no valid id",
+                ))
+            })?;
+        import_identity_record(parent, id, &bytes).map_err(IdentityFlowError::Io)?;
         Ok(())
     }
 }
 
-fn resolve_identity_dir() -> Result<PathBuf, io::Error> {
-    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME")
-        && !x.is_empty()
+fn import_identity_record(parent: &Path, id: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+    #[cfg(test)]
     {
-        return Ok(PathBuf::from(x).join("qos").join("identity"));
+        let provider = runtime_identity::BrokerFileProvider::new(parent);
+        runtime_identity::import_identity_with_provider(parent, id, bytes, &provider)
     }
-    if let Some(h) = std::env::var_os("HOME")
-        && !h.is_empty()
+    #[cfg(not(test))]
     {
-        return Ok(PathBuf::from(h)
-            .join(".config")
-            .join("qos")
-            .join("identity"));
+        runtime_identity::import_identity(parent, id, bytes)
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "neither XDG_CONFIG_HOME nor HOME set",
-    ))
 }
 
 /// A free function, not a method on the store, so the boot path can
@@ -195,7 +195,11 @@ mod tests {
         store.save(&rec).unwrap();
         assert!(store.identity_present());
         let back = store.load().unwrap().unwrap();
-        assert_eq!(back, rec);
+        assert_eq!(back.display_name, rec.display_name);
+        assert_eq!(back.public_key(), rec.public_key());
+        assert_eq!(back.schema_version, 2);
+        assert!(back.threshold_identity.secret_bytes.is_empty());
+        assert!(back.secret_ref.is_some());
     }
 
     #[test]
