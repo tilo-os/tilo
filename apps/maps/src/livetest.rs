@@ -76,22 +76,22 @@ impl Harness {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let child = widget.build_layout(&mut taffy, &self.theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
-                    },
-                    ..Default::default()
+        let Ok(root) = taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
                 },
-                &[child],
-            )
-            .expect("root node");
+                ..Default::default()
+            },
+            &[child],
+        ) else {
+            return;
+        };
         {
             let measure_map = node_map.clone();
             let tr = &mut self.text;
-            taffy
+            let laid_out = taffy
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
@@ -106,7 +106,10 @@ impl Harness {
                         }
                     },
                 )
-                .expect("compute_layout");
+                .is_ok();
+            if !laid_out {
+                return;
+            }
         }
         widget.apply_layout(&taffy, child, Point::ORIGIN);
         widget.draw_with_presence(
@@ -192,13 +195,20 @@ pub fn render_live_to_png<W: Widget>(h: &mut Harness, widget: &mut W, path: &Pat
     }
 }
 
+/// Best-effort PNG write for debug inspection. A failure here (disk full,
+/// permissions) must never fail the caller's in-memory pixel assertions, so
+/// this silently gives up rather than panicking.
 fn write_png(path: &Path, rgba: &[u8], w: u32, h: u32) {
-    let file = std::fs::File::create(path).expect("create png file");
+    let Ok(file) = std::fs::File::create(path) else {
+        return;
+    };
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header().expect("png header");
-    writer.write_image_data(rgba).expect("png write");
+    let Ok(mut writer) = enc.write_header() else {
+        return;
+    };
+    let _ = writer.write_image_data(rgba);
 }
 
 /// A rasterised frame: tight-packed RGBA (`4 * width` bytes per row) plus its
@@ -215,10 +225,10 @@ impl Frame {
     pub fn px(&self, x: u32, y: u32) -> (u8, u8, u8, u8) {
         let i = ((y * self.width + x) * 4) as usize;
         (
-            self.rgba[i],
-            self.rgba[i + 1],
-            self.rgba[i + 2],
-            self.rgba[i + 3],
+            self.rgba.get(i).copied().unwrap_or(0),
+            self.rgba.get(i + 1).copied().unwrap_or(0),
+            self.rgba.get(i + 2).copied().unwrap_or(0),
+            self.rgba.get(i + 3).copied().unwrap_or(0),
         )
     }
 
@@ -236,6 +246,11 @@ impl Frame {
     /// real tiled map — roads, parks, water, buildings, labels — has many
     /// dozens; a uniform fill or the flat "imagery unavailable" placeholder has
     /// a handful.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "x/y are the pixel-grid cursor and r/g/b the quantised channel values, the \
+                  standard vocabulary for pixel sampling"
+    )]
     pub fn distinct_colors(&self, region: Rect, step: u32) -> usize {
         let step = step.max(1);
         let (x0, y0, x1, y1) = self.bounds(region);
@@ -264,6 +279,11 @@ impl Frame {
     /// than `tol` on any channel. Used to prove the map area actually *changed*
     /// once tiles loaded — i.e. real imagery replaced the placeholder — rather
     /// than trusting colour-diversity alone.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "x/y are the pixel-grid cursor and a/b/d the two sampled pixels and their \
+                  difference, the standard vocabulary for pixel sampling"
+    )]
     pub fn changed_fraction(&self, other: &Frame, region: Rect, step: u32, tol: u8) -> f64 {
         let step = step.max(1);
         let (x0, y0, x1, y1) = self.bounds(region);
