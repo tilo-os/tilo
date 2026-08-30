@@ -5,11 +5,15 @@ use crate::process::{run, run_capture};
 /// Set the default audio sink volume to `pct` percent. `pct` is clamped
 /// to `[0, 100]`.
 pub fn set_volume(pct: f32) -> Result<(), String> {
-    let clamped = (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0);
     // wpctl takes a fraction like `0.50` or `50%`. We use the fraction
     // form to avoid locale-dependent `%` handling in shells.
-    let arg = format!("{clamped:.2}");
+    let arg = volume_arg(pct);
     run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &arg])
+}
+
+fn volume_arg(pct: f32) -> String {
+    let clamped = (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0);
+    format!("{clamped:.2}")
 }
 
 /// Read the default audio sink volume, returned as a `0.0..=1.0`
@@ -135,16 +139,9 @@ mod tests {
         assert!(parse_wpctl_volume("not-a-line").is_err());
     }
 
-    /// Clamp behaviour is observable through the `pct` argument — the
-    /// function doesn't expose the rounded fraction it formats into the
-    /// CLI string, so we test the clamp arithmetic indirectly via the
-    /// public `set_volume` path. Both extreme inputs must produce a
-    /// `Result` (Ok or "not installed" Err) without panicking.
     #[test]
     fn set_volume_clamps_out_of_range() {
-        let r1 = set_volume(150.0);
-        let r2 = set_volume(-25.0);
-        assert!(r1.is_ok() || r1.unwrap_err().contains("not installed"));
-        assert!(r2.is_ok() || r2.unwrap_err().contains("not installed"));
+        assert_eq!(volume_arg(150.0), "1.00");
+        assert_eq!(volume_arg(-25.0), "0.00");
     }
 }
