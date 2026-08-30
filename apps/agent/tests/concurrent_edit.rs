@@ -11,14 +11,15 @@
 //! it sees the agent's first change, which lands in the middle of the
 //! agent's own sequence of edits, while the agent is between actions.
 
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_agent::wire::{read_frame, write_frame};
 use qos_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use uuid::Uuid;
+
+mod typed_peer;
+use typed_peer::TypedPeer;
 
 const APP: &str = "dev.qos.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
@@ -113,12 +114,7 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
 fn a_person_typing_and_the_agent_working_both_land() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    {
-        let sock = sock.clone();
-        std::thread::spawn(move || {
-            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
-        });
-    }
+    let _broker = typed_peer::spawn(&sock);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -130,22 +126,20 @@ fn a_person_typing_and_the_agent_working_both_land() {
 
     let room = Uuid::new_v4();
 
-    let mut peer = UnixStream::connect(&sock).expect("peer connects");
-    let hello = serde_json::to_vec(&CollabRequest::Hello {
+    let mut peer = TypedPeer::connect(&sock).expect("peer connects");
+    let hello = CollabRequest::Hello {
         app_id: APP.into(),
         cluster_id: room,
         record: Some(RECORD.into()),
         handle: Some("ada".into()),
-    })
-    .unwrap();
-    write_frame(&mut peer, &hello).unwrap();
+    };
+    peer.announce(&sock, &hello).unwrap();
     let mut replica = seed_document();
     let head = heading_id(&replica);
     std::thread::sleep(Duration::from_millis(100));
 
     let cfg = Config {
-        endpoint: None,
-        socket: Some(sock),
+        endpoint: Some(sock),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
@@ -175,20 +169,18 @@ fn a_person_typing_and_the_agent_working_both_land() {
     let mut typed = 0usize;
     let mut table_done = false;
     while Instant::now() < deadline && !(table_done && typed == TYPED.chars().count()) {
-        let Some(frame) = read_frame(&mut peer) else {
+        let Some(event) = peer.recv().unwrap() else {
             continue;
         };
-        let event: CollabEvent = serde_json::from_slice(&frame).expect("decode");
         match event {
             CollabEvent::RemotePresenceUpdate {
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                let snap = CollabRequest::SyncCRDT {
                     data: replica.save(),
-                })
-                .unwrap();
-                write_frame(&mut peer, &snap).unwrap();
+                };
+                peer.send(&snap).unwrap();
             }
             CollabEvent::CRDTIncremental { data } => {
                 replica
@@ -200,9 +192,8 @@ fn a_person_typing_and_the_agent_working_both_land() {
                 // rather than merely overlapping.
                 if let Some(ch) = TYPED.chars().nth(typed) {
                     let delta = type_one(&mut replica, &head, &ch.to_string());
-                    let msg = serde_json::to_vec(&CollabRequest::SyncIncremental { data: delta })
-                        .unwrap();
-                    write_frame(&mut peer, &msg).unwrap();
+                    let msg = CollabRequest::SyncIncremental { data: delta };
+                    peer.send(&msg).unwrap();
                     typed += 1;
                 }
 

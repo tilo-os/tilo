@@ -196,6 +196,17 @@ impl ClientInput {
         self.pending_renames.push((surface_id, app_id));
     }
 
+    /// Keep a registered surface routable while removing every assumption
+    /// that it belongs to a tiled window. Used only for the compositor-
+    /// authorised on-screen keyboard after its stable app-id arrives.
+    pub fn promote_to_overlay(&mut self, surface_id: u64) {
+        self.pending_adoptions
+            .retain(|pending| pending.surface_id != surface_id);
+        self.pending_renames.retain(|(id, _)| *id != surface_id);
+        self.pending_removals.retain(|id| *id != surface_id);
+        self.placements.remove(&surface_id);
+    }
+
     /// The surface the seat's keyboard is currently focused on, if any.
     pub fn keyboard_focus(&self) -> Option<u64> {
         self.keyboard_focus
@@ -1119,6 +1130,12 @@ pub fn touch_target(
     let BackendTouchEvent::Down { x, y, .. } = touch else {
         return None;
     };
+    if let Some((surface_id, rect)) = fb.osk_surface_hit((*x, *y))
+        && state.osk_surface == Some(surface_id)
+        && state.client_input.surfaces.contains_key(&surface_id)
+    {
+        return Some((surface_id, (rect.x0, rect.y0)));
+    }
     let chrome = fb.chrome();
     let tree = chrome.tree();
     let hit = foreign_tile_at(&tree, fb.host(), (*x, *y))?;
@@ -1418,8 +1435,14 @@ pub fn route_input(
                     });
                     // Click-to-focus: raise the clicked window group so the keyboard follows the pointer into the client.
                     if let Some(h) = hit {
-                        raise_group(fb, h.strip, h.group);
-                        sync_keyboard_focus(state, fb);
+                        // Tapping the keyboard must keep the editable field's
+                        // keyboard focus. Pointer focus moves to the OSK, but
+                        // raising/focusing it would deactivate the very
+                        // text-input session the tap is meant to feed.
+                        if state.osk_surface != Some(h.surface_id) {
+                            raise_group(fb, h.strip, h.group);
+                            sync_keyboard_focus(state, fb);
+                        }
                     }
                 }
                 state.client_input.buttons_down += 1;
@@ -1632,6 +1655,15 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
                 .filter(|h| state.client_input.surfaces.contains_key(&h.surface_id))
         }
         Some(PointerOwner::Client(surface_id)) => {
+            if state.osk_surface == Some(surface_id) {
+                let (surface_id, rect) = fb.osk_surface_hit(state.client_input.cursor())?;
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
             let (strip, group) = *state.client_input.placements.get(&surface_id)?;
             let rect = fb.host().active_tile_rect(group)?;
             Some(TileHit {
@@ -1644,6 +1676,17 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
         None => {
             if captured {
                 return None;
+            }
+            if let Some((surface_id, rect)) = fb.osk_surface_hit(state.client_input.cursor())
+                && state.osk_surface == Some(surface_id)
+                && state.client_input.surfaces.contains_key(&surface_id)
+            {
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
             }
             let chrome = fb.chrome();
             let tree = chrome.tree();

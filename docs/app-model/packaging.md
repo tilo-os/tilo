@@ -173,13 +173,15 @@ At install time `qos-install install` drops a `qos-cli-shim` copy under
 
 #### `[providers]`
 
-Only meaningful for `kind = "format-provider"`. See
-[`formats.md`](./formats.md).
+For an app, this declares the file and link resources its GUI entrypoint can
+actually consume. A `format-provider` uses the same MIME list for its codec
+scope; see [`formats.md`](./formats.md).
 
 ```toml
 [providers]
 mime = ["text/markdown"]
 ext  = ["md", "markdown"]
+schemes = ["web+notes"]
 ```
 
 ### Validation
@@ -200,6 +202,9 @@ ext  = ["md", "markdown"]
   binary for `type = "both"`).
 - `kind = "format-provider"` has non-empty `providers.mime` AND ships a
   `component.wasm` in the payload.
+- provider extensions, concrete MIME types, and URI schemes use their strict
+  normalized identifier grammars; active/reserved `file`, `data`, and
+  `javascript` schemes are rejected.
 
 ### On-disk layout
 

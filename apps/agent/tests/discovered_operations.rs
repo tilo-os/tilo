@@ -1,18 +1,18 @@
 //! Operations the agent was never told about, discovered off the room's own
 //! applications rather than a written-down list, and dispatched for real —
-//! adapted to the toolkit's in-process relay (as `relay_roundtrip.rs` is)
-//! rather than the compositor's own broker: what is under test here is
-//! [`qos_agent::Session`]'s own discovery, dispatch and capability gating,
-//! not the broker's routing, so the lighter relay proves it just as well.
+//! carried over the compositor's production Cap'n Proto broker. What is
+//! under test is [`qos_agent::Session`]'s discovery, dispatch and capability
+//! gating while it participates through the same endpoint as an app.
 
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_agent::wire::{read_frame, write_frame};
 use qos_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use uuid::Uuid;
+
+mod typed_peer;
+use typed_peer::{TypedPeer as UnixStream, recv, send};
 
 const APP: &str = "dev.qos.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
@@ -81,12 +81,7 @@ fn run(
 ) -> (AutoCommit, bool) {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    {
-        let sock = sock.clone();
-        std::thread::spawn(move || {
-            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
-        });
-    }
+    let _broker = typed_peer::spawn(&sock);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -98,15 +93,14 @@ fn run(
 
     let room = Uuid::new_v4();
     let mut peer = UnixStream::connect(&sock).expect("peer connects");
-    write_frame(
+    send(
         &mut peer,
-        &serde_json::to_vec(&CollabRequest::Hello {
+        &CollabRequest::Hello {
             app_id: APP.into(),
             cluster_id: room,
             record: Some(RECORD.into()),
             handle: Some("ada".into()),
-        })
-        .unwrap(),
+        },
     )
     .unwrap();
     std::thread::sleep(Duration::from_millis(100));
@@ -122,10 +116,7 @@ fn run(
     let deadline = Instant::now() + within;
     let mut done = false;
     while Instant::now() < deadline && !done {
-        let Some(frame) = read_frame(&mut peer) else {
-            continue;
-        };
-        let Ok(event) = serde_json::from_slice::<CollabEvent>(&frame) else {
+        let Some(event) = recv(&mut peer) else {
             continue;
         };
         match event {
@@ -133,11 +124,10 @@ fn run(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                let snap = CollabRequest::SyncCRDT {
                     data: replica.save(),
-                })
-                .unwrap();
-                write_frame(&mut peer, &snap).unwrap();
+                };
+                send(&mut peer, &snap).unwrap();
             }
             CollabEvent::CRDTIncremental { data } => {
                 replica
@@ -170,8 +160,7 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
     );
     let (mut replica, acted) = run(
         |sock, room| Config {
-            endpoint: None,
-            socket: Some(sock),
+            endpoint: Some(sock),
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
@@ -246,12 +235,7 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
 fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    {
-        let sock = sock.clone();
-        std::thread::spawn(move || {
-            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
-        });
-    }
+    let _broker = typed_peer::spawn(&sock);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -265,15 +249,14 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     // The word processor: the page the agent was invited to, carrying the
     // instruction.
     let mut wp_peer = UnixStream::connect(&sock).expect("word processor connects");
-    write_frame(
+    send(
         &mut wp_peer,
-        &serde_json::to_vec(&CollabRequest::Hello {
+        &CollabRequest::Hello {
             app_id: APP.into(),
             cluster_id: room,
             record: Some(RECORD.into()),
             handle: Some("ada".into()),
-        })
-        .unwrap(),
+        },
     )
     .unwrap();
     let mut wp_replica = seed_document_with_image("Scribe: rotate the photograph right");
@@ -281,15 +264,14 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     // The photo editor: a second application's document, in the same room,
     // that the agent was never told about.
     let mut photo_peer = UnixStream::connect(&sock).expect("photo editor connects");
-    write_frame(
+    send(
         &mut photo_peer,
-        &serde_json::to_vec(&CollabRequest::Hello {
+        &CollabRequest::Hello {
             app_id: "dev.qos.photos".into(),
             cluster_id: room,
             record: None,
             handle: Some("ada".into()),
-        })
-        .unwrap(),
+        },
     )
     .unwrap();
     let mut photo_replica = AutoCommit::new();
@@ -323,8 +305,7 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         )
     };
     let cfg = Config {
-        endpoint: None,
-        socket: Some(sock),
+        endpoint: Some(sock),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
@@ -361,25 +342,24 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut signalled = false;
         while Instant::now() < deadline {
-            let Some(frame) = read_frame(&mut photo_peer) else {
+            let Some(event) = recv(&mut photo_peer) else {
                 continue;
             };
-            match serde_json::from_slice::<CollabEvent>(&frame) {
-                Ok(CollabEvent::RemotePresenceUpdate {
+            match event {
+                CollabEvent::RemotePresenceUpdate {
                     payload: PresencePayload::Arrived,
                     ..
-                }) => {
-                    let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                } => {
+                    let snap = CollabRequest::SyncCRDT {
                         data: photo_replica.save(),
-                    })
-                    .unwrap();
-                    write_frame(&mut photo_peer, &snap).unwrap();
+                    };
+                    send(&mut photo_peer, &snap).unwrap();
                     if !signalled {
                         let _ = photo_ready_tx.send(());
                         signalled = true;
                     }
                 }
-                Ok(CollabEvent::CRDTIncremental { data }) => {
+                CollabEvent::CRDTIncremental { data } => {
                     let _ = photo_replica.load_incremental(&data);
                     if photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters != 0 {
                         break;
@@ -397,26 +377,23 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
     while Instant::now() < deadline && !done {
-        let Some(frame) = read_frame(&mut wp_peer) else {
+        let Some(event) = recv(&mut wp_peer) else {
             continue;
         };
-        match serde_json::from_slice::<CollabEvent>(&frame) {
-            Ok(CollabEvent::RemotePresenceUpdate {
+        match event {
+            CollabEvent::RemotePresenceUpdate {
                 payload: PresencePayload::Arrived,
                 ..
-            }) => {
+            } => {
                 photo_ready_rx
                     .recv_timeout(Duration::from_secs(10))
                     .expect("the photo peer never answered its own Arrived");
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                let snap = CollabRequest::SyncCRDT {
                     data: wp_replica.save(),
-                })
-                .unwrap();
-                write_frame(&mut wp_peer, &snap).unwrap();
+                };
+                send(&mut wp_peer, &snap).unwrap();
             }
-            Ok(CollabEvent::CRDTIncremental { data })
-                if wp_replica.load_incremental(&data).is_ok() =>
-            {
+            CollabEvent::CRDTIncremental { data } if wp_replica.load_incremental(&data).is_ok() => {
                 done = !blocks(&wp_replica)
                     .iter()
                     .any(|x| x.text.starts_with("Scribe:"));
@@ -452,8 +429,7 @@ fn without_the_capability_a_discovered_operation_is_never_performed() {
     let replica = seed_document_with_image("Scribe: delete the image");
     let (replica, acted) = run(
         |sock, room| Config {
-            endpoint: None,
-            socket: Some(sock),
+            endpoint: Some(sock),
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),

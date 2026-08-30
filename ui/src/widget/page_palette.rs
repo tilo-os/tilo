@@ -397,6 +397,10 @@ impl Widget for PageJumpPalette {
         self.query_composition.ime_cursor_rect()
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         if !self.visible_flag {

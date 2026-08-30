@@ -203,6 +203,14 @@ impl SessionManager {
         self.suspended
     }
 
+    /// Replace the live idle-suspend timeout without resetting user activity.
+    /// A profile change is policy, not input; preserving the idle timestamp
+    /// makes a stricter profile take effect immediately and predictably.
+    pub fn set_suspend_timeout(&mut self, timeout: Option<Duration>) {
+        self.config.suspend_timeout = timeout;
+        self.suspended = false;
+    }
+
     /// Un-latch a pending suspend the caller decided **not** to act on (typically an inhibitor
     /// held). Leaves the idle timer untouched, so `tick` re-emits [`SessionTransition::Suspend`] the moment the inhibitor releases, without waiting for fresh activity. No-op if none was latched.
     pub fn cancel_suspend(&mut self) {
@@ -302,6 +310,20 @@ mod tests {
             .with_suspend(Some(Duration::from_mins(20)));
         assert_eq!(c.suspend_timeout, Some(Duration::from_mins(20)));
         assert_eq!(c.blank_timeout, Some(Duration::from_mins(5)));
+    }
+
+    #[test]
+    fn live_suspend_timeout_preserves_idle_time_and_rearms_policy() {
+        let t0 = Instant::now();
+        let mut session = SessionManager::new(cfg_s(None, None, Some(900)), t0);
+        assert!(session.tick(t0 + Duration::from_secs(599)).is_empty());
+        session.set_suspend_timeout(Some(Duration::from_secs(600)));
+        assert_eq!(
+            session.tick(t0 + Duration::from_secs(600)),
+            vec![SessionTransition::Suspend]
+        );
+        session.set_suspend_timeout(None);
+        assert!(session.tick(t0 + Duration::from_secs(10_000)).is_empty());
     }
 
     // blank / wake cycle

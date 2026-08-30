@@ -573,6 +573,10 @@ impl Widget for CodeEditor {
         Widget::ime_cursor_rect(&self.inner)
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Terminal)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.inner.accessibility()
     }

@@ -56,9 +56,6 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::marks::{self, Mark, MarkSpan};
 
-/// Caret thickness (logical px). Drawn solid — a blink would force an idle
-/// redraw every vsync (HIG §6).
-const CARET_WIDTH: f64 = 2.0;
 /// Inner padding of the editor frame (logical px).
 const PAD: f64 = 12.0;
 /// Extra left indent for a bulleted block, leaving room for the marker.
@@ -159,6 +156,7 @@ pub struct RichTextEditor {
     // --- IME ---
     preedit: String,
     preedit_cursor: Option<(usize, usize)>,
+    last_caret_width: f64,
 
     // --- persistence / undo ---
     dirty: bool,
@@ -192,6 +190,7 @@ impl RichTextEditor {
             last_click_time: None,
             preedit: String::new(),
             preedit_cursor: None,
+            last_caret_width: 2.0,
             dirty: false,
             last_edit_time: None,
         }
@@ -657,6 +656,7 @@ impl Widget for RichTextEditor {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.last_caret_width = theme.caret_width;
         let radius = f64::from(theme.tokens.radii.md);
         if self.frame {
             let body = RoundedRect::from_rect(self.rect, radius);
@@ -726,7 +726,7 @@ impl Widget for RichTextEditor {
             let caret = Rect::new(
                 f64::from(cx),
                 f64::from(top),
-                f64::from(cx) + CARET_WIDTH,
+                f64::from(cx) + theme.caret_width,
                 f64::from(top + h),
             );
             scene.fill(Fill::NonZero, t, theme.accent_primary, None, &caret);
@@ -994,9 +994,13 @@ impl Widget for RichTextEditor {
         Some(Rect::new(
             origin.x + f64::from(x),
             origin.y + f64::from(top),
-            origin.x + f64::from(x) + CARET_WIDTH,
+            origin.x + f64::from(x) + self.last_caret_width,
             origin.y + f64::from(top + height),
         ))
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
     }
 
     fn needs_redraw(&self) -> bool {

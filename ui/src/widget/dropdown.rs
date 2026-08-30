@@ -723,6 +723,9 @@ impl Widget for Dropdown {
             .then(|| self.filter_composition.ime_cursor_rect())
             .flatten()
     }
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
     fn is_enabled(&self) -> bool {
         self.enabled
     }

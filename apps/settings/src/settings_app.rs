@@ -227,6 +227,8 @@ impl SettingsApp {
             Category::Appearance => panes::appearance::build(),
             Category::Accessibility => panes::accessibility::build(),
             Category::Notifications => panes::notifications::build(),
+            Category::DefaultApps => panes::personal_apps::build(),
+            Category::Storage => panes::storage::build(),
             Category::ExternalAccounts => panes::accounts::build(),
             Category::RegionFormats => panes::region::build(),
             Category::Permissions => panes::permissions::build(),
@@ -561,7 +563,7 @@ impl AppWidget for SettingsApp {
     }
 
     fn app_title(&self) -> &'static str {
-        "Settings"
+        "Personal Settings"
     }
 
     fn app_icon(&self) -> IconDescriptor {

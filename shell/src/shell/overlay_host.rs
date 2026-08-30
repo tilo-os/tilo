@@ -42,8 +42,8 @@ use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
 };
 use crate::shell::workspace_settings::{
-    CapEdit, EXPIRY_CHOICES, draw_members_pane, draw_permissions_pane, members_pane_rows,
-    permissions_pane_layout,
+    CapEdit, EXPIRY_CHOICES, default_app_rows, draw_default_apps_pane, draw_members_pane,
+    draw_permissions_pane, members_pane_rows, permissions_pane_layout,
 };
 
 /// The Permissions tab's grant-composer controls, as painted. Cached on
@@ -147,6 +147,11 @@ pub struct ShellOverlayHost {
     /// The `os_action` shell-out fires only on Released so a drag doesn't
     /// spawn a subprocess per pixel of motion.
     qs_slider_drag: Option<usize>,
+    /// Session actions live in their own modal so restart/shutdown require
+    /// a second, explicit click and never share a hit target with QS.
+    power_menu_open: bool,
+    power_menu_transition: ui::Transition,
+    power_menu_armed: Option<usize>,
     /// When the workspace invite link was last copied, to confirm it.
     ws_invite_copied_at: Option<Instant>,
     /// Ribbon segment under the pointer, if any. Paint-only.
@@ -192,7 +197,11 @@ pub struct ShellOverlayHost {
     /// Hit rects for the WS-settings tab pills, in [`WsTab::all`] order.
     /// `Rect::ZERO` when not painted, so a stale click during a
     /// crossfade can't flip tabs after the modal is gone.
-    ws_settings_tab_pill_rects: [Rect; 3],
+    ws_settings_tab_pill_rects: [Rect; 4],
+    /// Apps & Files rows: resource, workspace-policy control, personal
+    /// workspace-choice control. Geometry is painted and hit-tested from the
+    /// same cache.
+    default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
     /// Cached Revoke-button rects for the Permissions pane, keyed by
     /// the capability's stable id — the key
     /// [`crate::shell::state::Workspace::revoke_as`] takes, so a click
@@ -261,6 +270,9 @@ pub struct ShellOverlayHost {
     /// pixels don't depend on host hardware. See
     /// [`crate::shell::status`].
     status_bridge: Option<crate::shell::status::StatusBridge>,
+    /// Single session-lifetime owner for persistent balance/mono transforms.
+    /// Present only in real compositor sessions, never shots or unit tests.
+    session_audio_policy: Option<crate::shell::session_audio_policy::SessionAudioPolicyOwner>,
     /// Room-activity sheet. Held rather than drawn immediate-mode
     /// because it is a real `Widget` with its own hover/scroll/filter
     /// state, placed by hand like the notification stack.
@@ -915,6 +927,9 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_slider_drag: None,
+            power_menu_open: false,
+            power_menu_transition: ui::Transition::closed(),
+            power_menu_armed: None,
             ws_invite_copied_at: None,
             strip_ribbon_hover: None,
             strip_rail_hover: None,
@@ -927,7 +942,8 @@ impl ShellOverlayHost {
             content_built_for_ws: None,
             last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
-            ws_settings_tab_pill_rects: [Rect::ZERO; 3],
+            ws_settings_tab_pill_rects: [Rect::ZERO; 4],
+            default_app_rects: Vec::new(),
             permissions_revoke_rects: Vec::new(),
             grant_composer_rects: None,
             member_control_rects: Vec::new(),
@@ -945,6 +961,7 @@ impl ShellOverlayHost {
             tab_tiles: std::collections::HashMap::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             status_bridge: None,
+            session_audio_policy: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
@@ -1028,6 +1045,8 @@ impl ShellOverlayHost {
     /// identical across machines.
     pub fn with_status_bridge(mut self, bridge: crate::shell::status::StatusBridge) -> Self {
         self.status_bridge = Some(bridge);
+        self.session_audio_policy =
+            Some(crate::shell::session_audio_policy::SessionAudioPolicyOwner::spawn());
         self
     }
 
@@ -3282,6 +3301,7 @@ impl ShellOverlayHost {
             WsTab::General => 0,
             WsTab::Members => 1,
             WsTab::Permissions => 2,
+            WsTab::Apps => 3,
         };
         self.ws_settings_tab_pill_rects[idx]
     }
@@ -3868,18 +3888,51 @@ impl ShellOverlayHost {
         };
         for reading in readings {
             let mut st = chrome.borrow_mut();
-            let (brightness, volume, wifi, bluetooth, power, wifi_nets, bt_devices) = match reading
-            {
-                QsReading::Fast {
-                    brightness,
-                    volume,
-                    wifi,
-                    bluetooth,
-                    power,
-                } => (brightness, volume, wifi, bluetooth, power, None, None),
-                QsReading::WifiNetworks(nets) => (None, None, None, None, None, nets, None),
-                QsReading::BtDevices(devs) => (None, None, None, None, None, None, devs),
-            };
+            let (brightness, volume, wifi, bluetooth, power, wired, battery, wifi_nets, bt_devices) =
+                match reading {
+                    QsReading::Fast {
+                        brightness,
+                        volume,
+                        wifi,
+                        bluetooth,
+                        power,
+                        wired,
+                        battery,
+                        radios,
+                        privacy,
+                        vpns,
+                    } => {
+                        if let Some(radios) = radios {
+                            st.quick_settings.radios = radios;
+                        }
+                        if let Some(vpns) = vpns {
+                            st.quick_settings.vpns = vpns;
+                        }
+                        st.quick_settings.privacy = privacy;
+                        (
+                            brightness,
+                            volume,
+                            wifi,
+                            bluetooth,
+                            power,
+                            wired,
+                            Some(battery),
+                            None,
+                            None,
+                        )
+                    }
+                    QsReading::WifiNetworks(nets) => {
+                        (None, None, None, None, None, None, None, nets, None)
+                    }
+                    QsReading::BtDevices(devs) => {
+                        (None, None, None, None, None, None, None, None, devs)
+                    }
+                    QsReading::Firmware(updates) => {
+                        st.quick_settings.firmware_updates = updates.map(|v| v.len());
+                        st.bump();
+                        continue;
+                    }
+                };
             if let Some(v) = brightness {
                 st.quick_settings.brightness = v;
             }
@@ -3891,6 +3944,12 @@ impl ShellOverlayHost {
             }
             if let Some(v) = bluetooth {
                 st.quick_settings.bluetooth = v;
+            }
+            if let Some(v) = wired {
+                st.quick_settings.wired = Some(v);
+            }
+            if let Some(v) = battery {
+                st.quick_settings.battery = v;
             }
             if let Some(p) = power {
                 use crate::shell::qs_actions::PowerProfile as ActPP;
@@ -4023,10 +4082,10 @@ impl ShellOverlayHost {
     /// Mirror of the geometry in `draw_quick_settings` — the popover rect
     /// anchored under the top-right tray pill. Width matches the concept's
     /// `w-80` (320px); height sums the section bands in
-    /// [`Self::draw_quick_settings`]: 16+56+16+72+16+88+16+48+16 = 360px.
+    /// [`Self::draw_quick_settings`], including three rows of system tiles.
     fn quick_settings_rect(&self) -> Rect {
         let popover_w = 320.0_f64;
-        let popover_h = 360.0_f64;
+        let popover_h = 552.0_f64;
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
@@ -4378,6 +4437,7 @@ impl ShellOverlayHost {
         let modal_h = match self.chrome.as_ref().map(|c| c.borrow().ws_settings_tab) {
             Some(WsTab::Permissions) => 640.0_f64,
             Some(WsTab::Members) => 600.0_f64,
+            Some(WsTab::Apps) => 640.0_f64,
             _ => 440.0_f64,
         };
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
@@ -5313,6 +5373,30 @@ impl Widget for ShellOverlayHost {
             stack.draw(scene, transform, text_renderer, theme, presence);
         }
 
+        // A visual alert is deliberately an edge treatment rather than a
+        // full-screen luminance flash: it stays obvious without obscuring
+        // content or creating an unnecessarily harsh photosensitivity risk.
+        let visual_alert = self.chrome.as_ref().is_some_and(|chrome| {
+            chrome
+                .borrow()
+                .visual_alert_active(std::time::Instant::now())
+        });
+        if visual_alert {
+            let edge = Rect::new(
+                self.rect.x0 + 4.0,
+                self.rect.y0 + 4.0,
+                self.rect.x1 - 4.0,
+                self.rect.y1 - 4.0,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(7.0),
+                transform,
+                theme.tokens.colors.accent[5],
+                None,
+                &edge,
+            );
+        }
+
         if overview_alpha <= 0.0 {
             // Clear the cached hit rect so a stray click during an
             // in-flight close can't create a workspace.
@@ -5347,7 +5431,8 @@ impl Widget for ShellOverlayHost {
         if !flags.ws_settings {
             // Clear cached rects so a click during the close fade can't
             // flip tabs, same as `add_workspace_rect` above.
-            self.ws_settings_tab_pill_rects = [Rect::ZERO; 3];
+            self.ws_settings_tab_pill_rects = [Rect::ZERO; 4];
+            self.default_app_rects.clear();
             self.permissions_revoke_rects.clear();
             self.grant_composer_rects = None;
             self.member_control_rects.clear();
@@ -5427,6 +5512,7 @@ impl Widget for ShellOverlayHost {
             // land. Wi-Fi/Bluetooth drill-in lists aren't requested here,
             // see `qs_refresh`.
             self.qs_refresh.kick_fast();
+            self.qs_refresh.kick_firmware();
         }
         self.qs_was_open = flags.quick_settings;
         self.apply_quick_settings_readings();
@@ -5483,6 +5569,35 @@ impl Widget for ShellOverlayHost {
             if in_flight {
                 scene.pop_layer();
             }
+        }
+
+        self.power_menu_transition.set_open(
+            self.power_menu_open,
+            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        let power_now = Instant::now();
+        if self.power_menu_transition.is_visible(power_now) {
+            let openness = self.power_menu_transition.value(power_now);
+            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
+            let (alpha, dy, scale) =
+                modal_transition_curve(&self.power_menu_transition, power_now, 0.94);
+            let rect = self.power_menu_rect();
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                transform,
+                &self.rect,
+            );
+            let cx = rect.center().x;
+            let cy = rect.center().y;
+            let modal_xform = transform
+                * Affine::translate((cx, cy + dy))
+                * Affine::scale(scale)
+                * Affine::translate((-cx, -cy));
+            self.draw_power_menu(scene, modal_xform, text_renderer, theme);
+            scene.pop_layer();
         }
 
         if flags.collaborators {
@@ -6284,6 +6399,12 @@ impl Widget for ShellOverlayHost {
                     *handled = true;
                     return;
                 }
+                if self.power_menu_open {
+                    self.power_menu_open = false;
+                    self.power_menu_armed = None;
+                    *handled = true;
+                    return;
+                }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     // Most transient thing on screen, so goes first.
@@ -6549,6 +6670,46 @@ impl Widget for ShellOverlayHost {
                 }
             }
             let flags = self.overlay_flags();
+            if self.power_menu_open {
+                let panel = self.power_menu_rect();
+                if !panel.contains(p) {
+                    self.power_menu_open = false;
+                    self.power_menu_armed = None;
+                    *handled = true;
+                    return;
+                }
+                for i in 0..5 {
+                    if !self.power_menu_action_rect(i).contains(p) {
+                        continue;
+                    }
+                    // Restart and shutdown are destructive: first click
+                    // arms the row, the second performs it.
+                    if i >= 3 && self.power_menu_armed != Some(i) {
+                        self.power_menu_armed = Some(i);
+                        *handled = true;
+                        return;
+                    }
+                    let action = match i {
+                        0 => os_actions::SessionAction::Lock,
+                        1 => os_actions::SessionAction::Logout,
+                        2 => os_actions::SessionAction::Suspend,
+                        3 => os_actions::SessionAction::Restart,
+                        _ => os_actions::SessionAction::ShutDown,
+                    };
+                    self.power_menu_open = false;
+                    self.power_menu_armed = None;
+                    std::thread::spawn(move || {
+                        os_actions::log_result(
+                            "session_action",
+                            os_actions::perform_session_action(action),
+                        );
+                    });
+                    *handled = true;
+                    return;
+                }
+                *handled = true;
+                return;
+            }
             if flags.room_activity && !self.room_activity.rect().contains(p) {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
@@ -6700,6 +6861,55 @@ impl Widget for ShellOverlayHost {
                                 return;
                             }
                         }
+                    } else if matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn) {
+                        let rect = self.quick_settings_rect();
+                        let row_h = 56.0_f64;
+                        let list_y0 = rect.y0 + 56.0;
+                        let vpns = self
+                            .chrome
+                            .as_ref()
+                            .map(|c| c.borrow().quick_settings.vpns.clone())
+                            .unwrap_or_default();
+                        for (i, vpn) in vpns.iter().enumerate() {
+                            let row_y = list_y0 + i as f64 * row_h;
+                            let row = Rect::new(
+                                rect.x0 + 12.0,
+                                row_y,
+                                rect.x1 - 12.0,
+                                row_y + row_h - 4.0,
+                            );
+                            if row.contains(p) {
+                                let next = !vpn.active;
+                                crate::shell::qs_actions::log_qs_result(
+                                    "set_vpn_connection",
+                                    self.qs_actions.set_vpn_connection(&vpn.name, next),
+                                );
+                                if let Some(chrome) = self.chrome.clone() {
+                                    let mut st = chrome.borrow_mut();
+                                    if let Some(item) = st
+                                        .quick_settings
+                                        .vpns
+                                        .iter_mut()
+                                        .find(|item| item.name == vpn.name)
+                                    {
+                                        item.active = next;
+                                    }
+                                    st.bump();
+                                }
+                                *handled = true;
+                                return;
+                            }
+                        }
+                    } else if matches!(
+                        current_level,
+                        crate::shell::quick_settings::QsLevel::Notifications
+                    ) && self.qs_notification_clear_rect().contains(p)
+                    {
+                        if let Some(chrome) = self.chrome.clone() {
+                            chrome.borrow_mut().clear_notification_history();
+                        }
+                        *handled = true;
+                        return;
                     }
                     *handled = true;
                     return;
@@ -6708,13 +6918,13 @@ impl Widget for ShellOverlayHost {
                     // Tested before the toggle hit so the chevron
                     // region wins over the toggle's full-card rect.
                     let mut pushed_level = None;
-                    for i in 0..2 {
+                    for i in [0, 1, 5] {
                         let chev = self.quick_settings_toggle_chevron_rect(i);
                         if chev.contains(p) {
-                            pushed_level = Some(if i == 0 {
-                                crate::shell::quick_settings::QsLevel::Wifi
-                            } else {
-                                crate::shell::quick_settings::QsLevel::Bluetooth
+                            pushed_level = Some(match i {
+                                0 => crate::shell::quick_settings::QsLevel::Wifi,
+                                1 => crate::shell::quick_settings::QsLevel::Bluetooth,
+                                _ => crate::shell::quick_settings::QsLevel::Vpn,
                             });
                             break;
                         }
@@ -6740,7 +6950,7 @@ impl Widget for ShellOverlayHost {
                     // Each tile closes the popover; the action fires
                     // after the chrome borrow drops.
                     let mut action_hit: Option<usize> = None;
-                    for i in 0..3 {
+                    for i in 0..4 {
                         let tile = self.quick_settings_action_geometry(i);
                         if tile.contains(p) {
                             action_hit = Some(i);
@@ -6754,20 +6964,52 @@ impl Widget for ShellOverlayHost {
                                 st.overlays.ws_settings = true;
                             }
                             1 => {
-                                // Placeholder until app launch is wired
-                                // through the sandbox spawn path.
-                                st.push_notification(
-                                    "Camera",
-                                    "Launch not yet wired to the sandbox spawner.",
+                                let active = st.quick_settings.privacy.active_media.clone();
+                                if active.is_empty() {
+                                    let privacy = &st.quick_settings.privacy;
+                                    let camera = format!("camera: {:?}", privacy.camera_kill);
+                                    let microphone =
+                                        format!("microphone: {:?}", privacy.microphone_kill);
+                                    st.push_notification(
+                                        "Privacy",
+                                        &format!("{camera} · {microphone}"),
+                                    );
+                                } else {
+                                    let mut failed = Vec::new();
+                                    let mut seen = std::collections::BTreeSet::new();
+                                    for use_ in &active {
+                                        if seen.insert(use_.client_id)
+                                            && os_actions::revoke_media_client(use_.client_id)
+                                                .is_err()
+                                        {
+                                            failed.push(use_.label.clone());
+                                        }
+                                    }
+                                    if failed.is_empty() {
+                                        st.quick_settings.privacy.active_media.clear();
+                                        st.push_notification(
+                                            "Camera and microphone access stopped",
+                                            "The active PipeWire clients were disconnected.",
+                                        );
+                                    } else {
+                                        st.push_notification(
+                                            "Could not stop all access",
+                                            &format!("Still active: {}", failed.join(", ")),
+                                        );
+                                    }
+                                }
+                            }
+                            2 => {
+                                st.quick_settings.push_level(
+                                    crate::shell::quick_settings::QsLevel::Notifications,
                                 );
+                                st.bump();
+                                *handled = true;
+                                return;
                             }
                             _ => {
-                                // Placeholder: a destructive poweroff
-                                // needs a confirmation UI first.
-                                st.push_notification(
-                                    "Power",
-                                    "Shutdown / restart menu not yet available.",
-                                );
+                                self.power_menu_open = true;
+                                self.power_menu_armed = None;
                             }
                         }
                         st.overlays.quick_settings = false;
@@ -6782,6 +7024,11 @@ impl Widget for ShellOverlayHost {
                     // participate — Released owns their shell-out.
                     let mut pending_wifi: Option<bool> = None;
                     let mut pending_bt: Option<bool> = None;
+                    let mut pending_wired: Option<bool> = None;
+                    let mut pending_airplane: Option<bool> = None;
+                    let mut pending_hotspot: Option<bool> = None;
+                    let mut pending_mobile: Option<bool> = None;
+                    let mut pending_night_light: Option<bool> = None;
                     let mut pending_power: Option<crate::shell::quick_settings::PowerProfile> =
                         None;
                     let mut st = chrome.borrow_mut();
@@ -6805,7 +7052,7 @@ impl Widget for ShellOverlayHost {
                             changed = true;
                         }
                     }
-                    for i in 0..2 {
+                    for i in 0..9 {
                         let prect = self.quick_settings_toggle_geometry(i);
                         let hit = Rect::new(
                             prect.x0 - 4.0,
@@ -6817,9 +7064,37 @@ impl Widget for ShellOverlayHost {
                             if i == 0 {
                                 st.quick_settings.wifi = !st.quick_settings.wifi;
                                 pending_wifi = Some(st.quick_settings.wifi);
-                            } else {
+                            } else if i == 1 {
                                 st.quick_settings.bluetooth = !st.quick_settings.bluetooth;
                                 pending_bt = Some(st.quick_settings.bluetooth);
+                            } else if i == 2 {
+                                if let Some(wired) = st.quick_settings.wired.as_mut() {
+                                    wired.connected = !wired.connected;
+                                    pending_wired = Some(wired.connected);
+                                }
+                            } else if i == 3 {
+                                st.quick_settings.radios.airplane_mode =
+                                    !st.quick_settings.radios.airplane_mode;
+                                pending_airplane = Some(st.quick_settings.radios.airplane_mode);
+                            } else if i == 4 {
+                                st.quick_settings.radios.hotspot_active =
+                                    !st.quick_settings.radios.hotspot_active;
+                                pending_hotspot = Some(st.quick_settings.radios.hotspot_active);
+                            } else if i == 5 {
+                                st.quick_settings
+                                    .push_level(crate::shell::quick_settings::QsLevel::Vpn);
+                            } else if i == 6 {
+                                st.quick_settings.night_light = !st.quick_settings.night_light;
+                                pending_night_light = Some(st.quick_settings.night_light);
+                            } else if i == 7 {
+                                st.push_notification(
+                                    "Displays",
+                                    "Display switching is available in Settings → Displays.",
+                                );
+                            } else if st.quick_settings.radios.wwan_available {
+                                st.quick_settings.radios.wwan_enabled =
+                                    !st.quick_settings.radios.wwan_enabled;
+                                pending_mobile = Some(st.quick_settings.radios.wwan_enabled);
                             }
                             changed = true;
                         }
@@ -6853,6 +7128,37 @@ impl Widget for ShellOverlayHost {
                                 "set_bluetooth",
                                 self.qs_actions.set_bluetooth(v),
                             );
+                        }
+                        if let Some(v) = pending_wired {
+                            crate::shell::qs_actions::log_qs_result(
+                                "set_wired",
+                                self.qs_actions.set_wired(v),
+                            );
+                        }
+                        if let Some(v) = pending_airplane {
+                            crate::shell::qs_actions::log_qs_result(
+                                "set_airplane_mode",
+                                self.qs_actions.set_airplane_mode(v),
+                            );
+                        }
+                        if let Some(v) = pending_hotspot {
+                            crate::shell::qs_actions::log_qs_result(
+                                "set_hotspot",
+                                self.qs_actions.set_hotspot(v),
+                            );
+                        }
+                        if let Some(v) = pending_mobile {
+                            crate::shell::qs_actions::log_qs_result(
+                                "set_mobile_broadband",
+                                self.qs_actions.set_mobile_broadband(v),
+                            );
+                        }
+                        if let Some(v) = pending_night_light {
+                            let mut values = serde_json::Map::new();
+                            values.insert("night_light".into(), serde_json::Value::Bool(v));
+                            if let Err(e) = settings_store::update_section("display", values) {
+                                tracing::warn!(error = %e, "night light preference save failed");
+                            }
                         }
                         if let Some(p) = pending_power {
                             use crate::shell::qs_actions::PowerProfile as ActPP;
@@ -6895,6 +7201,57 @@ impl Widget for ShellOverlayHost {
                     .chrome
                     .as_ref()
                     .is_some_and(|c| is_active_workspace_owner(&c.borrow()));
+
+                let default_rects = self.default_app_rects.clone();
+                for (resource, workspace_rect, user_rect) in default_rects {
+                    let workspace_hit = workspace_rect.area() > 0.0 && workspace_rect.contains(p);
+                    let user_hit = user_rect.area() > 0.0 && user_rect.contains(p);
+                    if !workspace_hit && !user_hit {
+                        continue;
+                    }
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut state = chrome.borrow_mut();
+                        let actor = state.local_user_id.clone();
+                        let candidates = crate::shell::launcher::default_app_candidates();
+                        let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
+                        let mut tree = state.tree_mut();
+                        if let Some(ws) = tree.active_workspace_mut() {
+                            if workspace_hit && is_owner {
+                                let next = crate::shell::workspace_settings::next_workspace_default(
+                                    ws.default_apps.policy.get(&resource),
+                                    &resource,
+                                    &candidates,
+                                );
+                                let _ = ws.set_default_app_policy_as(
+                                    &actor,
+                                    resource.clone(),
+                                    next,
+                                    &resolver,
+                                );
+                            } else if user_hit {
+                                let next = crate::shell::workspace_settings::next_user_default(
+                                    ws.default_apps
+                                        .user_choices
+                                        .get(&actor)
+                                        .and_then(|m| m.get(&resource)),
+                                    &resource,
+                                    &candidates,
+                                );
+                                let _ = ws.set_default_app_choice_as(
+                                    &actor,
+                                    &actor,
+                                    resource.clone(),
+                                    next,
+                                    &resolver,
+                                );
+                            }
+                        }
+                        drop(tree);
+                        state.bump();
+                    }
+                    *handled = true;
+                    return;
+                }
 
                 if let Some(composer) = self.grant_composer_rects {
                     let mut hit = None;
@@ -8552,7 +8909,7 @@ impl ShellOverlayHost {
         let ty = rect.y0 + 112.0;
         // Written into `self.ws_settings_tab_pill_rects` after the loop
         // so one source of geometry feeds draw and click-routing.
-        let mut pill_rects = [Rect::ZERO; 3];
+        let mut pill_rects = [Rect::ZERO; 4];
         for (i, tab) in tabs.iter().enumerate() {
             let active = *tab == active_tab;
             let label = tab.label();
@@ -8669,11 +9026,39 @@ impl ShellOverlayHost {
                 self.draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
                 return;
             }
+            WsTab::Apps => {
+                self.permissions_revoke_rects.clear();
+                self.grant_composer_rects = None;
+                self.member_control_rects.clear();
+                self.default_app_rects.clear();
+                let body_rect = self.ws_settings_body_rect(rect);
+                let candidates = crate::shell::launcher::default_app_candidates();
+                if let Some(ws) = tree.active_workspace() {
+                    self.default_app_rects.extend(
+                        default_app_rows(body_rect, &candidates)
+                            .into_iter()
+                            .map(|row| (row.resource, row.workspace_rect, row.user_rect)),
+                    );
+                    draw_default_apps_pane(
+                        scene,
+                        transform,
+                        body_rect,
+                        ws,
+                        &state.local_user_id,
+                        &candidates,
+                        text_renderer,
+                        theme,
+                    );
+                }
+                self.draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
+                return;
+            }
             WsTab::General => {
                 // Fall through to the General body below.
                 self.permissions_revoke_rects.clear();
                 self.grant_composer_rects = None;
                 self.member_control_rects.clear();
+                self.default_app_rects.clear();
             }
         }
 
@@ -9477,6 +9862,101 @@ impl ShellOverlayHost {
         }
     }
 
+    fn power_menu_rect(&self) -> Rect {
+        let w = 420.0_f64.min(self.rect.width() - 48.0);
+        let h = 388.0_f64.min(self.rect.height() - 48.0);
+        let c = self.rect.center();
+        Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0)
+    }
+
+    fn power_menu_action_rect(&self, index: usize) -> Rect {
+        let panel = self.power_menu_rect();
+        let y0 = panel.y0 + 62.0 + index as f64 * 58.0;
+        Rect::new(panel.x0 + 18.0, y0, panel.x1 - 18.0, y0 + 50.0)
+    }
+
+    fn draw_power_menu(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let panel = self.power_menu_rect();
+        let colors = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[1],
+            None,
+            &RoundedRect::from_rect(panel, 24.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Session",
+            theme.tokens.typography.scale.lg,
+            colors.text_primary,
+            transform * Affine::translate((panel.x0 + 22.0, panel.y0 + 20.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        let rows = [
+            ("Lock", "Keep apps running", ui::icons::Icon::Shield),
+            ("Log out", "End this session", ui::icons::Icon::ArrowRight),
+            ("Suspend", "Resume where you left off", ui::icons::Icon::Sun),
+            ("Restart", "Restart the computer", ui::icons::Icon::RotateCw),
+            ("Shut down", "Turn off the computer", ui::icons::Icon::Power),
+        ];
+        for (i, (label, detail, icon)) in rows.iter().enumerate() {
+            let row = self.power_menu_action_rect(i);
+            let armed = self.power_menu_armed == Some(i);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if armed {
+                    colors.semantic.danger.with_alpha_factor(0.18)
+                } else {
+                    colors.neutral[2]
+                },
+                None,
+                &RoundedRect::from_rect(row, 14.0),
+            );
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(row.x0 + 14.0, row.y0 + 14.0, row.x0 + 36.0, row.y0 + 36.0),
+                *icon,
+                if armed {
+                    colors.semantic.danger
+                } else {
+                    colors.text_primary
+                },
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                if armed {
+                    "Click again to confirm"
+                } else {
+                    label
+                },
+                theme.tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((row.x0 + 50.0, row.y0 + 8.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text(
+                scene,
+                detail,
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform * Affine::translate((row.x0 + 50.0, row.y0 + 28.0)),
+                None,
+            );
+        }
+    }
+
     fn draw_quick_settings(
         &mut self,
         scene: &mut Scene,
@@ -9536,12 +10016,20 @@ impl ShellOverlayHost {
                 self.draw_qs_bt_list(scene, transform, text_renderer, theme, &qs);
                 return;
             }
+            crate::shell::quick_settings::QsLevel::Vpn => {
+                self.draw_qs_vpn_list(scene, transform, text_renderer, theme, &qs);
+                return;
+            }
+            crate::shell::quick_settings::QsLevel::Notifications => {
+                self.draw_qs_notification_history(scene, transform, text_renderer, theme);
+                return;
+            }
             crate::shell::quick_settings::QsLevel::Root => {}
         }
 
-        // Section 1: Action row (Settings / Camera / Power).
+        // Section 1: Action row (Settings / Privacy / Notifications / Power).
         let white_10 = colors.text_primary.with_alpha_factor(0.10);
-        for i in 0..3 {
+        for i in 0..4 {
             let tile = self.quick_settings_action_geometry(i);
             // Control role: 12px — the radius scale deliberately omits
             // 16, so a literal 16 here would match nothing else on screen.
@@ -9551,27 +10039,28 @@ impl ShellOverlayHost {
             );
             // Power tile's red wash must expose its r/g/b signature so
             // the concept-parity spec test detects it.
-            let bg = if i == 2 {
+            let bg = if i == 3 {
                 colors.semantic.danger.with_alpha_factor(0.20)
             } else {
                 white_10
             };
             scene.fill(Fill::NonZero, transform, bg, None, &tile_rr);
 
-            let glyph_color = if i == 2 {
+            let glyph_color = if i == 3 {
                 colors.semantic.danger
             } else {
                 colors.text_primary
             };
             let glyph_rect = Rect::new(
                 tile.x0 + (tile.width() - 20.0) / 2.0,
-                tile.y0 + (tile.height() - 20.0) / 2.0,
+                tile.y0 + 7.0,
                 tile.x0 + f64::midpoint(tile.width(), 20.0),
-                tile.y0 + f64::midpoint(tile.height(), 20.0),
+                tile.y0 + 27.0,
             );
             let glyph = match i {
                 0 => ui::icons::Icon::Settings2,
                 1 => ui::icons::Icon::Camera,
+                2 => ui::icons::Icon::Bell,
                 _ => ui::icons::Icon::Power,
             };
             ui::icons::draw_icon(
@@ -9581,6 +10070,66 @@ impl ShellOverlayHost {
                 glyph,
                 glyph_color,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            if i == 1 {
+                let blocked = !matches!(
+                    qs.privacy.camera_kill,
+                    os_actions::KillState::Allowed | os_actions::KillState::Unavailable
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if blocked {
+                        colors.semantic.danger
+                    } else if !qs.privacy.active_media.is_empty() {
+                        colors.semantic.success
+                    } else {
+                        colors.text_dim.with_alpha_factor(0.45)
+                    },
+                    None,
+                    &vello::kurbo::Circle::new(Point::new(tile.x1 - 12.0, tile.y0 + 12.0), 4.0),
+                );
+                if qs.privacy.microphone_muted.unwrap_or(false)
+                    || !matches!(
+                        qs.privacy.microphone_kill,
+                        os_actions::KillState::Allowed | os_actions::KillState::Unavailable
+                    )
+                {
+                    ui::icons::draw_icon(
+                        scene,
+                        transform,
+                        Rect::new(tile.x0 + 7.0, tile.y0 + 7.0, tile.x0 + 21.0, tile.y0 + 21.0),
+                        ui::icons::Icon::MicOff,
+                        colors.semantic.danger,
+                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+            }
+            let action_label = match i {
+                0 => "Settings",
+                1 if !qs.privacy.active_media.is_empty() => "Stop access",
+                1 => "Privacy",
+                2 => "History",
+                _ => "Power",
+            };
+            let (label_w, _) = text_renderer.measure_weighted(
+                action_label,
+                tokens.typography.scale.xs,
+                None,
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                action_label,
+                tokens.typography.scale.xs,
+                glyph_color,
+                transform
+                    * Affine::translate((
+                        tile.center().x - f64::from(label_w) / 2.0,
+                        tile.y0 + 34.0,
+                    )),
+                None,
+                TextWeight::Medium,
             );
         }
 
@@ -9663,9 +10212,42 @@ impl ShellOverlayHost {
         } else {
             NOT_CONNECTED
         };
-        let toggle_rows: [(bool, &str, &str); 2] = [
-            (qs.wifi, "Wi-Fi", wifi_sub),
+        let wired_on = qs.wired.as_ref().is_some_and(|wired| wired.connected);
+        let wired_sub = qs
+            .wired
+            .as_ref()
+            .and_then(|wired| wired.device.as_deref())
+            .unwrap_or(if wired_on {
+                "Connected"
+            } else {
+                "Not connected"
+            });
+        let vpn_active = qs.vpns.iter().any(|vpn| vpn.active);
+        let vpn_sub = qs
+            .vpns
+            .iter()
+            .find(|vpn| vpn.active)
+            .or_else(|| qs.vpns.first())
+            .map_or("No profiles", |vpn| vpn.name.as_str());
+        let mobile_sub = if qs.radios.wwan_available {
+            if qs.radios.wwan_enabled {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        } else {
+            "Unavailable"
+        };
+        let toggle_rows: [(bool, &str, &str); 9] = [
+            (qs.wifi, "WLAN", wifi_sub),
             (qs.bluetooth, "Bluetooth", bt_sub),
+            (wired_on, "LAN", wired_sub),
+            (qs.radios.airplane_mode, "Airplane mode", "All radios"),
+            (qs.radios.hotspot_active, "Hotspot", "qOS Hotspot"),
+            (vpn_active, "VPN", vpn_sub),
+            (qs.night_light, "Night Light", "Display comfort"),
+            (false, "Displays", "Switch output"),
+            (qs.radios.wwan_enabled, "Mobile data", mobile_sub),
         ];
         for (i, (on, label, sub_line)) in toggle_rows.iter().enumerate() {
             let card = self.quick_settings_toggle_geometry(i);
@@ -9686,10 +10268,16 @@ impl ShellOverlayHost {
                 card.x0 + 12.0 + 20.0,
                 card.y0 + 12.0 + 20.0,
             );
-            let icon = if i == 0 {
-                ui::icons::Icon::Wifi
-            } else {
-                ui::icons::Icon::Bluetooth
+            let icon = match i {
+                0 => ui::icons::Icon::Wifi,
+                1 => ui::icons::Icon::Bluetooth,
+                2 => ui::icons::Icon::EthernetPort,
+                3 => ui::icons::Icon::WifiOff,
+                4 => ui::icons::Icon::Wifi,
+                5 => ui::icons::Icon::Shield,
+                6 => ui::icons::Icon::Sun,
+                7 => ui::icons::Icon::Monitor,
+                _ => ui::icons::Icon::Wifi,
             };
             ui::icons::draw_icon(
                 scene,
@@ -9764,9 +10352,21 @@ impl ShellOverlayHost {
             None,
             TextWeight::Semibold,
         );
+        let battery_summary = if qs.battery.present {
+            match qs.battery.health_percent() {
+                Some(health) => format!("{}% battery · {health}% health", qs.battery.capacity),
+                None => format!("{}% battery", qs.battery.capacity),
+            }
+        } else {
+            "AC power".to_string()
+        };
+        let power_detail = match qs.firmware_updates {
+            Some(count) if count > 0 => format!("{battery_summary} · {count} firmware update(s)"),
+            _ => battery_summary,
+        };
         text_renderer.draw_text(
             scene,
-            "Power Profile",
+            &power_detail,
             tokens.typography.scale.xs,
             colors.text_dim,
             transform * Affine::translate((pp.x0 + 44.0, pp.y0 + 26.0)),
@@ -10338,6 +10938,111 @@ impl ShellOverlayHost {
             transform * Affine::translate((tx, ty)),
             None,
         );
+    }
+
+    fn qs_notification_clear_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
+    }
+
+    /// Render the shell-owned, bounded session history. History deliberately
+    /// lives in chrome rather than Settings: Settings owns delivery policy,
+    /// while the shell is the only authority that actually received and
+    /// retired these notifications.
+    fn draw_qs_notification_history(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Notifications");
+        let rect = self.quick_settings_rect();
+        let colors = &theme.tokens.colors;
+        let history = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow().notification_history().to_vec())
+            .unwrap_or_default();
+        if history.is_empty() {
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "No recent notifications",
+            );
+            return;
+        }
+
+        let clear = self.qs_notification_clear_rect();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &RoundedRect::from_rect(clear, 10.0),
+        );
+        let (clear_w, clear_h) =
+            text_renderer.measure("Clear", theme.tokens.typography.scale.xs, None);
+        text_renderer.draw_text(
+            scene,
+            "Clear",
+            theme.tokens.typography.scale.xs,
+            colors.text_dim,
+            transform
+                * Affine::translate((
+                    clear.center().x - f64::from(clear_w) / 2.0,
+                    clear.center().y - f64::from(clear_h) / 2.0,
+                )),
+            None,
+        );
+
+        let row_h = 70.0;
+        let max_rows = ((rect.height() - 64.0) / row_h).floor().max(1.0) as usize;
+        for (index, notification) in history.iter().rev().take(max_rows).enumerate() {
+            let y0 = rect.y0 + 54.0 + index as f64 * row_h;
+            let row = Rect::new(rect.x0 + 12.0, y0, rect.x1 - 12.0, y0 + row_h - 6.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.neutral[2].with_alpha_factor(0.62),
+                None,
+                &RoundedRect::from_rect(row, 12.0),
+            );
+            let source = notification
+                .app_name
+                .as_deref()
+                .or(notification.app_id.as_deref())
+                .unwrap_or("System");
+            text_renderer.draw_text(
+                scene,
+                source,
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform * Affine::translate((row.x0 + 12.0, row.y0 + 7.0)),
+                Some((row.width() - 24.0) as f32),
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &notification.title,
+                theme.tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((row.x0 + 12.0, row.y0 + 24.0)),
+                Some((row.width() - 24.0) as f32),
+                TextWeight::Semibold,
+            );
+            if notification.show_preview && !notification.body.is_empty() {
+                text_renderer.draw_text(
+                    scene,
+                    &notification.body,
+                    theme.tokens.typography.scale.xs,
+                    colors.text_dim,
+                    transform * Affine::translate((row.x0 + 12.0, row.y0 + 44.0)),
+                    Some((row.width() - 24.0) as f32),
+                );
+            }
+        }
     }
 
     /// Hit rect for the back-chevron in the drill-in header. Click here
@@ -10933,6 +11638,81 @@ impl ShellOverlayHost {
         }
     }
 
+    /// VPN is a picker, never an ambiguous one-click toggle: every configured
+    /// profile keeps its own visible state and hit target.
+    fn draw_qs_vpn_list(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        qs: &crate::shell::chrome_state::QuickSettingsState,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let rect = self.quick_settings_rect();
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "VPN");
+        if qs.vpns.is_empty() {
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "No VPN profiles yet · add one in Settings",
+            );
+            return;
+        }
+        let row_h = 56.0_f64;
+        for (i, vpn) in qs.vpns.iter().enumerate() {
+            let y = rect.y0 + 56.0 + i as f64 * row_h;
+            let row = Rect::new(rect.x0 + 12.0, y, rect.x1 - 12.0, y + row_h - 4.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if vpn.active {
+                    colors.accent[5].with_alpha_factor(0.18)
+                } else {
+                    colors.neutral[2]
+                },
+                None,
+                &RoundedRect::from_rect(row, 12.0),
+            );
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(row.x0 + 12.0, row.y0 + 16.0, row.x0 + 32.0, row.y0 + 36.0),
+                ui::icons::Icon::Shield,
+                if vpn.active {
+                    colors.accent[5]
+                } else {
+                    colors.text_dim
+                },
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &vpn.name,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((row.x0 + 44.0, row.y0 + 9.0)),
+                None,
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text(
+                scene,
+                if vpn.active {
+                    "Connected · click to disconnect"
+                } else {
+                    "Click to connect"
+                },
+                tokens.typography.scale.xs,
+                colors.text_dim,
+                transform * Affine::translate((row.x0 + 44.0, row.y0 + 29.0)),
+                None,
+            );
+        }
+    }
+
     /// Collaborators dropdown: a peer-roster popover anchored under the
     /// top-right avatar stack. Each row shows an indigo-filled initial
     /// circle + the peer's name; empty rosters show a "No peers" hint so
@@ -11242,26 +12022,29 @@ impl ShellOverlayHost {
     }
 
     /// Toggle card rect for the i-th quick-settings toggle card
-    /// (0 = Wi-Fi, 1 = Bluetooth). The cards sit in a 2-col grid below
+    /// The nine system tiles sit in a 3-column grid below
     /// the slider card.
     pub fn quick_settings_toggle_geometry(&self, i: usize) -> Rect {
         let r = self.quick_settings_rect();
         let grid_y = r.y0 + 176.0;
         let grid_h = 88.0;
         let inner_w = r.width() - 32.0; // 16 px outer padding each side.
-        let card_w = (inner_w - 8.0) / 2.0; // 8 px gap between cards.
-        let x0 = r.x0 + 16.0 + i as f64 * (card_w + 8.0);
-        Rect::new(x0, grid_y, x0 + card_w, grid_y + grid_h)
+        let card_w = (inner_w - 16.0) / 3.0; // 8 px gaps between cards.
+        let row = i / 3;
+        let col = i % 3;
+        let x0 = r.x0 + 16.0 + col as f64 * (card_w + 8.0);
+        let y0 = grid_y + row as f64 * (grid_h + 8.0);
+        Rect::new(x0, y0, x0 + card_w, y0 + grid_h)
     }
 
-    /// Action-row tile rect for the i-th tile (0 = Settings, 1 = Camera,
-    /// 2 = Power). The row sits at the top of the popover.
+    /// Action-row tile rect for the i-th tile (Settings, Privacy,
+    /// Notifications, Power). The row sits at the top of the popover.
     pub(crate) fn quick_settings_action_geometry(&self, i: usize) -> Rect {
         let r = self.quick_settings_rect();
         let row_y = r.y0 + 16.0;
         let row_h = 56.0;
         let inner_w = r.width() - 32.0;
-        let tile_w = (inner_w - 16.0) / 3.0; // 8 px gap × 2.
+        let tile_w = (inner_w - 24.0) / 4.0; // 8 px gap × 3.
         let x0 = r.x0 + 16.0 + i as f64 * (tile_w + 8.0);
         Rect::new(x0, row_y, x0 + tile_w, row_y + row_h)
     }
@@ -11269,7 +12052,7 @@ impl ShellOverlayHost {
     /// Power Profile row rect — sits at the bottom of the popover.
     pub fn quick_settings_power_profile_geometry(&self) -> Rect {
         let r = self.quick_settings_rect();
-        let row_y = r.y0 + 280.0;
+        let row_y = r.y0 + 472.0;
         let row_h = 48.0;
         Rect::new(r.x0 + 16.0, row_y, r.x1 - 16.0, row_y + row_h)
     }
@@ -14834,6 +15617,7 @@ mod maximize_harvest_tests {
         let ws = Workspace {
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
@@ -15015,6 +15799,7 @@ mod resync_strips_tests {
         let ws = Workspace {
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),

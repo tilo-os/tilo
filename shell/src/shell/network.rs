@@ -200,20 +200,12 @@ pub struct InboundAppPresence {
     pub peer: u64,
     pub app_id: String,
     pub cluster_id: String,
-    pub payload: InboundAppPresencePayload,
-}
-
-/// Typed peer presence, plus the one-release read seam for peers that still
-/// embed a legacy JSON request. New publishes never construct `LegacyJson`.
-#[derive(Debug, Clone)]
-pub enum InboundAppPresencePayload {
-    Typed(collab_types::PeerPresence),
-    LegacyJson(Vec<u8>),
+    pub presence: collab_types::PeerPresence,
 }
 
 /// One received *signed* app-CRDT envelope. Distinct from
 /// [`InboundAppCrdt`] so a malformed envelope can never poison the
-/// legacy fan-out path, and vice versa.
+/// unsigned fan-out path, and vice versa.
 #[derive(Debug, Clone)]
 pub struct InboundAppCrdtSigned {
     pub peer: u64,
@@ -451,7 +443,6 @@ impl ShellNetwork {
             }
             NeighbourMsg::AppCrdtIncremental { cluster_id, .. }
             | NeighbourMsg::AppCrdtIncrementalSigned { cluster_id, .. }
-            | NeighbourMsg::AppPresence { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
             | NeighbourMsg::AppCrdtSnapshot { cluster_id, .. } => Some(cluster_id.as_str()),
             _ => None,
@@ -705,22 +696,6 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_app_presence)
     }
 
-    /// Queue a received `AppPresence` for the broker's drainer.
-    pub fn handle_app_presence_message(
-        &self,
-        peer: u64,
-        app_id: String,
-        cluster_id: String,
-        frame: Vec<u8>,
-    ) {
-        self.queue_app_presence(
-            peer,
-            app_id,
-            cluster_id,
-            InboundAppPresencePayload::LegacyJson(frame),
-        );
-    }
-
     pub fn handle_typed_app_presence_message(
         &self,
         peer: u64,
@@ -728,27 +703,12 @@ impl ShellNetwork {
         cluster_id: String,
         presence: collab_types::PeerPresence,
     ) {
-        self.queue_app_presence(
-            peer,
-            app_id,
-            cluster_id,
-            InboundAppPresencePayload::Typed(presence),
-        );
-    }
-
-    fn queue_app_presence(
-        &self,
-        peer: u64,
-        app_id: String,
-        cluster_id: String,
-        payload: InboundAppPresencePayload,
-    ) {
         if let Ok(mut buf) = self.inbound_app_presence.lock() {
             buf.push(InboundAppPresence {
                 peer,
                 app_id,
                 cluster_id,
-                payload,
+                presence,
             });
         }
     }
@@ -756,8 +716,8 @@ impl ShellNetwork {
     /// Publish one document's whole state so a peer that has just joined
     /// can adopt a document it holds no history for. Refuses above
     /// [`MAX_APP_SNAPSHOT_BYTES`] to bound serialization and fan-out memory —
-    /// both transports reach the wire through here, so the cap is enforced
-    /// once. Refusal logs at `warn`: the consequence
+    /// snapshots reach the wire through here, so the cap is enforced once.
+    /// Refusal logs at `warn`: the consequence
     /// (this document does not converge) has no other symptom.
     pub fn publish_app_crdt_snapshot(
         &self,
@@ -1367,25 +1327,6 @@ impl ShellNetwork {
                     }
                     continue;
                 }
-                // A peer's caret/selection inside a shared document.
-                // Same two gates as the CRDT variants.
-                if let NeighbourMsg::AppPresence {
-                    peer: peer_hash,
-                    ref app_id,
-                    ref cluster_id,
-                    ref frame,
-                } = msg
-                {
-                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
-                        self.handle_app_presence_message(
-                            peer_hash,
-                            app_id.clone(),
-                            cluster_id.clone(),
-                            frame.clone(),
-                        );
-                    }
-                    continue;
-                }
                 if let NeighbourMsg::AppPresenceV2 {
                     peer: peer_hash,
                     ref app_id,
@@ -1699,20 +1640,20 @@ mod tests {
             2,
             "Arrived + Left prompt a bounded app snapshot refresh"
         );
-        let payloads: Vec<_> = app_events.iter().map(|event| &event.payload).collect();
+        let payloads: Vec<_> = app_events.iter().map(|event| &event.presence).collect();
         assert!(matches!(
             payloads[0],
-            InboundAppPresencePayload::Typed(collab_types::PeerPresence {
+            collab_types::PeerPresence {
                 payload: collab_types::PeerPresencePayload::Arrived,
                 ..
-            })
+            }
         ));
         assert!(matches!(
             payloads[1],
-            InboundAppPresencePayload::Typed(collab_types::PeerPresence {
+            collab_types::PeerPresence {
                 payload: collab_types::PeerPresencePayload::Left,
                 ..
-            })
+            }
         ));
     }
 

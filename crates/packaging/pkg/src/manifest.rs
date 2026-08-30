@@ -28,7 +28,8 @@ pub struct Manifest {
     /// `[entrypoint]` block — what to launch. Required for `app`; optional/unset for other kinds.
     #[serde(default)]
     pub entrypoint: Option<Entrypoint>,
-    /// `[providers]` block — only meaningful for `format-provider`.
+    /// `[providers]` block — resource claims for GUI apps and MIME scope for
+    /// `format-provider` packages.
     #[serde(default)]
     pub providers: Providers,
     /// `[cli]` block — commands published on PATH via the launcher's
@@ -686,7 +687,8 @@ impl serde::Serialize for SplashSegment {
     }
 }
 
-/// `[providers]` — file kinds this package can open; only meaningful for `kind = "format-provider"`.
+/// `[providers]` — normalized resources an app can open, or codec MIME scope
+/// for `kind = "format-provider"`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Providers {
     /// MIME types claimed (e.g. `application/vnd.oasis.opendocument.text`).
@@ -695,6 +697,34 @@ pub struct Providers {
     /// File extensions claimed (without leading dot).
     #[serde(default)]
     pub ext: Vec<String>,
+    /// URI schemes handled by the application (without `:`), such as
+    /// `https`, `mailto`, or `webcal`. `file`, `data`, and `javascript` are
+    /// deliberately reserved and rejected by validation.
+    #[serde(default, alias = "uri-schemes", alias = "uri_schemes")]
+    pub schemes: Vec<String>,
+}
+
+impl Providers {
+    fn normalize(&mut self) {
+        self.mime = normalize_unique(&self.mime, |value| value.trim().to_ascii_lowercase());
+        self.ext = normalize_unique(&self.ext, |value| {
+            value.trim().trim_start_matches('.').to_ascii_lowercase()
+        });
+        self.schemes = normalize_unique(&self.schemes, |value| {
+            value.trim().trim_end_matches(':').to_ascii_lowercase()
+        });
+    }
+}
+
+fn normalize_unique(values: &[String], normalize: impl Fn(&str) -> String) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        let normalized = normalize(value);
+        if !out.contains(&normalized) {
+            out.push(normalized);
+        }
+    }
+    out
 }
 
 impl Manifest {
@@ -712,6 +742,7 @@ impl Manifest {
                 (name, req)
             })
             .collect();
+        m.providers.normalize();
         Ok(m)
     }
 
