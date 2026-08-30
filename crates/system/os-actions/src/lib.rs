@@ -31,11 +31,13 @@ pub mod firmware;
 pub mod modem;
 pub mod network;
 pub mod power;
+pub mod printing;
 pub mod privacy;
 mod process;
 pub mod session;
 pub mod time;
 pub mod tool_intent;
+pub mod users;
 
 pub use audio::{
     VolumeState, get_source_state, get_volume, get_volume_state, set_mute, set_volume, toggle_mute,
@@ -67,6 +69,7 @@ pub use network::{
     set_network_autoconnect, set_vpn_connection, set_wifi, set_wired,
 };
 pub use power::{PowerProfile, get_power_profile, set_power_profile};
+pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
 pub use privacy::{
     ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
     monitor_media_usage, revoke_media_client,
@@ -77,6 +80,7 @@ pub use tool_intent::{
     BackupsRoute, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent,
     ToolReply, ToolRequest, VpnRoute, open_tool, tool_intent_from_env,
 };
+pub use users::AccountRole;
 
 use std::time::Duration;
 

@@ -66,6 +66,43 @@ Do not hide expert capability behind a global “advanced mode.” Prefer a stab
 - The shared `appearance` record carries Settings' canonical active state. Studio's editable artifact is nested under `appearance.studio`, while `appearance.custom_theme` contains the validated, versioned runtime schema. Both writers merge fields they do not own.
 - Built-in Studio themes resolve through the shared `ui::Theme` constructors. Custom themes materialize through `ui::CustomThemeSpec`, the same exact color, shape, spacing, and typography contract consumed by shell chrome and every app.
 
+### People and identities
+
+- A **login account** is device scope: UID, home directory, password, avatar,
+  administrator role and automatic login. AccountsService is authoritative and
+  polkit authenticates every privileged change; Settings never edits passwd or
+  shadow files.
+- A **qOS identity** is personal scope and is not a login account. One login may
+  hold several identities. Settings shows their public fingerprints, lets the
+  person select an explicit active identity, and protects active/final records
+  from removal.
+- The selector contains only a validated identity id. The launcher resolves it
+  on the host and read-only binds exactly that regular file into a new app.
+  Apps never receive the identity directory and cannot enumerate or select
+  another key. Running apps keep the identity they started with, so an authored
+  operation cannot silently change person halfway through.
+- Identity creation, device enrolment, backup and key rotation remain one
+  identity ceremony shared with onboarding. Settings hosts/launches that
+  ceremony; it must not implement cryptography or copy secret fields into its
+  collaborative settings document.
+
+### Printing and scanning
+
+- Settings owns everyday setup and recovery: driverless IPP discovery/addition,
+  default selection, live queue health, active jobs, pause/resume, retry/cancel,
+  removal confirmation and scanner discovery.
+- CUPS, cups-filters and SANE are the authorities. qOS exposes one typed narrow
+  service over them and validates queue names, job ids and IPP(S) URIs before
+  invoking a tool. There is no qOS printer database or driver catalogue.
+- A Print Centre is justified for long job history, document previews, advanced
+  finishing, calibration and diagnostic logs. It consumes the same service and
+  opens on a printer/job id; it does not duplicate discovery, state, defaults or
+  queue mutation code.
+- Automatic setup offers only IPP Everywhere/AirPrint/Mopria devices. Legacy
+  PPD/driver installation is an explicit expert workflow with provenance and
+  package review, never a background download prompted by an untrusted network
+  advertisement.
+
 ## Integration contract
 
 The target architecture has four pieces:
