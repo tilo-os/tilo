@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+state_file=/var/lib/qos/update-policy
+if ! grep -qx 'metered=avoid' "$state_file" 2>/dev/null; then
+    exit 0
+fi
+
+# NetworkManager is the system authority for whether an active connection is
+# metered. Unknown/unreported links do not block security updates; only an
+# explicit yes (including a guessed yes) does.
+if ! command -v nmcli >/dev/null 2>&1; then
+    exit 0
+fi
+if nmcli -t -f GENERAL.STATE,GENERAL.METERED device show 2>/dev/null \
+    | grep -Eiq '(^|:)yes([[:space:]]|$)|yes \(guessed\)'; then
+    echo 'qOS update deferred: active connection is metered'
+    exit 1
+fi
+exit 0

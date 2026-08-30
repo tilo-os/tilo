@@ -1023,6 +1023,49 @@ Last paragraph.
     }
 
     #[test]
+    fn tex_and_typst_formula_fences_round_trip_as_editable_source() {
+        let source = r#"```tex
+\frac{x^2+1}{\sqrt{y}}
+```
+
+```typst visual
+sum_(i=1)^n frac(1, i^2)
+```
+"#;
+        let specs = parse(source);
+        assert_eq!(specs.len(), 2);
+        assert!(matches!(
+            &specs[0],
+            BlockSpec::CodeBlock { lang: Some(lang), text }
+                if lang == "tex" && text.contains("\\frac")
+        ));
+        assert!(matches!(
+            &specs[1],
+            BlockSpec::CodeBlock { lang: Some(lang), text }
+                if lang == "typst visual" && text.contains("sum_")
+        ));
+        assert_eq!(serialize(&specs), source);
+
+        let blocks = specs_to_blocks(&specs);
+        assert_eq!(
+            ui::math::FormulaSyntax::from_fence_language(match &blocks[0].kind {
+                ui::widget::BlockKind::CodeBlock { lang } => lang.as_deref(),
+                _ => None,
+            }),
+            Some(ui::math::FormulaSyntax::Tex)
+        );
+        assert_eq!(
+            ui::math::FormulaDescriptor::from_fence_language(match &blocks[1].kind {
+                ui::widget::BlockKind::CodeBlock { lang } => lang.as_deref(),
+                _ => None,
+            })
+            .map(|descriptor| descriptor.mode),
+            Some(ui::math::FormulaMode::Visual)
+        );
+        assert_eq!(serialize(&blocks_to_specs(&blocks)), source);
+    }
+
+    #[test]
     fn parse_numbered_list_items() {
         let blocks = parse("1. first\n\n2. second\n\n3. third\n");
         assert_eq!(

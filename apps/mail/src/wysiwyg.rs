@@ -1,18 +1,17 @@
 //! A small, self-contained **WYSIWYG rich-text editor** for HTML mail bodies.
 //!
-//! It is built only from primitives any app on the `ui` toolkit already has
-//! (`TextRenderer::draw_text_styled`, a Vello `Scene`, raw winit events), so it
-//! has no dependency on Mail itself and could be lifted into `ui` wholesale —
-//! see the promotion note at the bottom of this file. The toolkit's existing
+//! Its attributed paragraphs are shaped, wrapped, painted and hit-tested by
+//! the toolkit's [`RichTextLayout`], so it shares ligature, BiDi, Unicode-break
+//! and caret geometry with the other editors. The toolkit's existing
 //! `BlockEditor` is Markdown-only, single-line-per-block, and has no
 //! underline / block-quote / `href` link, so an HTML-mail editor needs its own
-//! component; this is that component, kept clean enough to reuse.
+//! component; Mail therefore retains the HTML document model and serialization.
 //!
 //! ## Model
 //! A document is a list of [`Block`]s. Each block has a [`BlockKind`]
 //! (paragraph, H1–H3, bullet / numbered list item, block-quote) and a run of
 //! text carrying per-character inline [`Style`] flags (bold / italic /
-//! underline) plus an optional link target. The caret is a `(block, byte)`
+//! underline) plus an optional link target. The caret is a `(block, character)`
 //! pair; a selection is an ordered caret pair. This is deliberately a flat,
 //! easy-to-serialise model rather than a tree.
 //!
@@ -33,8 +32,11 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
+use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_selection::{next_char_boundary, prev_char_boundary};
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 
 /// Inline character styling. Stored per byte run; toggled over the selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -108,7 +110,6 @@ struct Caret {
     glyph: usize,
 }
 
-const FONT_SIZE: f32 = 14.0;
 const LINE_GAP: f64 = 6.0;
 const BLOCK_GAP: f64 = 10.0;
 const PAD_X: f64 = 12.0;
@@ -131,9 +132,10 @@ pub struct Wysiwyg {
     /// Per-block laid-out content rects (in screen coords), recomputed each
     /// `layout`. Used for click hit-testing and caret placement.
     block_rects: Vec<Rect>,
-    /// Cached x-offsets of every glyph boundary per visible block line, filled
-    /// during `draw`; index by block. Each inner vec has `glyphs.len()+1` xs.
-    glyph_xs: Vec<Vec<f64>>,
+    /// Authoritative attributed layouts from the latest draw. Pointer hit
+    /// testing reads these instead of maintaining a second approximate row
+    /// model, so ligatures, BiDi and soft wrapping agree with the ink.
+    block_layouts: Vec<RichTextLayout>,
     scroll_y: f64,
     dirty: bool,
 }
@@ -154,7 +156,7 @@ impl Wysiwyg {
             rect: Rect::ZERO,
             pending: Style::default(),
             block_rects: Vec::new(),
-            glyph_xs: Vec::new(),
+            block_layouts: Vec::new(),
             scroll_y: 0.0,
             dirty: true,
         }
@@ -547,10 +549,15 @@ impl Wysiwyg {
             return;
         }
         if self.caret.glyph > 0 {
-            if let Some(blk) = self.blocks.get_mut(self.caret.block) {
-                blk.glyphs.remove(self.caret.glyph - 1);
+            if let Some(block) = self.blocks.get(self.caret.block) {
+                let byte = glyph_byte(&block.glyphs, self.caret.glyph);
+                let previous = prev_char_boundary(&block.text(), byte);
+                let previous_glyph = glyph_index_at_byte(&block.glyphs, previous);
+                if let Some(block) = self.blocks.get_mut(self.caret.block) {
+                    block.glyphs.drain(previous_glyph..self.caret.glyph);
+                }
+                self.caret.glyph = previous_glyph;
             }
-            self.caret.glyph -= 1;
         } else if self.caret.block > 0 {
             // Merge with previous block.
             let prev = self.caret.block - 1;
@@ -580,7 +587,10 @@ impl Wysiwyg {
         }
         if dx < 0 {
             if self.caret.glyph > 0 {
-                self.caret.glyph -= 1;
+                let block = &self.blocks[self.caret.block];
+                let byte = glyph_byte(&block.glyphs, self.caret.glyph);
+                self.caret.glyph =
+                    glyph_index_at_byte(&block.glyphs, prev_char_boundary(&block.text(), byte));
             } else if self.caret.block > 0 {
                 self.caret.block -= 1;
                 self.caret.glyph = self
@@ -593,7 +603,11 @@ impl Wysiwyg {
             .get(self.caret.block)
             .is_some_and(|b| self.caret.glyph < b.glyphs.len())
         {
-            self.caret.glyph += 1;
+            if let Some(block) = self.blocks.get(self.caret.block) {
+                let byte = glyph_byte(&block.glyphs, self.caret.glyph);
+                self.caret.glyph =
+                    glyph_index_at_byte(&block.glyphs, next_char_boundary(&block.text(), byte));
+            }
         } else if self.caret.block + 1 < self.blocks.len() {
             self.caret.block += 1;
             self.caret.glyph = 0;
@@ -644,157 +658,173 @@ impl Wysiwyg {
     pub fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         self.block_rects.clear();
-        self.glyph_xs.clear();
+        self.block_layouts.clear();
         let content_w = (self.rect.width() - 2.0 * PAD_X).max(40.0);
         let mut y = self.rect.y0 + PAD_Y - self.scroll_y;
         let mut list_num = 1;
 
         if self.is_empty() && !self.focused {
-            tr.draw_text(
+            let style = theme.tokens.typography.style(TextRole::Body);
+            tr.draw_style(
                 scene,
                 "Write your message…",
-                FONT_SIZE,
                 c.text_dim,
                 t * Affine::translate((self.rect.x0 + PAD_X, self.rect.y0 + PAD_Y)),
                 None,
+                &style,
             );
         }
 
+        let selection = self.ordered_selection();
+        let link_rgba = c.accent[4].to_rgba8();
+        let link_rgb = [link_rgba.r, link_rgba.g, link_rgba.b];
         for (bi, b) in self.blocks.iter().enumerate() {
-            let (size, weight) = match b.kind {
-                BlockKind::Heading(1) => (20.0_f32, TextWeight::Bold),
-                BlockKind::Heading(2) => (17.0, TextWeight::Bold),
-                BlockKind::Heading(_) => (15.0, TextWeight::Semibold),
-                _ => (FONT_SIZE, TextWeight::Regular),
+            let style = match b.kind {
+                BlockKind::Heading(1) => theme.tokens.typography.style(TextRole::Heading),
+                BlockKind::Heading(2) => theme
+                    .tokens
+                    .typography
+                    .style(TextRole::Title)
+                    .with_weight(TextWeight::Bold),
+                BlockKind::Heading(_) => theme
+                    .tokens
+                    .typography
+                    .style(TextRole::Body)
+                    .with_weight(TextWeight::Semibold),
+                _ => theme.tokens.typography.style(TextRole::Body),
             };
-            let line_h = f64::from(size) * 1.25 + LINE_GAP;
             let indent = match b.kind {
                 BlockKind::Bullet | BlockKind::Numbered => LIST_INDENT,
                 BlockKind::Quote => QUOTE_INDENT,
                 _ => 0.0,
             };
             let bx = self.rect.x0 + PAD_X + indent;
+            let available = (content_w - indent).max(1.0) as f32;
 
-            self.draw_block_prefix(scene, t, tr, theme, b, y, line_h, size, &mut list_num);
-
-            // Glyph runs (coalesced by style); returns each glyph boundary's
-            // x-offset for caret placement / hit-testing.
-            let xs = draw_block_runs(scene, t, tr, theme, b, bx, y, size, weight);
-            let x_end = *xs.last().unwrap_or(&bx);
-
-            let brect = Rect::new(
-                bx,
-                y,
-                self.rect.x0 + PAD_X + content_w,
-                y + line_h - LINE_GAP,
+            let mut spans = Vec::new();
+            let mut underlines = Vec::new();
+            let mut byte = 0usize;
+            let mut idx = 0usize;
+            while idx < b.glyphs.len() {
+                let glyph = &b.glyphs[idx];
+                let mut end = idx + 1;
+                while end < b.glyphs.len()
+                    && b.glyphs[end].style == glyph.style
+                    && b.glyphs[end].link == glyph.link
+                {
+                    end += 1;
+                }
+                let run: String = b.glyphs[idx..end].iter().map(|item| item.ch).collect();
+                let run_end = byte + run.len();
+                spans.push(
+                    RichSpan::new(run)
+                        .bold(glyph.style.bold)
+                        .italic(glyph.style.italic)
+                        .color(glyph.link.map(|_| link_rgb)),
+                );
+                if glyph.style.underline || glyph.link.is_some() {
+                    underlines.push((byte, run_end));
+                }
+                byte = run_end;
+                idx = end;
+            }
+            if spans.is_empty() {
+                spans.push(RichSpan::new(String::new()));
+            }
+            let layout = RichTextLayout::shape_styled(
+                &mut tr.font_system,
+                &spans,
+                &style,
+                Some(available),
+                TextAlign::Left,
+                underlines,
+                Vec::new(),
             );
-            self.draw_caret_and_selection(scene, t, theme, bi, y, size, bx, x_end, &xs);
+            let layout_h = f64::from(layout.height());
+
+            // Quote bar.
+            if matches!(b.kind, BlockKind::Quote) {
+                let bar = Rect::new(
+                    self.rect.x0 + PAD_X,
+                    y,
+                    self.rect.x0 + PAD_X + 3.0,
+                    y + layout_h,
+                );
+                scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5], None, &bar);
+            }
+            // List marker.
+            if matches!(b.kind, BlockKind::Bullet) {
+                tr.draw_style(
+                    scene,
+                    "•",
+                    c.text_dim,
+                    t * Affine::translate((self.rect.x0 + PAD_X + 4.0, y)),
+                    None,
+                    &style,
+                );
+            } else if matches!(b.kind, BlockKind::Numbered) {
+                tr.draw_style(
+                    scene,
+                    &format!("{list_num}."),
+                    c.text_dim,
+                    t * Affine::translate((self.rect.x0 + PAD_X, y)),
+                    None,
+                    &style,
+                );
+                list_num += 1;
+            }
+            if !matches!(b.kind, BlockKind::Numbered) {
+                list_num = 1;
+            }
+
+            let origin = t * Affine::translate((bx, y));
+            if let Some((sa, sb)) = selection
+                && bi >= sa.block
+                && bi <= sb.block
+            {
+                let (s, e) = self.block_selection_bounds(bi, sa, sb);
+                let start = glyph_byte(&b.glyphs, s);
+                let end = glyph_byte(&b.glyphs, e);
+                for (x0, y0, x1, y1) in layout.selection_rects(start, end) {
+                    let sel = Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        origin,
+                        c.accent[5].with_alpha_factor(0.28),
+                        None,
+                        &sel,
+                    );
+                }
+            }
+            tr.draw_rich(scene, &layout, origin, c.text_primary);
+
+            if self.focused && self.caret.block == bi {
+                let caret_byte = glyph_byte(&b.glyphs, self.caret.glyph);
+                let (cx, top, height) = layout.caret_geometry(caret_byte);
+                let caret = Rect::new(
+                    f64::from(cx),
+                    f64::from(top),
+                    f64::from(cx) + theme.caret_width,
+                    f64::from(top + height),
+                );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    origin,
+                    c.accent[5],
+                    None,
+                    &caret,
+                );
+            }
+
+            let brect = Rect::new(bx, y, bx + f64::from(available), y + layout_h);
             self.block_rects.push(brect);
-            self.glyph_xs.push(xs);
-            y += line_h
+            self.block_layouts.push(layout);
+            y += layout_h
                 + if matches!(b.kind, BlockKind::Heading(_)) {
                     BLOCK_GAP
                 } else {
-                    2.0
+                    LINE_GAP
                 };
-        }
-    }
-
-    /// Draw a block's quote bar or list marker, advancing `list_num` for
-    /// numbered lists and resetting it otherwise. Part of [`Self::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the per-block layout state draw() already computed; bundling them would just move the same count into a field list"
-    )]
-    fn draw_block_prefix(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        b: &Block,
-        y: f64,
-        line_h: f64,
-        size: f32,
-        list_num: &mut i32,
-    ) {
-        let c = &theme.tokens.colors;
-        if matches!(b.kind, BlockKind::Quote) {
-            let bar = Rect::new(
-                self.rect.x0 + PAD_X,
-                y,
-                self.rect.x0 + PAD_X + 3.0,
-                y + line_h - LINE_GAP,
-            );
-            scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5], None, &bar);
-        }
-        if matches!(b.kind, BlockKind::Bullet) {
-            tr.draw_text(
-                scene,
-                "•",
-                size,
-                c.text_dim,
-                t * Affine::translate((self.rect.x0 + PAD_X + 4.0, y)),
-                None,
-            );
-        } else if matches!(b.kind, BlockKind::Numbered) {
-            tr.draw_text(
-                scene,
-                &format!("{list_num}."),
-                size,
-                c.text_dim,
-                t * Affine::translate((self.rect.x0 + PAD_X, y)),
-                None,
-            );
-            *list_num += 1;
-        }
-        if !matches!(b.kind, BlockKind::Numbered) {
-            *list_num = 1;
-        }
-    }
-
-    /// Draw the caret and/or selection highlight for block `bi`, if either
-    /// falls within it. `xs` is that block's glyph-boundary x-offsets from
-    /// [`draw_block_runs`]. Part of [`Self::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the per-block layout state draw() already computed; bundling them would just move the same count into a field list"
-    )]
-    fn draw_caret_and_selection(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        bi: usize,
-        y: f64,
-        size: f32,
-        bx: f64,
-        x_end: f64,
-        xs: &[f64],
-    ) {
-        let c = &theme.tokens.colors;
-        if self.focused && self.caret.block == bi {
-            let cx = *xs.get(self.caret.glyph).unwrap_or(&bx);
-            let car = Rect::new(cx, y, cx + 1.6, y + f64::from(size) * 1.2);
-            scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5], None, &car);
-        }
-        if let Some((sa, sb)) = self.ordered_selection()
-            && bi >= sa.block
-            && bi <= sb.block
-        {
-            let (sel_start, sel_end) = self.block_selection_bounds(bi, sa, sb);
-            let x0 = *xs.get(sel_start).unwrap_or(&bx);
-            let x1 = *xs.get(sel_end).unwrap_or(&x_end);
-            if x1 > x0 {
-                let sel = Rect::new(x0, y, x1, y + f64::from(size) * 1.2);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    t,
-                    c.accent[5].with_alpha_factor(0.28),
-                    None,
-                    &sel,
-                );
-            }
         }
     }
 
@@ -822,18 +852,18 @@ impl Wysiwyg {
                 best = i;
             }
         }
-        let glyph = self.glyph_xs.get(best).map_or(0, |xs| {
-            let mut g = 0;
-            let mut bd = f64::MAX;
-            for (k, &gx) in xs.iter().enumerate() {
-                let d = (gx - pt.x).abs();
-                if d < bd {
-                    bd = d;
-                    g = k;
-                }
-            }
-            g
-        });
+        let glyph = self
+            .block_layouts
+            .get(best)
+            .zip(self.block_rects.get(best))
+            .zip(self.blocks.get(best))
+            .map_or(0, |((layout, rect), block)| {
+                let byte = layout.hit(
+                    (pt.x - rect.x0).max(0.0) as f32,
+                    (pt.y - rect.y0).max(0.0) as f32,
+                );
+                glyph_index_at_byte(&block.glyphs, byte)
+            });
         self.caret = Caret { block: best, glyph };
         self.pending = Style::default();
         self.dirty = true;
@@ -952,95 +982,35 @@ impl Wysiwyg {
     }
 }
 
+/// Convert the editor's character index to the shared layout's UTF-8 byte
+/// space. The model remains character-attributed for HTML serialization, while
+/// all geometry uses the toolkit's canonical byte-offset contract.
+fn glyph_byte(glyphs: &[Glyph], index: usize) -> usize {
+    glyphs
+        .iter()
+        .take(index.min(glyphs.len()))
+        .map(|glyph| glyph.ch.len_utf8())
+        .sum()
+}
+
+fn glyph_index_at_byte(glyphs: &[Glyph], byte: usize) -> usize {
+    let mut at = 0usize;
+    for (index, glyph) in glyphs.iter().enumerate() {
+        let next = at + glyph.ch.len_utf8();
+        if byte < next {
+            return index;
+        }
+        at = next;
+    }
+    glyphs.len()
+}
+
 /// Inline mark kinds the toolbar can toggle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InlineMark {
     Bold,
     Italic,
     Underline,
-}
-
-/// Draw one block's glyph runs (coalesced by style), returning the x-offset
-/// of every glyph boundary (`glyphs.len() + 1` entries total) for caret
-/// placement and hit-testing. Part of [`Wysiwyg::draw`].
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter is a distinct piece of the per-block layout state draw() already computed; bundling them would just move the same count into a field list"
-)]
-fn draw_block_runs(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    block: &Block,
-    bx: f64,
-    y: f64,
-    size: f32,
-    weight: TextWeight,
-) -> Vec<f64> {
-    let c = &theme.tokens.colors;
-    let mut xs = Vec::with_capacity(block.glyphs.len() + 1);
-    let mut x = bx;
-    xs.push(x);
-    let mut idx = 0;
-    while let Some(glyph) = block.glyphs.get(idx) {
-        let mut end = idx + 1;
-        while block
-            .glyphs
-            .get(end)
-            .is_some_and(|next| next.style == glyph.style && next.link == glyph.link)
-        {
-            end += 1;
-        }
-        let Some(run_glyphs) = block.glyphs.get(idx..end) else {
-            break;
-        };
-        let run: String = run_glyphs.iter().map(|rg| rg.ch).collect();
-        let col = if glyph.link.is_some() {
-            c.accent[4]
-        } else {
-            c.text_primary
-        };
-        let (rw, _) = tr.measure_weighted(
-            &run,
-            size,
-            None,
-            if glyph.style.bold {
-                TextWeight::Bold
-            } else {
-                weight
-            },
-        );
-        tr.draw_text_styled(
-            scene,
-            &run,
-            size,
-            col,
-            t * Affine::translate((x, y)),
-            None,
-            if glyph.style.bold {
-                TextWeight::Bold
-            } else {
-                weight
-            },
-            glyph.style.italic,
-            false,
-        );
-        if glyph.style.underline || glyph.link.is_some() {
-            let uy = y + f64::from(size) * 1.05;
-            let ul = Rect::new(x, uy, x + f64::from(rw), uy + 1.2);
-            scene.fill(vello::peniko::Fill::NonZero, t, col, None, &ul);
-        }
-        // Per-character xs (approximate by even division within run for
-        // caret hit precision; exact enough at body sizes).
-        let run_len = (end - idx) as f64;
-        for char_i in 1..=(end - idx) {
-            xs.push(x + f64::from(rw) * (char_i as f64) / run_len);
-        }
-        x += f64::from(rw);
-        idx = end;
-    }
-    xs
 }
 
 /// Render one block's glyph run to inline HTML, coalescing equal-style runs
@@ -1103,15 +1073,9 @@ fn escape_attr(s: &str) -> String {
 // ---------------------------------------------------------------------------
 // PROMOTION NOTE
 // ---------------------------------------------------------------------------
-// This editor is built only on `TextRenderer::draw_text_styled` + a Vello
-// `Scene` + raw winit events, with no dependency on the Mail app. It fills a
-// real gap in `ui`: the toolkit's `BlockEditor` is Markdown-only, single-line
-// per block, and has no underline / block-quote / `href` link. Lifting this
-// module into `ui/src/widget/` (renamed e.g. `HtmlEditor`) would give every app
-// a reusable WYSIWYG HTML body editor. Promotion work: bind the document to a
-// CRDT object (mirror `BlockEditor::bind_blocks`) for collaborative editing,
-// and add full per-character x-metrics from `TextRenderer` for pixel-exact
-// caret hit-testing (this version approximates within a style run).
+// The app-specific model remains here because it owns HTML serialization and
+// links. All visual text mechanics live in `RichTextLayout`; a future promotion
+// would therefore concern the HTML/CRDT document model, not another shaper.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1123,6 +1087,31 @@ mod tests {
         let ed = Wysiwyg::from_plain("First line\nSecond line");
         assert_eq!(ed.blocks.len(), 2);
         assert_eq!(ed.blocks[0].text(), "First line");
+    }
+
+    #[test]
+    fn backspace_deletes_one_extended_grapheme() {
+        let mut editor = Wysiwyg::new();
+        editor.set_focus(true);
+        for character in "A👩‍👩‍👧‍👦".chars() {
+            editor.insert_char(character);
+        }
+        editor.backspace();
+        assert_eq!(editor.to_plain(), "A");
+    }
+
+    #[test]
+    fn proportional_mail_body_wraps_with_shared_layout() {
+        let mut editor = Wysiwyg::from_plain(
+            "A deliberately long proportional paragraph with ligatures affinity office and wrapping.",
+        );
+        editor.apply_layout(Rect::new(0.0, 0.0, 180.0, 300.0));
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        let theme = Theme::light();
+        editor.draw(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
+        let body = theme.tokens.typography.style(TextRole::Body);
+        assert!(editor.block_layouts[0].height() > body.line_height_px());
     }
 
     #[test]

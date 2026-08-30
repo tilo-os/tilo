@@ -1240,7 +1240,14 @@ impl MailApp {
             return;
         }
         if let Some(h) = &self.engine {
+            let account_id = account.email.clone();
             let _ = h.tx.send(EngineRequest::Fetch { account, folder });
+            report_account_sync(
+                &account_id,
+                accounts::AccountSyncHealth::Syncing,
+                false,
+                Some("Checking mail"),
+            );
             self.awaiting_engine = true;
             self.last_auto_refresh_min = self.shared.borrow().now_min;
             self.shared.borrow_mut().status = Some("Syncing…".into());
@@ -1321,6 +1328,12 @@ impl MailApp {
                 match ev {
                     EngineEvent::Connected { account_id } => {
                         st.status = Some(format!("Connected {account_id}"));
+                        report_account_sync(
+                            &account_id,
+                            accounts::AccountSyncHealth::Syncing,
+                            false,
+                            Some("Connected; fetching mail"),
+                        );
                     }
                     EngineEvent::Folders { folders, .. } => {
                         // The fixed system-folder set drives the sidebar; log the
@@ -1328,7 +1341,9 @@ impl MailApp {
                         tracing::info!(count = folders.len(), "mail: server folders listed");
                     }
                     EngineEvent::Fetched {
-                        folder, messages, ..
+                        account_id,
+                        folder,
+                        messages,
                     } => {
                         let count = messages.len();
                         for m in messages {
@@ -1347,6 +1362,12 @@ impl MailApp {
                         } else {
                             format!("Synced {count} messages")
                         });
+                        report_account_sync(
+                            &account_id,
+                            accounts::AccountSyncHealth::Healthy,
+                            true,
+                            Some("Mail is up to date"),
+                        );
                         settled = true;
                     }
                     EngineEvent::Sent { wire_bytes } => {
@@ -1357,12 +1378,34 @@ impl MailApp {
                         // account (saved with that email as its id) reads them
                         // at connect time.
                         st.status = Some(format!("Signed in as {account_id}"));
+                        report_account_sync(
+                            &account_id,
+                            accounts::AccountSyncHealth::Healthy,
+                            true,
+                            Some("Signed in"),
+                        );
                         settled = true;
                     }
                     EngineEvent::Error { context, message } => {
                         // Surface the specific failure so a fetch never fails
                         // silently into an empty inbox.
                         st.status = Some(format!("{context}: {message}"));
+                        let account_id = st.accounts.active_config().email;
+                        let lower = format!("{context} {message}").to_ascii_lowercase();
+                        let health = if ["auth", "login", "password", "oauth", "credential"]
+                            .iter()
+                            .any(|needle| lower.contains(needle))
+                        {
+                            accounts::AccountSyncHealth::NeedsAuthentication
+                        } else {
+                            accounts::AccountSyncHealth::Error
+                        };
+                        report_account_sync(
+                            &account_id,
+                            health,
+                            false,
+                            Some(&format!("{context}: {message}")),
+                        );
                         settled = true;
                     }
                 }
@@ -2232,6 +2275,30 @@ fn draft_from_message(m: &Message) -> Draft {
 /// encrypted vault. An empty store when nothing is configured yet.
 fn load_account_store() -> AccountStore {
     AccountStore::load()
+}
+
+fn report_account_sync(
+    account_id: &str,
+    health: accounts::AccountSyncHealth,
+    _success: bool,
+    _message: Option<&str>,
+) {
+    if account_id.trim().is_empty() {
+        return;
+    }
+    let reporter = accounts::AccountSyncReporter::new(account_id.to_string());
+    let persisted = match health {
+        accounts::AccountSyncHealth::Never | accounts::AccountSyncHealth::Syncing => {
+            reporter.started()
+        }
+        accounts::AccountSyncHealth::Healthy => reporter.succeeded(),
+        accounts::AccountSyncHealth::Offline => reporter.offline(),
+        accounts::AccountSyncHealth::NeedsAuthentication => reporter.needs_authentication(),
+        accounts::AccountSyncHealth::Error => reporter.failed(),
+    };
+    if let Err(error) = persisted {
+        tracing::warn!(%error, account = account_id, "mail: could not persist sync status");
+    }
 }
 
 /// The shared image store used for sender avatars in the **live** app: fetches

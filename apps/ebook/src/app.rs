@@ -5556,9 +5556,20 @@ impl BooksApp {
                     } else {
                         base_family.clone()
                     };
-                    let (w, _) =
-                        tr.measure_font(&run.display_text, b.size, None, weight, run.italic, &fam);
-                    let w = w * l.glyph_scale;
+                    let w = run.math.as_ref().map_or_else(
+                        || {
+                            tr.measure_font(
+                                &run.display_text,
+                                b.size,
+                                None,
+                                weight,
+                                run.italic,
+                                &fam,
+                            )
+                            .0
+                        },
+                        |math| math.width as f32,
+                    ) * l.glyph_scale;
                     let x0 = content_x + indent + f64::from(run.x);
                     let x1 = x0 + f64::from(w);
                     self.sel_runs.push(SelRun {
@@ -5712,6 +5723,21 @@ impl BooksApp {
                 }
                 _ => {}
             }
+            if let Some(math) = &b.math
+                && pane.shows(b.top, b.line_height)
+            {
+                ui::math::draw_layout(
+                    scene,
+                    t,
+                    tr,
+                    &math.layout,
+                    Point::new(
+                        content_x + f64::from(math.x),
+                        pane.screen_y(b.top) + f64::from(math.y_offset),
+                    ),
+                    palette.ink,
+                );
+            }
             if let Some(bullet) = &b.bullet
                 && let Some(first) = b.lines.iter().find(|l| pane.shows(l.y, b.line_height))
             {
@@ -5738,12 +5764,13 @@ impl BooksApp {
                         TextWeight::Regular
                     };
                     let x = content_x + f64::from(b.indent) + f64::from(run.x);
+                    let run_y = ly + f64::from(run.y);
                     let fam = if mono {
                         FontChoice::Monospace
                     } else {
                         base_family.clone()
                     };
-                    if run.mono && !base_mono {
+                    if run.mono && !base_mono && run.math.is_none() {
                         let (cw, _) = tr.measure_styled(
                             &run.display_text,
                             b.size,
@@ -5755,24 +5782,36 @@ impl BooksApp {
                         let cw = cw * l.glyph_scale;
                         let chip = Rect::new(
                             x - 3.0,
-                            ly - 1.0,
+                            run_y - 1.0,
                             x + f64::from(cw) + 3.0,
-                            ly + f64::from(b.size) + 3.0,
+                            run_y + f64::from(b.size) + 3.0,
                         );
                         paint::fill_round(scene, t, chip, 3.0, palette.code_bg);
                     }
-                    tr.draw_text_font(
-                        scene,
-                        &run.display_text,
-                        b.size,
-                        palette.ink,
-                        t * Affine::translate((x, ly))
-                            * Affine::scale_non_uniform(f64::from(l.glyph_scale), 1.0),
-                        None,
-                        weight,
-                        run.italic,
-                        &fam,
-                    );
+                    if let Some(math) = &run.math {
+                        ui::math::draw_layout(
+                            scene,
+                            t * Affine::translate((x, run_y))
+                                * Affine::scale_non_uniform(f64::from(l.glyph_scale), 1.0),
+                            tr,
+                            math,
+                            Point::ZERO,
+                            palette.ink,
+                        );
+                    } else {
+                        tr.draw_text_font(
+                            scene,
+                            &run.display_text,
+                            b.size,
+                            palette.ink,
+                            t * Affine::translate((x, run_y))
+                                * Affine::scale_non_uniform(f64::from(l.glyph_scale), 1.0),
+                            None,
+                            weight,
+                            run.italic,
+                            &fam,
+                        );
+                    }
                 }
             }
         }
@@ -8699,6 +8738,22 @@ mod interaction_tests {
         BooksApp::with_library(load_sample_library())
     }
 
+    fn app_with_math_sample() -> BooksApp {
+        let mut app = app_with_sample();
+        let chapter = r#"<body xmlns="http://www.w3.org/1999/xhtml">
+          <h1>An Economy of Symbols</h1>
+          <p>Inline notation should belong to the sentence: <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></math>, without disturbing its rhythm.</p>
+          <p>A displayed identity gets room for its hierarchy and a stable optical centre.</p>
+          <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mfrac><mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mn>1</mn></mrow><msqrt><mrow><mi>y</mi><mo>-</mo><mn>3</mn></mrow></msqrt></mfrac></math>
+          <p>Limits and arrays use the same recursive boxes rather than a second renderer.</p>
+          <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mrow><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><mfenced><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></mfenced></mrow></math>
+        </body>"#;
+        app.library[0].chapters[0].blocks = crate::xhtml::parse_xhtml(chapter);
+        app.library[0].chapters[0].title = "An Economy of Symbols".into();
+        app.layout = None;
+        app
+    }
+
     /// Run one full headless frame so `self.hits` reflects the current view.
     fn frame(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) {
         let root = automerge::ROOT;
@@ -9646,6 +9701,52 @@ mod interaction_tests {
         assert_eq!(
             differing, 0,
             "serif reader differs from typography baseline in {differing} pixels"
+        );
+    }
+
+    #[test]
+    fn mathematical_reader_matches_shared_typesetting_baseline() {
+        use std::path::PathBuf;
+
+        use ui::offscreen::OffscreenRenderer;
+
+        let (width, height) = (1280u32, 800u32);
+        let mut app = app_with_math_sample();
+        let mut doc = AutoCommit::new();
+        let scene = render_scene(&mut app, &mut doc, f64::from(width), f64::from(height));
+        let mut renderer = match OffscreenRenderer::try_new(width, height) {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                eprintln!("offscreen: {error} — skipping ebook math baseline");
+                return;
+            }
+        };
+        let actual = renderer.render_rgba(&scene);
+        let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/typography/math-reader.png");
+        if std::env::var_os("UPDATE_EBOOK_MATH_BASELINE").is_some() {
+            if let Some(parent) = baseline.parent() {
+                std::fs::create_dir_all(parent).expect("create ebook math baseline dir");
+            }
+            image::save_buffer(&baseline, &actual, width, height, image::ColorType::Rgba8)
+                .expect("write ebook math baseline");
+            eprintln!("updated {}", baseline.display());
+            return;
+        }
+        let expected = image::open(&baseline)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "missing ebook math baseline {}: {error}; regenerate with \
+                     UPDATE_EBOOK_MATH_BASELINE=1",
+                    baseline.display()
+                )
+            })
+            .to_rgba8();
+        assert_eq!(expected.dimensions(), (width, height));
+        let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, expected.as_raw());
+        assert_eq!(
+            differing, 0,
+            "mathematical reader differs from baseline in {differing} pixels"
         );
     }
 

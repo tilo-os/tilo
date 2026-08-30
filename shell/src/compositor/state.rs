@@ -12,6 +12,7 @@ use std::sync::Arc;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Format, Modifier};
+use smithay::input::keyboard::{Layout, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -35,6 +36,10 @@ use smithay::wayland::fractional_scale::{
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::pointer_gestures::PointerGesturesState;
+use smithay::wayland::input_method::{
+    InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
+};
+use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
@@ -51,8 +56,9 @@ use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::{
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
     delegate_ext_data_control, delegate_fractional_scale, delegate_output,
-    delegate_pointer_gestures, delegate_primary_selection, delegate_seat, delegate_session_lock,
-    delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
+    delegate_input_method_manager, delegate_pointer_gestures, delegate_primary_selection,
+    delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
+    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
     delegate_xdg_shell,
 };
 
@@ -70,6 +76,11 @@ use crate::wayland::color_management::ColorManagerState;
 use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
 use std::collections::HashMap;
+
+/// Stable identity from `apps/osk/qos-app.toml`. It is necessary but never
+/// sufficient for promotion: the connection must also be accepted on the
+/// compositor's private OSK socket.
+pub const OSK_APP_ID: &str = "dev.qos.osk";
 
 /// Read the persisted `HiDPI` display scale from the shared settings store.
 ///
@@ -188,6 +199,16 @@ pub struct State {
     pub dmabuf_device: Result<RenderNode, ProbeError>,
     /// `wl_seat` collection.
     pub seat_state: SeatState<Self>,
+    /// Public `text-input-v3`: ordinary clients may describe only their own
+    /// focused fields. Smithay couples it to the seat focus and the one input
+    /// method below.
+    pub text_input_manager_state: TextInputManagerState,
+    /// Private `input-method-v2`: its global filter accepts only connections
+    /// arriving on the dedicated OSK socket.
+    pub input_method_manager_state: InputMethodManagerState,
+    /// Private `virtual-keyboard-v1`, retained for editing keys winit's
+    /// text-input client cannot yet express (notably Backspace).
+    pub virtual_keyboard_manager_state: VirtualKeyboardManagerState,
     /// Clipboard, primary selection and drag-and-drop.
     ///
     /// Owns the four selection globals plus the compositor's clipboard
@@ -294,9 +315,23 @@ pub struct State {
     /// registry, seat focus bookkeeping, and the queue of foreign toplevels
     /// waiting to be mirrored into the shell chrome's tab tree. Every method lives in [`crate::compositor::client_input`].
     pub client_input: crate::compositor::client_input::ClientInput,
+    /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
+    /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
+    pub osk_surface: Option<u64>,
 }
 
 impl State {
+    /// Whether the focused client has committed an enabled text-input-v3
+    /// session. This is the compositor's source of truth for OSK visibility;
+    /// Wayland xdg-toplevels have no client-side visibility request.
+    pub fn text_input_active(&self) -> bool {
+        let mut active = false;
+        self.seat
+            .text_input()
+            .with_active_text_input(|_, _| active = true);
+        active
+    }
+
     /// Build a fresh `State` with all protocol globals registered — each `*::new::<Self>` call advertises the corresponding Wayland global.
     pub fn new(loop_handle: LoopHandle<'static, Self>, display_handle: DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
@@ -382,17 +417,49 @@ impl State {
         let (repeat_delay, repeat_rate) =
             crate::compositor::backend::drm::input_config::InputSettings::load()
                 .key_repeat_params();
-        if let Err(e) = seat.add_keyboard(
-            Default::default(),
+        let keyboard_settings =
+            crate::compositor::backend::drm::input_config::KeyboardSettings::load();
+        let initial_keyboard_index = match seat.add_keyboard(
+            XkbConfig {
+                layout: &keyboard_settings.layouts,
+                variant: &keyboard_settings.variants,
+                options: keyboard_settings.options.clone(),
+                ..Default::default()
+            },
             repeat_delay.as_millis() as i32,
             repeat_rate as i32,
         ) {
-            tracing::warn!("seat: failed to add keyboard (text injection disabled): {e}");
-        }
+            Ok(_) => keyboard_settings.active_index,
+            Err(error) => {
+                tracing::warn!(?error, "seat: saved XKB sources failed; falling back to US");
+                if let Err(fallback_error) = seat.add_keyboard(
+                    XkbConfig {
+                        layout: "us",
+                        ..Default::default()
+                    },
+                    repeat_delay.as_millis() as i32,
+                    repeat_rate as i32,
+                ) {
+                    tracing::warn!(
+                        ?fallback_error,
+                        "seat: fallback keymap failed (text injection disabled)"
+                    );
+                }
+                0
+            }
+        };
         // A touchscreen can't reach a client without this — chrome uses the synthesised pointer stream, but real multi-touch needs `wl_touch`.
         seat.add_touch();
-        // Advertise the virtual-keyboard manager global so the OSK can inject text through the seat keyboard above.
-        VirtualKeyboardManagerState::new::<Self, _>(&display_handle, |_client| true);
+        // Text fields are public; the input method and virtual keyboard are
+        // not. Sandboxed apps only see the public Wayland socket. Even a
+        // process spoofing `dev.qos.osk` there cannot bind either privileged
+        // global: authorization is immutable per-connection state set by the
+        // dedicated socket acceptor.
+        let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
+        let input_method_manager_state =
+            InputMethodManagerState::new::<Self, _>(&display_handle, is_osk_client);
+        let virtual_keyboard_manager_state =
+            VirtualKeyboardManagerState::new::<Self, _>(&display_handle, is_osk_client);
         // Advertise `wp_color_manager_v1`, before the state literal below since `display_handle` is moved into the struct.
         let color_manager = ColorManagerState::new::<Self>(&display_handle);
         // Advertise `wp_fractional_scale_manager_v1` + `wp_viewporter`
@@ -412,7 +479,7 @@ impl State {
         // *focus* is pushed alongside keyboard focus every tick — see `client_input::sync_keyboard_focus` — since smithay gates `set_selection` on it.
         let selection = SelectionState::new(&display_handle);
 
-        Self {
+        let mut state = Self {
             loop_handle,
             display_handle,
             compositor_state,
@@ -424,6 +491,9 @@ impl State {
             dmabuf_global,
             dmabuf_device,
             seat_state,
+            text_input_manager_state,
+            input_method_manager_state,
+            virtual_keyboard_manager_state,
             selection,
             output_manager_state,
             workspace_tree: WorkspaceTree::bootstrap_default(),
@@ -450,6 +520,53 @@ impl State {
             session_lock: SessionLockHooks::default(),
             pointer_gestures_state,
             client_input: Default::default(),
+            osk_surface: None,
+        };
+        state.activate_keyboard_source(initial_keyboard_index);
+        state
+    }
+
+    fn activate_keyboard_source(&mut self, index: usize) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        keyboard.with_xkb_state(self, |mut context| {
+            context.set_layout(Layout(u32::try_from(index).unwrap_or(0)));
+        });
+    }
+
+    /// Recompile the Wayland seat keymap from per-user settings and notify
+    /// every focused client. A bad/missing XKB symbols file leaves the old
+    /// working keymap in place.
+    pub fn reload_keyboard_settings(&mut self) {
+        let settings = crate::compositor::backend::drm::input_config::KeyboardSettings::load();
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let config = XkbConfig {
+            layout: &settings.layouts,
+            variant: &settings.variants,
+            options: settings.options.clone(),
+            ..Default::default()
+        };
+        match keyboard.set_xkb_config(self, config) {
+            Ok(()) => {
+                self.activate_keyboard_source(settings.active_index);
+                let (delay, rate) =
+                    crate::compositor::backend::drm::input_config::InputSettings::load()
+                        .key_repeat_params();
+                keyboard.change_repeat_info(rate as i32, delay.as_millis() as i32);
+                tracing::info!(
+                    sources = ?settings.source_ids,
+                    active = settings.active_index,
+                    "Wayland seat: applied per-user XKB sources"
+                );
+            }
+            Err(error) => tracing::warn!(
+                sources = ?settings.source_ids,
+                %error,
+                "Wayland seat: requested XKB keymap did not compile; preserving the working keymap"
+            ),
         }
     }
 
@@ -1010,6 +1127,10 @@ pub struct ClientState {
     /// — see [`crate::compositor::selection`]. A *socket* privilege, not a flag
     /// a client can ask for: the sandbox launcher bind-mounts only the public socket into a sandbox.
     pub privileged: bool,
+    /// Connection accepted on the compositor-owned OSK socket. This is the
+    /// only credential accepted by the input-method and virtual-keyboard
+    /// global filters; an app-id string is never authority.
+    pub osk: bool,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -1021,6 +1142,7 @@ impl Default for ClientState {
             compositor_state: CompositorClientState::default(),
             index: NEXT.fetch_add(1, Ordering::Relaxed),
             privileged: false,
+            osk: false,
         }
     }
 }
@@ -1043,6 +1165,18 @@ impl ClientState {
             ..Self::default()
         })
     }
+
+    /// Per-client state for connections accepted on the private OSK socket.
+    pub fn osk_arc() -> Arc<Self> {
+        Arc::new(Self {
+            osk: true,
+            ..Self::default()
+        })
+    }
+}
+
+fn is_osk_client(client: &Client) -> bool {
+    client.get_data::<ClientState>().is_some_and(|d| d.osk)
 }
 
 /// The compositor's globally unique id for `surface`.
@@ -1099,7 +1233,7 @@ impl CompositorHandler for State {
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         let is_foreign_tab =
             tab_binding::group_id_for_surface(&self.workspace_tree, surface_id).is_some();
-        if is_foreign_tab {
+        if is_foreign_tab || self.osk_surface == Some(surface_id) {
             self.capture_foreign_surface(surface, surface_id);
         }
         if !is_shared {
@@ -1245,6 +1379,24 @@ impl ShmHandler for State {
     }
 }
 
+/// Both halves are required. The immutable socket credential prevents a
+/// public client from gaining overlay/input authority by copying the package
+/// id; the exact id prevents another helper on the private connection from
+/// accidentally being promoted.
+fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
+    osk_identity_is_trusted(
+        app_id,
+        surface
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().map(|data| data.osk))
+            .unwrap_or(false),
+    )
+}
+
+fn osk_identity_is_trusted(app_id: Option<&str>, socket_authorized: bool) -> bool {
+    socket_authorized && app_id == Some(OSK_APP_ID)
+}
+
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -1271,11 +1423,19 @@ impl XdgShellHandler for State {
                 .get::<XdgToplevelSurfaceData>()
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
-        tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id.clone());
-
         // Register the toplevel with the input router for local key/pointer delivery once focused; the chrome-side tab splices in next tick.
-        self.client_input
-            .register_toplevel(surface_id, surface.wl_surface().clone(), app_id);
+        self.client_input.register_toplevel(
+            surface_id,
+            surface.wl_surface().clone(),
+            app_id.clone(),
+        );
+
+        if trusted_osk_identity(surface.wl_surface(), app_id.as_deref()) {
+            self.client_input.promote_to_overlay(surface_id);
+            self.osk_surface = Some(surface_id);
+        } else {
+            tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id);
+        }
 
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
         crate::compositor::foreign::store().note_adopted(surface_id);
@@ -1284,6 +1444,9 @@ impl XdgShellHandler for State {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
+        if self.osk_surface == Some(surface_id) {
+            self.osk_surface = None;
+        }
         // If the destroyed surface held the output fullscreen, drop the transient promotion so layout restores instead of staying collapsed.
         if self.fullscreen_group
             == tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
@@ -1314,6 +1477,18 @@ impl XdgShellHandler for State {
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
         if let Some(app_id) = new_app_id {
+            if trusted_osk_identity(surface.wl_surface(), Some(&app_id)) {
+                // `set_app_id` normally arrives after `new_toplevel`; undo the
+                // temporary anonymous adoption before either tree can expose a
+                // keyboard as an ordinary app window.
+                let _ = tab_binding::close_tab_for_destroyed_surface(
+                    &mut self.workspace_tree,
+                    surface_id,
+                );
+                self.client_input.promote_to_overlay(surface_id);
+                self.osk_surface = Some(surface_id);
+                return;
+            }
             let _ = tab_binding::rename_tab_for_app_id(
                 &mut self.workspace_tree,
                 surface_id,
@@ -1459,6 +1634,26 @@ impl SeatHandler for State {
     }
 }
 
+impl InputMethodHandler for State {
+    fn new_popup(&mut self, _surface: InputMethodPopupSurface) {
+        // qOS gives the full keyboard its compositor-positioned xdg overlay.
+        // Candidate popups are supported by the protocol but not painted yet;
+        // keeping them out of the tiled tree is safer than adopting a transient
+        // IM surface as an application tab.
+    }
+
+    fn dismiss_popup(&mut self, _surface: InputMethodPopupSurface) {}
+
+    fn popup_repositioned(&mut self, _surface: InputMethodPopupSurface) {}
+
+    fn parent_geometry(
+        &self,
+        _parent: &WlSurface,
+    ) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+        smithay::utils::Rectangle::new((0, 0).into(), self.output_size.into())
+    }
+}
+
 impl OutputHandler for State {}
 
 impl FractionalScaleHandler for State {
@@ -1484,6 +1679,8 @@ delegate_xdg_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
 delegate_seat!(State);
+delegate_text_input_manager!(State);
+delegate_input_method_manager!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_pointer_gestures!(State);
 delegate_output!(State);
@@ -1541,6 +1738,25 @@ impl AsRef<ColorManagerState> for State {
 crate::delegate_color_management!(State);
 
 #[cfg(test)]
+mod osk_identity_tests {
+    use super::*;
+
+    #[test]
+    fn only_private_socket_plus_exact_app_id_is_trusted() {
+        assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
+        assert!(!osk_identity_is_trusted(Some(OSK_APP_ID), false));
+        assert!(!osk_identity_is_trusted(Some("dev.qos.lookalike"), true));
+        assert!(!osk_identity_is_trusted(None, true));
+    }
+
+    #[test]
+    fn public_clients_never_receive_the_osk_global_credential() {
+        assert!(!ClientState::default().osk);
+        assert!(ClientState::osk_arc().osk);
+    }
+}
+
+#[cfg(test)]
 mod tick_hook_tests {
     use super::*;
     use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -1575,6 +1791,8 @@ mod tick_hook_tests {
             position,
             size,
             scale,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            color_profile: None,
         }
     }
 

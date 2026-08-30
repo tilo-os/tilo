@@ -1,9 +1,8 @@
-# VPN — qOS application manifest.
+# VPN Studio — advanced VPN profile editor.
 #
-# A configuration UI, not a tunnel: no transport is linked and nothing
-# is execed today. It reads the WireGuard config dir so profiles can be
-# listed. Bringing a tunnel up will need a privileged helper, not a
-# wider grant here.
+# The advanced editor imports through the file portal and delegates profile
+# storage, secrets, activation, routing and DNS to NetworkManager. It has no
+# network namespace and receives no general privileged process capability.
 #
 # Pack and install:
 #
@@ -16,7 +15,7 @@
 
 [package]
 id       = "dev.qos.vpn"
-name     = "VPN"
+name     = "VPN Studio"
 category = "Network"
 version  = "0.1.0"
 kind     = "app"

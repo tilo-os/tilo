@@ -226,6 +226,19 @@ pub struct SearchContext<'a> {
     pub doc_root: &'a ObjId,
 }
 
+/// A [`SearchResult::score`]/[`SearchProvider::max_score`] value as a
+/// fraction of `[0.0, 1.0]`-scale `f32`. Provider score scales are
+/// small (files top out at 120, apps at 100 — see `max_score`'s doc),
+/// well under `f32`'s 24-bit mantissa, so the precision this cast could
+/// otherwise lose cannot happen for a real provider.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "provider score scales are small integers (<=120 by convention); exact precision isn't needed for a 0..1 strength ratio"
+)]
+fn i32_to_f32_lossy(n: i32) -> f32 {
+    n as f32
+}
+
 /// Registry that fans a query out to every provider under the current
 /// scope, then merges + sorts.
 pub struct SearchRegistry {
@@ -321,7 +334,7 @@ impl SearchRegistry {
                     provider.id(),
                     r.score,
                 );
-                let strength = r.score as f32 / top as f32;
+                let strength = i32_to_f32_lossy(r.score) / i32_to_f32_lossy(top);
                 merged.push((r, strength));
             }
         }
@@ -334,8 +347,12 @@ impl SearchRegistry {
             *slot = slot.max(*strength);
         }
         merged.sort_by(|(a, a_strength), (b, b_strength)| {
-            let a_group = best[&a.kind.sort_key()];
-            let b_group = best[&b.kind.sort_key()];
+            // Every key looked up here was inserted by the loop above
+            // (it walks the same `merged`), but `.get()` + a matching
+            // fallback avoids an avoidable panic in a sort comparator
+            // rather than relying on that invariant holding forever.
+            let a_group = best.get(&a.kind.sort_key()).copied().unwrap_or(f32::MIN);
+            let b_group = best.get(&b.kind.sort_key()).copied().unwrap_or(f32::MIN);
             b_group
                 .partial_cmp(&a_group)
                 .unwrap_or(Ordering::Equal)
@@ -382,7 +399,7 @@ impl SearchRegistry {
         for r in ranked {
             match groups.last_mut() {
                 Some(g) if g.kind == r.kind => {
-                    g.total += 1;
+                    g.total = g.total.saturating_add(1);
                     g.results.push(r);
                 }
                 _ => groups.push(KindGroup {
@@ -404,8 +421,8 @@ impl SearchRegistry {
         let n = groups.len();
         let mut remaining = row_budget;
         for (i, g) in groups.iter_mut().enumerate() {
-            let groups_left = n - i;
-            let share = (remaining / groups_left).max(1);
+            let groups_left = n.saturating_sub(i).max(1);
+            let share = remaining.checked_div(groups_left).unwrap_or(1).max(1);
             let keep = share.min(g.total);
             g.results.truncate(keep);
             remaining = remaining.saturating_sub(keep);
@@ -444,6 +461,7 @@ mod tests {
     use super::*;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use parking_lot::RwLock;
+    use std::fmt::Write as _;
     use std::rc::Rc;
     use std::sync::Arc as StdArc;
 
@@ -955,7 +973,9 @@ mod tests {
                 &doc,
                 &root,
             );
-            let first = out.first().expect("some result in {scope:?}");
+            let first = out
+                .first()
+                .unwrap_or_else(|| panic!("some result in {scope:?}"));
             assert_eq!(
                 first.provider_id,
                 "applications",
@@ -1125,11 +1145,13 @@ mod tests {
         .expect("manifest");
         let registry = root.join("registry.toml");
         let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
-        existing.push_str(&format!(
+        write!(
+            existing,
             "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
             payload.display().to_string(),
             manifest_path.display().to_string()
-        ));
+        )
+        .expect("write to String cannot fail");
         std::fs::write(&registry, existing).expect("registry");
         crate::shell::launcher::invalidate_app_cache();
     }

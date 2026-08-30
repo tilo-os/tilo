@@ -19,7 +19,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -32,6 +32,16 @@ use crate::widget::Widget;
 
 const PAD: f64 = 14.0;
 const ICON_D: f64 = 18.0;
+
+/// Narrows a screen-space `f64` tile-height value to `f32` for taffy;
+/// every call site here is a bounded UI dimension, well within `f32` range.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen-space px value, always well within f32 range"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
+}
 
 /// Direction of a [`StatTile`] delta — selects the arrow glyph and its colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,7 +130,7 @@ fn paint_stat_tile(
         caption,
         caption_size,
         theme.text_dim,
-        transform * Affine::translate((x, y)),
+        transform.pre_translate(Vec2::new(x, y)),
         None,
     );
 
@@ -139,7 +149,7 @@ fn paint_stat_tile(
         value,
         value_size,
         value_color,
-        transform * Affine::translate((x, y)),
+        transform.pre_translate(Vec2::new(x, y)),
         None,
     );
     y += f64::from(value_size) + 6.0;
@@ -157,7 +167,7 @@ fn paint_stat_tile(
             delta_text,
             delta_size,
             col,
-            transform * Affine::translate((dx, y)),
+            transform.pre_translate(Vec2::new(dx, y)),
             None,
         );
     }
@@ -185,18 +195,21 @@ impl StatTile {
         }
     }
 
+    #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
     /// Defaults to `theme.text_primary` when unset.
+    #[must_use]
     pub fn with_value_color(mut self, color: Color) -> Self {
         self.value_color = Some(color);
         self
     }
 
     /// E.g. `("12%", Trend::Up)`.
+    #[must_use]
     pub fn with_delta(mut self, text: impl Into<String>, trend: Trend) -> Self {
         self.delta = Some((text.into(), trend));
         self
@@ -244,7 +257,7 @@ impl Widget for StatTile {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let h = tile_height(self.delta.is_some(), theme) as f32;
+        let h = px(tile_height(self.delta.is_some(), theme));
         // Grows to share a row evenly, but keeps the fixed content height.
         let node = taffy.leaf_node(Style {
             flex_grow: 1.0,
@@ -272,7 +285,7 @@ impl Widget for StatTile {
         let theme = Theme::dark();
         taffy::Size {
             width: 160.0,
-            height: tile_height(self.delta.is_some(), &theme) as f32,
+            height: px(tile_height(self.delta.is_some(), &theme)),
         }
     }
 
@@ -362,7 +375,7 @@ mod tests {
             .map(|i| StatTile::new(format!("m{i}"), "1"))
             .collect();
         let mut nodes = Vec::new();
-        for w in widgets.iter_mut() {
+        for w in &mut widgets {
             nodes.push(w.build_layout(&mut taffy, &theme, &mut node_map));
         }
         let root = taffy.parent_node(
@@ -393,7 +406,7 @@ mod tests {
         for (w, n) in widgets.iter_mut().zip(nodes.iter()) {
             w.apply_layout(&taffy, *n, Point::ZERO);
         }
-        widgets.iter().map(|w| w.get_rect()).collect()
+        widgets.iter().map(Widget::get_rect).collect()
     }
 
     #[test]

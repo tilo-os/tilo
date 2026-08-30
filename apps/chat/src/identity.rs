@@ -6,8 +6,8 @@
 //! per-user reactions/read-watermarks collide in the shared CRDT. This module
 //! resolves that identity once at startup:
 //!
-//! 1. The qOS runtime identity (`QOS_USER_IDENTITY`, loaded via
-//!    [`runtime_identity`]) — the same key the collaboration layer signs ops
+//! 1. The qOS runtime identity (an inherited signing broker, loaded via
+//!    [`runtime_identity`]) — the same identity the collaboration layer uses
 //!    with. Its 32-byte group public key gives a stable unique id and its
 //!    display name / avatar colour come straight from first-boot setup.
 //! 2. A persisted per-install UUID under the chat data dir, so a peer keeps

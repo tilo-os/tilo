@@ -1,5 +1,6 @@
 //! `WorkspaceSettings` — the modal opened from the `TopBar`'s
-//! workspace-name button, with General / Members / Permissions tabs.
+//! workspace-name button, with General / Members / Privacy & Security /
+//! Apps & Files tabs.
 //!
 //! Members and Permissions are both views of [`Workspace::capabilities`]
 //! — the single list `decide_capability` consults, the sandbox turns
@@ -74,6 +75,8 @@ pub enum WsTab {
     /// Every capability the workspace has granted, and the affordance
     /// to grant another. Rendered from [`Workspace::capabilities`].
     Permissions,
+    /// Shared default-app policy plus this person's explicit override.
+    Apps,
 }
 
 impl WsTab {
@@ -81,15 +84,21 @@ impl WsTab {
         match self {
             WsTab::General => "General",
             WsTab::Members => "Members",
-            WsTab::Permissions => "Permissions",
+            WsTab::Permissions => "Privacy & Security",
+            WsTab::Apps => "Apps & Files",
         }
     }
 
     /// Iteration order for the sidebar nav and tab strip. Every tab is
     /// always reachable — a host must reach Permissions before any
     /// grant exists.
-    pub fn all() -> [WsTab; 3] {
-        [WsTab::General, WsTab::Members, WsTab::Permissions]
+    pub fn all() -> [WsTab; 4] {
+        [
+            WsTab::General,
+            WsTab::Members,
+            WsTab::Permissions,
+            WsTab::Apps,
+        ]
     }
 }
 
@@ -186,7 +195,7 @@ impl WorkspaceSettings {
     }
 
     /// Per-row hit-test rects, one per [`WsTab`] in [`WsTab::all`] order.
-    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 3] {
+    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 4] {
         let sidebar = self.sidebar_rect(modal_rect);
         let inset_x0 = sidebar.x0 + 16.0;
         let inset_x1 = sidebar.x1 - 16.0;
@@ -354,6 +363,7 @@ fn tab_focus_id(tab: WsTab) -> u64 {
         WsTab::General => BASE,
         WsTab::Members => BASE + 1,
         WsTab::Permissions => BASE + 2,
+        WsTab::Apps => BASE + 3,
     }
 }
 
@@ -1586,6 +1596,202 @@ fn draw_member_role_chip(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct DefaultAppRow {
+    pub resource: desktop_policy::ResourceKind,
+    pub workspace_rect: Rect,
+    pub user_rect: Rect,
+    pub row_rect: Rect,
+}
+
+pub fn default_app_rows(
+    pane: Rect,
+    candidates: &[desktop_policy::AppCandidate],
+) -> Vec<DefaultAppRow> {
+    let mut resources: Vec<_> = candidates
+        .iter()
+        .flat_map(|a| a.resources.iter().cloned())
+        .collect();
+    resources.sort();
+    resources.dedup();
+    let x0 = pane.x0 + PANE_PAD_X;
+    let x1 = pane.x1 - PANE_PAD_X;
+    let control_w = 190.0;
+    resources
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, resource)| {
+            let y0 = pane.y0 + 52.0 + index as f64 * 72.0;
+            let row_rect = Rect::new(x0, y0, x1, y0 + 64.0);
+            (row_rect.y1 <= pane.y1 - 10.0).then(|| DefaultAppRow {
+                resource,
+                workspace_rect: Rect::new(
+                    x1 - control_w * 2.0 - 12.0,
+                    y0 + 26.0,
+                    x1 - control_w - 12.0,
+                    y0 + 56.0,
+                ),
+                user_rect: Rect::new(x1 - control_w, y0 + 26.0, x1, y0 + 56.0),
+                row_rect,
+            })
+        })
+        .collect()
+}
+
+fn app_name<'a>(id: &str, candidates: &'a [desktop_policy::AppCandidate]) -> &'a str {
+    candidates
+        .iter()
+        .find(|a| a.package_id == id)
+        .map_or("Unavailable app", |a| a.display_name.as_str())
+}
+
+pub fn draw_default_apps_pane(
+    scene: &mut Scene,
+    transform: Affine,
+    pane: Rect,
+    ws: &Workspace,
+    local_user: &UserId,
+    candidates: &[desktop_policy::AppCandidate],
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    draw_section_header(
+        scene,
+        transform,
+        Point::new(pane.x0 + PANE_PAD_X, pane.y0 + PANE_PAD_TOP),
+        "DEFAULT APPLICATIONS",
+        None,
+        text_renderer,
+        theme,
+    );
+    text_renderer.draw_text(
+        scene,
+        "Workspace choice",
+        theme.tokens.typography.scale.xs,
+        theme.tokens.colors.text_dim,
+        transform * Affine::translate((pane.x1 - 404.0, pane.y0 + 34.0)),
+        None,
+    );
+    text_renderer.draw_text(
+        scene,
+        "Your choice",
+        theme.tokens.typography.scale.xs,
+        theme.tokens.colors.text_dim,
+        transform * Affine::translate((pane.x1 - 194.0, pane.y0 + 34.0)),
+        None,
+    );
+    let can_admin = ws.may_administer(local_user);
+    for row in default_app_rows(pane, candidates) {
+        draw_row_card(scene, transform, row.row_rect, theme);
+        let label = row.resource.display_label();
+        text_renderer.draw_text(
+            scene,
+            &label,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((row.row_rect.x0 + 12.0, row.row_rect.y0 + 12.0)),
+            None,
+        );
+        let policy = ws
+            .default_apps
+            .policy
+            .get(&row.resource)
+            .unwrap_or(&desktop_policy::WorkspaceDefaultPolicy::FollowPersonal);
+        let policy_label = match policy {
+            desktop_policy::WorkspaceDefaultPolicy::FollowPersonal => "Follow personal defaults",
+            desktop_policy::WorkspaceDefaultPolicy::App(id) => app_name(id, candidates),
+        };
+        let choice = ws
+            .default_apps
+            .user_choices
+            .get(local_user)
+            .and_then(|m| m.get(&row.resource))
+            .unwrap_or(&desktop_policy::UserWorkspaceChoice::FollowWorkspace);
+        let choice_label = match choice {
+            desktop_policy::UserWorkspaceChoice::FollowWorkspace => "Use workspace choice",
+            desktop_policy::UserWorkspaceChoice::PersonalDefault => "Use my personal default",
+            desktop_policy::UserWorkspaceChoice::App(id) => app_name(id, candidates),
+        };
+        draw_cycler(
+            scene,
+            transform,
+            row.workspace_rect,
+            policy_label,
+            can_admin,
+            text_renderer,
+            theme,
+        );
+        draw_cycler(
+            scene,
+            transform,
+            row.user_rect,
+            choice_label,
+            true,
+            text_renderer,
+            theme,
+        );
+    }
+    if candidates.iter().all(|a| a.resources.is_empty()) {
+        draw_empty_state(
+            scene,
+            transform,
+            pane,
+            Icon::LayoutGrid,
+            "No file handlers installed",
+            "Apps appear here after they declare supported file types.",
+            text_renderer,
+            theme,
+        );
+    }
+}
+
+pub fn next_workspace_default(
+    current: Option<&desktop_policy::WorkspaceDefaultPolicy>,
+    resource: &desktop_policy::ResourceKind,
+    candidates: &[desktop_policy::AppCandidate],
+) -> desktop_policy::WorkspaceDefaultPolicy {
+    let apps: Vec<_> = candidates.iter().filter(|a| a.handles(resource)).collect();
+    match current.unwrap_or(&desktop_policy::WorkspaceDefaultPolicy::FollowPersonal) {
+        desktop_policy::WorkspaceDefaultPolicy::FollowPersonal => apps.first().map_or(
+            desktop_policy::WorkspaceDefaultPolicy::FollowPersonal,
+            |a| desktop_policy::WorkspaceDefaultPolicy::App(a.package_id.clone()),
+        ),
+        desktop_policy::WorkspaceDefaultPolicy::App(id) => apps
+            .iter()
+            .position(|a| &a.package_id == id)
+            .and_then(|i| apps.get(i + 1))
+            .map_or(
+                desktop_policy::WorkspaceDefaultPolicy::FollowPersonal,
+                |a| desktop_policy::WorkspaceDefaultPolicy::App(a.package_id.clone()),
+            ),
+    }
+}
+
+pub fn next_user_default(
+    current: Option<&desktop_policy::UserWorkspaceChoice>,
+    resource: &desktop_policy::ResourceKind,
+    candidates: &[desktop_policy::AppCandidate],
+) -> desktop_policy::UserWorkspaceChoice {
+    let apps: Vec<_> = candidates.iter().filter(|a| a.handles(resource)).collect();
+    match current.unwrap_or(&desktop_policy::UserWorkspaceChoice::FollowWorkspace) {
+        desktop_policy::UserWorkspaceChoice::FollowWorkspace => {
+            desktop_policy::UserWorkspaceChoice::PersonalDefault
+        }
+        desktop_policy::UserWorkspaceChoice::PersonalDefault => apps
+            .first()
+            .map_or(desktop_policy::UserWorkspaceChoice::FollowWorkspace, |a| {
+                desktop_policy::UserWorkspaceChoice::App(a.package_id.clone())
+            }),
+        desktop_policy::UserWorkspaceChoice::App(id) => apps
+            .iter()
+            .position(|a| &a.package_id == id)
+            .and_then(|i| apps.get(i + 1))
+            .map_or(desktop_policy::UserWorkspaceChoice::FollowWorkspace, |a| {
+                desktop_policy::UserWorkspaceChoice::App(a.package_id.clone())
+            }),
+    }
+}
+
 /// A disabled control with no reason reads as a broken one.
 fn draw_authority_footnote(
     scene: &mut Scene,
@@ -2245,7 +2451,12 @@ mod tab_tests {
     fn ws_tab_all_iterates_in_nav_order() {
         assert_eq!(
             WsTab::all(),
-            [WsTab::General, WsTab::Members, WsTab::Permissions]
+            [
+                WsTab::General,
+                WsTab::Members,
+                WsTab::Permissions,
+                WsTab::Apps
+            ]
         );
     }
 
@@ -2289,10 +2500,11 @@ mod tab_tests {
         let ws = ws_settings_default();
         let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
         let rows = ws.nav_rows(modal);
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].0, WsTab::General);
         assert_eq!(rows[1].0, WsTab::Members);
         assert_eq!(rows[2].0, WsTab::Permissions);
+        assert_eq!(rows[3].0, WsTab::Apps);
         for (_, r) in &rows {
             assert!((r.height() - NAV_ROW_HEIGHT).abs() < f64::EPSILON);
             assert!(r.x1 > r.x0);
@@ -3197,5 +3409,81 @@ mod roster_order_tests {
             .map(|r| r.user)
             .collect();
         assert_eq!(after, before, "the row order must be identical");
+    }
+}
+
+#[cfg(test)]
+mod default_app_authority_tests {
+    use super::*;
+
+    fn candidate(id: &str) -> desktop_policy::AppCandidate {
+        desktop_policy::AppCandidate {
+            package_id: id.into(),
+            display_name: id.into(),
+            resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
+        }
+    }
+
+    #[test]
+    fn admin_policy_and_personal_escape_hatch_are_separately_authorized() {
+        let candidates = [candidate("dev.qos.viewer"), candidate("dev.qos.other")];
+        let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
+        let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
+        let mut ws = Workspace::new(WorkspaceId::from(7), "Docs");
+        ws.set_owner("owner");
+
+        assert!(
+            ws.set_default_app_policy_as(
+                &"member".into(),
+                pdf.clone(),
+                desktop_policy::WorkspaceDefaultPolicy::App("dev.qos.viewer".into()),
+                &resolver
+            )
+            .is_err()
+        );
+        ws.set_default_app_policy_as(
+            &"owner".into(),
+            pdf.clone(),
+            desktop_policy::WorkspaceDefaultPolicy::App("dev.qos.viewer".into()),
+            &resolver,
+        )
+        .unwrap();
+
+        assert!(
+            ws.set_default_app_choice_as(
+                &"owner".into(),
+                &"member".into(),
+                pdf.clone(),
+                desktop_policy::UserWorkspaceChoice::PersonalDefault,
+                &resolver
+            )
+            .is_err()
+        );
+        ws.set_default_app_choice_as(
+            &"member".into(),
+            &"member".into(),
+            pdf.clone(),
+            desktop_policy::UserWorkspaceChoice::App("dev.qos.other".into()),
+            &resolver,
+        )
+        .unwrap();
+        assert_eq!(
+            ws.default_apps.user_choices["member"][&pdf],
+            desktop_policy::UserWorkspaceChoice::App("dev.qos.other".into())
+        );
+    }
+
+    #[test]
+    fn controls_cycle_through_inheritance_before_apps() {
+        let candidates = [candidate("dev.qos.viewer")];
+        let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
+        assert_eq!(
+            next_workspace_default(None, &pdf, &candidates),
+            desktop_policy::WorkspaceDefaultPolicy::App("dev.qos.viewer".into())
+        );
+        assert_eq!(
+            next_user_default(None, &pdf, &candidates),
+            desktop_policy::UserWorkspaceChoice::PersonalDefault
+        );
     }
 }

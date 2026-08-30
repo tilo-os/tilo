@@ -7,60 +7,31 @@
 //!     `<PATH>` and exit. No window, no event loop. Used for headless
 //!     screenshot tests and CI snapshots.
 //!
-//! ## Integration seams
+//! ## qOS integration
 //!
-//! ## The keyboard is special — the compositor owns its visibility
+//! The session compositor supervises this signed service when the persisted
+//! accessibility preference is enabled. It gives the service a dedicated,
+//! unexported Wayland socket. Only connections accepted on that socket can see
+//! `input-method-v2` or `virtual-keyboard-v1`; copying the app-id on the public
+//! display grants no input authority.
 //!
-//! In qOS a normal app can't hide itself; every window lives in the tile
-//! layout and the OS owns its chrome. The on-screen keyboard is the one
-//! exception: it floats over whatever the user is typing into and vanishes when
-//! nothing wants text. That decision belongs to the **compositor**, not to this
-//! app. The compositor recognises the keyboard by its app-id
-//! ([`osk::KEYBOARD_APP_ID`]), keeps it out of the tile layout, and shows it
-//! only while a text input is focused — relaying that show/hide to the keyboard
-//! (and only the keyboard) over the input method. The widget never decides for
-//! itself to appear or disappear.
+//! The main xdg-toplevel announces the stable [`osk::KEYBOARD_APP_ID`]. The
+//! compositor requires both that id and the private-socket credential before it
+//! promotes the surface out of the workspace tree into a bottom floating
+//! overlay. Input-method activation makes the initially empty keyboard visible;
+//! leaving the focused text field suppresses it again. Pointer focus may enter
+//! the keyboard, but its taps deliberately do not take keyboard focus from the
+//! edited field.
 //!
-//! * **Auto-show via input-method-v2 (WIRED HERE):** when the compositor
-//!   advertises `zwp_input_method_manager_v2` (the qOS compositor does), the OSK
-//!   becomes an input-method client: it starts hidden, appears when the
-//!   compositor activates it (a text field is focused), picks the layout from
-//!   the field's content purpose, hides when focus leaves, and types via
-//!   `commit_string` (the clean IM path) rather than synthetic key events. The
-//!   input-method client runs on its own Wayland connection ([`osk::imclient`]);
-//!   a background thread turns its events into show/hide/purpose commands
-//!   delivered to the winit loop through the `EventLoopProxy`, where the widget
-//!   reacts via `on_external_event`. Use `--no-input-method` to force the
-//!   always-visible path; `--input-method` requires the protocol (errors if
-//!   absent).
+//! Typed and swiped text follows the protocol-clean `commit_string` path. A
+//! narrowly gated virtual keyboard handles Backspace because winit's current
+//! `text-input-v3` client does not consume `delete_surrounding_text`. On other
+//! compositors, the binary may use its standalone virtual-keyboard fallback;
+//! qOS never advertises that privileged global on its public display.
 //!
-//! * **Text injection (client half, fallback):** when there is no input method,
-//!   the live path builds a [`TextInjector`] (real `virtual-keyboard-v1`
-//!   backend, else a no-op [`NullInjector`]) and sets it as the widget's
-//!   `on_key` callback, so every committed [`osk::KeyAction`] is typed into the
-//!   focused surface as the user taps/swipes — the same approach `wtype` uses.
-//!   See [`osk::inject`] for the keymap-generation details and the manual-test
-//!   recipe.
-//!
-//! * **Floating overlay surface (still a seam):** the compositor already
-//!   recognises the keyboard by app-id, keeps it out of the tile layout, and
-//!   computes a bottom-anchored rect over the focused app (see the compositor's
-//!   `keyboard_overlay` module). What is not wired yet is the *surface role*:
-//!   the keyboard wants to be a `wlr-layer-shell` overlay (or an equivalent
-//!   compositor-positioned surface) so the compositor maps/unmaps and places it
-//!   directly. `ui::App` (winit) creates a plain xdg-toplevel and exposes no way
-//!   to request a layer-shell role or even set the Wayland app-id, so today this
-//!   binary opens a normal window and the keyboard simply paints nothing while
-//!   the compositor's decision says hidden. Closing this seam means teaching
-//!   `ui::App` to (a) set the surface app-id and (b) request the layer-shell
-//!   role; the widget, the injector, and the input-method client are unchanged.
-//!
-//! * **FUTO swipe + prediction:** a swipe decoder will consume the
-//!   pointer path during a press-drag, normalise it against
-//!   [`OskWidget::key_geometry`] (the same geometry used to render), and feed
-//!   candidate words into the toolbar's candidate ribbon. The decoder lives
-//!   in a separate (GPL) process/crate; this binary will spawn/talk to it.
-//!   No swipe code is linked here.
+//! Swipe decoding and prediction are live: the real FUTO model is selected
+//! when its runtime assets are available, otherwise the in-tree geometric
+//! decoder provides the same candidate UI.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -175,29 +146,41 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
     // keystrokes into the user's desktop.
 
     let (state, autosave) = ui::persist::open("dev.qos.osk");
-    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
+    let app = ui::App::new(state, Box::new(widget))
+        .with_autosave(autosave)
+        .with_window_app_id(osk::KEYBOARD_APP_ID);
     app.run();
 }
 
 /// The auto-show keyboard, driven by an `input-method-v2` client.
 ///
-/// The keyboard starts hidden. A background thread blocks on the input-method
-/// connection; each focus event is folded through an [`ImState`] reducer into a
-/// minimal show/hide/purpose command, which it sends to the winit loop via the
-/// `EventLoopProxy` as a [`UserEvent::External`] string the widget understands
-/// (`osk:show`, `osk:hide`, `osk:purpose:<name>`). Typed/swiped text is committed
-/// back to the focused app via the same input method (`commit_string`).
+/// The keyboard starts hidden. A background thread non-blockingly pumps the
+/// input-method connection; each focus event is folded through an [`ImState`]
+/// reducer into a minimal show/hide/purpose command, which it sends to the
+/// winit loop via the `EventLoopProxy` as a [`UserEvent::External`] string the
+/// widget understands (`osk:show`, `osk:hide`, `osk:purpose:<name>`).
+/// Typed/swiped text is committed back to the focused app via the same input
+/// method (`commit_string`).
 fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
     // The IM client is shared: the winit thread's `on_key` callback commits
     // typed text through it, while the background thread reads focus events.
     let im = Arc::new(Mutex::new(im));
 
     let im_for_keys = Arc::clone(&im);
+    // `text-input-v3` in winit intentionally does not implement
+    // delete_surrounding_text yet. Keep the compositor-gated virtual keyboard
+    // only for non-inserting editing keys such as Backspace; printable text
+    // stays on the input-method commit path.
+    let mut editing_keys = default_injector();
     let mut widget = OskWidget::new().hidden().on_key(move |action| {
-        // Turn the committed action into the text to insert and send it via the
-        // input method. State-only actions (shift/symbols/layout) and backspace
-        // produce no commit string here — backspace is handled by the host's
-        // surrounding-text editing, not by inserting a character.
+        if matches!(action, osk::KeyAction::Backspace) {
+            editing_keys.key_action(&action);
+            return;
+        }
+        // Turn the committed action into text and send it via the input method.
+        // State-only actions (shift/symbols/layout) and Backspace produce no
+        // commit string; the guarded virtual keyboard path above handles the
+        // latter until winit consumes delete_surrounding_text.
         if let Some(text) = osk::inject::action_symbols(&action)
             .iter()
             .map(symbol_to_commit_text)
@@ -215,7 +198,7 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
     }
 
     let state = ui::State::new();
-    let app = ui::App::new(state, Box::new(widget));
+    let app = ui::App::new(state, Box::new(widget)).with_window_app_id(osk::KEYBOARD_APP_ID);
 
     // Spawn the input-method reader once the event loop proxy exists, so it can
     // push show/hide/purpose commands into the loop.
@@ -237,6 +220,14 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
                 };
                 for ev in events {
                     let t = model.reduce(ev);
+                    // Purpose first, so the first mapped frame already has
+                    // the correct layout instead of flashing the text layout.
+                    if let Some(p) = t.purpose_changed {
+                        let cmd = format!("osk:purpose:{}", input_purpose_name(p));
+                        if proxy.send_event(UserEvent::External(cmd)).is_err() {
+                            return;
+                        }
+                    }
                     if let Some(visible) = t.visibility_changed {
                         let cmd = if visible { "osk:show" } else { "osk:hide" };
                         if proxy
@@ -244,12 +235,6 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
                             .is_err()
                         {
                             return; // event loop gone
-                        }
-                    }
-                    if let Some(p) = t.purpose_changed {
-                        let cmd = format!("osk:purpose:{}", input_purpose_name(p));
-                        if proxy.send_event(UserEvent::External(cmd)).is_err() {
-                            return;
                         }
                     }
                 }
@@ -261,7 +246,8 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
 
 /// The text a single [`osk::Symbol`] inserts when committed through the input
 /// method, or `None` for symbols that aren't a plain inserted character (so the
-/// whole commit is skipped — e.g. backspace, handled by surrounding-text edits).
+/// whole commit is skipped — e.g. Backspace, handled by the guarded virtual
+/// keyboard fallback).
 fn symbol_to_commit_text(sym: &osk::Symbol) -> Option<char> {
     match sym {
         osk::Symbol::Unicode(c) => Some(*c),

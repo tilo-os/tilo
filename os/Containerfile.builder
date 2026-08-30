@@ -44,8 +44,26 @@ RUN curl -fsSL https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --profile minimal \
           --default-toolchain "${RUST_CHANNEL}" \
           --component rustfmt --component clippy \
-          --component rust-analyzer \
+          --component rust-src --component rust-analyzer \
     && cargo --version && rustc --version && rust-analyzer --version
+
+# Remote compiler caching is part of the build environment rather than a
+# per-job download. Pin and verify the upstream static binary so every shard
+# gets the same client without spending runner CPU compiling sccache itself.
+ARG SCCACHE_VERSION=0.17.0
+ARG SCCACHE_SHA256=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
+RUN archive="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    && curl -fsSL \
+      "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${archive}" \
+      -o "/tmp/${archive}" \
+    && echo "${SCCACHE_SHA256}  /tmp/${archive}" | sha256sum -c - \
+    && tar -xzf "/tmp/${archive}" -C /tmp \
+    && install -m 0755 \
+      "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
+      /usr/local/bin/sccache \
+    && rm -rf "/tmp/${archive}" \
+      "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl" \
+    && sccache --version
 
 RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \
     && cargo nextest --version && cargo deny --version && cargo machete --version

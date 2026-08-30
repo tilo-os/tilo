@@ -87,11 +87,23 @@ impl CollabClient {
         channel_id: &str,
         identity: &[u8],
     ) -> Result<ChannelHandle, NotAvailable> {
+        self.join_channel_as(channel_id, identity, "").await
+    }
+
+    /// Join a channel while announcing the participant's display handle.
+    /// Empty handles retain the broker's room/local-identity fallback.
+    pub async fn join_channel_as(
+        &self,
+        channel_id: &str,
+        identity: &[u8],
+        participant_handle: &str,
+    ) -> Result<ChannelHandle, NotAvailable> {
         let mut req = self.inner.join_channel_request();
         {
             let mut builder = req.get();
             builder.set_channel_id(channel_id);
             builder.set_identity(identity);
+            builder.set_participant_handle(participant_handle);
         }
         let reply = req.send().promise.await?;
         let handle = reply.get()?.get_handle()?;

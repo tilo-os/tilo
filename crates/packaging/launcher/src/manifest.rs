@@ -82,6 +82,10 @@ pub struct MinimalManifest {
     /// `[providers].ext` — file extensions this package can open, how the
     /// desktop learns which app owns a document type.
     pub opens_ext: Vec<String>,
+    /// Normalized, concrete MIME types declared by the package.
+    pub opens_mime: Vec<String>,
+    /// Normalized URI schemes (without `:`) declared by the package.
+    pub opens_schemes: Vec<String>,
 }
 
 impl MinimalManifest {
@@ -117,10 +121,10 @@ struct RawManifest {
 struct ProvidersBlock {
     #[serde(default)]
     ext: Vec<String>,
-    /// Accepted so a manifest carrying `mime = [...]` still decodes; nothing routes on MIME yet.
     #[serde(default)]
-    #[allow(dead_code)]
     mime: Vec<String>,
+    #[serde(default, alias = "uri-schemes", alias = "uri_schemes")]
+    schemes: Vec<String>,
 }
 
 /// `[cli]` block, mirrors [`pkg::manifest::Cli`], decoded independently
@@ -171,15 +175,26 @@ impl From<RawManifest> for MinimalManifest {
             .filter(|k| !k.is_empty())
             .unwrap_or_else(|| KIND_APP.to_string());
         let cli_commands = raw.cli.map(|c| c.commands).unwrap_or_default();
+        let providers = raw.providers.unwrap_or_default();
         // Normalised on decode: lowercase, no leading dot, no blanks — a
         // manifest writing `".ODT"` and one writing `"odt"` must resolve the same.
-        let opens_ext = raw
-            .providers
-            .map(|p| p.ext)
-            .unwrap_or_default()
+        let opens_ext = providers
+            .ext
             .into_iter()
             .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
-            .filter(|e| !e.is_empty())
+            .filter(|e| valid_extension(e))
+            .collect();
+        let opens_mime = providers
+            .mime
+            .into_iter()
+            .map(|mime| mime.trim().to_ascii_lowercase())
+            .filter(|mime| valid_mime(mime))
+            .collect();
+        let opens_schemes = providers
+            .schemes
+            .into_iter()
+            .map(|scheme| scheme.trim().trim_end_matches(':').to_ascii_lowercase())
+            .filter(|scheme| valid_scheme(scheme))
             .collect();
         let runtime = raw.package.as_ref().and_then(|p| p.runtime.clone());
         let name = raw.package.as_ref().and_then(|p| p.name.clone());
@@ -202,8 +217,50 @@ impl From<RawManifest> for MinimalManifest {
             sandbox: raw.sandbox,
             cli_commands,
             opens_ext,
+            opens_mime,
+            opens_schemes,
         }
     }
+}
+
+fn valid_extension(ext: &str) -> bool {
+    !ext.is_empty()
+        && ext.len() <= 64
+        && ext
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
+}
+
+fn valid_mime(mime: &str) -> bool {
+    let Some((top, subtype)) = mime.split_once('/') else {
+        return false;
+    };
+    let token = |part: &str| {
+        !part.is_empty()
+            && part.len() <= 127
+            && part.bytes().all(|b| {
+                b.is_ascii_alphanumeric()
+                    || matches!(
+                        b,
+                        b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+                    )
+            })
+    };
+    mime.len() <= 255
+        && !subtype.contains('/')
+        && top != "*"
+        && subtype != "*"
+        && token(top)
+        && token(subtype)
+}
+
+fn valid_scheme(scheme: &str) -> bool {
+    let mut chars = scheme.chars();
+    !scheme.is_empty()
+        && scheme.len() <= 32
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && !matches!(scheme, "file" | "data" | "javascript")
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -554,6 +611,19 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(m.opens_ext, vec!["odt".to_string(), "md".to_string()]);
+    }
+
+    #[test]
+    fn mime_and_scheme_claims_are_normalized_and_unsafe_values_dropped() {
+        let m: MinimalManifest = toml::from_str(
+            "package_id = \"com.example.x\"\nversion = \"1\"\n\
+             [entrypoint]\nbin = \"bin/x\"\n\
+             [providers]\nmime = [\" Text/HTML \", \"text/html; charset=x\"]\n\
+             schemes = [\"HTTPS:\", \"javascript\", \"bad scheme\"]\n",
+        )
+        .expect("parses");
+        assert_eq!(m.opens_mime, vec!["text/html"]);
+        assert_eq!(m.opens_schemes, vec!["https"]);
     }
 
     #[test]

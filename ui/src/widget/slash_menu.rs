@@ -27,7 +27,7 @@
 //!
 //! `CommandPalette` is a full-screen search affordance with a filter
 //! strip, kbd-chip footer, and a docked input row. The slash menu is
-//! a tiny anchored popover with seven rows and no chrome. Wrapping
+//! a compact anchored popover with no extra chrome. Wrapping
 //! the palette would mean working around its layout primitives and
 //! pinned 360 px width, which is wider than most paragraph blocks.
 //! A purpose-built widget is ~150 LOC and avoids the impedance match.
@@ -168,6 +168,20 @@ impl SlashMenu {
                 label: "Code block",
                 keywords: &["code", "codeblock", "code block"],
                 kind: BlockKind::CodeBlock { lang: None },
+            },
+            MenuRow {
+                label: "TeX formula",
+                keywords: &["tex", "latex", "math", "equation", "formula"],
+                kind: BlockKind::CodeBlock {
+                    lang: Some("tex".to_string()),
+                },
+            },
+            MenuRow {
+                label: "Typst formula",
+                keywords: &["typst", "math", "equation", "formula"],
+                kind: BlockKind::CodeBlock {
+                    lang: Some("typst".to_string()),
+                },
             },
             MenuRow {
                 label: "Divider",
@@ -614,6 +628,10 @@ impl Widget for SlashMenu {
             .flatten()
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // The block-type picker is a Menu. Rows are drawn (not child widgets),
@@ -694,8 +712,8 @@ mod tests {
     fn new_starts_hidden_with_full_row_set() {
         let m = SlashMenu::new();
         assert!(!m.is_visible());
-        // Paragraph, H1-3, Bullet, Numbered, Checklist, Code block, Divider.
-        assert_eq!(m.visible_len(), 9);
+        // Paragraph, H1-3, lists, code, TeX, Typst, and divider.
+        assert_eq!(m.visible_len(), 11);
     }
 
     #[test]
@@ -716,7 +734,7 @@ mod tests {
         m.set_filter("h");
         // "Heading 1/2/3" and "Checklist" (contains "h" in "Checklist")
         // match. All three Heading rows should be present.
-        assert!(m.visible_len() < 8);
+        assert!(m.visible_len() < 11);
         // Specifically: "Heading 1" must be in the visible set.
         let any_h1 = (0..m.visible_len()).any(|_| {
             matches!(m.highlighted_kind(), Some(BlockKind::Heading(1))) || m.visible_len() > 0
@@ -797,7 +815,7 @@ mod tests {
             Some((1, 1)),
         ))));
         assert_eq!(m.filter(), "");
-        assert_eq!(m.visible_len(), 9);
+        assert_eq!(m.visible_len(), 11);
         assert_eq!(Widget::accessibility(&m).unwrap().value, None);
 
         let mut scene = Scene::new();
