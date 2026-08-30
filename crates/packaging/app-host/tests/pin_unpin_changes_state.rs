@@ -1,6 +1,12 @@
 //! pin / unpin flip a package's `Pinning` state and persist across
 //! store re-opens.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::common;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;

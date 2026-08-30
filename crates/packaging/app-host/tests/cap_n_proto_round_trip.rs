@@ -2,6 +2,12 @@
 //! Unix socket in a `LocalSet`, dial from a client, and drive
 //! install → list → pin → resolve → diskUsage.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::common;
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -7,6 +7,12 @@
 //! is unit-tested separately in `ui::widget::rich_text_line` via
 //! `link_at_byte`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use notes::NotesApp;
 use notes::sidebar::OutEvent;
 use tempfile::TempDir;

@@ -7,6 +7,12 @@
 //! construct here. The popover's own filtering / arrow-nav / Enter
 //! semantics are unit-pinned in `widget::link_popover::tests`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use ui::widget::link_popover::PageEntry;
 use ui::widget::marks::Mark;
 use ui::widget::{BlockEditor, BlockKind};

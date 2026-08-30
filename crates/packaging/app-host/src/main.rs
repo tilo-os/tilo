@@ -4,6 +4,15 @@
 //! and runs the accept loop. Best-effort systemd `READY=1` notify so a
 //! `Type=notify` user unit can serialise dependent units behind us.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

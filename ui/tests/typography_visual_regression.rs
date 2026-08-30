@@ -5,6 +5,12 @@
 //! Update intentional changes with:
 //! `UPDATE_TYPOGRAPHY_BASELINES=1 cargo test -p ui --test it typography_visual_regression`
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};

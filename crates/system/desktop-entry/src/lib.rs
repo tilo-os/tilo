@@ -23,6 +23,15 @@
 //! - [`cache`]  — memoising a scan for a UI that queries per keystroke.
 //! - [`launch`] — spawning a host application, and what that costs.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod cache;
 pub mod entry;
 pub mod exec;

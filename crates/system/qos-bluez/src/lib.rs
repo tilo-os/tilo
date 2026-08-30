@@ -36,6 +36,15 @@
 //! reply that does not fit the question, nobody answering in time — returns a
 //! D-Bus error to `BlueZ`. Silence never becomes consent.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod agent;
 pub mod client;
 pub mod model;

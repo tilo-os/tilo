@@ -34,6 +34,15 @@
 //! `logind.Suspend`, mirrors the registry into a logind `idle:sleep` lock,
 //! watches the battery, and reacts to the lid.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod battery;
 pub mod bridge;
 pub mod config;

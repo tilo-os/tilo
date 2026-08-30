@@ -22,6 +22,15 @@
 //! are expected to fall back to a stock-Linux path (or disable the
 //! feature) when running as a Flatpak.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::rc::Rc;
 
 use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};

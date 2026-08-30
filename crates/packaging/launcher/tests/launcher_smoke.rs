@@ -15,6 +15,12 @@
 //! The non-ignored tests cover manifest-handling and service-resolution
 //! semantics without touching bwrap at all.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

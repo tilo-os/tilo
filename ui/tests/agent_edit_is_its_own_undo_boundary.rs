@@ -10,6 +10,12 @@
 //! The event reaches the app through the typed action subscription, drained by the same
 //! `App::pump_collab_presence` a running window calls every frame.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc};
 

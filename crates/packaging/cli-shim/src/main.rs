@@ -22,6 +22,15 @@
 //! - The sidecar's `launcher` override exists only for out-of-tree
 //!   testing; production installs leave it unset.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::env;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};

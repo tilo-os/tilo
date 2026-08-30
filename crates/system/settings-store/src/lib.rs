@@ -27,6 +27,15 @@
 //! out of range must never take an app or session down — every read path returns the
 //! caller's default instead.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};

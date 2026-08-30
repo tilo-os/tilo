@@ -9,6 +9,12 @@
 //! renderer `--shots` uses — and assert the surface actually painted content
 //! (it is not blank), so a "shot" is verified, not just produced.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use automerge::AutoCommit;

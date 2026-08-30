@@ -12,6 +12,12 @@
 //!   6. The relay's Ready reports `pending_deltas=1` and immediately
 //!      delivers D1 to B.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use qos_relay::Envelope;

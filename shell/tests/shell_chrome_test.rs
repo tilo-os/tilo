@@ -1,6 +1,12 @@
 //! Interaction tests for shell chrome widgets (`OverviewView`, `GlobalSearch`,
 //! `QuickSettings`, `WorkspaceSettings`, `SidebarWheel`, `TopBar`, …).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 #[test]
 fn visual_smoke_checklist_is_documented() {
     let src = include_str!("../src/shell/mod.rs");

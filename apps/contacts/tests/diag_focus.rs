@@ -9,6 +9,12 @@
 //! contacts form. If a refactor ever leaked the form's inputs into the App
 //! tree, the App would start handling Tab itself and this would fail.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 #[test]
 fn contacts_root_owns_focus_and_registers_none_with_the_app() {
     let state = ui::State::new();

@@ -18,6 +18,12 @@
 //! Set `MAPS_LIVE_OUT=/some/dir` to control where the inspection PNGs are
 //! written (default: `apps/maps/live-out/`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

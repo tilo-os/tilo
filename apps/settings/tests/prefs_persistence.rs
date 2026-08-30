@@ -7,6 +7,12 @@
 //! `~/.config/qos/settings.json` the panes write. A process-wide lock
 //! serialises the env mutation so the tests don't race each other.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 

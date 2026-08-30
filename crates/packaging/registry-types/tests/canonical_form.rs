@@ -3,6 +3,12 @@
 //! yesterday to still verify after any client re-encodes the
 //! entry.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use registry_types::{

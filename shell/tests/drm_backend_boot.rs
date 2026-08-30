@@ -11,6 +11,12 @@
 //! No rendering — only that the backend claims the seat, enumerates at
 //! least one KMS card node, and attaches libinput.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::compositor::backend::Backend;
 use shell::compositor::backend::drm::DrmBackend;
 

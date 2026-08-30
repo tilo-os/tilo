@@ -6,6 +6,12 @@
 //! [`ChannelGroup::add_member_with_commit`] /
 //! [`ChannelGroup::process_commit`] pair.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
 

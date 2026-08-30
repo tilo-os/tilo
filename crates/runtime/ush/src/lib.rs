@@ -66,6 +66,15 @@
 //! same record the compositor stores, shows in its permissions panel and
 //! can revoke. There is no `ush`-local permission type. See [`policy`].
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod audit;
 pub mod broker;
 pub mod guard;

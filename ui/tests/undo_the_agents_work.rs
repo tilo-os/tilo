@@ -8,6 +8,12 @@
 //! **document content** rather than on a return value — a revert that reported
 //! success while leaving the text alone fails these tests.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 

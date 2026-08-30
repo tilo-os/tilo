@@ -11,6 +11,11 @@
 //! `#[ignore]`d to keep CI quiet; enable with `--include-ignored`.
 
 #![cfg(feature = "vaapi")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
 
 use shell::collab::encoder::{Codec, EncoderInit, EncoderKind, FrameInput, build, probe, vaapi};
 use shell::collab::flatpak_share::SharedFlatpakSession;

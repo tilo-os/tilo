@@ -1,6 +1,12 @@
 //! Phase 4: Cmd-K / Ctrl-K opens the page jump palette, which
 //! navigates to the chosen page on Enter.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use notes::NotesApp;
 use tempfile::TempDir;
 

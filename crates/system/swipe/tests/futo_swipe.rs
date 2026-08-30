@@ -4,6 +4,11 @@
 //! clone, plus `en_w2.combined`). Otherwise it self-skips.
 
 #![cfg(futo)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
 
 use std::path::PathBuf;
 use swipe::{FutoSwipe, ModelPaths};

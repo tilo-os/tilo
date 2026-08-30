@@ -42,6 +42,15 @@
 //! `NOTIFY_SOCKET` `sd_notify(3)` protocol directly — we don't pull in
 //! `systemd-sys` just for a one-line handshake.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::fs;
 use std::io::Write;
 use std::os::unix::net::UnixDatagram;

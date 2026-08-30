@@ -5,6 +5,12 @@
 //! it in the other" — the App layer drives exactly these calls
 //! (`broadcast_doc_delta` -> `SyncIncremental`; poll -> `load_incremental`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::thread;
 use std::time::Duration;
 

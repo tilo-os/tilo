@@ -11,6 +11,12 @@
 //! need `/dev/fuse` + `fusermount3` and are skipped in constrained CI
 //! (`cargo test -p app-fs -- --include-ignored` locally).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::sync::Arc;
 
 use app_fs::{

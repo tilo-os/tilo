@@ -4,6 +4,12 @@
 //! `scroll_y` math (wheel-to-px conversion, top clamp, content-extent
 //! clamp) that has no test today.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 

@@ -31,6 +31,15 @@
 //! * [`installer_app`] — the root [`InstallerApp`] `Widget` + wizard
 //!   state machine.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod action_button;
 pub mod disk_row;
 pub mod disks;

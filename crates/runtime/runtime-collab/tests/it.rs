@@ -1,5 +1,11 @@
 // One test binary instead of one per file; #[path] keeps the files in place.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 #[path = "mock_broker.rs"]
 mod mock_broker;
 #[path = "schema_v2.rs"]

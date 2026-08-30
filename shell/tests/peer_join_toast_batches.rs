@@ -1,5 +1,11 @@
 //! Peer-join toast batching: 3 join events in <1s → single toast.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::{Duration, Instant};
 
 use shell::shell::peer_join_toast::{BATCH_WINDOW, PeerEventKind, PeerToastQueue};

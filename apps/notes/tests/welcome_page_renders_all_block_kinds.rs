@@ -7,6 +7,12 @@
 //!    Phase-3 kind (paragraph, heading, bullet, checklist, code block,
 //!    divider) — proving the parser landed at least one of each.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashSet;
 
 use notes::WELCOME_BODY;

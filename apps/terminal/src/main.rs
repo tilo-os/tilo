@@ -13,7 +13,6 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-
 // Thin binary entry point — all logic lives in the library.
 //
 // Supports two modes:
@@ -26,6 +25,14 @@
 // The `--shots` flow mirrors the same layout/draw passes the live
 // `App::run` does, just funnels into `OffscreenRenderer::render_png`
 // instead of a wgpu surface.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
 
 use std::collections::HashMap;
 

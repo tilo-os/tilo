@@ -23,6 +23,15 @@
 //!
 //! [OCF]: https://www.w3.org/publishing/epub3/epub-ocf.html
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use qdoc::snapshot::AttrVal;
 use qdoc::{BlockView, DocSnapshot};
 use std::fmt;

@@ -39,6 +39,15 @@
 //! AND the publisher signature embedded in the qpkg must validate
 //! against the entry's publisher. Any mismatch aborts the fetch.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod config;
 pub mod index;
 pub mod publish;

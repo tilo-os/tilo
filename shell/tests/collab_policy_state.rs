@@ -4,6 +4,12 @@
 //! ingress. Transport tests should prove framing and routing; policy belongs
 //! here so retiring an RPC dialect cannot silently retire its guarantees.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 

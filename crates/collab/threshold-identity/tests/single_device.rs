@@ -4,6 +4,12 @@
 //! signatures verify through both `collab_types::verify_event` (the
 //! public consumer) and the crate's own `verify_threshold_signature` helper.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{ThresholdIdentity, signing::verify_threshold_signature};
 

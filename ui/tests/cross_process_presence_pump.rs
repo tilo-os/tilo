@@ -1,5 +1,11 @@
 //! Two-App proof that typed cross-process presence reaches the App pump.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::thread;
 use std::time::Duration;
 

@@ -8,6 +8,12 @@
 //! then one `tick_active_group_reconcile_for_tests` (mirroring production's
 //! per-frame [`Widget::update`]).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use shell::shell::build_nirios_overlay_host_with_chrome;

@@ -2,6 +2,12 @@
 //! any widget or shell source file. Every literal must flow through
 //! `theme.*` so the OS can enforce one design language.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::{

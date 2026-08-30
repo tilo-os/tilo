@@ -9,6 +9,12 @@
 //! silently break the production encode path) — both use the same maths
 //! (203-nit white, BT.709->2020, PQ inverse EOTF).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::shell::color_pipeline::{
     OUTPUT_ENCODE_SHADER_SOURCE, SDR_REFERENCE_WHITE_NITS, map_sdr_pixel_to_pq_bt2020, pq_eotf,
 };

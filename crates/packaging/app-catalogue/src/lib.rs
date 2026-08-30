@@ -20,6 +20,15 @@
 //! path to `qos-install`, which checks the publisher signature
 //! fail-closed before extracting anything; `--allow-self-signed` is never passed.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod client;
 pub mod config;
 pub mod install;

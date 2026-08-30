@@ -2,6 +2,15 @@
 //! packages (.qpkg) locally, verifying the package signature and trust
 //! chain before installing.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::fs;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
