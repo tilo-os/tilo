@@ -1,7 +1,7 @@
 //! The OS draws the window chrome; the app must NOT draw its own title / app-
 //! name header (that would duplicate the compositor's window-group pill). This
 //! guards the removal of the old in-pane "title + subtitle + toggle" header and
-//! the sidebar's "Settings" title.
+//! the sidebar's "Personal Settings" title.
 //!
 //! It asserts on the real composed tree: it walks every widget's accessibility
 //! node (a `Text`'s accessible name *is* its rendered string) and proves the
@@ -86,7 +86,7 @@ fn rendered_names(app: &SettingsApp) -> Vec<String> {
 fn app_title_is_exposed_only_through_app_widget() {
     // The sanctioned channel: the OS pill reads this. Present and correct.
     let app = SettingsApp::new();
-    assert_eq!(app.app_title(), "Settings");
+    assert_eq!(app.app_title(), "Personal Settings");
     assert!(matches!(app.app_icon(), IconDescriptor::Glyph(_)));
 }
 
@@ -105,8 +105,8 @@ fn no_pane_draws_the_app_name_or_a_subtitle_header() {
         let names = rendered_names(&app);
 
         assert!(
-            !names.iter().any(|n| n == "Settings"),
-            "{cat:?}: the app must not draw its own \"Settings\" app-name header \
+            !names.iter().any(|n| n == "Personal Settings"),
+            "{cat:?}: the app must not draw its own \"Personal Settings\" app-name header \
              (the OS pill carries it); rendered names were {names:?}"
         );
         assert!(

@@ -1052,6 +1052,18 @@ impl ChromeState {
         self.priority_contacts = priority_contacts;
     }
 
+    /// Keep notification unit tests independent of the developer account's
+    /// live policy document. Production always refreshes from the shared
+    /// settings authority in `pump_dbus_notifications`.
+    #[cfg(test)]
+    pub(crate) fn set_notification_policy_for_tests(
+        &mut self,
+        policy: settings_store::notification_policy::NotificationPolicy,
+    ) {
+        self.notification_policy = policy;
+        self.notification_policy_checked = Some(std::time::Instant::now());
+    }
+
     pub fn set_session_locked(&mut self, locked: bool) {
         if self.session_locked != locked {
             self.session_locked = locked;
