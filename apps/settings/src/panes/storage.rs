@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
+use runtime_fs::storage::{
+    DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, StorageClient, SyncStorageSnapshot,
+};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{Button, Widget};
@@ -18,11 +21,17 @@ use crate::widgets::{caption, card, card_with_action, rows, value_row};
 const CLEAN_KEY: &str = "storage.cleanup.confirmed";
 const DISKS_KEY: &str = "storage.open.disks";
 const BACKUPS_KEY: &str = "storage.open.backups";
+const SYNC_FREE_KEY: &str = "storage.sync.free";
 
 pub struct StoragePane {
     roots: StorageRoots,
     snapshot: StorageSnapshot,
     cleanup: Option<CleanupPreview>,
+    sync_snapshot: Option<SyncStorageSnapshot>,
+    sync_message: Option<String>,
+    sync_busy: bool,
+    sync_result: Option<std::sync::mpsc::Receiver<Result<EvictionReport, String>>>,
+    snapshot_result: Option<std::sync::mpsc::Receiver<Result<SyncStorageSnapshot, String>>>,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -30,7 +39,9 @@ pub struct StoragePane {
 impl StoragePane {
     pub fn new() -> Self {
         let roots = StorageRoots::discover();
-        Self::with_roots(roots)
+        let mut pane = Self::with_roots(roots);
+        pane.refresh_sync();
+        pane
     }
 
     pub fn with_roots(roots: StorageRoots) -> Self {
@@ -43,9 +54,28 @@ impl StoragePane {
             roots,
             snapshot,
             cleanup,
+            sync_snapshot: None,
+            sync_message: None,
+            sync_busy: false,
+            sync_result: None,
+            snapshot_result: None,
             composed: None,
             rect: Rect::ZERO,
         }
+    }
+
+    fn refresh_sync(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+                .and_then(|mut client| client.snapshot())
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        if self.sync_snapshot.is_none() {
+            self.sync_message = Some("Loading synced storage…".into());
+        }
+        self.snapshot_result = Some(receiver);
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -61,7 +91,16 @@ impl StoragePane {
                 ]
                 .into_iter()
                 .map(|category| {
-                    let value = if self.snapshot.unavailable.contains(&category) {
+                    let value = if category == StorageCategory::SyncedFiles {
+                        self.sync_snapshot
+                            .as_ref()
+                            .map(|snapshot| {
+                                human_bytes(
+                                    snapshot.workspaces.iter().map(|w| w.logical_bytes).sum(),
+                                )
+                            })
+                            .unwrap_or_else(|| "Not available".into())
+                    } else if self.snapshot.unavailable.contains(&category) {
                         "Not available".into()
                     } else {
                         human_bytes(*totals.get(&category).unwrap_or(&0))
@@ -71,6 +110,66 @@ impl StoragePane {
                 .collect(),
             ),
         );
+
+        let synced = match &self.sync_snapshot {
+            Some(snapshot) => {
+                let local: u64 = snapshot.workspaces.iter().map(|w| w.local_bytes).sum();
+                let remote: u64 = snapshot
+                    .workspaces
+                    .iter()
+                    .map(|w| w.remote_only_bytes)
+                    .sum();
+                let reclaimable: u64 = snapshot
+                    .workspaces
+                    .iter()
+                    .map(|w| w.reclaimable_bytes)
+                    .sum();
+                let mut sync_rows = vec![
+                    value_row("On this device", &human_bytes(local)),
+                    value_row("On other devices only", &human_bytes(remote)),
+                    value_row("Safe to free", &human_bytes(reclaimable)),
+                ];
+                if let Some(message) = &self.sync_message {
+                    sync_rows.push(caption(message));
+                }
+                sync_rows.extend(
+                    snapshot
+                        .files
+                        .iter()
+                        .filter(|f| f.reclaimable_bytes > 0)
+                        .take(8)
+                        .map(|f| value_row(&f.logical_path, &human_bytes(f.reclaimable_bytes))),
+                );
+                if reclaimable > 0 && !self.sync_busy {
+                    card_with_action(
+                        "Synced storage",
+                        Box::new(Button::new(
+                            "storage.sync.free",
+                            &format!("Free {}", human_bytes(reclaimable)),
+                            Some(SYNC_FREE_KEY),
+                        )),
+                        rows(sync_rows),
+                    )
+                } else {
+                    sync_rows.push(caption(if self.sync_busy {
+                        "Verifying remote copies and freeing local space…"
+                    } else if snapshot.online {
+                        "Nothing is safely reclaimable. Dirty, pinned, shared, and unverified content stays local."
+                    } else {
+                        "You are offline. Local synced content stays available and cannot be reclaimed."
+                    }));
+                    card("Synced storage", rows(sync_rows))
+                }
+            }
+            None => card(
+                "Synced storage",
+                rows(vec![caption(
+                    self.sync_message
+                        .as_deref()
+                        .unwrap_or("Sync storage accounting is not available."),
+                )]),
+            ),
+        };
 
         let mut largest = self.snapshot.entries.clone();
         largest.sort_by(|a, b| b.bytes.cmp(&a.bytes));
@@ -144,7 +243,7 @@ impl StoragePane {
                 ),
             ]),
         );
-        crate::widgets::cards(vec![overview, apps, cleanup, tools])
+        crate::widgets::cards(vec![overview, synced, apps, cleanup, tools])
     }
 
     fn pressed(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
@@ -170,8 +269,67 @@ fn human_bytes(bytes: u64) -> String {
     format!("{bytes} B")
 }
 
+fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelection> {
+    snapshot
+        .files
+        .iter()
+        .filter(|file| file.reclaimable_bytes > 0)
+        .map(EvictionSelection::from)
+        .collect()
+}
+
 impl Widget for StoragePane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(receiver) = &self.snapshot_result {
+            match receiver.try_recv() {
+                Ok(Ok(snapshot)) => {
+                    self.sync_snapshot = Some(snapshot);
+                    self.snapshot_result = None;
+                    if self.sync_message.as_deref() == Some("Loading synced storage…") {
+                        self.sync_message = None;
+                    }
+                }
+                Ok(Err(error)) => {
+                    self.sync_snapshot = None;
+                    self.snapshot_result = None;
+                    self.sync_message = Some(format!("Sync storage service unavailable: {error}"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.sync_snapshot = None;
+                    self.snapshot_result = None;
+                    self.sync_message = Some("Sync storage service ended unexpectedly.".into());
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(receiver) = &self.sync_result {
+            match receiver.try_recv() {
+                Ok(Ok(report)) => {
+                    self.sync_busy = false;
+                    self.sync_result = None;
+                    self.refresh_sync();
+                    self.sync_message = Some(format!(
+                        "Freed {} from {} synced files.",
+                        human_bytes(report.freed_bytes),
+                        report.evicted_files
+                    ));
+                }
+                Ok(Err(error)) => {
+                    self.sync_busy = false;
+                    self.sync_result = None;
+                    self.sync_message = Some(format!("Nothing was removed: {error}"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.sync_busy = false;
+                    self.sync_result = None;
+                    self.sync_message = Some(
+                        "The sync storage request ended unexpectedly; nothing was assumed removed."
+                            .into(),
+                    );
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if Self::pressed(state, root, CLEAN_KEY) {
             let _ = state.put(root, CLEAN_KEY, false);
             if let Some(preview) = &self.cleanup {
@@ -184,6 +342,23 @@ impl Widget for StoragePane {
                         .as_deref()
                         .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
                 }
+            }
+        }
+        if Self::pressed(state, root, SYNC_FREE_KEY) {
+            let _ = state.put(root, SYNC_FREE_KEY, false);
+            if !self.sync_busy
+                && let Some(snapshot) = &self.sync_snapshot
+            {
+                let selected = reclaimable_selections(snapshot);
+                let (sender, receiver) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+                        .and_then(|mut client| client.evict(selected))
+                        .map_err(|error| error.to_string());
+                    let _ = sender.send(result);
+                });
+                self.sync_busy = true;
+                self.sync_result = Some(receiver);
             }
         }
         if Self::pressed(state, root, DISKS_KEY) {
@@ -323,5 +498,33 @@ mod tests {
         });
         assert_eq!(pane.snapshot.reclaimable_bytes(), 24);
         assert_eq!(pane.cleanup.as_ref().unwrap().total_bytes, 24);
+    }
+
+    #[test]
+    fn settings_submits_only_authority_approved_reclaimable_files() {
+        let file = |identity: &str, reclaimable_bytes| runtime_fs::storage::SyncedFileState {
+            workspace: "work".into(),
+            app: None,
+            logical_path: format!("/{identity}"),
+            identity: identity.into(),
+            inode: 1,
+            version: "v".into(),
+            logical_bytes: 10,
+            hydrated_bytes: 10,
+            remote_only: false,
+            dirty: reclaimable_bytes == 0,
+            pinned: false,
+            in_flight: false,
+            remotely_durable: reclaimable_bytes > 0,
+            reclaimable_bytes,
+        };
+        let snapshot = SyncStorageSnapshot {
+            online: true,
+            files: vec![file("clean", 10), file("dirty", 0)],
+            ..SyncStorageSnapshot::default()
+        };
+        let selected = reclaimable_selections(&snapshot);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].identity, "clean");
     }
 }

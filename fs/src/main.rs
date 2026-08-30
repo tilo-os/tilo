@@ -52,6 +52,9 @@ enum Command {
         /// Serve the document control socket here.
         #[arg(long)]
         control_sock: Option<PathBuf>,
+        /// Serve typed hydration accounting and safe eviction here.
+        #[arg(long)]
+        storage_sock: Option<PathBuf>,
         #[command(flatten)]
         acl: AclArgs,
     },
@@ -69,6 +72,9 @@ enum Command {
         /// Serve the document control socket here.
         #[arg(long)]
         control_sock: Option<PathBuf>,
+        /// Serve typed hydration accounting and safe eviction here.
+        #[arg(long)]
+        storage_sock: Option<PathBuf>,
         #[command(flatten)]
         acl: AclArgs,
     },
@@ -83,15 +89,37 @@ async fn main() -> Result<()> {
             cache_dir,
             seed,
             control_sock,
+            storage_sock,
             acl,
-        } => serve(mount_point, cache_dir, seed, control_sock, acl).await,
+        } => {
+            serve(
+                mount_point,
+                cache_dir,
+                seed,
+                control_sock,
+                storage_sock,
+                acl,
+            )
+            .await
+        }
         Command::Mount {
             mount_point,
             ticket,
             cache_dir,
             control_sock,
+            storage_sock,
             acl,
-        } => mount(mount_point, ticket, cache_dir, control_sock, acl).await,
+        } => {
+            mount(
+                mount_point,
+                ticket,
+                cache_dir,
+                control_sock,
+                storage_sock,
+                acl,
+            )
+            .await
+        }
     }
 }
 
@@ -227,6 +255,7 @@ async fn serve(
     cache_dir: Option<PathBuf>,
     seed: Option<PathBuf>,
     control_sock: Option<PathBuf>,
+    storage_sock: Option<PathBuf>,
     acl_args: AclArgs,
 ) -> Result<()> {
     let np = namespace_path(&cache_dir);
@@ -286,6 +315,7 @@ async fn serve(
         workspace.sync.clone(),
         acl,
         thumb_dir,
+        storage_sock,
     )
     .await?;
     if let Some(p) = &np {
@@ -303,6 +333,7 @@ async fn mount(
     ticket: String,
     cache_dir: Option<PathBuf>,
     control_sock: Option<PathBuf>,
+    storage_sock: Option<PathBuf>,
     acl_args: AclArgs,
 ) -> Result<()> {
     let ticket = Ticket::decode(&ticket)?;
@@ -344,6 +375,7 @@ async fn mount(
         workspace.sync.clone(),
         acl,
         thumb_dir,
+        storage_sock,
     )
     .await?;
     if let Some(p) = &np {
@@ -422,6 +454,7 @@ async fn run_mount(
     sync: Arc<SyncHandle>,
     acl: Option<(AclHandle, IdentityKey)>,
     thumb_dir: Option<PathBuf>,
+    storage_sock: Option<PathBuf>,
 ) -> Result<()> {
     if !mount_point.exists() {
         std::fs::create_dir_all(&mount_point)?;
@@ -429,6 +462,15 @@ async fn run_mount(
 
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
     let fs = QuickFS::new(namespace, hydrator, heuristics).with_sync(sync);
+    let storage_authority = storage_sock.as_ref().map(|_| {
+        fs::storage::StorageAuthority::new(
+            fs.namespace.clone(),
+            fs.hydrator.clone(),
+            fs.hydrator.store.clone(),
+            fs.write_buffers_handle(),
+            "Current workspace",
+        )
+    });
     // Bind the capability list, if given, before the mount goes live, so every op is checked from the start.
     let fs = match acl {
         Some((acl, identity)) => fs.with_acl(acl, identity),
@@ -445,6 +487,24 @@ async fn run_mount(
         },
         None => fs,
     };
+
+    let _storage = storage_sock
+        .zip(storage_authority)
+        .map(|(sock, authority)| {
+            let _ = std::fs::remove_file(&sock);
+            match tokio::net::UnixListener::bind(&sock) {
+                Ok(listener) => {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o660));
+                    println!("Storage accounting socket at {sock:?}");
+                    tokio::spawn(fs::storage::serve(listener, authority))
+                }
+                Err(error) => {
+                    eprintln!("could not bind storage socket {sock:?}: {error}");
+                    tokio::spawn(async {})
+                }
+            }
+        });
 
     let mut config = Config::default();
     config.mount_options = vec![
