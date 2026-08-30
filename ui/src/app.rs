@@ -385,7 +385,9 @@ impl App {
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
             // Auto-enable if the shell mirrored QOS_A11Y_* into this sandbox.
-            screen_reader: if Self::screen_reader_env_enabled() {
+            screen_reader: if Self::screen_reader_env_enabled()
+                || Self::persisted_accessibility_bool("screen_reader")
+            {
                 Some(crate::screen_reader::ScreenReader::new())
             } else {
                 None
@@ -526,6 +528,13 @@ impl App {
             }
         }
         false
+    }
+
+    fn persisted_accessibility_bool(key: &str) -> bool {
+        settings_store::load_section("accessibility")
+            .get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
     }
 
     /// Shared truthy-env-var gate for the low-vision flags: non-empty, not
@@ -906,6 +915,13 @@ impl App {
         }
         self.theme_store_stamp = stamp;
         self.base_theme = Theme::configured();
+        // Screen reader is a device/personal setting, not a per-application
+        // opt-in. Every qOS app watches the same file and changes its real
+        // narrator lifecycle when Personal Settings changes it.
+        let configured_reader = Self::persisted_accessibility_bool("screen_reader")
+            || Self::screen_reader_env_enabled();
+        self.set_screen_reader_enabled(configured_reader);
+        self.a11y.screen_reader = self.screen_reader.is_some();
         self.rebuild_theme();
         self.layout_dirty = true;
         self.structure_dirty = true;
