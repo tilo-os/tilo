@@ -8,6 +8,7 @@ name = "settings_store"
 path = "src/lib.rs"
 
 [dependencies]
+serde.workspace = true
 serde_json.workspace = true
 # Resolves `$HOME` for the XDG fallback. `dirs::config_dir()` is deliberately
 # NOT used to locate the config root — see the module docs for why its

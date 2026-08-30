@@ -31,6 +31,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod notification_policy;
+
 /// The file name under the qOS config root.
 const FILE: &str = "settings.json";
 
