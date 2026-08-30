@@ -86,11 +86,17 @@ impl Drop for Relay {
         // Stop reconnect loops before closing the shared endpoint.  An
         // explicit close also tells connected peers about a host shutdown
         // immediately instead of making them wait for QUIC's idle timeout.
-        self.peer_relay_tasks.lock().unwrap().clear();
-        let endpoint = self.endpoint.clone();
-        tokio::spawn(async move {
-            endpoint.close().await;
-        });
+        if let Ok(mut tasks) = self.peer_relay_tasks.lock() {
+            tasks.clear();
+        }
+        // `Relay` is normally dropped inside Tokio, but Drop must remain safe
+        // in synchronous teardown and after a runtime has already stopped.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let endpoint = self.endpoint.clone();
+            runtime.spawn(async move {
+                endpoint.close().await;
+            });
+        }
     }
 }
 
