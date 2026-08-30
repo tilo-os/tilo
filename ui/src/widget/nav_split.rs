@@ -43,6 +43,16 @@ const REVEAL_RATE: f64 = 14.0;
 /// teleport the flap straight to its endpoint instead of sliding.
 const MAX_FRAME_DT: f64 = 0.1;
 
+/// The scrim's alpha for the current reveal — `reveal` is clamped to
+/// `0.0..=1.0`, so this is always in `0.0..=0.5`, well inside `f32` range.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "reveal is clamped to 0.0..=1.0, so alpha is always 0.0..=0.5"
+)]
+fn scrim_alpha(reveal: f64) -> f32 {
+    (reveal * 0.5) as f32
+}
+
 /// How the split resolves at the current width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplitLayout {
@@ -286,24 +296,28 @@ impl NavSplit {
     }
 
     /// Override the width breakpoint (logical px).
+    #[must_use]
     pub fn with_breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = px;
         self
     }
 
     /// Override the docked / fully-revealed sidebar width (logical px).
+    #[must_use]
     pub fn with_sidebar_width(mut self, px: f64) -> Self {
         self.sidebar_width = px;
         self
     }
 
     /// Choose the structural mode (Adaptive / `AlwaysDocked` / Push).
+    #[must_use]
     pub fn with_mode(mut self, mode: SplitMode) -> Self {
         self.mode = mode;
         self
     }
 
     /// Start the sidebar collapsed even when docked (summon-on-demand panel).
+    #[must_use]
     pub fn with_sidebar_closed(mut self) -> Self {
         self.flap = FlapState::closed_by_default();
         self
@@ -457,11 +471,16 @@ impl NavSplit {
             if rect.width() <= 0.0 || rect.height() <= 0.0 {
                 continue;
             }
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "narrowing screen-space layout dimensions for taffy; never near f32::MAX"
+            )]
+            let (w, h) = (rect.width() as f32, rect.height() as f32);
             let _ = taffy.compute_layout_with_measure(
                 node,
                 Size {
-                    width: taffy::AvailableSpace::Definite(rect.width() as f32),
-                    height: taffy::AvailableSpace::Definite(rect.height() as f32),
+                    width: taffy::AvailableSpace::Definite(w),
+                    height: taffy::AvailableSpace::Definite(h),
                 },
                 |known, available, node_id, _, _| {
                     if let Some(&ptr) = map.get(&node_id) {
@@ -494,20 +513,20 @@ impl NavSplit {
     /// `Scrollable` push its new offset down. Falls back to a full
     /// `place_children` if no cached tree exists yet.
     fn reapply_children(&mut self) {
-        if self.inner_taffy.is_none() || self.sidebar_node.is_none() || self.content_node.is_none()
-        {
+        // Take the tree out so the children (other fields) can be borrowed
+        // mutably alongside it, then put it straight back.
+        let (Some(taffy), Some(s_node), Some(c_node)) = (
+            self.inner_taffy.take(),
+            self.sidebar_node,
+            self.content_node,
+        ) else {
             // Shouldn't happen on a reposition, but be safe: fall back to a
             // full solve, paying for the `TextRenderer` only here.
             let mut tr = TextRenderer::new();
             let theme = Theme::dark();
             self.place_children(&theme, &mut tr);
             return;
-        }
-        // Take the tree out so the children (other fields) can be borrowed
-        // mutably alongside it, then put it straight back.
-        let taffy = self.inner_taffy.take().unwrap();
-        let s_node = self.sidebar_node.unwrap();
-        let c_node = self.content_node.unwrap();
+        };
         let s_origin = Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0);
         let c_origin = Point::new(self.content_rect.x0, self.content_rect.y0);
         self.sidebar.apply_layout(&taffy, s_node, s_origin);
@@ -549,8 +568,7 @@ impl NavSplit {
     fn sidebar_visible(&self) -> bool {
         match (self.mode, self.layout_mode()) {
             (SplitMode::Push, _) => true, // master pane always laid out
-            (_, SplitLayout::Docked) => self.flap.reveal() > 0.001,
-            (_, SplitLayout::Overlay) => self.flap.reveal() > 0.001,
+            (_, SplitLayout::Docked | SplitLayout::Overlay) => self.flap.reveal() > 0.001,
         }
     }
 }
@@ -572,14 +590,14 @@ impl Widget for NavSplit {
 
     fn build_layout(
         &mut self,
-        _taffy: &mut TaffyTree<()>,
+        taffy: &mut TaffyTree<()>,
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The split occupies its whole allocation; children are laid out in
         // an isolated inner tree (their rects escape normal flow in overlay
         // mode). Same approach as ModalDialog / PopoverWidget.
-        let node = _taffy.leaf_node(Style {
+        let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -653,7 +671,7 @@ impl Widget for NavSplit {
 
         // Scrim (overlay mode only), then the sidebar on top.
         if self.scrim_rect.width() > 0.0 {
-            let alpha = (self.flap.reveal() * 0.5) as f32;
+            let alpha = scrim_alpha(self.flap.reveal());
             let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
             scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
         }
@@ -688,7 +706,7 @@ impl Widget for NavSplit {
             permissions,
         );
         if self.scrim_rect.width() > 0.0 {
-            let alpha = (self.flap.reveal() * 0.5) as f32;
+            let alpha = scrim_alpha(self.flap.reveal());
             let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
             scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
         }
@@ -843,7 +861,81 @@ impl Widget for NavSplit {
 mod tests {
     use super::*;
     use crate::widget::Text;
+    use std::cell::Cell;
+    use std::rc::Rc;
     use vello_encoding::DrawTag;
+
+    /// Content spy: counts its `build_layout` calls (the expensive rebuild
+    /// `place_children` performs) and reports `layout_needs_measure() ==
+    /// false`, exactly like `Scrollable`. Used by
+    /// [`pure_reposition_reuses_the_inner_layout_instead_of_re_solving`].
+    struct Spy {
+        builds: Rc<Cell<usize>>,
+        rect: Rect,
+    }
+    impl Widget for Spy {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.builds.set(self.builds.get() + 1);
+            let n = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            });
+            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
+            n
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let l = taffy.layout(node).copied().unwrap_or_default();
+            self.rect = Rect::new(
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+                origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+                origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+            );
+        }
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut AutoCommit,
+            _p: &ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _n: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn is_layout_dirty(&self) -> bool {
+            self.rect == Rect::ZERO
+        }
+        fn layout_needs_measure(&self) -> bool {
+            false
+        }
+        fn name(&self) -> &'static str {
+            "Spy"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
 
     fn split(w: f64, mode: SplitMode) -> NavSplit {
         let mut ns = NavSplit::new(
@@ -855,6 +947,10 @@ mod tests {
         ns
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "test viewport dimensions are small literals, never near f32::MAX"
+    )]
     fn lay_out(ns: &mut NavSplit, w: f64, h: f64) {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -1210,80 +1306,6 @@ mod tests {
     /// made scrolling long lists crawl. A resize DOES re-solve.
     #[test]
     fn pure_reposition_reuses_the_inner_layout_instead_of_re_solving() {
-        use std::cell::Cell;
-        use std::rc::Rc;
-
-        // Content spy: counts its `build_layout` calls (the expensive rebuild
-        // `place_children` performs) and reports `layout_needs_measure() ==
-        // false`, exactly like `Scrollable`.
-        struct Spy {
-            builds: Rc<Cell<usize>>,
-            rect: Rect,
-        }
-        impl Widget for Spy {
-            fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-            fn build_layout(
-                &mut self,
-                taffy: &mut TaffyTree<()>,
-                _t: &Theme,
-                node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-            ) -> NodeId {
-                self.builds.set(self.builds.get() + 1);
-                let n = taffy.leaf_node(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                });
-                node_map.insert(n, self as *mut dyn Widget);
-                n
-            }
-            fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-                let l = taffy.layout(node).copied().unwrap_or_default();
-                self.rect = Rect::new(
-                    origin.x + l.location.x as f64,
-                    origin.y + l.location.y as f64,
-                    origin.x + l.location.x as f64 + l.size.width as f64,
-                    origin.y + l.location.y as f64 + l.size.height as f64,
-                );
-            }
-            fn draw(
-                &mut self,
-                _s: &mut Scene,
-                _t: Affine,
-                _tr: &mut TextRenderer,
-                _th: &Theme,
-                _p: &PresenceCtx,
-            ) {
-            }
-            fn handle_event(
-                &mut self,
-                _e: &WindowEvent,
-                _sf: f64,
-                _m: &winit::event::Modifiers,
-                _s: &mut AutoCommit,
-                _p: &ObjId,
-                _h: &mut bool,
-                _ft: &mut Option<NodeId>,
-                _n: NodeId,
-                _t: &TaffyTree<()>,
-            ) {
-            }
-            fn is_layout_dirty(&self) -> bool {
-                self.rect == Rect::ZERO
-            }
-            fn layout_needs_measure(&self) -> bool {
-                false
-            }
-            fn name(&self) -> &str {
-                "Spy"
-            }
-            fn get_rect(&self) -> Rect {
-                self.rect
-            }
-        }
-
         let builds = Rc::new(Cell::new(0usize));
         let mut ns = NavSplit::new(
             Box::new(Text::new("sidebar")),
