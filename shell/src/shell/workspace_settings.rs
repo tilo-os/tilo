@@ -1737,8 +1737,10 @@ pub fn draw_default_apps_pane(
             transform,
             pane,
             Icon::LayoutGrid,
-            "No file handlers installed",
-            "Apps appear here after they declare supported file types.",
+            (
+                "No file handlers installed",
+                "Apps appear here after they declare supported file types.",
+            ),
             text_renderer,
             theme,
         );

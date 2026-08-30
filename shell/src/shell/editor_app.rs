@@ -615,7 +615,7 @@ impl EditorApp {
     /// range. `origin` is `(body_top, content_x)`.
     fn peer_selection_line_rects(
         &self,
-        range: &std::ops::Range<usize>,
+        range: &ui::presence::SelectionRange,
         origin: (f64, f64),
         tr: &mut TextRenderer,
     ) -> Vec<Rect> {
@@ -794,6 +794,57 @@ impl Widget for EditorApp {
         }
     }
 
+    fn name(&self) -> &'static str {
+        "EditorApp"
+    }
+
+    /// Folded into the body's presence key so a peer's caret for one tab
+    /// isn't drawn in another tab of the same app.
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        self.body.set_record(record);
+    }
+
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.body.presence_key())
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.body.needs_commit()
+    }
+
+    fn on_commit(&mut self) {
+        self.body.on_commit();
+    }
+
+    fn get_state(&self) -> Option<String> {
+        Some(self.cursor_pos.to_string())
+    }
+
+    fn set_state(&mut self, s: &str) {
+        if let Ok(pos) = s.parse::<usize>() {
+            self.cursor_pos = pos;
+            self.clamp_cursor();
+        }
+    }
+}
+
+impl EditorApp {
     fn handle_keyboard_input(
         &mut self,
         key_event: &KeyEvent,
@@ -863,55 +914,6 @@ impl Widget for EditorApp {
                     *handled = true;
                 }
             }
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "EditorApp"
-    }
-
-    /// Folded into the body's presence key so a peer's caret for one tab
-    /// isn't drawn in another tab of the same app.
-    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
-        self.body.set_record(record);
-    }
-
-    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
-        Some(self.body.presence_key())
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.focused = focused;
-    }
-
-    fn is_focused(&self) -> bool {
-        self.focused
-    }
-
-    fn needs_commit(&self) -> bool {
-        self.body.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.body.on_commit();
-    }
-
-    fn get_state(&self) -> Option<String> {
-        Some(self.cursor_pos.to_string())
-    }
-
-    fn set_state(&mut self, s: &str) {
-        if let Ok(pos) = s.parse::<usize>() {
-            self.cursor_pos = pos;
-            self.clamp_cursor();
         }
     }
 }

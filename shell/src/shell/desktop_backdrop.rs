@@ -255,7 +255,10 @@ impl DesktopBackdrop {
             let dy = self.rect.y0 - self.cache_rect.y0;
             // `pre_translate` is kurbo's non-operator equivalent of
             // `out_transform * Affine::translate((dx, dy))`.
-            out_scene.append(&self.cached, Some(out_transform.pre_translate((dx, dy))));
+            out_scene.append(
+                &self.cached,
+                Some(out_transform.pre_translate((dx, dy).into())),
+            );
             return;
         }
 

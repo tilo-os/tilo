@@ -769,6 +769,172 @@ impl Widget for NoteTreeView {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
+    /// Every visible row: selection pill, presence mist, nesting guides,
+    /// expand glyph and label.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "draw-context bundle, not real parameter coupling"
+    )]
+
+    /// One row's selection pill, presence mist, nesting guides, expand
+    /// glyph and label.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "draw-context bundle, not real parameter coupling"
+    )]
+
+    /// The half-transparent floating copy of the dragged row, following
+    /// the cursor above the reflowing list.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "draw-context bundle, not real parameter coupling"
+    )]
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        self.last_modifiers = modifiers.state();
+
+        if self.handle_menu_and_drag_escape(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return;
+        }
+        if self.handle_rename_routing(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return;
+        }
+
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.handle_cursor_moved(pt);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.handle_drag_release(handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                self.handle_right_click(focus_target, node_id, handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.handle_left_click(focus_target, node_id, handled);
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                let mods = modifiers.state();
+                self.handle_key_press(logical_key, mods, handled);
+            }
+            _ => {}
+        }
+    }
+
+    /// Routes to the context menu and an in-flight drag's Escape-to-cancel
+    /// — whatever currently owns input, in that priority order. Returns
+    /// `true` when the event was fully consumed and [`Self::handle_event`]
+    /// should stop dispatching.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
+
+    /// Routes to the active rename editor — commits it on a click outside
+    /// its rect, then forwards the event (with Enter/Escape handled first
+    /// so the editor doesn't swallow them). Returns `true` when the event
+    /// was fully consumed and [`Self::handle_event`] should stop
+    /// dispatching.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
+
+    fn name(&self) -> &'static str {
+        "NoteTreeView"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+        // Losing focus commits any in-progress rename (focus-out ends
+        // editing), matching every inline-rename field. Escape still
+        // cancels explicitly before focus is dropped.
+        if !focused && self.rename.is_some() {
+            self.commit_rename();
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    /// A latched drag (or an open context menu) wants to keep receiving
+    /// pointer events even when the cursor leaves the sidebar rect, so the
+    /// ghost keeps tracking and the drop still resolves.
+    fn wants_pointer_capture(&self) -> bool {
+        self.drag.wants_capture() || self.menu.is_open()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+}
+
+impl NoteTreeView {
     /// The "PAGES" label + "+" new-page button header strip.
     fn draw_header(
         &self,
@@ -815,12 +981,6 @@ impl Widget for NoteTreeView {
         );
     }
 
-    /// Every visible row: selection pill, presence mist, nesting guides,
-    /// expand glyph and label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_rows(
         &self,
         scene: &mut Scene,
@@ -872,12 +1032,6 @@ impl Widget for NoteTreeView {
         }
     }
 
-    /// One row's selection pill, presence mist, nesting guides, expand
-    /// glyph and label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_one_row(
         &self,
         scene: &mut Scene,
@@ -1023,12 +1177,6 @@ impl Widget for NoteTreeView {
         }
     }
 
-    /// The half-transparent floating copy of the dragged row, following
-    /// the cursor above the reflowing list.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_drag_ghost(
         &self,
         scene: &mut Scene,
@@ -1075,97 +1223,6 @@ impl Widget for NoteTreeView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.last_modifiers = modifiers.state();
-
-        if self.handle_menu_and_drag_escape(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return;
-        }
-        if self.handle_rename_routing(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return;
-        }
-
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.handle_cursor_moved(pt);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.handle_drag_release(handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } => {
-                self.handle_right_click(focus_target, node_id, handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.handle_left_click(focus_target, node_id, handled);
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                let mods = modifiers.state();
-                self.handle_key_press(logical_key, mods, handled);
-            }
-            _ => {}
-        }
-    }
-
-    /// Routes to the context menu and an in-flight drag's Escape-to-cancel
-    /// — whatever currently owns input, in that priority order. Returns
-    /// `true` when the event was fully consumed and [`Self::handle_event`]
-    /// should stop dispatching.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
     fn handle_menu_and_drag_escape(
         &mut self,
         event: &WindowEvent,
@@ -1235,15 +1292,6 @@ impl Widget for NoteTreeView {
         false
     }
 
-    /// Routes to the active rename editor — commits it on a click outside
-    /// its rect, then forwards the event (with Enter/Escape handled first
-    /// so the editor doesn't swallow them). Returns `true` when the event
-    /// was fully consumed and [`Self::handle_event`] should stop
-    /// dispatching.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
     fn handle_rename_routing(
         &mut self,
         event: &WindowEvent,
@@ -1597,47 +1645,6 @@ impl Widget for NoteTreeView {
             }
             _ => {}
         }
-    }
-
-    fn name(&self) -> &'static str {
-        "NoteTreeView"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.is_focused = focused;
-        // Losing focus commits any in-progress rename (focus-out ends
-        // editing), matching every inline-rename field. Escape still
-        // cancels explicitly before focus is dropped.
-        if !focused && self.rename.is_some() {
-            self.commit_rename();
-        }
-    }
-
-    fn is_focused(&self) -> bool {
-        self.is_focused
-    }
-
-    /// A latched drag (or an open context menu) wants to keep receiving
-    /// pointer events even when the cursor leaves the sidebar rect, so the
-    /// ghost keeps tracking and the drop still resolves.
-    fn wants_pointer_capture(&self) -> bool {
-        self.drag.wants_capture() || self.menu.is_open()
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
     }
 }
 

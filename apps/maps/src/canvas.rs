@@ -664,7 +664,7 @@ fn draw_dashed(
         return;
     }
     for seg in pts.windows(2) {
-        let [&a, &b] = seg else { continue };
+        let &[a, b] = seg else { continue };
         let len = a.distance(b);
         if len < 1e-3 {
             continue;
