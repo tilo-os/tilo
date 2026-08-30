@@ -1,9 +1,9 @@
 //! Code — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//! * default — run the live winit event loop via `ui::App`.
+//! * `--shots PATH` — render one offscreen frame to a PNG and exit (headless
+//!   screenshot; identical passes to the live app).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -52,6 +52,10 @@ const SCENARIOS: &[&str] = &[
     "status",
 ];
 
+/// # Errors
+/// Returns an error when `--shots` fails to lay out or render the offscreen
+/// frame (see [`render_scenario_to_png`]); an unknown `--scenario` name exits
+/// the process directly rather than returning an error.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -165,6 +169,10 @@ fn parse_scenario_arg(args: &[String]) -> Option<String> {
 /// first. Mirrors `ui::App`'s cycle (sync → `build_layout` → `compute_layout` →
 /// `apply_layout` → draw); for the `terminal` scenario it also drives the live
 /// PTY and pumps `sync` a few times so real shell output lands in the frame.
+///
+/// # Errors
+/// Returns an error if taffy fails to assemble or measure the offscreen
+/// layout tree.
 fn render_scenario_to_png(
     mut app: code_editor::CodeApp,
     viewport: (u32, u32),
@@ -182,9 +190,6 @@ fn render_scenario_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
     let mut state = ui::State::new();
 
     // Pre-sync staging: opening the terminal must happen before the first sync
@@ -207,8 +212,52 @@ fn render_scenario_to_png(
     }
 
     app.sync(&mut state.doc, &state.root);
+    build_and_apply_layout(&mut app, &theme, &mut text_renderer, w, h)?;
 
-    let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+    stage_scenario(
+        &mut app,
+        scenario,
+        &mut state,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+    );
+
+    // The staged scenarios change the layout (the find bar appears, the search
+    // panel is taller), so the tree has to be rebuilt before the final draw or
+    // the new surfaces get last frame's geometry.
+    if matches!(scenario, Some("find" | "search")) {
+        build_and_apply_layout(&mut app, &theme, &mut text_renderer, w, h)?;
+    }
+
+    let scene = draw_frame(&mut app, &mut text_renderer, &theme, &presence, &permission);
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    println!("code_editor: wrote shot to {}", out.display());
+    Ok(())
+}
+
+/// Build `app`'s widget tree at `w`×`h`, measure it, and apply the result —
+/// the `build_layout` → `compute_layout` → `apply_layout` third of the cycle,
+/// shared by the initial layout and the rebuild after a scenario changes it.
+///
+/// # Errors
+/// Returns an error if taffy fails to assemble or measure the layout tree.
+fn build_and_apply_layout(
+    app: &mut code_editor::CodeApp,
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    w: u32,
+    h: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = app.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -219,10 +268,9 @@ fn render_scenario_to_png(
         },
         &[child],
     )?;
-
     {
         let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
+        let tr = &mut *text_renderer;
         taffy.compute_layout_with_measure(
             root,
             taffy::Size {
@@ -239,27 +287,50 @@ fn render_scenario_to_png(
         )?;
     }
     app.apply_layout(&taffy, child, Point::ORIGIN);
+    Ok(())
+}
 
-    // A helper that runs a full draw pass into a fresh scene.
-    let draw = |app: &mut code_editor::CodeApp, tr: &mut TextRenderer| {
-        let mut scene = Scene::new();
-        app.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            tr,
-            &theme,
-            &presence,
-            &permission,
-        );
-        scene
-    };
+/// Run one full draw pass into a fresh scene.
+fn draw_frame(
+    app: &mut code_editor::CodeApp,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permission: &PermissionContext,
+) -> Scene {
+    let mut scene = Scene::new();
+    app.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        text_renderer,
+        theme,
+        presence,
+        permission,
+    );
+    scene
+}
 
-    // Post-layout staging.
+/// Stage the requested `--scenario` after the first layout pass: select
+/// words, open the find bar, drive the live terminal's PTY, and so on. A
+/// `None` scenario (the default cold-start frame) stages nothing.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same handful of already-built shots context (app, state, renderer, theme, presence, permission) to whichever scenario arm needs it; grouping them into a struct would not make the call clearer"
+)]
+fn stage_scenario(
+    app: &mut code_editor::CodeApp,
+    scenario: Option<&str>,
+    state: &mut ui::State,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permission: &PermissionContext,
+) {
     match scenario {
         Some("terminal") => {
             // One draw settles the terminal's cell metrics + placement, then we
             // drive the real shell and pump `sync` to collect its output.
-            let _ = draw(&mut app, &mut text_renderer);
+            let _ = draw_frame(app, text_renderer, theme, presence, permission);
             app.shots_terminal_input(
                 "echo 'qOS embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
                  echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n",
@@ -300,51 +371,4 @@ fn render_scenario_to_png(
         }
         _ => {}
     }
-    // The staged scenarios change the layout (the find bar appears, the search
-    // panel is taller), so the tree has to be rebuilt before the final draw or
-    // the new surfaces get last frame's geometry.
-    if matches!(scenario, Some("find" | "search")) {
-        let mut taffy2: TaffyTree<()> = TaffyTree::new();
-        let mut map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child2 = app.build_layout(&mut taffy2, &theme, &mut map2);
-        let root2 = taffy2.new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child2],
-        )?;
-        {
-            let measure_map = map2.clone();
-            let tr = &mut text_renderer;
-            taffy2.compute_layout_with_measure(
-                root2,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )?;
-        }
-        app.apply_layout(&taffy2, child2, Point::ORIGIN);
-    }
-
-    let scene = draw(&mut app, &mut text_renderer);
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("code_editor: wrote shot to {}", out.display());
-    Ok(())
 }
