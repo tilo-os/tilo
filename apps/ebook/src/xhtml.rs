@@ -278,7 +278,9 @@ fn mathml_row(node: Node) -> Row {
                 .collect();
             vec![MathNode::Table { rows }]
         }
-        "mfenced" => vec![MathNode::Paren {
+        "mfenced" => vec![MathNode::Delimited {
+            open: mathml_delimiter(node.attribute("open"), '('),
+            close: mathml_delimiter(node.attribute("close"), ')'),
             body: mathml_children(node),
         }],
         "semantics" => element_children
@@ -298,6 +300,14 @@ fn mathml_row(node: Node) -> Row {
 
 fn mathml_children(node: Node) -> Row {
     node.children().flat_map(mathml_row).collect()
+}
+
+fn mathml_delimiter(value: Option<&str>, default: char) -> Option<char> {
+    match value {
+        Some("") | Some(".") => None,
+        Some(value) => value.chars().next(),
+        None => Some(default),
+    }
 }
 
 fn spans_empty(spans: &[Span]) -> bool {
@@ -547,9 +557,10 @@ mod tests {
             panic!("expected display math");
         };
         assert!(matches!(expr.root[0], MathNode::UnderOver { .. }));
-        let MathNode::Paren { body } = &expr.root[1] else {
+        let MathNode::Delimited { open, close, body } = &expr.root[1] else {
             panic!("matrix fence retained");
         };
+        assert_eq!((*open, *close), (Some('('), Some(')')));
         let MathNode::Table { rows } = &body[0] else {
             panic!("matrix remains a table");
         };
