@@ -173,6 +173,14 @@ pub struct StoreItem {
     /// Source-code URL, if the item exposes it. qOS entries do; most
     /// Flathub apps don't via the v2 API.
     pub source_url: Option<String>,
+    /// Original local `.flatpakref` selected through file-open integration.
+    ///
+    /// Catalogue Flatpaks leave this empty and install by app id from
+    /// Flathub. A populated value keeps the file-open flow on the same card
+    /// and action path while ensuring Flatpak receives the exact reference
+    /// the user chose.
+    #[serde(default)]
+    pub install_ref_path: Option<String>,
     /// Where this came from.
     pub source: StoreSource,
     /// Newest → oldest.
@@ -352,6 +360,7 @@ mod tests {
             icon_url: None,
             homepage_url: None,
             source_url: None,
+            install_ref_path: None,
             source: StoreSource::Qos {
                 registry_name: "qOS main".into(),
             },
@@ -376,6 +385,7 @@ mod tests {
             icon_url: None,
             homepage_url: None,
             source_url: None,
+            install_ref_path: None,
             source: StoreSource::Flathub,
             versions: vec![StoreItemVersion {
                 version: "1.0".into(),
