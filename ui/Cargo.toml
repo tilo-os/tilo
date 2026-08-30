@@ -8,6 +8,10 @@ license.workspace = true
 autotests = false
 autoexamples = false
 
+[package.metadata.cargo-machete]
+# build.rs probes optional system libraries through pkg-config.
+ignored = ["pkg-config"]
+
 [features]
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any

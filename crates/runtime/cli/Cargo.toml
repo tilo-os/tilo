@@ -22,7 +22,6 @@ runtime          = { path = "../runtime" }
 runtime-fs       = { path = "../runtime-fs" }
 
 anyhow.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"] }
 
 [dev-dependencies]
 tempfile.workspace = true

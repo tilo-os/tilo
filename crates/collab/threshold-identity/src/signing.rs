@@ -27,6 +27,7 @@ use frost_ed25519::round1::{SigningCommitments, SigningNonces};
 use frost_ed25519::round2::SignatureShare;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
+use serde_bytes as serde_bytes_codec;
 
 use collab_types::{Ed25519PublicKey, Signature, VerifyError};
 
@@ -41,7 +42,7 @@ pub struct SigningRound1Commitment {
     /// 1-indexed share number of the sender.
     pub from_share_index: u16,
     /// Serialised `SigningCommitments`. Opaque.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub commitment_bytes: Vec<u8>,
 }
 
@@ -78,14 +79,14 @@ pub struct SigningRound2Partial {
     /// 1-indexed share number of the sender.
     pub from_share_index: u16,
     /// Serialised `SignatureShare`. Opaque.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub share_bytes: Vec<u8>,
     /// The signer's verifying share (public), included so the aggregator
     /// can rebuild a `PublicKeyPackage` without a separate channel.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub verifying_share_bytes: Vec<u8>,
     /// The signed message bytes — all partials in one aggregation must agree.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub signed_message_bytes: Vec<u8>,
     /// Share indices participating in this run, in `BTree` order — all
     /// partials must agree.
