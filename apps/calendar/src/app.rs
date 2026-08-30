@@ -41,6 +41,7 @@ use ui::theme::Theme;
 use ui::widget::{BlockEditor, DatePicker, Scrollable, TextInput, TimePicker};
 
 use crate::account::AccountStore;
+use crate::agenda::{AgendaAction, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
@@ -446,7 +447,9 @@ pub struct CalendarApp {
     timeline_scroll: Scrollable,
     /// Vertical scroll of the agenda list, so a short window pages through the
     /// upcoming days instead of clipping them.
-    agenda_scroll: Scrollable,
+    /// Self-contained upcoming-list view: scroll state, input, drawing and row
+    /// actions live together instead of leaking into the root widget.
+    agenda: AgendaView,
     /// Whether the timeline scroll has been seeded to the work-day yet. Seeded
     /// once, the first time the day is too tall to fit, so it opens around
     /// [`TIMELINE_INITIAL_HOUR`] rather than at midnight.
@@ -582,7 +585,7 @@ impl CalendarApp {
             status: None,
             dirty: true,
             timeline_scroll: Scrollable::new_vertical().always_visible(),
-            agenda_scroll: Scrollable::new_vertical().always_visible(),
+            agenda: AgendaView::new(),
             timeline_scroll_seeded: false,
             shots_scroll_hour: None,
             timeline_drag: None,
@@ -1411,12 +1414,11 @@ impl CalendarApp {
             && !(matches!(self.sidebar_mode, SidebarMode::Overlay) && self.sidebar_open)
     }
 
-    /// Forward a raw event to one of the view scroll containers. Returns whether
-    /// it was consumed (a wheel that moved, or a scrollbar interaction).
+    /// Forward a raw event to the timeline scroll container. Returns whether it
+    /// was consumed (a wheel that moved, or a scrollbar interaction).
     #[allow(clippy::too_many_arguments)]
     fn forward_to_scroll(
         &mut self,
-        agenda: bool,
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
@@ -1428,12 +1430,7 @@ impl CalendarApp {
     ) -> bool {
         let mut handled = false;
         let mut ft = *focus_target;
-        let scroll = if agenda {
-            &mut self.agenda_scroll
-        } else {
-            &mut self.timeline_scroll
-        };
-        scroll.handle_event(
+        self.timeline_scroll.handle_event(
             event,
             scale_factor,
             modifiers,
@@ -1488,9 +1485,8 @@ impl CalendarApp {
                     }
             ) {
                 let p = self.last_mouse;
-                if self.agenda_scroll.wants_pointer_capture() || self.view_rect().contains(p) {
-                    return self.forward_to_scroll(
-                        true,
+                if self.agenda.wants_pointer_capture() || self.view_rect().contains(p) {
+                    let handled = self.agenda.handle_event(
                         event,
                         scale_factor,
                         modifiers,
@@ -1500,6 +1496,10 @@ impl CalendarApp {
                         node_id,
                         taffy,
                     );
+                    if handled {
+                        self.dirty = true;
+                    }
+                    return handled;
                 }
             }
             return false;
@@ -1519,7 +1519,6 @@ impl CalendarApp {
             WindowEvent::MouseWheel { .. } => {
                 if area.contains(p) {
                     return self.forward_to_scroll(
-                        false,
                         event,
                         scale_factor,
                         modifiers,
@@ -1536,7 +1535,6 @@ impl CalendarApp {
                 // A scrollbar thumb drag owns every move until release.
                 if self.timeline_scroll.wants_pointer_capture() {
                     return self.forward_to_scroll(
-                        false,
                         event,
                         scale_factor,
                         modifiers,
@@ -1556,7 +1554,6 @@ impl CalendarApp {
                 // Otherwise let the bar track hover near the edge (never consumes).
                 if area.contains(p) {
                     self.forward_to_scroll(
-                        false,
                         event,
                         scale_factor,
                         modifiers,
@@ -1581,7 +1578,6 @@ impl CalendarApp {
                 }
                 // Offer the press to the scrollbar first.
                 if self.forward_to_scroll(
-                    false,
                     event,
                     scale_factor,
                     modifiers,
@@ -1629,7 +1625,6 @@ impl CalendarApp {
             } => {
                 if self.timeline_scroll.wants_pointer_capture() {
                     return self.forward_to_scroll(
-                        false,
                         event,
                         scale_factor,
                         modifiers,
@@ -2238,7 +2233,11 @@ impl CalendarApp {
         if self.content_rect.area() > 0.0 {
             match self.view {
                 View::Week | View::Day => self.update_timeline_scroll(),
-                View::Agenda => self.update_agenda_scroll(),
+                View::Agenda => {
+                    let area = self.view_rect();
+                    let hidden = self.hidden_calendar_ids();
+                    self.agenda.layout(area, &self.model, self.anchor, &hidden);
+                }
                 View::Month => {}
             }
         }
@@ -2312,16 +2311,6 @@ impl CalendarApp {
                 .set_offset_y((focus_hour * g.hour_h) as f32);
             self.timeline_scroll_seeded = true;
         }
-    }
-
-    /// Point the agenda [`Scrollable`] at the current view geometry so a short
-    /// window pages through the upcoming days instead of clipping them.
-    fn update_agenda_scroll(&mut self) {
-        let area = self.view_rect();
-        let content_h = self.agenda_content_height();
-        self.agenda_scroll.set_viewport_rect(area);
-        self.agenda_scroll
-            .set_content_size(area.width() as f32, content_h as f32);
     }
 
     /// Geometry of the centered modal editor card, sized to a comfortable
@@ -4074,240 +4063,6 @@ impl CalendarApp {
         scene.pop_layer();
     }
 
-    /// Total content height of the agenda list, matching the row increments in
-    /// [`Self::draw_agenda`], so the scroll extent is exact.
-    fn agenda_content_height(&self) -> f64 {
-        let from = self.anchor;
-        let to = self.anchor + Duration::days(21);
-        let mut y = 18.0;
-        let mut day = from;
-        while day <= to {
-            let events = self.visible_events_on(day).len();
-            let tasks = self
-                .model
-                .tasks
-                .iter()
-                .filter(|tk| tk.due == Some(day) && tk.parent.is_none())
-                .count();
-            if events + tasks > 0 {
-                y += 26.0 + 32.0 * (events + tasks) as f64 + 12.0;
-            }
-            day += Duration::days(1);
-        }
-        y + 8.0
-    }
-
-    fn draw_agenda(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        fill_rect(scene, t, c.surfaces.base, area);
-
-        let from = self.anchor;
-        let to = self.anchor + Duration::days(21);
-        let x0 = area.x0 + 24.0;
-        // Wide enough to give the location its own right-hand column; below it
-        // the row keeps time + title and drops the location so nothing overlaps.
-        let show_loc = area.width() >= 520.0;
-        let offset = f64::from(self.agenda_scroll.offset_y());
-        // Content-space cursor, mapped to the screen through the scroll offset.
-        let mut y = area.y0 + 18.0 - offset;
-        let mut drew_any = false;
-
-        // Row helper: cull rows fully outside the viewport (still advance `y`),
-        // otherwise draw and register a click target clamped to the viewport.
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &area,
-        );
-
-        let mut day = from;
-        while day <= to {
-            let evs = self.visible_events_on(day);
-            let tasks: Vec<_> = self
-                .model
-                .tasks
-                .iter()
-                .filter(|tk| tk.due == Some(day) && tk.parent.is_none())
-                .collect();
-            if evs.is_empty() && tasks.is_empty() {
-                day += Duration::days(1);
-                continue;
-            }
-            drew_any = true;
-
-            // Date heading.
-            if y + 24.0 > area.y0 && y < area.y1 {
-                let is_today = day == self.today;
-                let head_col = if is_today { c.accent[5] } else { c.neutral[8] };
-                tr.draw_text(
-                    scene,
-                    &date::relative_label(day, self.today),
-                    15.0,
-                    head_col,
-                    t * Affine::translate((x0, y)),
-                    None,
-                );
-                tr.draw_text(
-                    scene,
-                    &date::fmt_day_long(day),
-                    12.0,
-                    c.text_dim,
-                    t * Affine::translate((x0 + 120.0, y + 2.0)),
-                    None,
-                );
-            }
-            y += 26.0;
-
-            for e in &evs {
-                let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
-                if row.y1 > area.y0 && row.y0 < area.y1 {
-                    if row.contains(self.last_mouse) {
-                        fill_round(scene, t, c.surface_white_5, row, 6.0);
-                    }
-                    let col = e.color.color(theme);
-                    fill_round(
-                        scene,
-                        t,
-                        col,
-                        Rect::new(row.x0, row.y0 + 4.0, row.x0 + 4.0, row.y1 - 4.0),
-                        2.0,
-                    );
-                    let time = if e.all_day {
-                        "All day".to_string()
-                    } else {
-                        date::fmt_time(&e.start)
-                    };
-                    tr.draw_text(
-                        scene,
-                        &time,
-                        12.0,
-                        c.text_dim,
-                        t * Affine::translate((row.x0 + 16.0, y + 7.0)),
-                        None,
-                    );
-                    let title_max = if show_loc && !e.location.is_empty() {
-                        row.width() - 220.0
-                    } else {
-                        row.width() - 104.0
-                    };
-                    tr.draw_text(
-                        scene,
-                        &e.title,
-                        13.0,
-                        c.neutral[9],
-                        t * Affine::translate((row.x0 + 90.0, y + 7.0)),
-                        Some(title_max.max(40.0) as f32),
-                    );
-                    if show_loc && !e.location.is_empty() {
-                        tr.draw_text(
-                            scene,
-                            &e.location,
-                            12.0,
-                            c.text_dim,
-                            t * Affine::translate((row.x1 - 130.0, y + 7.0)),
-                            Some(126.0),
-                        );
-                    }
-                    if let Some(hit) = clamp_hit(row, area) {
-                        hits.push((hit, Action::OpenEvent(e.id)));
-                    }
-                }
-                y += 32.0;
-            }
-            for tk in &tasks {
-                let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
-                if row.y1 > area.y0 && row.y0 < area.y1 {
-                    if row.contains(self.last_mouse) {
-                        fill_round(scene, t, c.surface_white_5, row, 6.0);
-                    }
-                    // Open the task on a plain row click; checkbox + label toggle
-                    // completion (pushed on top so they win the reverse hit-scan).
-                    if let Some(hit) = clamp_hit(row, area) {
-                        hits.push((hit, Action::OpenTask(tk.id)));
-                    }
-                    let box_rect = Rect::new(
-                        row.x0 + 8.0,
-                        row.center().y - 8.0,
-                        row.x0 + 24.0,
-                        row.center().y + 8.0,
-                    );
-                    draw_checkbox(scene, t, theme, box_rect, tk.done);
-                    let col = if tk.done { c.text_dim } else { c.neutral[9] };
-                    let label_x0 = row.x0 + 34.0;
-                    tr.draw_text(
-                        scene,
-                        &tk.title,
-                        13.0,
-                        col,
-                        t * Affine::translate((label_x0, y + 7.0)),
-                        Some((row.width() - 160.0).max(40.0) as f32),
-                    );
-                    let label_w = f64::from(tr.measure(&tk.title, 13.0, None).0);
-                    if tk.done {
-                        stroke_line(
-                            scene,
-                            t,
-                            c.text_dim,
-                            Point::new(label_x0, row.center().y),
-                            Point::new((label_x0 + label_w).min(row.x1 - 120.0), row.center().y),
-                            1.0,
-                        );
-                    }
-                    let complete = Rect::new(
-                        row.x0,
-                        row.y0,
-                        (label_x0 + label_w.min(row.width() - 160.0) + 8.0).min(row.x1 - 40.0),
-                        row.y1,
-                    );
-                    if let Some(hit) = clamp_hit(complete, area) {
-                        hits.push((hit, Action::ToggleTask(tk.id)));
-                    }
-                    if tk.priority != Priority::None {
-                        tr.draw_text(
-                            scene,
-                            tk.priority.flag(),
-                            11.0,
-                            tk.priority.color(theme),
-                            t * Affine::translate((row.x1 - 30.0, y + 7.0)),
-                            None,
-                        );
-                    }
-                }
-                y += 32.0;
-            }
-            y += 12.0;
-            day += Duration::days(1);
-        }
-
-        scene.pop_layer();
-
-        if !drew_any {
-            center_text(
-                scene,
-                tr,
-                "Nothing scheduled — press New to add an event",
-                14.0,
-                c.text_dim,
-                area,
-                t,
-            );
-        }
-
-        // Shared overlay scrollbar composited on top of the clipped list.
-        self.agenda_scroll.draw_bar_overlay(scene, t, theme);
-        hits
-    }
-
     fn draw_detail(
         &self,
         scene: &mut Scene,
@@ -5149,7 +4904,33 @@ impl Widget for CalendarApp {
                     let days = [self.anchor];
                     hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
                 }
-                View::Agenda => hits.extend(self.draw_agenda(scene, t, text_renderer, theme, area)),
+                View::Agenda => {
+                    let hidden = self.hidden_calendar_ids();
+                    hits.extend(
+                        self.agenda
+                            .draw(
+                                scene,
+                                t,
+                                text_renderer,
+                                theme,
+                                area,
+                                &self.model,
+                                self.anchor,
+                                self.today,
+                                &hidden,
+                                self.last_mouse,
+                            )
+                            .into_iter()
+                            .map(|(rect, action)| {
+                                let action = match action {
+                                    AgendaAction::OpenEvent(id) => Action::OpenEvent(id),
+                                    AgendaAction::OpenTask(id) => Action::OpenTask(id),
+                                    AgendaAction::ToggleTask(id) => Action::ToggleTask(id),
+                                };
+                                (rect, action)
+                            }),
+                    );
+                }
             }
             // First-run onboarding: over an otherwise-blank Month/Week/Day view
             // with no events, show a friendly prompt instead of an empty grid.
@@ -5559,7 +5340,7 @@ impl Widget for CalendarApp {
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
             || self.timeline_scroll.needs_redraw()
-            || self.agenda_scroll.needs_redraw()
+            || self.agenda.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
@@ -5568,7 +5349,7 @@ impl Widget for CalendarApp {
         self.title_input.mark_drawn();
         self.location_input.mark_drawn();
         self.timeline_scroll.mark_drawn();
-        self.agenda_scroll.mark_drawn();
+        self.agenda.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -5588,7 +5369,7 @@ impl Widget for CalendarApp {
         // still settling momentum / fading its bar.
         self.syncing
             || self.timeline_scroll.needs_animation_frame()
-            || self.agenda_scroll.needs_animation_frame()
+            || self.agenda.needs_animation_frame()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -5597,7 +5378,7 @@ impl Widget for CalendarApp {
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
             || self.timeline_scroll.is_layout_dirty()
-            || self.agenda_scroll.is_layout_dirty()
+            || self.agenda.is_layout_dirty()
     }
 
     /// While the event/task editor is open it OWNS the keyboard. Reporting the
@@ -5632,11 +5413,11 @@ impl Widget for CalendarApp {
 // Drawing primitives (free functions).
 // ========================================================================
 
-fn fill_rect(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
+pub(crate) fn fill_rect(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
     scene.fill(Fill::NonZero, t, color, None, &r);
 }
 
-fn fill_round(scene: &mut Scene, t: Affine, color: Color, r: Rect, radius: f64) {
+pub(crate) fn fill_round(scene: &mut Scene, t: Affine, color: Color, r: Rect, radius: f64) {
     scene.fill(
         Fill::NonZero,
         t,
@@ -5656,11 +5437,11 @@ fn stroke_round(scene: &mut Scene, t: Affine, color: Color, r: Rect, radius: f64
     );
 }
 
-fn stroke_line(scene: &mut Scene, t: Affine, color: Color, a: Point, b: Point, w: f64) {
+pub(crate) fn stroke_line(scene: &mut Scene, t: Affine, color: Color, a: Point, b: Point, w: f64) {
     scene.stroke(&Stroke::new(w), t, color, None, &Line::new(a, b));
 }
 
-fn center_text(
+pub(crate) fn center_text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     text: &str,
@@ -5880,7 +5661,7 @@ fn draw_check(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
     scene.stroke(&Stroke::new(1.8), t, color, None, &p);
 }
 
-fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, done: bool) {
+pub(crate) fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, done: bool) {
     let c = &theme.tokens.colors;
     if done {
         fill_round(scene, t, c.accent[5], r, 4.0);
@@ -5900,13 +5681,6 @@ fn snap_minute(m: i64) -> i64 {
 fn fmt_min(min: i64) -> String {
     let m = min.clamp(0, 24 * 60);
     format!("{:02}:{:02}", m / 60, m % 60)
-}
-
-/// Intersect a click target with the visible viewport; `None` when the row is
-/// scrolled entirely out of view (so it can't be clicked through the edge).
-fn clamp_hit(row: Rect, viewport: Rect) -> Option<Rect> {
-    let r = row.intersect(viewport);
-    (r.width() > 0.0 && r.height() > 0.0).then_some(r)
 }
 
 /// A minute-of-day (0..=1439) as a wall-clock time.
