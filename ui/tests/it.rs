@@ -104,6 +104,8 @@ mod tokens_test;
 mod tooltip_render_test;
 #[path = "tooltip_test.rs"]
 mod tooltip_test;
+#[path = "typography_visual_regression.rs"]
+mod typography_visual_regression;
 #[path = "undo_per_author.rs"]
 mod undo_per_author;
 #[path = "undo_the_agents_work.rs"]
