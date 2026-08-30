@@ -51,9 +51,11 @@ fn skip(name: &str) {
 }
 
 fn unique_cache() -> PathBuf {
+    // Only needs to be distinct per run; a pre-epoch clock (never in practice)
+    // just falls back to 0 rather than panicking the test setup.
     let n = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_nanos();
     std::env::temp_dir().join(format!("qos-maps-live-{}-{}", std::process::id(), n))
 }
