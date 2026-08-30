@@ -52,6 +52,7 @@ mode = "off"
 # per-cluster file-access prompt lives on the portal side, so it stays the
 # security boundary.
 file-chooser = "via-host"
+notifications = "via-host"
 
 [sandbox.services]
 collab = "optional@1"

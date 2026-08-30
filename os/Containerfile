@@ -486,7 +486,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     pipewire \
     pipewire-pulseaudio \
+    pipewire-utils \
     wireplumber \
+    libcanberra-gtk3 \
+    sound-theme-freedesktop \
     && dnf clean all && ${DROP_RPMDB_WAL}
 
 # GStreamer — the Music app plays audio through a `playbin` whose sink chain

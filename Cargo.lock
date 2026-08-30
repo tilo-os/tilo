@@ -2392,6 +2392,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "zbus 4.4.0",
 ]
 
 [[package]]
@@ -12621,6 +12622,7 @@ dependencies = [
  "futures-lite",
  "futures-util",
  "greeter",
+ "hex",
  "iroh",
  "iroh-base",
  "iroh-gossip",
