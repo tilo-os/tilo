@@ -1,0 +1,697 @@
+//! Shared visual/IME state for transient search and command queries.
+//!
+//! Query owners keep their committed `String` and filtering semantics. This
+//! helper makes the editable presentation behave like every other toolkit text
+//! surface: one shaped layout for ink, selection, caret and candidate geometry,
+//! with IME preedit excluded from application state until commit.
+
+use std::ops::Range;
+
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
+use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use crate::richtext::RichTextLayout;
+use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_selection::Selection;
+
+/// Whether an IME event changed only the display composition or committed a
+/// new query value. Owners should re-run filtering only for `Committed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryImeChange {
+    Display,
+    Committed,
+}
+
+/// Result of routing an event through the shared single-line query editor.
+///
+/// `Display` covers caret/selection movement, clipboard copy, and IME preedit;
+/// owners should repaint but must not recompute their result set. `Edited`
+/// means committed text changed and filtering should be refreshed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryEventChange {
+    Ignored,
+    Display,
+    Edited,
+}
+
+/// Retained shaping and IME state for an inline query editor.
+pub struct QueryComposition {
+    preedit: String,
+    preedit_cursor: Option<(usize, usize)>,
+    layout: Option<RichTextLayout>,
+    layout_text: String,
+    signature: u64,
+    caret: Option<Rect>,
+}
+
+impl Default for QueryComposition {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QueryComposition {
+    pub fn new() -> Self {
+        Self {
+            preedit: String::new(),
+            preedit_cursor: None,
+            layout: None,
+            layout_text: String::new(),
+            signature: u64::MAX,
+            caret: None,
+        }
+    }
+
+    pub fn is_composing(&self) -> bool {
+        !self.preedit.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.preedit.clear();
+        self.preedit_cursor = None;
+        self.layout = None;
+        self.layout_text.clear();
+        self.caret = None;
+        self.signature = u64::MAX;
+    }
+
+    /// Apply one platform IME event. Preedit changes only this helper; commit
+    /// replaces the owner's current selection as one atomic string edit.
+    pub fn handle_ime(
+        &mut self,
+        ime: &Ime,
+        text: &mut String,
+        selection: &mut Selection,
+    ) -> QueryImeChange {
+        match ime {
+            Ime::Preedit(preedit, cursor) => {
+                self.preedit.clone_from(preedit);
+                self.preedit_cursor = *cursor;
+                QueryImeChange::Display
+            }
+            Ime::Commit(committed) => {
+                let committed: String = committed
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .collect();
+                let range = selection.range();
+                text.replace_range(range.clone(), &committed);
+                *selection = Selection::collapsed(range.start + committed.len());
+                self.preedit.clear();
+                self.preedit_cursor = None;
+                QueryImeChange::Committed
+            }
+            Ime::Disabled => {
+                self.preedit.clear();
+                self.preedit_cursor = None;
+                QueryImeChange::Display
+            }
+            Ime::Enabled => QueryImeChange::Display,
+        }
+    }
+
+    /// Apply the ordinary editing subset of a window event to a transient
+    /// query. Navigation/activation keys such as Up, Down, Enter, Escape and
+    /// Tab are intentionally left to the owning popup.
+    ///
+    /// The owner supplies modifier state because winit reports it separately
+    /// from `KeyEvent`. `command` should be true for Ctrl on Linux/Windows or
+    /// Command on macOS.
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        text: &mut String,
+        selection: &mut Selection,
+        shift: bool,
+        command: bool,
+    ) -> QueryEventChange {
+        if let WindowEvent::Ime(ime) = event {
+            return match self.handle_ime(ime, text, selection) {
+                QueryImeChange::Display => QueryEventChange::Display,
+                QueryImeChange::Committed => QueryEventChange::Edited,
+            };
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    text: event_text,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return QueryEventChange::Ignored;
+        };
+
+        use crate::text_selection::{
+            clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+            prev_char_boundary, prev_word_boundary,
+        };
+
+        let replace_selection = |text: &mut String, selection: &mut Selection, inserted: &str| {
+            let inserted: String = inserted
+                .chars()
+                .filter(|character| !character.is_control())
+                .collect();
+            if inserted.is_empty() {
+                return false;
+            }
+            let range = selection.range();
+            text.replace_range(range.clone(), &inserted);
+            *selection = Selection::collapsed(range.start + inserted.len());
+            true
+        };
+        let delete_selection = |text: &mut String, selection: &mut Selection| {
+            if selection.is_collapsed() {
+                return false;
+            }
+            let range = selection.range();
+            text.replace_range(range.clone(), "");
+            *selection = Selection::collapsed(range.start);
+            true
+        };
+
+        match logical_key {
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) => {
+                let right = matches!(logical_key, Key::Named(NamedKey::ArrowRight));
+                if !shift && !selection.is_collapsed() {
+                    let edge = if right {
+                        selection.max()
+                    } else {
+                        selection.min()
+                    };
+                    selection.move_to(edge);
+                    return QueryEventChange::Display;
+                }
+                let cursor = selection.cursor;
+                let next = if command {
+                    if right {
+                        next_word_boundary(text, cursor)
+                    } else {
+                        prev_word_boundary(text, cursor)
+                    }
+                } else {
+                    self.visual_motion(text, cursor, right).unwrap_or_else(|| {
+                        if right {
+                            next_char_boundary(text, cursor)
+                        } else {
+                            prev_char_boundary(text, cursor)
+                        }
+                    })
+                };
+                if shift {
+                    selection.extend_to(next);
+                } else {
+                    selection.move_to(next);
+                }
+                QueryEventChange::Display
+            }
+            Key::Named(NamedKey::Home | NamedKey::End) => {
+                let next = if matches!(logical_key, Key::Named(NamedKey::Home)) {
+                    0
+                } else {
+                    text.len()
+                };
+                if shift {
+                    selection.extend_to(next);
+                } else {
+                    selection.move_to(next);
+                }
+                QueryEventChange::Display
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if delete_selection(text, selection) {
+                    return QueryEventChange::Edited;
+                }
+                let cursor = selection.cursor;
+                if cursor == 0 {
+                    return QueryEventChange::Display;
+                }
+                let previous = if command {
+                    prev_word_boundary(text, cursor)
+                } else {
+                    prev_char_boundary(text, cursor)
+                };
+                text.replace_range(previous..cursor, "");
+                selection.move_to(previous);
+                QueryEventChange::Edited
+            }
+            Key::Named(NamedKey::Delete) => {
+                if delete_selection(text, selection) {
+                    return QueryEventChange::Edited;
+                }
+                let cursor = selection.cursor;
+                if cursor == text.len() {
+                    return QueryEventChange::Display;
+                }
+                let next = if command {
+                    next_word_boundary(text, cursor)
+                } else {
+                    next_char_boundary(text, cursor)
+                };
+                text.replace_range(cursor..next, "");
+                QueryEventChange::Edited
+            }
+            Key::Named(NamedKey::Space) if !command => {
+                if replace_selection(text, selection, " ") {
+                    QueryEventChange::Edited
+                } else {
+                    QueryEventChange::Display
+                }
+            }
+            Key::Character(shortcut) if command => match shortcut.as_str() {
+                "a" | "A" => {
+                    selection.anchor = 0;
+                    selection.cursor = text.len();
+                    QueryEventChange::Display
+                }
+                "c" | "C" => {
+                    let range = selection.range();
+                    if !range.is_empty() {
+                        clipboard_copy(&text[range]);
+                    }
+                    QueryEventChange::Display
+                }
+                "x" | "X" => {
+                    let range = selection.range();
+                    if range.is_empty() {
+                        QueryEventChange::Display
+                    } else {
+                        clipboard_copy(&text[range.clone()]);
+                        delete_selection(text, selection);
+                        QueryEventChange::Edited
+                    }
+                }
+                "v" | "V" => match clipboard_paste() {
+                    Some(pasted) if replace_selection(text, selection, &pasted) => {
+                        QueryEventChange::Edited
+                    }
+                    _ => QueryEventChange::Display,
+                },
+                _ => QueryEventChange::Ignored,
+            },
+            Key::Character(character) if !command => {
+                // `KeyEvent::text` captures composed multi-scalar input when
+                // available. Synthetic events and some platform backends only
+                // populate the logical character, which is still a valid
+                // single-key insertion fallback.
+                let inserted = event_text.as_deref().unwrap_or(character.as_str());
+                if replace_selection(text, selection, inserted) {
+                    QueryEventChange::Edited
+                } else {
+                    QueryEventChange::Ignored
+                }
+            }
+            _ => QueryEventChange::Ignored,
+        }
+    }
+
+    /// Display text including composition. While composing, the committed
+    /// selection is visually replaced but remains untouched in `text`.
+    pub fn display_text(&self, text: &str, selection: &Selection) -> String {
+        if self.preedit.is_empty() {
+            return text.to_string();
+        }
+        let range = selection.range();
+        let mut display = String::with_capacity(text.len() - range.len() + self.preedit.len());
+        display.push_str(&text[..range.start]);
+        display.push_str(&self.preedit);
+        display.push_str(&text[range.end..]);
+        display
+    }
+
+    fn preedit_range(&self, selection: &Selection) -> Range<usize> {
+        let start = selection.range().start;
+        start..start + self.preedit.len()
+    }
+
+    fn display_caret(&self, selection: &Selection) -> usize {
+        if self.preedit.is_empty() {
+            return selection.cursor;
+        }
+        let start = selection.range().start;
+        let offset = self
+            .preedit_cursor
+            .map(|(_, end)| end)
+            .unwrap_or(self.preedit.len())
+            .min(self.preedit.len());
+        start + self.preedit.floor_char_boundary(offset)
+    }
+
+    fn signature(&self, display: &str, style: &TextStyle, selection: &Selection) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hash = DefaultHasher::new();
+        display.hash(&mut hash);
+        style.size.to_bits().hash(&mut hash);
+        style.line_height.to_bits().hash(&mut hash);
+        style.weight.hash(&mut hash);
+        style.italic.hash(&mut hash);
+        style.family.hash(&mut hash);
+        // The same visible string can be produced by committed text or by a
+        // preedit replacing an equal selection. Keep those layouts distinct
+        // so an IME underline can neither linger nor move to a stale range.
+        self.is_composing().hash(&mut hash);
+        if self.is_composing() {
+            self.preedit_range(selection).hash(&mut hash);
+        }
+        hash.finish()
+    }
+
+    /// Paint an unwrapped query into a clipped viewport. The shaped caret is
+    /// kept visible by horizontal scrolling; placeholder, selection and
+    /// preedit use the same layout and baseline.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        renderer: &mut TextRenderer,
+        text: &str,
+        selection: &Selection,
+        placeholder: &str,
+        rect: Rect,
+        style: &TextStyle,
+        ink: Color,
+        dim_ink: Color,
+        selection_color: Color,
+        caret_color: Color,
+        show_caret: bool,
+    ) {
+        let composing = !self.preedit.is_empty();
+        let shows_placeholder = text.is_empty() && !composing;
+        let display = if shows_placeholder {
+            placeholder.to_string()
+        } else {
+            self.display_text(text, selection)
+        };
+        let signature = self.signature(&display, style, selection);
+        if self.layout.is_none() || self.signature != signature {
+            let mut layout =
+                RichTextLayout::shape_plain(&mut renderer.font_system, &display, style, None);
+            if composing {
+                layout.add_underline(self.preedit_range(selection));
+            }
+            self.layout = Some(layout);
+            self.layout_text.clone_from(&display);
+            self.signature = signature;
+        }
+
+        let caret_byte = if shows_placeholder {
+            0
+        } else {
+            self.display_caret(selection)
+        };
+        let layout = self.layout.as_ref().unwrap();
+        let (caret_x, caret_top, caret_height) = layout.caret_geometry(caret_byte);
+        let scroll_x = if shows_placeholder {
+            0.0
+        } else {
+            (f64::from(caret_x) - rect.width().max(1.0)).max(0.0)
+        };
+        let origin = Point::new(
+            rect.x0 - scroll_x,
+            rect.center().y - f64::from(layout.height()) / 2.0,
+        );
+        let caret = Rect::new(
+            origin.x + f64::from(caret_x),
+            origin.y + f64::from(caret_top),
+            origin.x + f64::from(caret_x) + 2.0,
+            origin.y + f64::from(caret_top + caret_height),
+        );
+
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &rect,
+        );
+        if !composing && !shows_placeholder {
+            let range = selection.range();
+            if !range.is_empty() {
+                for (x0, y0, x1, y1) in layout.selection_rects(range.start, range.end) {
+                    let band = Rect::new(
+                        origin.x + f64::from(x0),
+                        origin.y + f64::from(y0),
+                        origin.x + f64::from(x1),
+                        origin.y + f64::from(y1),
+                    );
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        selection_color,
+                        None,
+                        &band,
+                    );
+                }
+            }
+        }
+        renderer.draw_rich(
+            scene,
+            layout,
+            transform * Affine::translate((origin.x, origin.y)),
+            if shows_placeholder { dim_ink } else { ink },
+        );
+        if show_caret {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                caret_color,
+                None,
+                &caret,
+            );
+        }
+        scene.pop_layer();
+        self.caret = show_caret.then_some(caret);
+    }
+
+    pub fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.caret
+    }
+
+    /// Move to the adjacent shaped caret stop when the retained layout still
+    /// represents the committed query. Callers can fall back to logical
+    /// grapheme movement before the first draw after an edit.
+    pub fn visual_motion(&self, text: &str, byte: usize, right: bool) -> Option<usize> {
+        if self.is_composing() || self.layout_text != text {
+            return None;
+        }
+        self.layout
+            .as_ref()
+            .map(|layout| layout.visual_motion(byte, right))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text_render::FontChoice;
+
+    fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        event.logical_key = logical_key;
+        event.text = text.map(Into::into);
+        event.location = winit::keyboard::KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    #[test]
+    fn shared_editor_replaces_selection_and_deletes_extended_graphemes() {
+        let mut composition = QueryComposition::new();
+        let mut text = "a👨‍👩‍👧‍👦z".to_string();
+        let family_start = 1;
+        let family_end = text.len() - 1;
+        let mut selection = Selection {
+            anchor: family_start,
+            cursor: family_end,
+        };
+        assert_eq!(
+            composition.handle_event(
+                &key(Key::Character("x".into()), Some("x")),
+                &mut text,
+                &mut selection,
+                false,
+                false,
+            ),
+            QueryEventChange::Edited
+        );
+        assert_eq!(text, "axz");
+        assert_eq!(selection, Selection::collapsed(2));
+
+        selection.move_to(2);
+        assert_eq!(
+            composition.handle_event(
+                &key(Key::Named(NamedKey::Backspace), None),
+                &mut text,
+                &mut selection,
+                false,
+                false,
+            ),
+            QueryEventChange::Edited
+        );
+        assert_eq!(text, "az");
+    }
+
+    #[test]
+    fn shared_editor_supports_selection_collapse_shift_and_word_motion() {
+        let mut composition = QueryComposition::new();
+        let mut text = "alpha beta".to_string();
+        let mut selection = Selection {
+            anchor: 2,
+            cursor: 8,
+        };
+        composition.handle_event(
+            &key(Key::Named(NamedKey::ArrowLeft), None),
+            &mut text,
+            &mut selection,
+            false,
+            false,
+        );
+        assert_eq!(selection, Selection::collapsed(2));
+
+        composition.handle_event(
+            &key(Key::Named(NamedKey::ArrowRight), None),
+            &mut text,
+            &mut selection,
+            true,
+            true,
+        );
+        assert_eq!(selection.anchor, 2);
+        assert_eq!(selection.cursor, 6);
+    }
+
+    #[test]
+    fn preedit_replaces_selection_only_in_the_display_until_commit() {
+        let mut composition = QueryComposition::new();
+        let mut text = "search old value".to_string();
+        let mut selection = Selection {
+            anchor: 7,
+            cursor: 10,
+        };
+        assert_eq!(
+            composition.handle_ime(
+                &Ime::Preedit("新".into(), Some(("新".len(), "新".len()))),
+                &mut text,
+                &mut selection,
+            ),
+            QueryImeChange::Display
+        );
+        assert_eq!(text, "search old value");
+        assert_eq!(
+            composition.display_text(&text, &selection),
+            "search 新 value"
+        );
+        assert_eq!(
+            composition.handle_ime(&Ime::Commit("新".into()), &mut text, &mut selection),
+            QueryImeChange::Committed
+        );
+        assert_eq!(text, "search 新 value");
+        assert_eq!(selection, Selection::collapsed("search 新".len()));
+    }
+
+    #[test]
+    fn draw_publishes_an_internal_preedit_caret() {
+        let mut composition = QueryComposition::new();
+        let mut text = "ab".to_string();
+        let mut selection = Selection::collapsed(1);
+        composition.handle_ime(
+            &Ime::Preedit("漢字".into(), Some(("漢".len(), "漢".len()))),
+            &mut text,
+            &mut selection,
+        );
+        let mut renderer = TextRenderer::new();
+        let mut scene = Scene::new();
+        let rect = Rect::new(10.0, 10.0, 210.0, 42.0);
+        composition.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &text,
+            &selection,
+            "Search…",
+            rect,
+            &TextStyle::new(16.0).with_family(FontChoice::SansSerif),
+            Color::WHITE,
+            Color::from_rgb8(128, 128, 128),
+            Color::from_rgba8(80, 100, 255, 100),
+            Color::WHITE,
+            true,
+        );
+        assert!(rect.contains(composition.ime_cursor_rect().unwrap().center()));
+        assert_eq!(text, "ab");
+    }
+
+    #[test]
+    fn equal_preedit_and_committed_text_do_not_share_an_underlined_layout() {
+        let mut composition = QueryComposition::new();
+        let mut text = "a".to_string();
+        let mut selection = Selection {
+            anchor: 0,
+            cursor: 1,
+        };
+        let mut renderer = TextRenderer::new();
+        let mut scene = Scene::new();
+        let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+        let style = TextStyle::new(16.0).with_family(FontChoice::SansSerif);
+        let draw = |composition: &mut QueryComposition,
+                    scene: &mut Scene,
+                    renderer: &mut TextRenderer,
+                    text: &str,
+                    selection: &Selection| {
+            composition.draw(
+                scene,
+                Affine::IDENTITY,
+                renderer,
+                text,
+                selection,
+                "Search…",
+                rect,
+                &style,
+                Color::WHITE,
+                Color::from_rgb8(128, 128, 128),
+                Color::from_rgba8(80, 100, 255, 100),
+                Color::WHITE,
+                true,
+            );
+        };
+
+        composition.handle_ime(
+            &Ime::Preedit("a".into(), Some((1, 1))),
+            &mut text,
+            &mut selection,
+        );
+        draw(
+            &mut composition,
+            &mut scene,
+            &mut renderer,
+            &text,
+            &selection,
+        );
+        let composing_signature = composition.signature;
+
+        composition.handle_ime(&Ime::Disabled, &mut text, &mut selection);
+        draw(
+            &mut composition,
+            &mut scene,
+            &mut renderer,
+            &text,
+            &selection,
+        );
+        assert_ne!(composition.signature, composing_signature);
+    }
+}

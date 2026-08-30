@@ -570,6 +570,10 @@ impl Widget for CodeEditor {
         self.inner.is_focused()
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.inner)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.inner.accessibility()
     }
@@ -1444,6 +1448,31 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_forwards_the_shaped_ime_candidate_rect() {
+        let mut ed = CodeEditor::local()
+            .with_language(Language::Rust)
+            .with_initial_value("let value = 1;");
+        ed.set_focused(true);
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        let mut doc = AutoCommit::new();
+        assert!(drive(
+            &mut ed,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit(
+                "漢".into(),
+                Some(("漢".len(), "漢".len())),
+            )),
+            &mods(false, false),
+        ));
+        draw_once(&mut ed, &Theme::dark());
+
+        let wrapper_rect = Widget::ime_cursor_rect(&ed).expect("wrapper publishes IME geometry");
+        let inner_rect = Widget::ime_cursor_rect(ed.inner()).expect("inner input has a caret");
+        assert_eq!(wrapper_rect, inner_rect);
+        assert!(wrapper_rect.x0 > ed.gutter_width());
+    }
+
+    #[test]
     fn enter_inserts_a_real_newline_and_gutter_counts_lines() {
         let mut ed = CodeEditor::local();
         ed.set_focused(true);
@@ -1574,7 +1603,7 @@ mod tests {
         let node = ed
             .accessibility()
             .expect("code editor exposes an a11y node");
-        assert_eq!(node.role, Role::TextInput);
+        assert_eq!(node.role, Role::MultilineTextInput);
         assert!(
             node.state.multiline,
             "code editor reports a multiline text field"

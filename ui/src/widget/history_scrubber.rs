@@ -1167,7 +1167,12 @@ impl Widget for HistoryScrubber {
         _taffy: &TaffyTree<()>,
     ) {
         // A name field owns the keyboard while it is up.
-        if self.naming.is_some() && matches!(event, WindowEvent::KeyboardInput { .. }) {
+        if self.naming.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+        {
             let outcome = self
                 .naming
                 .as_mut()
@@ -1371,6 +1376,12 @@ impl Widget for HistoryScrubber {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.naming
+            .as_ref()
+            .and_then(|(_, field)| field.ime_cursor_rect())
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1715,6 +1726,36 @@ mod version_tests {
             node,
             &tree,
         );
+    }
+
+    #[test]
+    fn naming_field_forwards_ime_preedit_and_candidate_geometry() {
+        let mut scrubber = with_versions(900.0);
+        scrubber.set_current_tick(12);
+        assert!(scrubber.begin_naming_current_group());
+        let committed = scrubber.naming_buffer().unwrap().to_string();
+        dispatch(
+            &mut scrubber,
+            &WindowEvent::Ime(winit::event::Ime::Preedit(
+                "漢".into(),
+                Some(("漢".len(), "漢".len())),
+            )),
+        );
+        assert_eq!(scrubber.naming_buffer(), Some(committed.as_str()));
+
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        Widget::draw(
+            &mut scrubber,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        let candidate = Widget::ime_cursor_rect(&scrubber)
+            .expect("history wrapper forwards its naming field caret");
+        assert!(scrubber.name_field_rect().contains(candidate.center()));
     }
 
     fn type_str(s: &mut HistoryScrubber, text: &str) {

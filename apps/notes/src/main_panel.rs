@@ -441,9 +441,8 @@ impl Widget for MainPanel {
             let unshifted_origin = Point::new(self.rect.x0, self.rect.y0);
             self.editor.apply_layout(taffy, n, unshifted_origin);
             let editor_rect = self.editor.get_rect();
-            let last_block_bottom = self
-                .editor
-                .blocks()
+            let blocks = self.editor.blocks();
+            let last_block_bottom = blocks
                 .iter()
                 .map(|b| b.line.get_rect().y1)
                 .fold(editor_rect.y0, f64::max);
@@ -455,11 +454,20 @@ impl Widget for MainPanel {
             let viewport_h =
                 (self.rect.height() - 2.0 * PADDING_PX - TITLE_HEIGHT - TITLE_TO_EDITOR_GAP)
                     .max(0.0);
-            let max_scroll = (content_h - viewport_h).max(0.0);
-            let clamped = self.scroll_y.clamp(0.0, max_scroll);
-            if clamped != self.scroll_y {
-                self.scroll_y = clamped;
-                self.dirty = true;
+            // During a structure rebuild taffy can briefly publish the
+            // editor origin before any non-empty block has usable geometry.
+            // Treating that transient zero as a real content extent jumps a
+            // scrolled document back to the top. Preserve the offset for this
+            // pass; the next settled layout supplies the real extent and
+            // performs the ordinary clamp. A genuinely empty editor may clamp.
+            let has_content_geometry = blocks.is_empty() || last_block_bottom > editor_rect.y0;
+            if has_content_geometry {
+                let max_scroll = (content_h - viewport_h).max(0.0);
+                let clamped = self.scroll_y.clamp(0.0, max_scroll);
+                if clamped != self.scroll_y {
+                    self.scroll_y = clamped;
+                    self.dirty = true;
+                }
             }
             // Re-apply layout with the (possibly clamped) scroll
             // offset so block rects reflect their on-screen position.
