@@ -135,6 +135,13 @@ pub fn resolve(path: &Path) -> DocumentTarget {
 /// The one open path — palette, file explorer and drop-on-group all
 /// come through here, so a document lands in the same sandbox with the
 /// same identity regardless of which surface activated it.
+///
+/// # Errors
+///
+/// Returns [`OpenError::NoHandler`] if no app claims `path`'s
+/// extension, [`OpenError::NoWorkspace`] if there is no active
+/// workspace to open into, or [`OpenError::Launch`] if starting the
+/// app failed.
 pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<Opened, OpenError> {
     open(path, chrome, None)
 }
@@ -142,6 +149,10 @@ pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<Opened, OpenErr
 /// [`open_in_workspace`] for a caller that already knows the target
 /// group — a drop target is the user's own instruction rather than a
 /// placement rule. Every other open asks [`placement_for_document_open`].
+///
+/// # Errors
+///
+/// Same conditions as [`open_in_workspace`].
 pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Opened, OpenError> {
     open(path, chrome, Some(Placement::TabIn(group)))
 }
@@ -272,6 +283,17 @@ struct OpenDocument {
 /// workspace or one widget tree.
 static OPEN_DOCUMENTS: Mutex<Vec<OpenDocument>> = Mutex::new(Vec::new());
 
+/// Lock [`OPEN_DOCUMENTS`], recovering from poisoning instead of
+/// panicking: a panic while holding this lock doesn't corrupt the open
+/// document list it protects, so a poisoned lock is treated the same
+/// as a healthy one rather than wedging every future caller in this
+/// process.
+fn lock_open_documents() -> std::sync::MutexGuard<'static, Vec<OpenDocument>> {
+    OPEN_DOCUMENTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Focus needs all four coordinates — a subset leaves the user looking
 /// at a different workspace than the tab they asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,7 +314,7 @@ enum Existing {
 /// Keyed by record, so re-noting the same document replaces rather
 /// than duplicates.
 fn note_opening(record: &RecordId, package_id: &str) {
-    let mut open = OPEN_DOCUMENTS.lock().expect("OPEN_DOCUMENTS poisoned");
+    let mut open = lock_open_documents();
     open.retain(|d| &d.record != record);
     open.push(OpenDocument {
         record: record.clone(),
@@ -302,24 +324,18 @@ fn note_opening(record: &RecordId, package_id: &str) {
 }
 
 fn forget_document(record: &RecordId) {
-    OPEN_DOCUMENTS
-        .lock()
-        .expect("OPEN_DOCUMENTS poisoned")
-        .retain(|d| &d.record != record);
+    lock_open_documents().retain(|d| &d.record != record);
 }
 
 pub fn clear_open_documents() {
-    OPEN_DOCUMENTS
-        .lock()
-        .expect("OPEN_DOCUMENTS poisoned")
-        .clear();
+    lock_open_documents().clear();
 }
 
 /// Matches by wayland app-id; the oldest unclaimed note wins (launch
 /// order) when one app opens two documents at once. Idempotent per
 /// surface — one that already holds a note must not steal a second.
 pub fn claim_surface_for_document(app_id: &str, surface_id: u64) {
-    let mut open = OPEN_DOCUMENTS.lock().expect("OPEN_DOCUMENTS poisoned");
+    let mut open = lock_open_documents();
     if open.iter().any(|d| d.surface == Some(surface_id)) {
         return;
     }
@@ -335,9 +351,10 @@ pub fn claim_surface_for_document(app_id: &str, surface_id: u64) {
 /// the caller launches for real rather than focusing nothing.
 fn existing_window_for(record: &RecordId, chrome: &Chrome) -> Option<Existing> {
     let surface = {
-        let open = OPEN_DOCUMENTS.lock().expect("OPEN_DOCUMENTS poisoned");
-        let d = open.iter().find(|d| &d.record == record)?;
-        match d.surface {
+        let open = lock_open_documents();
+        let surface_opt = open.iter().find(|d| &d.record == record)?.surface;
+        drop(open);
+        match surface_opt {
             Some(s) => s,
             None => return Some(Existing::Starting),
         }
@@ -424,6 +441,7 @@ mod tests {
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use parking_lot::RwLock;
+    use std::fmt::Write as _;
     use std::sync::Arc;
 
     /// A registry + manifest pair so `launcher::installed_apps()`
@@ -448,11 +466,13 @@ mod tests {
         .unwrap();
         let registry = dir.join("registry.toml");
         let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
-        existing.push_str(&format!(
+        write!(
+            existing,
             "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
             payload.display().to_string(),
             manifest_path.display().to_string()
-        ));
+        )
+        .unwrap();
         std::fs::write(&registry, existing).unwrap();
     }
 
@@ -585,6 +605,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn opening_an_open_document_focuses_it_instead_of_launching_again() {
+        const SURFACE: u64 = 4242;
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
@@ -608,7 +629,6 @@ mod tests {
         let after_first = launched_commands(&log, 1);
         assert_eq!(after_first.len(), 1);
 
-        const SURFACE: u64 = 4242;
         let adopted = {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
@@ -746,13 +766,14 @@ mod tests {
             let tree = st.tree();
             let ws = tree.active_workspace().unwrap();
             let want = Subject::app("dev.qos.word-processor");
-            let scopes: Vec<&Scope> = ws
+            let scopes: Vec<Scope> = ws
                 .capabilities
                 .iter()
                 .filter(|c| c.subject == want && c.effect == Effect::Grant)
-                .map(|c| &c.scope)
+                .map(|c| c.scope.clone())
                 .collect();
-            assert_eq!(scopes, vec![&Scope::FsPath(doc.display().to_string())]);
+            drop(tree);
+            assert_eq!(scopes, vec![Scope::FsPath(doc.display().to_string())]);
         }
 
         file_explorer::files_app::clear_document_opener();
