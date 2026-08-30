@@ -2166,11 +2166,20 @@ impl Widget for ActivityTimeline {
         _state: &mut AutoCommit,
         _root: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
         match event {
+            WindowEvent::Ime(_) if self.naming.is_some() => {
+                let outcome = self.naming.as_mut().map_or(NameFieldOutcome::Ignored, |n| {
+                    n.field.handle_event(event, modifiers)
+                });
+                if outcome == NameFieldOutcome::Edited {
+                    self.dirty = true;
+                    *handled = true;
+                }
+            }
             // A name field owns the keyboard while it is up, so a version
             // called "edits" cannot accidentally re-filter the pane.
             WindowEvent::KeyboardInput {
@@ -2285,6 +2294,7 @@ impl Widget for ActivityTimeline {
                         && self.name_selection_rect.contains(self.last_cursor)
                     {
                         self.begin_naming_selection();
+                        *focus_target = Some(node_id);
                     }
                     *handled = true;
                     return;
@@ -2351,6 +2361,7 @@ impl Widget for ActivityTimeline {
                             }
                             if name.contains(self.last_cursor) {
                                 self.begin_naming_group_at_row(i);
+                                *focus_target = Some(node_id);
                                 *handled = true;
                                 return;
                             }
@@ -2442,6 +2453,12 @@ impl Widget for ActivityTimeline {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.naming
+            .as_ref()
+            .and_then(|naming| naming.field.ime_cursor_rect())
     }
 
     fn needs_redraw(&self) -> bool {

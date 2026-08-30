@@ -14,14 +14,55 @@
 //!   chrome, `wl_data_device` for a Wayland app, arboard on X11, and an
 //!   in-process buffer of last resort that announces itself in the log.
 //!
-//! The boundary predicate (`is_word_char`) mirrors POSIX `\w` and Vim's
-//! `iskeyword`: letters, digits, underscore are word characters; whitespace
-//! and punctuation are boundaries.
+//! Word operations follow Unicode Standard Annex #29, so apostrophes,
+//! combining marks, non-Latin scripts, and Unicode numeric forms behave as
+//! coherent words instead of being reduced to an ASCII-style predicate.
 
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::clipboard::{ClipboardTarget, clipboard_backend, warn_fallback_once};
+
+/// Which shaped run owns a caret at a shared logical byte boundary.
+///
+/// Most offsets have only one visual position, so callers rarely need to set
+/// this explicitly. Mixed-direction text and soft wraps can expose both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextAffinity {
+    /// Associate the caret with the text ending at this byte.
+    #[default]
+    Before,
+    /// Associate the caret with the text beginning at this byte.
+    After,
+}
+
+/// A document byte offset plus the visual side of an ambiguous boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TextPosition {
+    pub byte: usize,
+    pub affinity: TextAffinity,
+}
+
+impl TextPosition {
+    /// The conventional position for APIs that only have a byte offset.
+    pub const fn new(byte: usize) -> Self {
+        Self {
+            byte,
+            affinity: TextAffinity::Before,
+        }
+    }
+
+    pub const fn with_affinity(byte: usize, affinity: TextAffinity) -> Self {
+        Self { byte, affinity }
+    }
+}
+
+impl From<usize> for TextPosition {
+    fn from(byte: usize) -> Self {
+        Self::new(byte)
+    }
+}
 
 /// Anchor + cursor pair. `anchor == cursor` means "no live selection".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,95 +118,54 @@ impl Selection {
     }
 }
 
-/// A character counts as a "word" character if it's a letter, digit,
-/// or underscore — same convention as POSIX `\w` and Vim's `iskeyword`.
-/// Whitespace and punctuation are word boundaries; double-click word
-/// selection and Ctrl+Left/Right use this predicate.
-pub(crate) fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
+use crate::text_break::unicode_word_ranges;
 
-/// Walk back to the previous "word boundary" (start of the word the
-/// cursor sits in, or start of the previous word if already at a
-/// boundary). Returns a byte index that is always on a char boundary.
+/// Walk back to the previous UAX #29 word start. If the cursor is inside a
+/// word this returns that word's start; at its start it returns the preceding
+/// word's start. The result is always a UTF-8 boundary.
 pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx == 0 {
-        return 0;
+    let mut byte = byte_idx.min(text.len());
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
     }
-    let mut i = byte_idx.min(text.len());
-    while i > 0 && !text.is_char_boundary(i) {
-        i -= 1;
-    }
-    // Skip non-word chars walking left (whitespace + punctuation eaten
-    // before reaching the previous word's body).
-    while i > 0 {
-        let c = text[..i].chars().next_back().unwrap();
-        if is_word_char(c) {
-            break;
-        }
-        i -= c.len_utf8();
-    }
-    // Skip the word body itself.
-    while i > 0 {
-        let c = text[..i].chars().next_back().unwrap();
-        if !is_word_char(c) {
-            break;
-        }
-        i -= c.len_utf8();
-    }
-    i
+    unicode_word_ranges(text)
+        .rev()
+        .find(|range| range.start < byte)
+        .map_or(0, |range| range.start)
 }
 
-/// Mirror of [`prev_word_boundary`] for the forward direction.
+/// Mirror of [`prev_word_boundary`] for forward movement: the next UAX #29
+/// word start, or the end of the string.
 pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
-    let mut i = byte_idx.min(text.len());
-    while i < text.len() && !text.is_char_boundary(i) {
-        i += 1;
+    let mut byte = byte_idx.min(text.len());
+    while byte < text.len() && !text.is_char_boundary(byte) {
+        byte += 1;
     }
-    while i < text.len() {
-        let c = text[i..].chars().next().unwrap();
-        if !is_word_char(c) {
-            break;
-        }
-        i += c.len_utf8();
-    }
-    while i < text.len() {
-        let c = text[i..].chars().next().unwrap();
-        if is_word_char(c) {
-            break;
-        }
-        i += c.len_utf8();
-    }
-    i
+    unicode_word_ranges(text)
+        .find(|range| range.start > byte)
+        .map_or(text.len(), |range| range.start)
 }
 
-/// Byte range `(start, end)` of the word containing `byte_idx` (or the
-/// word immediately on the left when `byte_idx` lands on whitespace
-/// right after a word — matches every native editor's double-click
-/// behaviour). Used by double-click word selection.
+/// Byte range `(start, end)` of the UAX #29 word containing `byte_idx`, or the
+/// word immediately on the left when the index lands in following punctuation
+/// or whitespace. Used by double-click word selection.
 pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
-    let mut start = byte_idx.min(text.len());
-    while start > 0 && !text.is_char_boundary(start) {
-        start -= 1;
+    let mut byte = byte_idx.min(text.len());
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
     }
-    // Find left edge of current word.
-    while start > 0 {
-        let c = text[..start].chars().next_back().unwrap();
-        if !is_word_char(c) {
+    let mut previous = None;
+    for range in unicode_word_ranges(text) {
+        if range.start <= byte && byte <= range.end {
+            return (range.start, range.end);
+        }
+        if range.end <= byte {
+            previous = Some(range);
+        } else {
             break;
         }
-        start -= c.len_utf8();
     }
-    // Find right edge.
-    let mut end = start;
-    while end < text.len() {
-        let c = text[end..].chars().next().unwrap();
-        if !is_word_char(c) {
-            break;
-        }
-        end += c.len_utf8();
-    }
-    (start, end)
+    previous.map_or((byte, byte), |range| (range.start, range.end))
 }
 
 /// Byte range `(start, end)` of the *line* containing `byte_idx`, where
@@ -181,30 +181,43 @@ pub fn line_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     (start, end)
 }
 
-/// Step one Unicode scalar to the left of `byte_idx`. Always returns a
-/// char-boundary byte index.
-pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx == 0 {
-        return 0;
-    }
-    let mut i = byte_idx.min(text.len()) - 1;
-    while i > 0 && !text.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Step one Unicode scalar to the right of `byte_idx`. Always returns
-/// a char-boundary byte index.
-pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
+/// The nearest extended-grapheme boundary at or before `byte_idx`.
+///
+/// This is the safe place to clamp carets after remote edits: a UTF-8 scalar
+/// boundary may still sit inside a combining sequence or emoji ZWJ cluster.
+pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
     if byte_idx >= text.len() {
         return text.len();
     }
-    let mut i = byte_idx + 1;
-    while i < text.len() && !text.is_char_boundary(i) {
-        i += 1;
-    }
-    i
+    let byte_idx = byte_idx.min(text.len());
+    text.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= byte_idx)
+        .last()
+        .unwrap_or(0)
+}
+
+/// Step one user-perceived character to the left of `byte_idx`. Extended
+/// grapheme clusters keep combining marks, emoji modifiers, flags, and ZWJ
+/// sequences together. The legacy function name is retained for API
+/// compatibility.
+pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
+    let byte_idx = byte_idx.min(text.len());
+    text.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .take_while(|&i| i < byte_idx)
+        .last()
+        .unwrap_or(0)
+}
+
+/// Step one user-perceived character to the right of `byte_idx`. See
+/// [`prev_char_boundary`] for the compatibility note.
+pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
+    let byte_idx = byte_idx.min(text.len());
+    text.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .find(|&i| i > byte_idx)
+        .unwrap_or(text.len())
 }
 
 // --- char-indexed variants -------------------------------------------------
@@ -545,6 +558,35 @@ mod tests {
     }
 
     #[test]
+    fn unicode_words_keep_apostrophes_and_decimal_numbers_together() {
+        let text = "can't pay 32.3 now";
+        assert_eq!(word_boundaries(text, 3), (0, "can't".len()));
+        let number_start = text.find("32.3").unwrap();
+        assert_eq!(
+            word_boundaries(text, number_start + 2),
+            (number_start, number_start + "32.3".len())
+        );
+        assert_eq!(next_word_boundary(text, 0), "can't ".len());
+    }
+
+    #[test]
+    fn unicode_words_keep_combining_marks_with_their_base() {
+        let text = "nai\u{308}ve café";
+        let first_end = text.find(' ').unwrap();
+        assert_eq!(word_boundaries(text, 4), (0, first_end));
+        assert_eq!(prev_word_boundary(text, first_end), 0);
+    }
+
+    #[test]
+    fn dictionary_word_motion_segments_thai_without_spaces() {
+        let text = "ทุกสองสัปดาห์";
+        assert_eq!(next_word_boundary(text, 0), 9);
+        assert_eq!(next_word_boundary(text, 9), 18);
+        assert_eq!(prev_word_boundary(text, text.len()), 18);
+        assert_eq!(word_boundaries(text, 12), (9, 18));
+    }
+
+    #[test]
     fn word_boundaries_empty_string() {
         assert_eq!(word_boundaries("", 0), (0, 0));
     }
@@ -594,6 +636,24 @@ mod tests {
         assert_eq!(prev_char_boundary(s, 3), 1);
         assert_eq!(prev_char_boundary(s, 1), 0);
         assert_eq!(prev_char_boundary(s, 0), 0);
+    }
+
+    #[test]
+    fn character_motion_keeps_extended_graphemes_whole() {
+        let combining = "a\u{301}b";
+        let first_cluster_end = "a\u{301}".len();
+        assert_eq!(next_char_boundary(combining, 0), first_cluster_end);
+        assert_eq!(prev_char_boundary(combining, first_cluster_end), 0);
+
+        let family = "👩‍👩‍👧‍👦!";
+        let emoji_end = family.len() - 1;
+        assert_eq!(next_char_boundary(family, 0), emoji_end);
+        assert_eq!(prev_char_boundary(family, emoji_end), 0);
+        assert_eq!(
+            grapheme_boundary_at_or_before(family, family.len()),
+            family.len()
+        );
+        assert_eq!(grapheme_boundary_at_or_before(family, 4), 0);
     }
 
     #[test]

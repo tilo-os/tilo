@@ -5884,6 +5884,20 @@ impl Widget for WordProcessorWidget {
                             }
                             last += 1;
                         }
+                        // Respect the shared paragraph widow/orphan policy. If the
+                        // next page would receive too few lines, leave enough there;
+                        // if this page cannot retain the minimum, move the paragraph
+                        // fragment wholesale instead of producing a one-line stub.
+                        let available = last - li + 1;
+                        let allowed = layout.fragment_line_count_from(li, available);
+                        if allowed == 0 && slice_top > page_content_top(cur_page) + 0.5 {
+                            cur_page += 1;
+                            slice_top = page_content_top(cur_page);
+                            y = slice_top;
+                            continue;
+                        }
+                        let allowed = allowed.max(1).min(available);
+                        last = li + allowed - 1;
                         let (lt, lh) = lines[last];
                         let slice_bottom = layout_y + lt + lh;
                         let band = Rect::new(text_x, slice_top, text_x + width, slice_bottom);
