@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -75,11 +75,13 @@ impl Suggestion {
         }
     }
 
+    #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
@@ -108,6 +110,27 @@ const DROPDOWN_GAP: f64 = 6.0;
 const ROW_PAD_X: f64 = 12.0;
 const ICON_PX: f64 = 16.0;
 const DEFAULT_MAX_VISIBLE: usize = 8;
+
+/// Widens a small UI count (row/suggestion index or count, always far
+/// below `f64`'s exact-integer range) for layout math.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "UI row/suggestion counts are always far below f64's exact-integer range"
+)]
+fn count_f64(n: usize) -> f64 {
+    n as f64
+}
+
+/// Narrows a screen-space `f64` layout value to `f32` for text rendering;
+/// every call site here is a bounded panel/row dimension, well within
+/// `f32` range.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen-space px value, always well within f32 range"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
+}
 
 pub struct Autocomplete {
     id: String,
@@ -148,22 +171,26 @@ impl Autocomplete {
         }
     }
 
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
         self.input = std::mem::replace(&mut self.input, TextInput::local()).with_id(id);
         self
     }
 
+    #[must_use]
     pub fn with_placeholder(mut self, hint: &str) -> Self {
         self.input.set_placeholder(hint);
         self
     }
 
+    #[must_use]
     pub fn with_font_size(mut self, size: f32) -> Self {
         self.input.set_font_size(size);
         self
     }
 
+    #[must_use]
     pub fn with_suggester<F>(mut self, f: F) -> Self
     where
         F: Fn(&str) -> Vec<Suggestion> + 'static,
@@ -180,6 +207,7 @@ impl Autocomplete {
     }
 
     /// Rows beyond this clip rather than growing the panel without bound.
+    #[must_use]
     pub fn with_max_visible(mut self, n: usize) -> Self {
         self.max_visible = n.max(1);
         self
@@ -333,24 +361,29 @@ impl Autocomplete {
         }
     }
 
-    fn move_highlight(&mut self, delta: i64) {
+    /// Only ever called with a single step (`true` = toward the end);
+    /// wraps at both ends. Plain `usize` arithmetic (no `i64` round trip)
+    /// keeps every step provably in range.
+    fn move_highlight(&mut self, forward: bool) {
         if self.suggestions.is_empty() {
             return;
         }
         self.open = true;
-        let n = self.suggestions.len() as i64;
+        let len = self.suggestions.len();
+        let last = len.saturating_sub(1);
         let next = match self.highlight {
             None => {
-                if delta > 0 {
+                if forward {
                     0
                 } else {
-                    (n - 1) as usize
+                    last
                 }
             }
-            Some(cur) => {
-                let c = cur as i64 + delta;
-                c.rem_euclid(n) as usize
+            Some(cur) if forward => {
+                let stepped = cur.saturating_add(1);
+                if stepped >= len { 0 } else { stepped }
             }
+            Some(cur) => cur.checked_sub(1).unwrap_or(last),
         };
         self.highlight = Some(next);
     }
@@ -363,7 +396,7 @@ impl Autocomplete {
         let h = if self.suggestions.is_empty() {
             STATUS_ROW_H + 8.0
         } else {
-            self.suggestions.len().min(self.max_visible) as f64 * ROW_H + 8.0
+            count_f64(self.suggestions.len().min(self.max_visible)) * ROW_H + 8.0
         };
         Some(Rect::new(
             self.rect.x0,
@@ -373,8 +406,8 @@ impl Autocomplete {
         ))
     }
 
-    fn row_rect(&self, panel: Rect, i: usize) -> Rect {
-        let y0 = panel.y0 + 4.0 + i as f64 * ROW_H;
+    fn row_rect(panel: Rect, i: usize) -> Rect {
+        let y0 = panel.y0 + 4.0 + count_f64(i) * ROW_H;
         Rect::new(panel.x0 + 4.0, y0, panel.x1 - 4.0, y0 + ROW_H)
     }
 
@@ -385,7 +418,113 @@ impl Autocomplete {
             return None;
         }
         (0..self.suggestions.len().min(self.max_visible))
-            .find(|&i| self.row_rect(panel, i).contains(pt))
+            .find(|&i| Self::row_rect(panel, i).contains(pt))
+    }
+
+    /// Paints one suggestion row: hover/armed background, optional icon,
+    /// right-aligned detail, then the label clipped to what's left of the
+    /// row. Split out of `draw_overlay` so that function stays a plain
+    /// walk over the visible rows.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "an internal per-row painting step; each argument is independently needed by the row and bundling them would only hide that"
+    )]
+    fn draw_row(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        tokens: &crate::tokens::Tokens,
+        accent: vello::peniko::Color,
+        row: Rect,
+        i: usize,
+        s: &Suggestion,
+    ) {
+        let armed = self.highlight == Some(i);
+        let hovered = self.hover == Some(i) && !armed;
+        if armed {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                accent,
+                None,
+                &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
+            );
+        } else if hovered {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                tokens.colors.surface_white_10,
+                None,
+                &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
+            );
+        }
+        let on_accent = tokens
+            .colors
+            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
+        let text_color = if armed {
+            on_accent
+        } else {
+            tokens.colors.text_primary
+        };
+        // 80% white alpha on a bright accent drops an already-marginal
+        // label below legible, so soften toward the fill instead, held
+        // to the contrast floor.
+        let dim_color = if armed {
+            tokens.colors.ink_on_any(
+                &[accent],
+                crate::tokens::colors::over(accent, on_accent, 0.8),
+                crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+            )
+        } else {
+            tokens.colors.text_dim
+        };
+        let text_size = tokens.typography.scale.base;
+        let detail_size = tokens.typography.scale.sm;
+        let mut x = row.x0 + ROW_PAD_X;
+        if let Some(icon) = s.icon {
+            let iy = row.y0 + (ROW_H - ICON_PX) / 2.0;
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(x, iy, x + ICON_PX, iy + ICON_PX),
+                icon,
+                if armed {
+                    on_accent
+                } else {
+                    tokens.colors.text_dim
+                },
+                LUCIDE_DEFAULT_STROKE_PX,
+            );
+            x += ICON_PX + 10.0;
+        }
+        let ty = row.y0 + (ROW_H - f64::from(text_size)) / 2.0;
+        // Right-aligned detail first, so we can bound the label width.
+        let mut label_x1 = row.x1 - ROW_PAD_X;
+        if let Some(detail) = &s.detail {
+            let (dw, _) = text_renderer.measure(detail, detail_size, None);
+            let dx = row.x1 - ROW_PAD_X - f64::from(dw);
+            text_renderer.draw_text(
+                scene,
+                detail,
+                detail_size,
+                dim_color,
+                transform.pre_translate(Vec2::new(
+                    dx,
+                    row.y0 + (ROW_H - f64::from(detail_size)) / 2.0,
+                )),
+                None,
+            );
+            label_x1 = dx - 8.0;
+        }
+        text_renderer.draw_text(
+            scene,
+            &s.label,
+            text_size,
+            text_color,
+            transform.pre_translate(Vec2::new(x, ty)),
+            Some(px((label_x1 - x).max(0.0))),
+        );
     }
 }
 
@@ -473,7 +612,6 @@ impl Widget for Autocomplete {
         );
 
         let text_size = tokens.typography.scale.base;
-        let detail_size = tokens.typography.scale.sm;
 
         // No rows yet: render the lone status line (loading / no matches).
         if self.suggestions.is_empty() {
@@ -484,96 +622,15 @@ impl Widget for Autocomplete {
                     status,
                     text_size,
                     tokens.colors.text_dim,
-                    transform * Affine::translate((panel.x0 + ROW_PAD_X + 4.0, ty)),
-                    Some((panel.width() - 2.0 * (ROW_PAD_X + 4.0)).max(0.0) as f32),
+                    transform.pre_translate(Vec2::new(panel.x0 + ROW_PAD_X + 4.0, ty)),
+                    Some(px((panel.width() - 2.0 * (ROW_PAD_X + 4.0)).max(0.0))),
                 );
             }
             return;
         }
-        for i in 0..self.suggestions.len().min(self.max_visible) {
-            let s = &self.suggestions[i];
-            let row = self.row_rect(panel, i);
-            let armed = self.highlight == Some(i);
-            let hovered = self.hover == Some(i) && !armed;
-            if armed {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    accent,
-                    None,
-                    &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
-                );
-            } else if hovered {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    tokens.colors.surface_white_10,
-                    None,
-                    &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
-                );
-            }
-            let on_accent = tokens
-                .colors
-                .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
-            let text_color = if armed {
-                on_accent
-            } else {
-                tokens.colors.text_primary
-            };
-            // 80% white alpha on a bright accent drops an already-marginal
-            // label below legible, so soften toward the fill instead, held
-            // to the contrast floor.
-            let dim_color = if armed {
-                tokens.colors.ink_on_any(
-                    &[accent],
-                    crate::tokens::colors::over(accent, on_accent, 0.8),
-                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
-                )
-            } else {
-                tokens.colors.text_dim
-            };
-            let mut x = row.x0 + ROW_PAD_X;
-            if let Some(icon) = s.icon {
-                let iy = row.y0 + (ROW_H - ICON_PX) / 2.0;
-                draw_icon(
-                    scene,
-                    transform,
-                    Rect::new(x, iy, x + ICON_PX, iy + ICON_PX),
-                    icon,
-                    if armed {
-                        on_accent
-                    } else {
-                        tokens.colors.text_dim
-                    },
-                    LUCIDE_DEFAULT_STROKE_PX,
-                );
-                x += ICON_PX + 10.0;
-            }
-            let ty = row.y0 + (ROW_H - f64::from(text_size)) / 2.0;
-            // Right-aligned detail first, so we can bound the label width.
-            let mut label_x1 = row.x1 - ROW_PAD_X;
-            if let Some(detail) = &s.detail {
-                let (dw, _) = text_renderer.measure(detail, detail_size, None);
-                let dx = row.x1 - ROW_PAD_X - f64::from(dw);
-                text_renderer.draw_text(
-                    scene,
-                    detail,
-                    detail_size,
-                    dim_color,
-                    transform
-                        * Affine::translate((dx, row.y0 + (ROW_H - f64::from(detail_size)) / 2.0)),
-                    None,
-                );
-                label_x1 = dx - 8.0;
-            }
-            text_renderer.draw_text(
-                scene,
-                &s.label,
-                text_size,
-                text_color,
-                transform * Affine::translate((x, ty)),
-                Some((label_x1 - x).max(0.0) as f32),
-            );
+        for (i, s) in self.suggestions.iter().enumerate().take(self.max_visible) {
+            let row = Self::row_rect(panel, i);
+            self.draw_row(scene, transform, text_renderer, tokens, accent, row, i, s);
         }
     }
 
@@ -609,11 +666,11 @@ impl Widget for Autocomplete {
                 ..
             } => match logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
-                    self.move_highlight(1);
+                    self.move_highlight(true);
                     *handled = true;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    self.move_highlight(-1);
+                    self.move_highlight(false);
                     *handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
@@ -657,8 +714,10 @@ impl Widget for Autocomplete {
                 button: MouseButton::Left,
                 ..
             } if self.row_at(self.last_pointer).is_some() => {
-                if let Some(i) = self.row_at(self.last_pointer) {
-                    let value = self.suggestions[i].value.clone();
+                if let Some(i) = self.row_at(self.last_pointer)
+                    && let Some(s) = self.suggestions.get(i)
+                {
+                    let value = s.value.clone();
                     self.accept(value);
                     *handled = true;
                 }
@@ -980,7 +1039,7 @@ mod tests {
         drive(&mut ac, &char_key("a")); // → "alpha","album"
         let panel = ac.dropdown_rect().expect("dropdown open");
         // Click the second row ("album").
-        let row = ac.row_rect(panel, 1);
+        let row = Autocomplete::row_rect(panel, 1);
         let c = row.center();
         drive(&mut ac, &mouse_move(c.x, c.y));
         assert!(drive(&mut ac, &left_press()));
