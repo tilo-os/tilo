@@ -573,6 +573,7 @@ mod tests {
             natural_scroll: true,
             pointer_speed: 0.75,
             key_repeat: 0.2,
+            ..Default::default()
         };
         assert_eq!(plan_for(&s, &touchpad()), plan_for(&s, &touchpad()));
     }
