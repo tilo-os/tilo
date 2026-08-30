@@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::kurbo::{Affine, Circle, Point, Rect, Vec2};
 use vello::peniko::{self, BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
@@ -83,8 +83,7 @@ impl Avatar {
         let ramp = &theme.tokens.colors.accent;
         let mut hasher = DefaultHasher::new();
         self.initials.hash(&mut hasher);
-        let idx = (hasher.finish() as usize) % ramp.len();
-        ramp[idx]
+        ramp[ramp_index(hasher.finish(), ramp.len())]
     }
 
     /// Circle-clip, fill the image scaled to the avatar square (so the
@@ -102,7 +101,7 @@ impl Avatar {
         let sx = self.rect.width() / iw;
         let sy = self.rect.height() / ih;
         let brush_transform =
-            Affine::translate((self.rect.x0, self.rect.y0)) * Affine::scale_non_uniform(sx, sy);
+            Affine::translate((self.rect.x0, self.rect.y0)).pre_scale_non_uniform(sx, sy);
 
         let image_brush = peniko::ImageBrush::new(img.clone());
         scene.fill(
@@ -144,7 +143,7 @@ impl Avatar {
         }
         // Same 0.4× ratio the widget uses, but keyed off the rect rather
         // than a stored `size` field so callers don't have to thread one.
-        let text_size = (rect.width().min(rect.height()) as f32) * 0.4;
+        let text_size = px(rect.width().min(rect.height())) * 0.4;
         let (tw, th) =
             text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - f64::from(tw) / 2.0;
@@ -154,7 +153,7 @@ impl Avatar {
             &initials,
             text_size,
             Self::initial_ink(color),
-            transform * Affine::translate((tx, ty)),
+            transform.pre_translate(Vec2::new(tx, ty)),
             None,
             TextWeight::Semibold,
         );
@@ -244,7 +243,7 @@ impl Avatar {
         // "+N" can be 2–3 glyphs, so key the size a touch below the 0.4×
         // initials ratio to keep "+12" inside the chip.
         let label = format!("+{count}");
-        let text_size = (rect.width().min(rect.height()) as f32) * 0.36;
+        let text_size = px(rect.width().min(rect.height())) * 0.36;
         let (tw, th) =
             text_renderer.measure_weighted(&label, text_size, None, TextWeight::Semibold);
         let tx = centre.x - f64::from(tw) / 2.0;
@@ -254,7 +253,7 @@ impl Avatar {
             &label,
             text_size,
             label_color,
-            transform * Affine::translate((tx, ty)),
+            transform.pre_translate(Vec2::new(tx, ty)),
             None,
             TextWeight::Semibold,
         );
@@ -297,12 +296,17 @@ impl Avatar {
     /// immediate-mode callers of [`Avatar::draw_at`] can derive it without
     /// constructing an `Avatar`.
     pub fn color_for_initials(initials: &str, theme: &Theme) -> Color {
+        // The normalised copy is read via `Hash::hash` below; clippy's
+        // collection_is_never_read doesn't recognize hashing as a read.
+        #[allow(
+            clippy::collection_is_never_read,
+            reason = "read by Hash::hash two lines down, which this lint doesn't track as a use"
+        )]
         let initials: String = initials.to_uppercase().chars().take(2).collect();
         let ramp = &theme.tokens.colors.accent;
         let mut hasher = DefaultHasher::new();
         initials.hash(&mut hasher);
-        let idx = (hasher.finish() as usize) % ramp.len();
-        ramp[idx]
+        ramp[ramp_index(hasher.finish(), ramp.len())]
     }
 
     fn paint_initials(
@@ -334,11 +338,35 @@ impl Avatar {
             &self.initials,
             text_size,
             Self::initial_ink(bg),
-            transform * Affine::translate((tx, ty)),
+            transform.pre_translate(Vec2::new(tx, ty)),
             None,
             TextWeight::Semibold,
         );
     }
+}
+
+/// Index into a colour ramp of length `len` from a 64-bit hash. `len` is
+/// always a small, fixed ramp size, so the truncation the lint warns
+/// about can't actually occur; `checked_rem` handles `len == 0` safely.
+fn ramp_index(hash: u64, len: usize) -> usize {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the low bits of a 64-bit hash modulo a small ramp length always fit in usize"
+    )]
+    let hash = hash as usize;
+    hash.checked_rem(len).unwrap_or(0)
+}
+
+/// Narrows a small, on-screen chip dimension to `f32` for text sizing.
+/// Avatar chips are always a handful to a few hundred logical pixels,
+/// nowhere near `f32::MAX`.
+fn px(v: f64) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "v is an avatar chip dimension, never approaching f32::MAX"
+    )]
+    let out = v as f32;
+    out
 }
 
 impl Widget for Avatar {
@@ -370,6 +398,13 @@ impl Widget for Avatar {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        // Exact comparison is intentional: any width/height delta, however
+        // small, must invalidate the render cache — an epsilon would let a
+        // genuine sub-pixel size change go undetected.
+        #[allow(
+            clippy::float_cmp,
+            reason = "cache-dirtying must catch any delta, not just deltas past an epsilon"
+        )]
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         if size_changed {
@@ -395,7 +430,7 @@ impl Widget for Avatar {
             let dy = self.rect.y0 - self.cache_rect.y0;
             out_scene.append(
                 &self.cached,
-                Some(out_transform * Affine::translate((dx, dy))),
+                Some(out_transform.pre_translate(Vec2::new(dx, dy))),
             );
             return;
         }
@@ -475,7 +510,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        avatar.rect = Rect::new(0.0, 0.0, avatar.size as f64, avatar.size as f64);
+        avatar.rect = Rect::new(0.0, 0.0, f64::from(avatar.size), f64::from(avatar.size));
         avatar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         scene
     }
@@ -764,8 +799,8 @@ mod tests {
         assert_eq!(scene.encoding().draw_tags.len(), 0);
     }
 
-    /// The draw stream must contain BEGIN_CLIP → IMAGE → END_CLIP in that
-    /// order; losing the clip would render the image as a square. A 1×1
+    /// The draw stream must contain `BEGIN_CLIP` → `IMAGE` → `END_CLIP` in
+    /// that order; losing the clip would render the image as a square. A 1×1
     /// transparent image keeps the test independent of any on-disk
     /// fixture — only tag order is inspected, not pixel content.
     #[test]
