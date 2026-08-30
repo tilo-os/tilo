@@ -349,7 +349,11 @@ impl AppearancePrefs {
 /// dark theme for an unrecognised name so a stray value never leaves the UI
 /// unthemed.
 pub fn theme_by_name(name: &str) -> ui::Theme {
-    ui::Theme::named(name).unwrap_or_else(ui::Theme::dark)
+    if name.starts_with("custom:") {
+        ui::Theme::configured()
+    } else {
+        ui::Theme::named(name).unwrap_or_else(ui::Theme::dark)
+    }
 }
 
 /// Notification-delivery policy the compositor's notification layer reads
@@ -521,8 +525,9 @@ impl SystemPrefs {
     }
 
     /// Serialize to pretty JSON, **merging** into `existing` so foreign
-    /// keys (notably `locale`) survive. Only the four sections this store
-    /// owns are rewritten.
+    /// keys (notably `locale`) survive. The known `appearance` fields are
+    /// merged one level deeper so Theme Studio's nested editable artifact is
+    /// not destroyed when Settings changes text scale or the active preset.
     pub fn to_json_merged(&self, existing: &str) -> String {
         let mut root: serde_json::Value =
             serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
@@ -551,10 +556,18 @@ impl SystemPrefs {
             "updates".into(),
             serde_json::to_value(&self.updates).unwrap_or_default(),
         );
-        obj.insert(
-            "appearance".into(),
-            serde_json::to_value(&self.appearance).unwrap_or_default(),
-        );
+        let appearance = obj
+            .entry("appearance")
+            .or_insert_with(|| serde_json::json!({}));
+        if !appearance.is_object() {
+            *appearance = serde_json::json!({});
+        }
+        let known = serde_json::to_value(&self.appearance).unwrap_or_default();
+        if let (Some(target), Some(fields)) = (appearance.as_object_mut(), known.as_object()) {
+            for (key, value) in fields {
+                target.insert(key.clone(), value.clone());
+            }
+        }
         obj.insert(
             "notifications".into(),
             serde_json::to_value(self.notifications).unwrap_or_default(),
@@ -839,6 +852,18 @@ mod tests {
             out.contains("\"currency\": \"EUR\""),
             "locale survived: {out}"
         );
+    }
+
+    #[test]
+    fn merge_preserves_theme_studio_artifact_when_writing_appearance() {
+        let existing = r#"{"appearance":{"theme":"Dark","studio":{"id":"sunset","theme":{"accent":[251,146,60]}}}}"#;
+        let mut p = SystemPrefs::from_json(existing);
+        p.appearance.text_scale = 1.25;
+        let out = p.to_json_merged(existing);
+        let root: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(root["appearance"]["studio"]["id"], "sunset");
+        assert_eq!(root["appearance"]["studio"]["theme"]["accent"][0], 251);
+        assert_eq!(root["appearance"]["text_scale"], 1.25);
     }
 
     #[test]
