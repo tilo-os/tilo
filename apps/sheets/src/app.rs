@@ -4719,7 +4719,7 @@ mod tests {
     /// (no document change, as on every scroll/selection/hover frame) skips the
     /// snapshot + full recalculation. Run with `--ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
     fn bench_reload_memoisation() {
         let (mut app, mut doc) = seeded_app();
         let n = 20_000;

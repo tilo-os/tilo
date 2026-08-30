@@ -343,6 +343,12 @@ pub struct MonitorApp {
     rect: Rect,
     last_cursor: Point,
     last_refresh: Instant,
+    /// Never sample the live machine — the seeded snapshot is the whole model.
+    /// `last_refresh` alone cannot promise this: it only delays the first
+    /// sample, so any frame that takes longer than `interval_ms` (a loaded
+    /// machine, a debug build) swaps the deterministic rows for the real
+    /// process table underneath whatever is reading them.
+    sample_only: bool,
     rows_per_page: usize,
     /// The process table's clipped row viewport — wheel events over it scroll
     /// the rows/columns; outside it (and on the Resources tab) the wheel
@@ -385,6 +391,7 @@ impl MonitorApp {
         // "now" ⇒ the first (screenshot) frame skips the live refresh and
         // renders the seeded sample untouched.
         let mut app = Self::build(model, selected_pid, Instant::now());
+        app.sample_only = true;
         // Seed a synthetic CPU history for the pre-selected process so the
         // detail pane's sparkline reads as "alive" in the hermetic shot frame
         // (which never ticks the live sampler that would fill it for real).
@@ -443,6 +450,7 @@ impl MonitorApp {
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             last_refresh,
+            sample_only: false,
             rows_per_page: 1,
             table_viewport: Rect::ZERO,
             table_content_w: 0.0,
@@ -455,6 +463,9 @@ impl MonitorApp {
     /// first draw never trips this (elapsed ≈ 0), so `--shots` shows the
     /// sample snapshot; the live loop updates a beat later.
     fn maybe_refresh(&mut self) {
+        if self.sample_only {
+            return;
+        }
         if self.last_refresh.elapsed() >= Duration::from_millis(self.prefs.interval_ms) {
             self.sampler.refresh(&mut self.model);
             self.last_refresh = Instant::now();
