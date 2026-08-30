@@ -12,12 +12,25 @@ use crate::format::CodecError;
 use crate::model::DocMut;
 use crate::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
 
-use quick_xml::events::Event;
+use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
 
 /// EMUs per CSS pixel (914400 EMU/inch ÷ 96 px/inch), for `wp:extent` → model pixel size.
-const EMU_PER_PX: f64 = 914400.0 / 96.0;
+const EMU_PER_PX: f64 = 914_400.0 / 96.0;
+
+/// EMU → CSS pixel, rounded. Images are nowhere near i64's range, but a float has no checked
+/// int conversion, so the bound is asserted with a clamp rather than assumed.
+fn emu_to_px(emu: f64) -> i64 {
+    let px = emu / EMU_PER_PX;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to ±1_000_000_000 above, far inside i64 range for a pixel dimension"
+    )]
+    {
+        px.round().clamp(-1_000_000_000.0, 1_000_000_000.0) as i64
+    }
+}
 
 /// Build a `rId → media bytes` map from `word/_rels/document.xml.rels`, so the body parser can turn an `a:blip r:embed="rIdN"` into a stored image blob.
 pub(crate) fn build_image_map(container: &DocxContainer) -> BTreeMap<String, Vec<u8>> {
@@ -29,11 +42,7 @@ pub(crate) fn build_image_map(container: &DocxContainer) -> BTreeMap<String, Vec
         return out;
     };
     let mut reader = Reader::from_str(s);
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Relationship" => {
                 let id = attr_val(&e, b"Id");
@@ -74,248 +83,273 @@ struct DrawingState {
     rel: Option<String>,
 }
 
-fn start_block(
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    kind: &str,
-) -> String {
-    let id = doc.insert_block(prev.as_deref(), kind);
-    *prev = Some(id.clone());
-    *cur = Some(id.clone());
-    *cur_len = 0;
-    id
+/// The docx-id → qdoc-id lookup tables [`BodyState::handle_empty`] resolves footnote/endnote/
+/// comment references against.
+struct RefMaps<'a> {
+    foot: &'a BTreeMap<String, String>,
+    end: &'a BTreeMap<String, String>,
+    comment: &'a BTreeMap<String, String>,
 }
 
-fn append(doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str) {
-    if let Some(b) = cur
-        && !txt.is_empty()
-    {
-        doc.splice_text(b, *cur_len, 0, txt);
-        *cur_len += txt.chars().count();
-    }
-}
-
-pub(crate) fn parse_body(
-    document_xml: &[u8],
-    reg: &StyleRegistry,
-    foot_map: &BTreeMap<String, String>,
-    end_map: &BTreeMap<String, String>,
-    comment_map: &BTreeMap<String, String>,
-    image_map: &BTreeMap<String, Vec<u8>>,
-    doc: &mut DocMut,
-) -> Result<(), CodecError> {
-    let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
-    let mut reader = Reader::from_str(s);
-
-    let mut in_body = false;
-    let mut prev: Option<String> = None;
-    let mut cur: Option<String> = None;
-    let mut cur_len: usize = 0;
+/// All per-parse mutable state for [`parse_body`]'s event loop, bundled so the loop can be split
+/// into named handlers below instead of one 450-line function.
+#[derive(Default)]
+struct BodyState {
+    in_body: bool,
+    prev: Option<String>,
+    cur: Option<String>,
+    cur_len: usize,
 
     // Paragraph-property scratch, gathered from `w:pPr` then applied at its close.
-    let mut in_ppr = false;
-    let mut in_numpr = false;
-    let mut p_style: Option<String> = None;
-    let mut p_align: Option<String> = None;
-    let mut p_numid: Option<String> = None;
-    let mut p_line_spacing: Option<f64> = None;
+    in_ppr: bool,
+    in_numpr: bool,
+    p_style: Option<String>,
+    p_align: Option<String>,
+    p_numid: Option<String>,
+    p_line_spacing: Option<f64>,
 
     // Run marks are collected for `w:rPr` and applied over the run's text range at `</w:r>`.
-    let mut in_run = false;
-    let mut in_rpr = false;
-    let mut in_t = false;
-    let mut run_start: usize = 0;
-    let mut run_marks: Vec<(String, MarkValue)> = Vec::new();
+    in_run: bool,
+    in_char_props: bool,
+    in_t: bool,
+    run_start: usize,
+    run_marks: Vec<(String, MarkValue)>,
 
-    let mut pending_marks: Vec<(String, usize, usize, String, MarkValue)> = Vec::new();
+    pending_marks: Vec<(String, usize, usize, String, MarkValue)>,
     // Paragraph-style inline marks for the current block, applied over [0, len].
-    let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
-    let mut note_refs: Vec<(String, usize, String)> = Vec::new();
+    cur_para_marks: Vec<(String, MarkValue)>,
+    note_refs: Vec<(String, usize, String)>,
     // Open comment ranges keyed by docx id, awaiting their matching `w:commentRangeEnd`.
-    let mut open_comments: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
-    let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
+    open_comments: BTreeMap<String, (String, String, usize)>,
+    comment_ranges: Vec<(String, usize, usize, String)>,
 
     // Open bookmark ranges keyed by the OOXML `w:id`, matched on `w:bookmarkEnd`; the name comes from `w:bookmarkStart`'s `w:name`.
-    let mut open_bookmarks: BTreeMap<String, (String, usize, String)> = BTreeMap::new();
-    let mut bookmark_ranges: Vec<(String, usize, usize, String)> = Vec::new();
+    open_bookmarks: BTreeMap<String, (String, usize, String)>,
+    bookmark_ranges: Vec<(String, usize, usize, String)>,
 
     // In-progress cross-reference (`w:hyperlink w:anchor="name"`): anchor target + start index; the `link` mark applies at close.
-    let mut hyperlink: Option<(String, Option<String>, usize)> = None;
-    let mut cross_refs: Vec<(String, usize, usize, String)> = Vec::new();
+    hyperlink: Option<(String, Option<String>, usize)>,
+    cross_refs: Vec<(String, usize, usize, String)>,
 
     // In-progress `<w:ins>`/`<w:del>` wrapper: change id, kind, anchor block, start index; the `ins`/`del` mark applies at close.
     // Deleted runs carry `<w:delText>` instead of `<w:t>` (treated identically here).
-    let mut change: Option<(String, crate::snapshot::ChangeKind, Option<String>, usize)> = None;
-    let mut change_ranges: Vec<(String, usize, usize, crate::snapshot::ChangeKind, String)> =
-        Vec::new();
+    change: Option<(String, crate::snapshot::ChangeKind, Option<String>, usize)>,
+    change_ranges: Vec<(String, usize, usize, crate::snapshot::ChangeKind, String)>,
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
-    let mut table_id: Option<String> = None;
-    let mut trow: usize = 0;
-    let mut tcol: usize = 0;
-    let mut table_seq: usize = 0;
+    table_id: Option<String>,
+    trow: usize,
+    tcol: usize,
+    table_seq: usize,
 
-    let mut capture: Option<(usize, i32)> = None; // (start byte, open depth) of a fidelity atom
+    capture: Option<(usize, i32)>, // (start byte, open depth) of a fidelity atom
 
     // In-progress `w:drawing`; becomes its own `image` block at `</w:drawing>`, replacing the enclosing empty paragraph.
-    let mut drawing: Option<DrawingState> = None;
+    drawing: Option<DrawingState>,
+}
 
-    macro_rules! flush_para_marks {
-        () => {
-            if let Some(b) = cur.as_ref() {
-                for (name, value) in cur_para_marks.drain(..) {
-                    pending_marks.push((b.clone(), 0, cur_len, name, value));
-                }
-            }
-            cur_para_marks.clear();
-        };
+impl BodyState {
+    /// Opens a fresh top-level block anchored after the previous one, and makes it current.
+    fn start_block(&mut self, doc: &mut DocMut, kind: &str) -> String {
+        let id = doc.insert_block(self.prev.as_deref(), kind);
+        self.prev = Some(id.clone());
+        self.cur = Some(id.clone());
+        self.cur_len = 0;
+        id
     }
 
-    // Finalise the paragraph's properties: pick the block kind (list_item/heading/paragraph), set attrs, stash whole-block marks.
-    macro_rules! finalize_ppr {
-        () => {
-            if let Some(id) = cur.clone() {
-                // Line spacing rides as `line_spacing` regardless of block kind; a direct `w:spacing` wins over inheriting from the style.
-                let line_spacing = p_line_spacing.or_else(|| p_style.as_deref().and_then(|s| reg.para_line_spacing(s)));
-                if let Some(ls) = line_spacing {
-                    doc.set_attr(&id, "line_spacing", ls);
-                }
-                let level = p_style.as_deref().and_then(|s| reg.heading_level(s));
-                if let Some(numid) = p_numid.clone() {
-                    doc.set_kind(&id, "list_item");
-                    let ordered = reg.num_ordered.get(&numid).copied().unwrap_or(false);
-                    doc.set_attr(&id, "ordered", ordered);
-                    // Numbering fidelity (ordered lists only): preserve format + start so the list re-exports intact.
-                    if ordered {
-                        if let Some(def) = reg.num_def.get(&numid) {
-                            if let Some(f) = def.num_format {
-                                if f != "decimal" {
-                                    doc.set_attr(&id, "num_format", f);
-                                }
-                            }
-                            if let Some(s) = def.num_start {
-                                if s != 1 {
-                                    doc.set_attr(&id, "num_start", s);
-                                    // OOXML numbering restarts by default; a non-1 start implies a restart at that value.
-                                    doc.set_attr(&id, "num_restart", true);
-                                }
-                            }
-                        }
-                    }
-                    // Direct `w:jc` wins; otherwise inherit alignment from the style.
-                    let align = p_align.clone().or_else(|| p_style.as_deref().and_then(|s| reg.para_align(s)));
-                    if let Some(a) = align {
-                        doc.set_attr(&id, "align", a.as_str());
-                    }
-                } else if let Some(l) = level {
-                    doc.set_kind(&id, "heading");
-                    doc.set_attr(&id, "level", l);
-                    let align = p_align.clone().or_else(|| p_style.as_deref().and_then(|s| reg.para_align(s)));
-                    if let Some(a) = align {
-                        doc.set_attr(&id, "align", a.as_str());
-                    }
-                } else {
-                    // A plain paragraph with a *named* style lifts the style's definition into the styles container and points the block at
-                    // it via `style`, rather than also baking its formatting onto the block — which would break round-trip idempotency.
-                    let lifted = p_style
-                        .as_deref()
-                        .filter(|s| reg.is_named_para(s))
-                        .and_then(|s| reg.style_props(s).map(|props| (s.to_string(), props)));
-                    if let Some((sid, props)) = lifted {
-                        doc.set_style(&sid, &props);
-                        doc.set_attr(&id, "style", sid.as_str());
-                        if let Some(a) = p_align.clone() {
-                            doc.set_attr(&id, "align", a.as_str());
-                        }
-                    } else {
-                        let align = p_align.clone().or_else(|| p_style.as_deref().and_then(|s| reg.para_align(s)));
-                        if let Some(a) = align {
-                            doc.set_attr(&id, "align", a.as_str());
-                        }
-                        if let Some(st) = p_style.clone() {
-                            cur_para_marks = reg.para_text_marks(&st);
-                        }
-                    }
-                }
-            }
-        };
-    }
-
-    loop {
-        let pos_before = reader.buffer_position() as usize;
-        let ev = reader
-            .read_event()
-            .map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
-
-        if let Some((start, depth)) = capture.as_mut() {
-            match &ev {
-                Event::Start(_) => *depth += 1,
-                Event::End(_) => {
-                    *depth -= 1;
-                    if *depth == 0 {
-                        let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
-                        doc.set_attr(&id, "xml", raw.as_str());
-                        cur = None;
-                        capture = None;
-                    }
-                }
-                _ => {}
-            }
-            continue;
+    fn append(&mut self, doc: &mut DocMut, txt: &str) {
+        if let Some(b) = self.cur.as_deref()
+            && !txt.is_empty()
+        {
+            doc.splice_text(b, self.cur_len, 0, txt);
+            self.cur_len = self.cur_len.saturating_add(txt.chars().count());
         }
+    }
 
-        // Inside a `w:drawing`: collect inline-vs-anchor, extent, wrap, and the blip rel, then materialise on `</w:drawing>`.
-        if let Some(dr) = drawing.as_mut() {
-            match &ev {
-                Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
-                    b"wp:inline" => dr.floating = false,
-                    b"wp:anchor" => dr.floating = true,
-                    b"wp:extent" => {
-                        if let Some(cx) = attr_val(e, b"cx").and_then(|v| v.parse::<f64>().ok()) {
-                            dr.width = Some((cx / EMU_PER_PX).round() as i64);
-                        }
-                        if let Some(cy) = attr_val(e, b"cy").and_then(|v| v.parse::<f64>().ok()) {
-                            dr.height = Some((cy / EMU_PER_PX).round() as i64);
+    /// Flushes the current block's paragraph-style inline marks (set by [`Self::finalize_ppr`]) over `[0, cur_len)`.
+    fn flush_para_marks(&mut self) {
+        if let Some(b) = self.cur.as_ref() {
+            for (name, value) in self.cur_para_marks.drain(..) {
+                self.pending_marks
+                    .push((b.clone(), 0, self.cur_len, name, value));
+            }
+        }
+        self.cur_para_marks.clear();
+    }
+
+    /// Finalise the paragraph's properties: pick the block kind (list_item/heading/paragraph), set attrs, stash whole-block marks.
+    fn finalize_ppr(&mut self, doc: &mut DocMut, reg: &StyleRegistry) {
+        let Some(id) = self.cur.clone() else {
+            return;
+        };
+        // Line spacing rides as `line_spacing` regardless of block kind; a direct `w:spacing` wins over inheriting from the style.
+        let line_spacing = self.p_line_spacing.or_else(|| {
+            self.p_style
+                .as_deref()
+                .and_then(|s| reg.para_line_spacing(s))
+        });
+        if let Some(ls) = line_spacing {
+            doc.set_attr(&id, "line_spacing", ls);
+        }
+        let level = self.p_style.as_deref().and_then(|s| reg.heading_level(s));
+        if let Some(numid) = self.p_numid.clone() {
+            doc.set_kind(&id, "list_item");
+            let ordered = reg.num_ordered.get(&numid).copied().unwrap_or(false);
+            doc.set_attr(&id, "ordered", ordered);
+            // Numbering fidelity (ordered lists only): preserve format + start so the list re-exports intact.
+            if ordered {
+                if let Some(def) = reg.num_def.get(&numid) {
+                    if let Some(f) = def.num_format {
+                        if f != "decimal" {
+                            doc.set_attr(&id, "num_format", f);
                         }
                     }
-                    // wrapNone/wrapTopAndBottom don't flow text beside the image → `none`; wrapSquare/wrapTight/wrapThrough use the wrapText side.
-                    b"wp:wrapNone" | b"wp:wrapTopAndBottom" => dr.wrap = Some("none".to_string()),
-                    b"wp:wrapSquare" | b"wp:wrapTight" | b"wp:wrapThrough" => {
-                        let side = attr_val(e, b"wrapText");
-                        dr.wrap = Some(
-                            match side.as_deref() {
-                                Some("left") => "left",
-                                Some("right") => "right",
-                                _ => "both", // "bothSides" | "largest" | absent
+                    if let Some(s) = def.num_start {
+                        if s != 1 {
+                            doc.set_attr(&id, "num_start", s);
+                            // OOXML numbering restarts by default; a non-1 start implies a restart at that value.
+                            doc.set_attr(&id, "num_restart", true);
+                        }
+                    }
+                }
+            }
+            // Direct `w:jc` wins; otherwise inherit alignment from the style.
+            let align = self
+                .p_align
+                .clone()
+                .or_else(|| self.p_style.as_deref().and_then(|s| reg.para_align(s)));
+            if let Some(a) = align {
+                doc.set_attr(&id, "align", a.as_str());
+            }
+        } else if let Some(l) = level {
+            doc.set_kind(&id, "heading");
+            doc.set_attr(&id, "level", l);
+            let align = self
+                .p_align
+                .clone()
+                .or_else(|| self.p_style.as_deref().and_then(|s| reg.para_align(s)));
+            if let Some(a) = align {
+                doc.set_attr(&id, "align", a.as_str());
+            }
+        } else {
+            // A plain paragraph with a *named* style lifts the style's definition into the styles container and points the block at
+            // it via `style`, rather than also baking its formatting onto the block — which would break round-trip idempotency.
+            let lifted = self
+                .p_style
+                .as_deref()
+                .filter(|s| reg.is_named_para(s))
+                .and_then(|s| reg.style_props(s).map(|props| (s.to_string(), props)));
+            if let Some((sid, props)) = lifted {
+                doc.set_style(&sid, &props);
+                doc.set_attr(&id, "style", sid.as_str());
+                if let Some(a) = self.p_align.clone() {
+                    doc.set_attr(&id, "align", a.as_str());
+                }
+            } else {
+                let align = self
+                    .p_align
+                    .clone()
+                    .or_else(|| self.p_style.as_deref().and_then(|s| reg.para_align(s)));
+                if let Some(a) = align {
+                    doc.set_attr(&id, "align", a.as_str());
+                }
+                if let Some(st) = self.p_style.clone() {
+                    self.cur_para_marks = reg.para_text_marks(&st);
+                }
+            }
+        }
+    }
+
+    /// While a fidelity atom is being captured (`capture` is `Some`), tracks element depth and
+    /// closes/records the atom at depth 0. Returns `true` when the event was consumed here.
+    fn handle_capture(&mut self, s: &str, pos_after: usize, ev: &Event, doc: &mut DocMut) -> bool {
+        let Some((start, depth)) = self.capture.as_mut() else {
+            return false;
+        };
+        match ev {
+            Event::Start(_) => *depth = depth.saturating_add(1),
+            Event::End(_) => {
+                *depth = depth.saturating_sub(1);
+                if *depth == 0 {
+                    let raw = s.get(*start..pos_after).unwrap_or_default().to_string();
+                    let id = self.start_block(doc, "fidelity");
+                    doc.set_attr(&id, "xml", raw.as_str());
+                    self.cur = None;
+                    self.capture = None;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Inside a `w:drawing`: collect inline-vs-anchor, extent, wrap, and the blip rel, then
+    /// materialise on `</w:drawing>`. Returns `true` when the event was consumed here.
+    fn handle_drawing(
+        &mut self,
+        ev: &Event,
+        doc: &mut DocMut,
+        image_map: &BTreeMap<String, Vec<u8>>,
+    ) -> bool {
+        if self.drawing.is_none() {
+            return false;
+        }
+        match ev {
+            Event::Start(e) | Event::Empty(e) => {
+                if let Some(dr) = self.drawing.as_mut() {
+                    match e.name().as_ref() {
+                        b"wp:inline" => dr.floating = false,
+                        b"wp:anchor" => dr.floating = true,
+                        b"wp:extent" => {
+                            if let Some(cx) = attr_val(e, b"cx").and_then(|v| v.parse::<f64>().ok())
+                            {
+                                dr.width = Some(emu_to_px(cx));
                             }
-                            .to_string(),
-                        );
-                    }
-                    // Page-relative horizontal/vertical positioning marks a page anchor.
-                    b"wp:positionH" | b"wp:positionV" => {
-                        if attr_val(e, b"relativeFrom").as_deref() == Some("page") {
-                            dr.page_relative = true;
+                            if let Some(cy) = attr_val(e, b"cy").and_then(|v| v.parse::<f64>().ok())
+                            {
+                                dr.height = Some(emu_to_px(cy));
+                            }
                         }
+                        // wrapNone/wrapTopAndBottom don't flow text beside the image → `none`; wrapSquare/wrapTight/wrapThrough use the wrapText side.
+                        b"wp:wrapNone" | b"wp:wrapTopAndBottom" => {
+                            dr.wrap = Some("none".to_string());
+                        }
+                        b"wp:wrapSquare" | b"wp:wrapTight" | b"wp:wrapThrough" => {
+                            let side = attr_val(e, b"wrapText");
+                            dr.wrap = Some(
+                                match side.as_deref() {
+                                    Some("left") => "left",
+                                    Some("right") => "right",
+                                    _ => "both", // "bothSides" | "largest" | absent
+                                }
+                                .to_string(),
+                            );
+                        }
+                        // Page-relative horizontal/vertical positioning marks a page anchor.
+                        b"wp:positionH" | b"wp:positionV" => {
+                            if attr_val(e, b"relativeFrom").as_deref() == Some("page") {
+                                dr.page_relative = true;
+                            }
+                        }
+                        b"a:blip" if dr.rel.is_none() => {
+                            dr.rel = attr_val(e, b"r:embed").or_else(|| attr_val(e, b"r:link"));
+                        }
+                        _ => {}
                     }
-                    b"a:blip" if dr.rel.is_none() => {
-                        dr.rel = attr_val(e, b"r:embed").or_else(|| attr_val(e, b"r:link"));
-                    }
-                    _ => {}
-                },
-                Event::End(e) if e.name().as_ref() == b"w:drawing" => {
-                    let dr = drawing.take().unwrap();
+                }
+            }
+            Event::End(e) if e.name().as_ref() == b"w:drawing" => {
+                if let Some(dr) = self.drawing.take() {
                     let bytes = dr.rel.as_deref().and_then(|r| image_map.get(r));
                     if let Some(bytes) = bytes {
                         let hash = doc.put_blob(bytes);
                         // Reuse the enclosing (image-only) paragraph if empty, else open a fresh block, as `image`.
-                        let id = if let (Some(c), 0) = (cur.clone(), cur_len) {
+                        let id = if let (Some(c), 0) = (self.cur.clone(), self.cur_len) {
                             doc.set_kind(&c, "image");
                             c
                         } else {
-                            start_block(doc, &mut prev, &mut cur, &mut cur_len, "image")
+                            self.start_block(doc, "image")
                         };
                         doc.set_attr(&id, "blob", hash.as_str());
                         let anchor = if !dr.floating {
@@ -340,285 +374,369 @@ pub(crate) fn parse_body(
                             doc.set_attr(&id, "wrap", w.as_str());
                         }
                         // An image block isn't a text container; close it.
-                        prev = Some(id);
-                        cur = None;
+                        self.prev = Some(id);
+                        self.cur = None;
                     }
-                    in_run = false;
                 }
-                _ => {}
+                self.in_run = false;
             }
+            _ => {}
+        }
+        true
+    }
+
+    /// Block-structure and run-open events: headings/paragraphs/lists/tables, tracked-change and
+    /// hyperlink openers, and the fidelity-atom capture start for anything unmodeled.
+    fn handle_start(&mut self, e: &BytesStart, doc: &mut DocMut, pos_before: usize) {
+        match e.name().as_ref() {
+            b"w:body" => self.in_body = true,
+            // A paragraph (outside a table) opens a block; its kind is refined once `w:pPr` closes.
+            b"w:p" if self.in_body && self.table_id.is_none() => {
+                self.start_block(doc, "paragraph");
+                self.p_style = None;
+                self.p_align = None;
+                self.p_numid = None;
+                self.p_line_spacing = None;
+                self.cur_para_marks.clear();
+            }
+            b"w:pPr" if self.table_id.is_none() => self.in_ppr = true,
+            b"w:numPr" if self.in_ppr => self.in_numpr = true,
+            // A tracked-change wrapper: create the change record now, remember the start index; the mark applies over `[start, cur_len)` at close.
+            b"w:ins" | b"w:del" if self.in_body && self.cur.is_some() => {
+                let kind = if e.name().as_ref() == b"w:ins" {
+                    crate::snapshot::ChangeKind::Ins
+                } else {
+                    crate::snapshot::ChangeKind::Del
+                };
+                let author = attr_val(e, b"w:author").unwrap_or_default();
+                let date = attr_val(e, b"w:date").unwrap_or_default();
+                let cid = doc.insert_change(kind, &author, &date);
+                self.change = Some((cid, kind, self.cur.clone(), self.cur_len));
+            }
+            b"w:hyperlink" if self.in_body && self.cur.is_some() => {
+                // A cross-reference (`w:anchor="name"`): remember target + start index; `r:id`-based external links aren't modeled.
+                if let Some(anchor) = attr_val(e, b"w:anchor") {
+                    self.hyperlink = Some((
+                        format!("{}{anchor}", crate::schema::CROSS_REF_PREFIX),
+                        self.cur.clone(),
+                        self.cur_len,
+                    ));
+                }
+            }
+            b"w:r" if self.in_body => {
+                self.in_run = true;
+                self.run_start = self.cur_len;
+                self.run_marks.clear();
+            }
+            b"w:rPr" if self.in_run => self.in_char_props = true,
+            // An embedded image: begin collecting size/positioning/blip until `</w:drawing>`.
+            b"w:drawing" if self.in_body => {
+                self.drawing = Some(DrawingState::default());
+            }
+            // Deleted text in a `<w:del>` run uses `<w:delText>`; treated like `<w:t>` on import.
+            b"w:t" | b"w:delText" if self.in_run => self.in_t = true,
+            b"w:tbl" if self.in_body => {
+                self.table_seq = self.table_seq.saturating_add(1);
+                self.table_id = Some(format!("t{}", self.table_seq));
+                self.trow = 0;
+            }
+            b"w:tr" if self.table_id.is_some() => self.tcol = 0,
+            b"w:tc" if self.table_id.is_some() => {
+                if let Some(tid) = self.table_id.clone() {
+                    let id = self.start_block(doc, "cell");
+                    doc.set_attr(&id, "table", tid.as_str());
+                    if let (Ok(row), Ok(col)) = (i64::try_from(self.trow), i64::try_from(self.tcol))
+                    {
+                        doc.set_attr(&id, "row", row);
+                        doc.set_attr(&id, "col", col);
+                    }
+                }
+            }
+            // Unknown block-level element → capture verbatim as a fidelity atom.
+            _ if self.in_body && self.cur.is_none() && self.table_id.is_none() => {
+                self.capture = Some((pos_before, 1));
+            }
+            _ => {}
+        }
+    }
+
+    /// Self-closing property/marker events: paragraph and run properties, tabs/breaks, note
+    /// references, comment/bookmark range markers, and the fidelity-atom capture for a single
+    /// unmodeled empty element.
+    fn handle_empty(
+        &mut self,
+        e: &BytesStart,
+        doc: &mut DocMut,
+        reg: &StyleRegistry,
+        maps: &RefMaps,
+        raw: &str,
+    ) {
+        match e.name().as_ref() {
+            b"w:p" if self.in_body && self.table_id.is_none() => {
+                self.start_block(doc, "paragraph");
+                self.cur = None;
+            }
+            b"w:pStyle" if self.in_ppr => self.p_style = attr_val(e, b"w:val"),
+            b"w:jc" if self.in_ppr => self.p_align = attr_val(e, b"w:val").map(|v| map_jc(&v)),
+            b"w:spacing" if self.in_ppr => {
+                if let Some(ls) = line_spacing_from_spacing(e) {
+                    self.p_line_spacing = Some(ls);
+                }
+            }
+            b"w:numId" if self.in_numpr => self.p_numid = attr_val(e, b"w:val"),
+            b"w:tab" if self.in_run => self.append(doc, "\t"),
+            b"w:br" | b"w:cr" if self.in_run => self.append(doc, "\n"),
+            b"w:footnoteReference" | b"w:endnoteReference" if self.in_run => {
+                // A note reference: resolve its docx id to a qdoc note id, splice a placeholder, and defer the marker until text is present.
+                let is_foot = e.name().as_ref() == b"w:footnoteReference";
+                let map = if is_foot { maps.foot } else { maps.end };
+                if let Some(docx_id) = attr_val(e, b"w:id")
+                    && let Some(note_id) = map.get(&docx_id)
+                    && let Some(b) = self.cur.clone()
+                {
+                    let idx = self.cur_len;
+                    self.append(doc, &FIELD_PLACEHOLDER.to_string());
+                    self.note_refs.push((b, idx, note_id.clone()));
+                }
+            }
+            b"w:commentRangeStart" if self.in_body && self.cur.is_some() => {
+                // The start of a commented range: remember the char index; the matching `w:commentRangeEnd` records the end.
+                if let Some(docx_id) = attr_val(e, b"w:id")
+                    && let Some(cid) = maps.comment.get(&docx_id)
+                    && let Some(b) = self.cur.clone()
+                {
+                    self.open_comments
+                        .insert(docx_id, (cid.clone(), b, self.cur_len));
+                }
+            }
+            b"w:commentRangeEnd" if self.in_body => {
+                // Closes a commented range: anchor a `comment` mark over `[start, cur_len)`.
+                if let Some(docx_id) = attr_val(e, b"w:id")
+                    && let Some((cid, b, start)) = self.open_comments.remove(&docx_id)
+                {
+                    self.comment_ranges.push((b, start, self.cur_len, cid));
+                }
+            }
+            b"w:bookmarkStart" if self.in_body && self.cur.is_some() => {
+                // Opens a bookmark's range: remember name + start index. Word's built-in `_GoBack` bookmark has no useful name, so it's skipped.
+                if let (Some(id), Some(name), Some(b)) = (
+                    attr_val(e, b"w:id"),
+                    attr_val(e, b"w:name"),
+                    self.cur.clone(),
+                ) && name != "_GoBack"
+                {
+                    self.open_bookmarks.insert(id, (b, self.cur_len, name));
+                }
+            }
+            b"w:bookmarkEnd" if self.in_body => {
+                // Closes a bookmark's range: anchor a `bookmark` mark valued with the name.
+                if let Some(id) = attr_val(e, b"w:id")
+                    && let Some((b, start, name)) = self.open_bookmarks.remove(&id)
+                {
+                    self.bookmark_ranges.push((b, start, self.cur_len, name));
+                }
+            }
+            // `w:commentReference` carries no range info (defined by start/end), so it's ignored.
+            _ if self.in_char_props => {
+                if let Some((k, v)) = mark_from_rpr_child(e) {
+                    self.run_marks.retain(|(k2, _)| k2 != &k);
+                    self.run_marks.push((k, v));
+                } else if e.name().as_ref() == b"w:rStyle"
+                    && let Some(name) = attr_val(e, b"w:val")
+                {
+                    for (k, v) in reg.text_marks(&name) {
+                        self.run_marks.retain(|(k2, _)| k2 != &k);
+                        self.run_marks.push((k, v));
+                    }
+                }
+            }
+            _ if self.in_body && self.cur.is_none() && self.table_id.is_none() => {
+                let id = self.start_block(doc, "fidelity");
+                doc.set_attr(&id, "xml", raw);
+                self.cur = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Closing events: property scope ends, tracked-change/hyperlink/run closes (which anchor
+    /// their deferred marks), and paragraph/table-cell/table-row/table closes.
+    fn handle_end(&mut self, e: &BytesEnd, doc: &mut DocMut, reg: &StyleRegistry) {
+        match e.name().as_ref() {
+            b"w:body" => self.in_body = false,
+            b"w:pPr" if self.table_id.is_none() => {
+                self.in_ppr = false;
+                self.finalize_ppr(doc, reg);
+            }
+            b"w:numPr" => self.in_numpr = false,
+            b"w:rPr" => self.in_char_props = false,
+            b"w:t" | b"w:delText" => self.in_t = false,
+            b"w:ins" | b"w:del" => {
+                // Close the tracked-change wrapper: anchor an `ins`/`del` mark over `[start, cur_len)`.
+                if let Some((cid, kind, block, start)) = self.change.take()
+                    && let Some(b) = block
+                {
+                    self.change_ranges.push((b, start, self.cur_len, kind, cid));
+                }
+            }
+            b"w:r" => {
+                self.in_run = false;
+                let marks = std::mem::take(&mut self.run_marks);
+                if let Some(b) = self.cur.as_ref() {
+                    for (name, value) in marks {
+                        self.pending_marks.push((
+                            b.clone(),
+                            self.run_start,
+                            self.cur_len,
+                            name,
+                            value,
+                        ));
+                    }
+                }
+            }
+            b"w:hyperlink" => {
+                // Close the cross-reference: anchor a `link` mark valued `#name` over `[start, cur_len)`.
+                if let Some((value, block, start)) = self.hyperlink.take()
+                    && let Some(b) = block
+                {
+                    self.cross_refs.push((b, start, self.cur_len, value));
+                }
+            }
+            b"w:p" if self.table_id.is_none() => {
+                self.flush_para_marks();
+                self.cur = None;
+            }
+            b"w:tc" if self.table_id.is_some() => {
+                self.cur = None;
+                self.tcol = self.tcol.saturating_add(1);
+            }
+            b"w:tr" if self.table_id.is_some() => self.trow = self.trow.saturating_add(1),
+            b"w:tbl" => {
+                self.table_id = None;
+                self.cur = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_text(&mut self, t: &BytesText, doc: &mut DocMut) -> Result<(), CodecError> {
+        if self.in_t
+            && let Some(b) = self.cur.as_ref()
+        {
+            let txt = t
+                .xml10_content()
+                .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+            if !txt.is_empty() {
+                doc.splice_text(b, self.cur_len, 0, &txt);
+                self.cur_len = self.cur_len.saturating_add(txt.chars().count());
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies every mark gathered during parsing (runs, paragraph styles, notes, comments,
+    /// bookmarks, tracked changes, cross-references), now that all text is present (exact
+    /// ranges, no expansion). Called once after the event loop ends.
+    fn finish(mut self, doc: &mut DocMut) {
+        for (b, start, end, name, value) in self.pending_marks {
+            if start >= end {
+                continue;
+            }
+            match value {
+                MarkValue::Bool(v) => doc.add_mark(&b, start, end, &name, v),
+                MarkValue::Int(n) => doc.add_mark(&b, start, end, &name, n),
+                MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
+            }
+        }
+        for (b, idx, nid) in self.note_refs {
+            let end = idx.saturating_add(1);
+            doc.add_mark(&b, idx, end, MARK_NOTE_REF, nid.as_str());
+        }
+        // A comment missing its `w:commentRangeEnd` anchors at start, extending to block end.
+        for (_docx_id, (cid, b, start)) in std::mem::take(&mut self.open_comments) {
+            let end = doc_block_len(doc, &b).max(start);
+            self.comment_ranges.push((b, start, end, cid));
+        }
+        // A zero-width comment range can't carry a mark, so it's widened to one character when the block has text after the anchor.
+        for (b, start, mut end, cid) in self.comment_ranges {
+            if end <= start {
+                let blen = doc_block_len(doc, &b);
+                end = start.saturating_add(1).min(blen);
+            }
+            if end > start {
+                doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
+            }
+        }
+        // Tracked-change anchor marks: cover each changed range with the matching `ins`/`del` mark.
+        for (b, start, end, kind, cid) in self.change_ranges {
+            if end > start {
+                doc.add_change_mark(kind, &b, start, end, &cid);
+            }
+        }
+        // A bookmark missing its `w:bookmarkEnd` anchors at start, extending to block end.
+        for (_id, (b, start, name)) in std::mem::take(&mut self.open_bookmarks) {
+            let end = doc_block_len(doc, &b).max(start);
+            self.bookmark_ranges.push((b, start, end, name));
+        }
+        // Bookmark anchor marks: a zero-width (point) range is widened to one character (see `add_bookmark`).
+        for (b, start, end, name) in self.bookmark_ranges {
+            doc.add_bookmark(&b, start, end, &name);
+        }
+        // Cross-reference `link` marks cover each linked range, valued `#target`.
+        for (b, start, end, value) in self.cross_refs {
+            if end > start {
+                doc.add_mark(&b, start, end, crate::schema::MARK_LINK, value.as_str());
+            }
+        }
+    }
+}
+
+pub(crate) fn parse_body(
+    document_xml: &[u8],
+    reg: &StyleRegistry,
+    foot_map: &BTreeMap<String, String>,
+    end_map: &BTreeMap<String, String>,
+    comment_map: &BTreeMap<String, String>,
+    image_map: &BTreeMap<String, Vec<u8>>,
+    doc: &mut DocMut,
+) -> Result<(), CodecError> {
+    let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
+    let mut reader = Reader::from_str(s);
+    let maps = RefMaps {
+        foot: foot_map,
+        end: end_map,
+        comment: comment_map,
+    };
+    let mut st = BodyState::default();
+
+    loop {
+        let pos_before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let ev = reader
+            .read_event()
+            .map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
+        let pos_after = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+
+        if st.handle_capture(s, pos_after, &ev, doc) {
+            continue;
+        }
+        if st.handle_drawing(&ev, doc, image_map) {
             continue;
         }
 
         match ev {
-            Event::Start(e) => match e.name().as_ref() {
-                b"w:body" => in_body = true,
-                // A paragraph (outside a table) opens a block; its kind is refined once `w:pPr` closes.
-                b"w:p" if in_body && table_id.is_none() => {
-                    start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
-                    p_style = None;
-                    p_align = None;
-                    p_numid = None;
-                    p_line_spacing = None;
-                    cur_para_marks.clear();
-                }
-                b"w:pPr" if table_id.is_none() => in_ppr = true,
-                b"w:numPr" if in_ppr => in_numpr = true,
-                // A tracked-change wrapper: create the change record now, remember the start index; the mark applies over `[start, cur_len)` at close.
-                b"w:ins" | b"w:del" if in_body && cur.is_some() => {
-                    let kind = if e.name().as_ref() == b"w:ins" {
-                        crate::snapshot::ChangeKind::Ins
-                    } else {
-                        crate::snapshot::ChangeKind::Del
-                    };
-                    let author = attr_val(&e, b"w:author").unwrap_or_default();
-                    let date = attr_val(&e, b"w:date").unwrap_or_default();
-                    let cid = doc.insert_change(kind, &author, &date);
-                    change = Some((cid, kind, cur.clone(), cur_len));
-                }
-                b"w:hyperlink" if in_body && cur.is_some() => {
-                    // A cross-reference (`w:anchor="name"`): remember target + start index; `r:id`-based external links aren't modeled.
-                    if let Some(anchor) = attr_val(&e, b"w:anchor") {
-                        hyperlink = Some((
-                            format!("{}{anchor}", crate::schema::CROSS_REF_PREFIX),
-                            cur.clone(),
-                            cur_len,
-                        ));
-                    }
-                }
-                b"w:r" if in_body => {
-                    in_run = true;
-                    run_start = cur_len;
-                    run_marks.clear();
-                }
-                b"w:rPr" if in_run => in_rpr = true,
-                // An embedded image: begin collecting size/positioning/blip until `</w:drawing>`.
-                b"w:drawing" if in_body => {
-                    drawing = Some(DrawingState::default());
-                }
-                b"w:t" if in_run => in_t = true,
-                // Deleted text in a `<w:del>` run uses `<w:delText>`; treated like `<w:t>` on import.
-                b"w:delText" if in_run => in_t = true,
-                b"w:tbl" if in_body => {
-                    table_seq += 1;
-                    table_id = Some(format!("t{table_seq}"));
-                    trow = 0;
-                }
-                b"w:tr" if table_id.is_some() => tcol = 0,
-                b"w:tc" if table_id.is_some() => {
-                    if let Some(tid) = table_id.clone() {
-                        let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "cell");
-                        doc.set_attr(&id, "table", tid.as_str());
-                        doc.set_attr(&id, "row", trow as i64);
-                        doc.set_attr(&id, "col", tcol as i64);
-                    }
-                }
-                // Unknown block-level element → capture verbatim as a fidelity atom.
-                _ if in_body && cur.is_none() && table_id.is_none() => {
-                    capture = Some((pos_before, 1));
-                }
-                _ => {}
-            },
-            Event::Empty(e) => match e.name().as_ref() {
-                b"w:p" if in_body && table_id.is_none() => {
-                    start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
-                    cur = None;
-                }
-                b"w:pStyle" if in_ppr => p_style = attr_val(&e, b"w:val"),
-                b"w:jc" if in_ppr => p_align = attr_val(&e, b"w:val").map(|v| map_jc(&v)),
-                b"w:spacing" if in_ppr => {
-                    if let Some(ls) = line_spacing_from_spacing(&e) {
-                        p_line_spacing = Some(ls);
-                    }
-                }
-                b"w:numId" if in_numpr => p_numid = attr_val(&e, b"w:val"),
-                b"w:tab" if in_run => append(doc, &cur, &mut cur_len, "\t"),
-                b"w:br" | b"w:cr" if in_run => append(doc, &cur, &mut cur_len, "\n"),
-                b"w:footnoteReference" | b"w:endnoteReference" if in_run => {
-                    // A note reference: resolve its docx id to a qdoc note id, splice a placeholder, and defer the marker until text is present.
-                    let is_foot = e.name().as_ref() == b"w:footnoteReference";
-                    let map = if is_foot { foot_map } else { end_map };
-                    if let Some(docx_id) = attr_val(&e, b"w:id")
-                        && let Some(note_id) = map.get(&docx_id)
-                        && let Some(b) = cur.clone()
-                    {
-                        let idx = cur_len;
-                        append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
-                        note_refs.push((b, idx, note_id.clone()));
-                    }
-                }
-                b"w:commentRangeStart" if in_body && cur.is_some() => {
-                    // The start of a commented range: remember the char index; the matching `w:commentRangeEnd` records the end.
-                    if let Some(docx_id) = attr_val(&e, b"w:id")
-                        && let Some(cid) = comment_map.get(&docx_id)
-                        && let Some(b) = cur.clone()
-                    {
-                        open_comments.insert(docx_id, (cid.clone(), b, cur_len));
-                    }
-                }
-                b"w:commentRangeEnd" if in_body => {
-                    // Closes a commented range: anchor a `comment` mark over `[start, cur_len)`.
-                    if let Some(docx_id) = attr_val(&e, b"w:id")
-                        && let Some((cid, b, start)) = open_comments.remove(&docx_id)
-                    {
-                        comment_ranges.push((b, start, cur_len, cid));
-                    }
-                }
-                b"w:bookmarkStart" if in_body && cur.is_some() => {
-                    // Opens a bookmark's range: remember name + start index. Word's built-in `_GoBack` bookmark has no useful name, so it's skipped.
-                    if let (Some(id), Some(name), Some(b)) =
-                        (attr_val(&e, b"w:id"), attr_val(&e, b"w:name"), cur.clone())
-                        && name != "_GoBack"
-                    {
-                        open_bookmarks.insert(id, (b, cur_len, name));
-                    }
-                }
-                b"w:bookmarkEnd" if in_body => {
-                    // Closes a bookmark's range: anchor a `bookmark` mark valued with the name.
-                    if let Some(id) = attr_val(&e, b"w:id")
-                        && let Some((b, start, name)) = open_bookmarks.remove(&id)
-                    {
-                        bookmark_ranges.push((b, start, cur_len, name));
-                    }
-                }
-                // `w:commentReference` carries no range info (defined by start/end), so it's ignored.
-                _ if in_rpr => {
-                    if let Some((k, v)) = mark_from_rpr_child(&e) {
-                        run_marks.retain(|(k2, _)| k2 != &k);
-                        run_marks.push((k, v));
-                    } else if e.name().as_ref() == b"w:rStyle"
-                        && let Some(name) = attr_val(&e, b"w:val")
-                    {
-                        for (k, v) in reg.text_marks(&name) {
-                            run_marks.retain(|(k2, _)| k2 != &k);
-                            run_marks.push((k, v));
-                        }
-                    }
-                }
-                _ if in_body && cur.is_none() && table_id.is_none() => {
-                    let raw = s[pos_before..reader.buffer_position() as usize].to_string();
-                    let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
-                    doc.set_attr(&id, "xml", raw.as_str());
-                    cur = None;
-                }
-                _ => {}
-            },
-            Event::End(e) => match e.name().as_ref() {
-                b"w:body" => in_body = false,
-                b"w:pPr" if table_id.is_none() => {
-                    in_ppr = false;
-                    finalize_ppr!();
-                }
-                b"w:numPr" => in_numpr = false,
-                b"w:rPr" => in_rpr = false,
-                b"w:t" => in_t = false,
-                b"w:delText" => in_t = false,
-                b"w:ins" | b"w:del" => {
-                    // Close the tracked-change wrapper: anchor an `ins`/`del` mark over `[start, cur_len)`.
-                    if let Some((cid, kind, block, start)) = change.take()
-                        && let Some(b) = block
-                    {
-                        change_ranges.push((b, start, cur_len, kind, cid));
-                    }
-                }
-                b"w:r" => {
-                    in_run = false;
-                    if let Some(b) = cur.as_ref() {
-                        for (name, value) in run_marks.drain(..) {
-                            pending_marks.push((b.clone(), run_start, cur_len, name, value));
-                        }
-                    }
-                    run_marks.clear();
-                }
-                b"w:hyperlink" => {
-                    // Close the cross-reference: anchor a `link` mark valued `#name` over `[start, cur_len)`.
-                    if let Some((value, block, start)) = hyperlink.take()
-                        && let Some(b) = block
-                    {
-                        cross_refs.push((b, start, cur_len, value));
-                    }
-                }
-                b"w:p" if table_id.is_none() => {
-                    flush_para_marks!();
-                    cur = None;
-                }
-                b"w:tc" if table_id.is_some() => {
-                    cur = None;
-                    tcol += 1;
-                }
-                b"w:tr" if table_id.is_some() => trow += 1,
-                b"w:tbl" => {
-                    table_id = None;
-                    cur = None;
-                }
-                _ => {}
-            },
-            Event::Text(t) => {
-                if in_t && let Some(b) = cur.as_ref() {
-                    let txt = t
-                        .xml10_content()
-                        .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
-                    if !txt.is_empty() {
-                        doc.splice_text(b, cur_len, 0, &txt);
-                        cur_len += txt.chars().count();
-                    }
-                }
+            Event::Start(e) => st.handle_start(&e, doc, pos_before),
+            Event::Empty(e) => {
+                let raw = s.get(pos_before..pos_after).unwrap_or_default();
+                st.handle_empty(&e, doc, reg, &maps, raw);
             }
+            Event::End(e) => st.handle_end(&e, doc, reg),
+            Event::Text(t) => st.handle_text(&t, doc)?,
             Event::Eof => break,
             _ => {}
         }
     }
 
-    // Apply marks now that all text is present (exact ranges, no expansion).
-    for (b, start, end, name, value) in pending_marks {
-        if start >= end {
-            continue;
-        }
-        match value {
-            MarkValue::Bool(v) => doc.add_mark(&b, start, end, &name, v),
-            MarkValue::Int(n) => doc.add_mark(&b, start, end, &name, n),
-            MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
-        }
-    }
-    for (b, idx, nid) in note_refs {
-        doc.add_mark(&b, idx, idx + 1, MARK_NOTE_REF, nid.as_str());
-    }
-    // A comment missing its `w:commentRangeEnd` anchors at start, extending to block end.
-    for (_docx_id, (cid, b, start)) in std::mem::take(&mut open_comments) {
-        let end = doc_block_len(doc, &b).max(start);
-        comment_ranges.push((b, start, end, cid));
-    }
-    // A zero-width comment range can't carry a mark, so it's widened to one character when the block has text after the anchor.
-    for (b, start, mut end, cid) in comment_ranges {
-        if end <= start {
-            let blen = doc_block_len(doc, &b);
-            end = (start + 1).min(blen);
-        }
-        if end > start {
-            doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
-        }
-    }
-    // Tracked-change anchor marks: cover each changed range with the matching `ins`/`del` mark.
-    for (b, start, end, kind, cid) in change_ranges {
-        if end > start {
-            doc.add_change_mark(kind, &b, start, end, &cid);
-        }
-    }
-    // A bookmark missing its `w:bookmarkEnd` anchors at start, extending to block end.
-    for (_id, (b, start, name)) in std::mem::take(&mut open_bookmarks) {
-        let end = doc_block_len(doc, &b).max(start);
-        bookmark_ranges.push((b, start, end, name));
-    }
-    // Bookmark anchor marks: a zero-width (point) range is widened to one character (see `add_bookmark`).
-    for (b, start, end, name) in bookmark_ranges {
-        doc.add_bookmark(&b, start, end, &name);
-    }
-    // Cross-reference `link` marks cover each linked range, valued `#target`.
-    for (b, start, end, value) in cross_refs {
-        if end > start {
-            doc.add_mark(&b, start, end, crate::schema::MARK_LINK, value.as_str());
-        }
-    }
+    st.finish(doc);
     Ok(())
 }
 
