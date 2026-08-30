@@ -709,11 +709,18 @@ fn enter_from_left(node: &Node) -> Option<Slot> {
     match node {
         Node::Frac { .. } => Some(Slot::Num),
         Node::Sup { .. } => Some(Slot::Exp),
+        Node::Sub { .. } => Some(Slot::Sub),
+        Node::SubSup { .. } => Some(Slot::Sup),
         Node::Sqrt { index: Some(_), .. } => Some(Slot::Index),
         Node::Sqrt { index: None, .. } => Some(Slot::Radicand),
         Node::Paren { .. } => Some(Slot::Body),
         Node::Func { .. } => Some(Slot::Arg),
-        Node::Char(_) => None,
+        Node::UnderOver { .. } => Some(Slot::Base),
+        Node::Table { rows } if rows.first().is_some_and(|row| !row.is_empty()) => {
+            Some(Slot::Cell(0, 0))
+        }
+        Node::Table { .. } => None,
+        Node::Char(_) | Node::Text(_) => None,
     }
 }
 
@@ -722,10 +729,20 @@ fn enter_from_right(node: &Node) -> Option<Slot> {
     match node {
         Node::Frac { .. } => Some(Slot::Den),
         Node::Sup { .. } => Some(Slot::Exp),
+        Node::Sub { .. } => Some(Slot::Sub),
+        Node::SubSup { .. } => Some(Slot::Sub),
         Node::Sqrt { .. } => Some(Slot::Radicand),
         Node::Paren { .. } => Some(Slot::Body),
         Node::Func { .. } => Some(Slot::Arg),
-        Node::Char(_) => None,
+        Node::UnderOver { .. } => Some(Slot::Base),
+        Node::Table { rows } => rows.iter().enumerate().rev().find_map(|(row, cells)| {
+            let column = cells.len().checked_sub(1)?;
+            Some(Slot::Cell(
+                u16::try_from(row).ok()?,
+                u16::try_from(column).ok()?,
+            ))
+        }),
+        Node::Char(_) | Node::Text(_) => None,
     }
 }
 
@@ -739,6 +756,12 @@ fn flatten_node(node: &Node) -> Row {
             r
         }
         Node::Sup { exp } => exp.clone(),
+        Node::Sub { sub } => sub.clone(),
+        Node::SubSup { sub, sup } => {
+            let mut row = sub.clone();
+            row.extend(sup.clone());
+            row
+        }
         Node::Sqrt { index, radicand } => {
             let mut r = index.clone().unwrap_or_default();
             r.extend(radicand.clone());
@@ -746,5 +769,16 @@ fn flatten_node(node: &Node) -> Row {
         }
         Node::Paren { body } => body.clone(),
         Node::Func { arg, .. } => arg.clone(),
+        Node::Text(_) => vec![node.clone()],
+        Node::UnderOver { base, under, over } => {
+            let mut row = base.clone();
+            row.extend(under.clone().unwrap_or_default());
+            row.extend(over.clone().unwrap_or_default());
+            row
+        }
+        Node::Table { rows } => rows
+            .iter()
+            .flat_map(|cells| cells.iter().flat_map(|cell| cell.clone()))
+            .collect(),
     }
 }
