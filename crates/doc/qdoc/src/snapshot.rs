@@ -124,6 +124,10 @@ impl ChangeKind {
         }
     }
     /// Parse a schema string back into a [`ChangeKind`] (`del` → `Del`, anything else → `Ins`, the default).
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "returns Self infallibly by design, not std::str::FromStr's fallible contract"
+    )]
     pub fn from_str(s: &str) -> Self {
         if s == "del" {
             ChangeKind::Del
