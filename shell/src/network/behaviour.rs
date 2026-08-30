@@ -31,9 +31,20 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 /// Machine-wide device key used by the compositor, filesystem and host.
 pub const DEVICE_KEY_PATH: &str = "/var/lib/qos/device/keypair.bin";
 
+/// Pre-device-key location used by the libp2p compositor. It is read only
+/// during a one-way migration into [`DEVICE_KEY_PATH`].
+pub const LEGACY_PEER_KEY_PATH: &str = "/var/lib/qos-fs/peer-key";
+
 /// Load the device key, creating it only when the path is genuinely absent.
 /// Malformed, unreadable or over-permissive files are never replaced.
 pub fn load_or_create_keypair(path: &std::path::Path) -> std::io::Result<iroh::SecretKey> {
+    load_or_create_keypair_with_legacy(path, std::path::Path::new(LEGACY_PEER_KEY_PATH))
+}
+
+fn load_or_create_keypair_with_legacy(
+    path: &std::path::Path,
+    legacy_path: &std::path::Path,
+) -> std::io::Result<iroh::SecretKey> {
     let canonical_paths = qos_user_identity::IdentityPaths::under(
         path.parent()
             .and_then(std::path::Path::parent)
@@ -41,11 +52,23 @@ pub fn load_or_create_keypair(path: &std::path::Path) -> std::io::Result<iroh::S
     );
 
     let signing = if path == canonical_paths.device_privkey {
-        qos_user_identity::load_or_create_device_key(&canonical_paths)
-            .map(|(key, _)| key)
-            .map_err(persist_error)?
+        if !path.try_exists()? && legacy_path.try_exists()? {
+            migrate_legacy_path(&canonical_paths, legacy_path)?
+        } else {
+            match qos_user_identity::load_or_create_device_key(&canonical_paths) {
+                Ok((key, _)) => key,
+                Err(qos_user_identity::PersistError::WrongKeyLength(_)) => {
+                    migrate_protobuf_key(path)?
+                }
+                Err(error) => return Err(persist_error(error)),
+            }
+        }
     } else if path.exists() {
-        qos_user_identity::persist::read_device_key(path).map_err(persist_error)?
+        match qos_user_identity::persist::read_device_key(path) {
+            Ok(key) => key,
+            Err(qos_user_identity::PersistError::WrongKeyLength(_)) => migrate_protobuf_key(path)?,
+            Err(error) => return Err(persist_error(error)),
+        }
     } else {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -55,6 +78,68 @@ pub fn load_or_create_keypair(path: &std::path::Path) -> std::io::Result<iroh::S
         key
     };
     Ok(iroh::SecretKey::from_bytes(&signing.to_bytes()))
+}
+
+fn migrate_legacy_path(
+    paths: &qos_user_identity::IdentityPaths,
+    legacy_path: &std::path::Path,
+) -> std::io::Result<ed25519_dalek::SigningKey> {
+    let bytes = std::fs::read(legacy_path)?;
+    let seed = seed_from_libp2p_protobuf(&bytes).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} is not an Ed25519 libp2p private key; refusing to replace device identity",
+                legacy_path.display()
+            ),
+        )
+    })?;
+    qos_user_identity::persist::adopt_device_key(paths, &seed).map_err(persist_error)
+}
+
+fn migrate_protobuf_key(path: &std::path::Path) -> std::io::Result<ed25519_dalek::SigningKey> {
+    let bytes = std::fs::read(path)?;
+    let seed = seed_from_libp2p_protobuf(&bytes).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} is neither a 32-byte device key nor an Ed25519 libp2p private key; refusing to replace it",
+                path.display()
+            ),
+        )
+    })?;
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    qos_user_identity::persist::write_device_key(path, &signing)?;
+    Ok(signing)
+}
+
+/// Decode the only legacy private-key shape qOS ever generated:
+/// protobuf `PrivateKey { Type: Ed25519, Data: secret || public }`.
+/// Keeping this tiny decoder local avoids retaining libp2p just for migration.
+fn seed_from_libp2p_protobuf(bytes: &[u8]) -> Option<[u8; 32]> {
+    const HEADER: &[u8] = &[0x08, 0x01, 0x12, 0x40];
+    if bytes.len() != HEADER.len() + 64 || !bytes.starts_with(HEADER) {
+        return None;
+    }
+    let keypair: [u8; 64] = bytes[HEADER.len()..].try_into().ok()?;
+    let seed: [u8; 32] = keypair[..32].try_into().ok()?;
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    if signing.verifying_key().to_bytes() != keypair[32..] {
+        return None;
+    }
+    Some(seed)
+}
+
+/// Convert an Ed25519 libp2p PeerId to the Iroh endpoint that uses the same
+/// public key. Only inline-public-key PeerIds are accepted.
+pub fn endpoint_from_legacy_peer_id(text: &str) -> Option<iroh::EndpointId> {
+    let bytes = bs58::decode(text).into_vec().ok()?;
+    const PREFIX: &[u8] = &[0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+    if bytes.len() != PREFIX.len() + 32 || !bytes.starts_with(PREFIX) {
+        return None;
+    }
+    let public: [u8; 32] = bytes[PREFIX.len()..].try_into().ok()?;
+    iroh::EndpointId::from_bytes(&public).ok()
 }
 
 fn persist_error(error: qos_user_identity::PersistError) -> std::io::Error {
@@ -95,6 +180,56 @@ mod tests {
             std::io::ErrorKind::InvalidData
         );
         assert_eq!(std::fs::read(path).unwrap(), b"not a key");
+    }
+
+    fn legacy_protobuf(seed: [u8; 32]) -> Vec<u8> {
+        let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let mut bytes = vec![0x08, 0x01, 0x12, 0x40];
+        bytes.extend_from_slice(&seed);
+        bytes.extend_from_slice(&signing.verifying_key().to_bytes());
+        bytes
+    }
+
+    #[test]
+    fn protobuf_device_key_is_migrated_in_place() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("device/keypair.bin");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, legacy_protobuf([7; 32])).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let key = load_or_create_keypair_with_legacy(&path, &dir.path().join("unused")).unwrap();
+        assert_eq!(key.to_bytes(), [7; 32]);
+        assert_eq!(std::fs::read(path).unwrap(), [7; 32]);
+    }
+
+    #[test]
+    fn legacy_path_is_adopted_when_device_key_is_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("device/keypair.bin");
+        let legacy = dir.path().join("qos-fs/peer-key");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, legacy_protobuf([8; 32])).unwrap();
+
+        let key = load_or_create_keypair_with_legacy(&path, &legacy).unwrap();
+        assert_eq!(key.to_bytes(), [8; 32]);
+        assert_eq!(std::fs::read(path).unwrap(), [8; 32]);
+    }
+
+    #[test]
+    fn legacy_peer_id_maps_to_same_iroh_public_key() {
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut peer_id = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+        peer_id.extend_from_slice(&signing.verifying_key().to_bytes());
+        let peer_id = bs58::encode(peer_id).into_string();
+        assert_eq!(
+            endpoint_from_legacy_peer_id(&peer_id),
+            Some(iroh::SecretKey::from_bytes(&[9; 32]).public())
+        );
     }
 
     #[test]

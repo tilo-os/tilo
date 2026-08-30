@@ -204,13 +204,48 @@ pub fn verify_hello_ack(
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
+    verify_hello_ack_inner(
+        ack,
+        Some(own_user_public_key),
+        revocations,
+        now_ns,
+        challenge_client_nonce,
+    )
+}
+
+/// Verify a server reached through an already-pinned Iroh endpoint without
+/// requiring it to share the client's user root. This is the hosted-service
+/// path: Iroh authenticates the endpoint from `EndpointAddr`, while this
+/// handshake verifies that the server owns the device key in its valid cert.
+pub fn verify_pinned_host_ack(
+    ack: &HelloAck,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<AuthenticatedPeer, AuthError> {
+    verify_hello_ack_inner(ack, None, revocations, now_ns, challenge_client_nonce)
+}
+
+fn verify_hello_ack_inner(
+    ack: &HelloAck,
+    expected_user_public_key: Option<&[u8; 32]>,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<AuthenticatedPeer, AuthError> {
     verify_device_cert_at(&ack.cert, now_ns)?;
+    if !ack.cert.capabilities.can_act_as_host {
+        return Err(AuthError::PolicyReject);
+    }
     if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
         return Err(AuthError::Revoked);
     }
-    // From the client's perspective, the server must chain to the
-    // client's user identity — the "matching user" trust policy.
-    if &ack.cert.user_public_key != own_user_public_key {
+    // A same-owner client pins the expected user root. A hosted-service
+    // client instead pins the Iroh EndpointAddr and accepts any valid server
+    // root, while still requiring proof of the certified device key.
+    if let Some(expected) = expected_user_public_key
+        && &ack.cert.user_public_key != expected
+    {
         return Err(AuthError::PolicyReject);
     }
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
@@ -452,6 +487,29 @@ mod tests {
             AuthError::PolicyReject
         ));
         let _ = alice_root;
+    }
+
+    #[test]
+    fn client_rejects_pinned_server_without_host_capability() {
+        let (root, user) = UserIdentity::generate("Provider", 1);
+        let ordinary_device = enrol(
+            &root,
+            user.public_key,
+            "ordinary device",
+            DeviceCapabilities::member(),
+        );
+        let client_nonce = [8u8; 32];
+        let ack = build_hello_ack(
+            ordinary_device.cert,
+            &ordinary_device.sk,
+            [9u8; 32],
+            &client_nonce,
+        );
+
+        assert!(matches!(
+            verify_pinned_host_ack(&ack, &RevocationList::new(), 1000, &client_nonce,).unwrap_err(),
+            AuthError::PolicyReject
+        ));
     }
 
     #[test]

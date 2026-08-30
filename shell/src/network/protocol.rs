@@ -123,7 +123,7 @@ pub enum NeighbourMsg {
     /// `peer` was granted permission `capability`.
     PermissionGrant { peer: PeerId, capability: String },
     /// Periodic liveness beacon — Actor publishes one per joined workspace every
-    /// 5s; receivers evict peers silent for 15s. `peer` is the hashed Iroh
+    /// 5s; direct peers are evicted after 15s without any traffic. `peer` is the hashed Iroh
     /// `PeerId`; `ts` is unix-millis.
     Heartbeat { peer: PeerId, ts: u64 },
     /// App-level CRDT incremental — bridges app-side Automerge change blobs from

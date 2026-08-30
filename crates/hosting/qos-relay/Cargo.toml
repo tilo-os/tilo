@@ -73,6 +73,7 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 blake3.workspace = true
 hex.workspace = true
+uuid.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["full"] }
