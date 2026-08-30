@@ -55,6 +55,7 @@ fn button_uses_token_radius() {
         reduce_motion: false,
         text_scale: 1.0,
         ui_scale: 1.0,
+        caret_width: 2.0,
         tokens: t,
     };
     // A scene is required to draw; just assert the legacy shortcut mirrors the token.
