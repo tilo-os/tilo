@@ -55,6 +55,10 @@ pub struct InstalledApp {
     /// "which app owns `.odt`": installing an app is what teaches the
     /// desktop its file types.
     pub opens_extensions: Vec<String>,
+    /// Concrete normalized MIME claims from `[providers].mime`.
+    pub opens_mime_types: Vec<String>,
+    /// Normalized URI schemes from `[providers].schemes`.
+    pub opens_uri_schemes: Vec<String>,
 }
 
 impl InstalledApp {
@@ -63,6 +67,22 @@ impl InstalledApp {
     pub fn opens_extension(&self, ext: &str) -> bool {
         let want = ext.trim().trim_start_matches('.').to_ascii_lowercase();
         !want.is_empty() && self.opens_extensions.contains(&want)
+    }
+
+    pub fn opens_mime(&self, mime: &str) -> bool {
+        desktop_policy::ResourceKind::mime(mime).is_ok_and(|resource| {
+            resource
+                .mime_name()
+                .is_some_and(|mime| self.opens_mime_types.iter().any(|claim| claim == mime))
+        })
+    }
+
+    pub fn opens_scheme(&self, scheme: &str) -> bool {
+        desktop_policy::ResourceKind::scheme(scheme).is_ok_and(|resource| {
+            resource
+                .scheme_name()
+                .is_some_and(|scheme| self.opens_uri_schemes.iter().any(|claim| claim == scheme))
+        })
     }
 }
 
@@ -373,6 +393,8 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
             has_gui: manifest.entrypoint.gui_bin().is_some()
                 && manifest.kind == launcher::manifest::KIND_APP,
             opens_extensions: manifest.opens_ext.clone(),
+            opens_mime_types: manifest.opens_mime.clone(),
+            opens_uri_schemes: manifest.opens_schemes.clone(),
         });
     }
     Ok(out)
@@ -410,9 +432,8 @@ pub fn gui_apps() -> Vec<InstalledApp> {
     apps
 }
 
-/// Two packages can claim the same extension; the tie breaks by display
-/// name for a stable-across-boots answer. A user-visible default-app
-/// preference is the real long-term fix; this is the deterministic stand-in.
+/// Two packages can claim the same extension; the shared policy resolver uses
+/// personal/workspace defaults and a deterministic display-name fallback.
 pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
     app_for_extension_with_policy(ext, "", None)
 }
@@ -426,14 +447,39 @@ pub fn app_for_extension_with_policy(
     user_id: &str,
     workspace: Option<&desktop_policy::WorkspaceDefaults>,
 ) -> Option<InstalledApp> {
+    let resource = desktop_policy::ResourceKind::extension(ext).ok()?;
+    app_for_resource_with_policy(&resource, user_id, workspace)
+}
+
+pub fn app_for_resource_with_policy(
+    resource: &desktop_policy::ResourceKind,
+    user_id: &str,
+    workspace: Option<&desktop_policy::WorkspaceDefaults>,
+) -> Option<InstalledApp> {
     let apps = gui_apps();
     let candidates = default_app_candidates_from(&apps);
-    let resource = desktop_policy::ResourceKind::extension(ext).ok()?;
     let personal = desktop_policy::PersonalDefaults::load();
     let selected = desktop_policy::DefaultAppResolver::new(&candidates)
-        .resolve(&resource, user_id, &personal, workspace)?;
+        .resolve(resource, user_id, &personal, workspace)?;
     apps.into_iter()
         .find(|app| app.package_id == selected.package_id)
+}
+
+/// Re-read the installed registry and manifest immediately before launch.
+/// Picker state and the two-second application cache are never authority for
+/// executing a resource handler: an uninstalled app or a claim removed by an
+/// upgrade fails closed here.
+pub fn revalidate_resource_claim(
+    package_id: &str,
+    resource: &desktop_policy::ResourceKind,
+) -> bool {
+    let Ok(apps) = read_installed_apps() else {
+        return false;
+    };
+    let candidates = default_app_candidates_from(&apps);
+    desktop_policy::DefaultAppResolver::new(&candidates)
+        .validate_app(resource, package_id)
+        .is_ok()
 }
 
 pub fn default_app_candidates() -> Vec<desktop_policy::AppCandidate> {
@@ -449,6 +495,16 @@ fn default_app_candidates_from(apps: &[InstalledApp]) -> Vec<desktop_policy::App
                 .opens_extensions
                 .iter()
                 .filter_map(|ext| desktop_policy::ResourceKind::extension(ext).ok())
+                .chain(
+                    app.opens_mime_types
+                        .iter()
+                        .filter_map(|mime| desktop_policy::ResourceKind::mime(mime).ok()),
+                )
+                .chain(
+                    app.opens_uri_schemes
+                        .iter()
+                        .filter_map(|scheme| desktop_policy::ResourceKind::scheme(scheme).ok()),
+                )
                 .collect(),
         })
         .collect()
@@ -527,6 +583,28 @@ pub fn build_launch_command(
     render_node: Option<&Path>,
     document: Option<&Path>,
 ) -> LaunchCommand {
+    build_launch_command_for(
+        app,
+        launcher_bin,
+        wayland_socket,
+        room,
+        capabilities_file,
+        render_node,
+        document,
+        None,
+    )
+}
+
+fn build_launch_command_for(
+    app: &InstalledApp,
+    launcher_bin: &Path,
+    wayland_socket: &Path,
+    room: RoomId,
+    capabilities_file: Option<&Path>,
+    render_node: Option<&Path>,
+    document: Option<&Path>,
+    uri: Option<&str>,
+) -> LaunchCommand {
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -553,6 +631,10 @@ pub fn build_launch_command(
     if let Some(path) = document {
         args.push("--open".to_string());
         args.push(path.display().to_string());
+    }
+    if let Some(uri) = uri {
+        args.push("--open-uri".to_string());
+        args.push(uri.to_string());
     }
     // Service sockets are resolved by the launcher against
     // `$XDG_RUNTIME_DIR/qos/services`; a required-but-absent one fails loudly.
@@ -584,20 +666,33 @@ pub fn launch_with_document(
     room: RoomId,
     document: Option<&Path>,
 ) -> Result<InstalledApp, LaunchError> {
-    launch_with_context(package_id, room, document, None)
+    launch_with_context(package_id, room, document, None, None)
+}
+
+/// Launch an installed GUI application with one opaque URI argument. The
+/// resource dispatcher must validate the scheme claim immediately before
+/// calling this; this layer only guarantees the value is not interpreted as a
+/// program or split into additional arguments.
+pub fn launch_with_uri(
+    package_id: &str,
+    room: RoomId,
+    uri: &str,
+) -> Result<InstalledApp, LaunchError> {
+    launch_with_context(package_id, room, None, Some(uri), None)
 }
 
 /// Launch the only package owned by a typed tool intent and pass that exact
 /// context through the trusted launcher. The request format cannot smuggle an
 /// executable, package id, or extra arguments into this path.
 pub fn launch_tool_intent(intent: &ToolIntent, room: RoomId) -> Result<InstalledApp, LaunchError> {
-    launch_with_context(intent.package_id(), room, None, Some(intent))
+    launch_with_context(intent.package_id(), room, None, None, Some(intent))
 }
 
 fn launch_with_context(
     package_id: &str,
     room: RoomId,
     document: Option<&Path>,
+    uri: Option<&str>,
     tool_intent: Option<&ToolIntent>,
 ) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
@@ -630,7 +725,7 @@ fn launch_with_context(
         }
     };
 
-    let mut command = build_launch_command(
+    let mut command = build_launch_command_for(
         &app,
         &launcher_bin,
         &socket,
@@ -638,6 +733,7 @@ fn launch_with_context(
         capabilities_file.as_deref(),
         crate::compositor::render_node::resolved(),
         document,
+        uri,
     );
     if let Some(intent) = tool_intent {
         // Validation happens at the service boundary too; repeat it here so
@@ -677,6 +773,15 @@ pub fn launch_document_in_workspace(
 ) -> Result<InstalledApp, LaunchError> {
     set_workspace_capabilities(workspace.capabilities.clone());
     launch_with_document(package_id, workspace.room, document)
+}
+
+pub fn launch_uri_in_workspace(
+    package_id: &str,
+    workspace: &Workspace,
+    uri: &str,
+) -> Result<InstalledApp, LaunchError> {
+    set_workspace_capabilities(workspace.capabilities.clone());
+    launch_with_uri(package_id, workspace.room, uri)
 }
 
 /// Run `command` on a worker thread and report the outcome through
@@ -1093,6 +1198,8 @@ mod tests {
             payload_root: PathBuf::from("/apps/hello"),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         };
         let cmd = build_launch_command(
             &app,
@@ -1138,6 +1245,8 @@ mod tests {
             payload_root: PathBuf::from("/apps/hello"),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         };
         let cmd = build_launch_command(
             &app,
@@ -1337,6 +1446,8 @@ mod tests {
             payload_root: PathBuf::new(),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         });
         // full package id, trailing component, case-insensitivity
         assert_eq!(
@@ -1367,6 +1478,8 @@ mod tests {
             payload_root: PathBuf::from("/apps/x"),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         }
     }
 

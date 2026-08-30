@@ -77,6 +77,7 @@ pub mod tile;
 pub mod tool_intents;
 pub mod topbar;
 pub mod topbar_chrome;
+pub mod uri_open;
 pub mod window_actions;
 pub mod workspace_drop;
 pub mod workspace_settings;

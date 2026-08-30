@@ -46,7 +46,11 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     let args: Vec<String> = std::env::args().collect();
-    let open = parse_value_arg(&args, "--open").map(PathBuf::from);
+    let open = parse_value_arg(&args, "--open")
+        .map(PathBuf::from)
+        .or_else(|| {
+            (args.len() == 2 && !args[1].starts_with('-')).then(|| PathBuf::from(&args[1]))
+        });
 
     if let Some(out) = parse_value_arg(&args, "--shots").map(PathBuf::from) {
         let viewport = parse_value_arg(&args, "--viewport")
