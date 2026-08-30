@@ -59,6 +59,19 @@ const ARROW_SIZE_PX: f64 = 4.0;
 const FALLBACK_BODY_W: f64 = 96.0;
 const FALLBACK_BODY_H: f64 = 32.0;
 
+/// Narrows a layout/measurement value to `f32` for taffy. Every call site
+/// is a pixel size or offset for this popover's own body, always many
+/// orders of magnitude below `f32::MAX`, so the truncation the lint warns
+/// about can't actually occur here.
+#[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen-space pixel values in this widget never approach f32::MAX"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
+}
+
 /// Anchored, dismissible overlay panel, generic over its content widget
 /// so callers can stuff arbitrary trees inside (menu rows, color
 /// pickers, form bodies, etc.).
@@ -100,6 +113,7 @@ impl<C: Widget> PopoverWidget<C> {
 
     /// Set the popover's open state. When `false`, the widget paints
     /// nothing and ignores input events.
+    #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
         self
@@ -107,6 +121,7 @@ impl<C: Widget> PopoverWidget<C> {
 
     /// Register an outside-click dismiss callback. Called once per
     /// outside `MouseInput { Pressed, Left }` while the popover is open.
+    #[must_use]
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_dismiss = Some(Box::new(f));
         self
@@ -115,6 +130,7 @@ impl<C: Widget> PopoverWidget<C> {
     /// Override the viewport used for the flip resolver. Default is
     /// "infinite"; callers that want flip-on-clip semantics MUST pass the
     /// real viewport (typically the host window's inner rect).
+    #[must_use]
     pub fn with_viewport(mut self, viewport: Rect) -> Self {
         self.viewport = viewport;
         self
@@ -229,8 +245,8 @@ impl<C: Widget> PopoverWidget<C> {
         let _ = inner_taffy.compute_layout_with_measure(
             content_node,
             taffy::Size {
-                width: taffy::AvailableSpace::Definite(inner.width() as f32),
-                height: taffy::AvailableSpace::Definite(inner.height() as f32),
+                width: taffy::AvailableSpace::Definite(px(inner.width())),
+                height: taffy::AvailableSpace::Definite(px(inner.height())),
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = inner_map.get(&node_id) {
@@ -498,7 +514,7 @@ mod tests {
                 },
                 ..Default::default()
             });
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
 
@@ -515,8 +531,8 @@ mod tests {
             self.rect = Rect::new(
                 origin.x,
                 origin.y,
-                origin.x + self.intrinsic.width as f64,
-                origin.y + self.intrinsic.height as f64,
+                origin.x + f64::from(self.intrinsic.width),
+                origin.y + f64::from(self.intrinsic.height),
             );
         }
 
@@ -553,7 +569,7 @@ mod tests {
         ) {
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "TestContent"
         }
 
@@ -589,7 +605,7 @@ mod tests {
     #[test]
     fn popover_anchored_below_positions_under_anchor() {
         let theme = Theme::dark();
-        let gap = theme.tokens.spacing.s2 as f64;
+        let gap = f64::from(theme.tokens.spacing.s2);
         let anchor = Rect::new(100.0, 100.0, 200.0, 130.0);
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let mut p = PopoverWidget::new(anchor, TestContent::new(120.0, 80.0), PopoverSide::Below)
