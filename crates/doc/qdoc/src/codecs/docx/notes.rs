@@ -36,22 +36,22 @@ pub(super) fn import_notes_part(
     // Per-note capture: the docx id, its raw-XML start byte, and the open depth.
     let mut capture: Option<(String, usize, i32)> = None;
     loop {
-        let pos_before = reader.buffer_position() as usize;
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
+        let pos_before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let Ok(ev) = reader.read_event() else {
+            break;
         };
         // Advance / close an in-progress note capture.
         if let Some((id, start, depth)) = capture.as_mut() {
             match &ev {
-                Event::Start(_) => *depth += 1,
+                Event::Start(_) => *depth = depth.saturating_add(1),
                 Event::End(_) => {
-                    *depth -= 1;
+                    *depth = depth.saturating_sub(1);
                     if *depth == 0 {
-                        let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        if let Some(note_id) = import_one_note(&raw, kind, doc) {
-                            map.insert(id.clone(), note_id);
-                        }
+                        let pos_after =
+                            usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+                        let raw = s.get(*start..pos_after).unwrap_or_default().to_string();
+                        let note_id = import_one_note(&raw, kind, doc);
+                        map.insert(id.clone(), note_id);
                         capture = None;
                     }
                 }
@@ -78,7 +78,7 @@ pub(super) fn import_notes_part(
 
 /// Parse one verbatim `<w:footnote>/<w:endnote>` element into a fresh note: each `w:p`
 /// becomes a paragraph block, `w:t` runs are text.
-fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String> {
+fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> String {
     let note_id = doc.insert_note(kind);
     let mut reader = Reader::from_str(raw);
     let mut prev: Option<String> = None;
@@ -101,15 +101,11 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String
             && !txt.is_empty()
         {
             doc.splice_note_text(&note_id, b, *cur_len, 0, txt);
-            *cur_len += txt.chars().count();
+            *cur_len = cur_len.saturating_add(txt.chars().count());
         }
     };
 
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"w:p" => open_block(doc, &mut prev, &mut cur, &mut cur_len),
@@ -137,7 +133,7 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String
             _ => {}
         }
     }
-    Some(note_id)
+    note_id
 }
 
 fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
@@ -237,15 +233,15 @@ fn collect_kind<'a>(
 ) -> Vec<ExportNote<'a>> {
     let want = kind.as_str();
     let mut out = Vec::new();
-    let mut next = 1i64;
-    for n in notes.iter().filter(|n| n.kind == want) {
+    for (i, n) in notes.iter().filter(|n| n.kind == want).enumerate() {
+        // Footnote/endnote ids are 1-based.
+        let next = i64::try_from(i).unwrap_or(i64::MAX).saturating_add(1);
         id_map.insert(n.id.clone(), next);
         kind_map.insert(n.id.clone(), kind);
         out.push(ExportNote {
             docx_id: next,
             note: n,
         });
-        next += 1;
     }
     out
 }
