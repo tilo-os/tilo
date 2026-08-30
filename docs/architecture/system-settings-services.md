@@ -70,8 +70,10 @@ printer which answered but omitted supplies. Settings says "not reported" or
   package IDs. The compositor applies them using launcher-attributed callers,
   never the sender-controlled freedesktop `app_name`.
 - priority is a user decision; temporary mutes are absolute deadlines. Priority
-  contacts remain unavailable until there is a verified Contacts identity
-  source.
+  contacts come from a launcher-verified Contacts projection containing only
+  salted endpoint digests. Communication apps require a separate per-app grant
+  before a matching contact may pierce focus mode; the authorized app remains
+  trusted for its sender assertion until transports are OS-owned.
 - accessibility controls are writable only when a compositor or service applies
   them. The compositor owns grayscale/invert output filters, the pointer-centred
   magnifier lens, pointer guides, large cursor, sticky/slow keys and configurable
