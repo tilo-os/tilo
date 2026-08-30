@@ -2379,6 +2379,77 @@ fn autoconfig_lookup(_email: &str) -> Option<crate::autoconfig::Autoconfig> {
 
 // =============================== Widget impl ===============================
 
+impl MailApp {
+    /// Step 1 of [`Widget::handle_event`]: the compose window is modal while
+    /// open — route the event to it, act on whatever [`ComposeAction`] it
+    /// raised, and report whether it consumed the event.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
+    )]
+    fn handle_compose_modal(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let (consumed, action) =
+            self.compose
+                .handle_event(event, scale_factor, modifiers, state, path, node_id, taffy);
+        match action {
+            ComposeAction::Send => self.send_compose(state),
+            ComposeAction::SaveDraft => self.save_compose_draft(state),
+            ComposeAction::Close => {
+                self.persist_compose_format(state);
+                self.dirty = true;
+            }
+            ComposeAction::None => {}
+        }
+        consumed
+    }
+
+    /// Step 1.5 of [`Widget::handle_event`]: while first-run onboarding is
+    /// shown, the only interaction is a click on the "Add account" button.
+    fn handle_first_run_click(&mut self, pt: Point) {
+        self.rebuild_overlay_hits();
+        if self
+            .overlay_hits
+            .iter()
+            .any(|(rc, h)| matches!(h, OverlayHit::FirstRunAdd) && rc.contains(pt))
+        {
+            self.open_setup_edit(None);
+        }
+    }
+
+    /// Step 3 of [`Widget::handle_event`]: while the row context menu is open,
+    /// a click either activates the item under it or dismisses the menu.
+    fn handle_context_menu_click(&mut self, pt: Point, state: &mut AutoCommit) {
+        self.rebuild_overlay_hits();
+        let item = self
+            .overlay_hits
+            .iter()
+            .rev()
+            .find(|(rc, h)| matches!(h, OverlayHit::CtxItem(_)) && rc.contains(pt))
+            .cloned();
+        if let Some((_, OverlayHit::CtxItem(i))) = item {
+            if let Some(menu) = self.context_menu.take()
+                && let Some(action) = menu.items.get(i).copied()
+            {
+                self.shared
+                    .borrow_mut()
+                    .apply_message_action(state, menu.target, action);
+                self.process_intents();
+            }
+        } else {
+            self.context_menu = None;
+        }
+    }
+}
+
 impl Widget for MailApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Drain any engine results first so freshly-fetched messages are present
@@ -2567,14 +2638,6 @@ impl Widget for MailApp {
         self.draw_status(scene, t, tr, theme);
     }
 
-    /// Step 1 of [`Self::handle_event`]: the compose window is modal while
-    /// open — route the event to it, act on whatever [`ComposeAction`] it
-    /// raised, and report whether it consumed the event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -2756,70 +2819,6 @@ impl Widget for MailApp {
         self.compose.mark_drawn();
         for i in &mut self.setup_inputs {
             i.mark_drawn();
-        }
-    }
-}
-
-impl MailApp {
-    fn handle_compose_modal(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let (consumed, action) =
-            self.compose
-                .handle_event(event, scale_factor, modifiers, state, path, node_id, taffy);
-        match action {
-            ComposeAction::Send => self.send_compose(state),
-            ComposeAction::SaveDraft => self.save_compose_draft(state),
-            ComposeAction::Close => {
-                self.persist_compose_format(state);
-                self.dirty = true;
-            }
-            ComposeAction::None => {}
-        }
-        consumed
-    }
-
-    /// Step 1.5 of [`Self::handle_event`]: while first-run onboarding is
-    /// shown, the only interaction is a click on the "Add account" button.
-    fn handle_first_run_click(&mut self, pt: Point) {
-        self.rebuild_overlay_hits();
-        if self
-            .overlay_hits
-            .iter()
-            .any(|(rc, h)| matches!(h, OverlayHit::FirstRunAdd) && rc.contains(pt))
-        {
-            self.open_setup_edit(None);
-        }
-    }
-
-    /// Step 3 of [`Self::handle_event`]: while the row context menu is open,
-    /// a click either activates the item under it or dismisses the menu.
-    fn handle_context_menu_click(&mut self, pt: Point, state: &mut AutoCommit) {
-        self.rebuild_overlay_hits();
-        let item = self
-            .overlay_hits
-            .iter()
-            .rev()
-            .find(|(rc, h)| matches!(h, OverlayHit::CtxItem(_)) && rc.contains(pt))
-            .cloned();
-        if let Some((_, OverlayHit::CtxItem(i))) = item {
-            if let Some(menu) = self.context_menu.take()
-                && let Some(action) = menu.items.get(i).copied()
-            {
-                self.shared
-                    .borrow_mut()
-                    .apply_message_action(state, menu.target, action);
-                self.process_intents();
-            }
-        } else {
-            self.context_menu = None;
         }
     }
 }
