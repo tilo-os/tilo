@@ -11,12 +11,13 @@
 //! `threshold-identity`, visual logic stays in `ui`.
 
 use std::fs;
-use std::io;
+use std::fs::OpenOptions;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 use ui::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PairingHandshake,
@@ -40,15 +41,6 @@ impl DiskIdentityStore {
     /// created.
     pub fn from_env() -> Result<Self, io::Error> {
         let base = runtime_identity::identity_dir_from_env()?;
-        fs::create_dir_all(&base)?;
-        // The contents will be 0600, but a world-listable directory
-        // still leaks "identity exists" / atime.
-        #[cfg(unix)]
-        {
-            let mut perm = fs::metadata(&base)?.permissions();
-            perm.set_mode(0o700);
-            let _ = fs::set_permissions(&base, perm);
-        }
         let path = base.join("primary.json");
         Ok(Self { path })
     }
@@ -69,10 +61,37 @@ impl DiskIdentityStore {
 
 impl IdentityStore for DiskIdentityStore {
     fn load(&self) -> Result<Option<IdentityRecord>, IdentityFlowError> {
-        if !self.path.exists() {
-            return Ok(None);
+        let mut file = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&self.path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(IdentityFlowError::Io(error)),
+        };
+        let metadata = file.metadata().map_err(IdentityFlowError::Io)?;
+        if !metadata.file_type().is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+            || metadata.len() > 1024 * 1024
+        {
+            return Err(IdentityFlowError::Io(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "identity record must be a private user-owned regular file",
+            )));
         }
-        let bytes = fs::read(&self.path).map_err(IdentityFlowError::Io)?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        (&mut file)
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(IdentityFlowError::Io)?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(IdentityFlowError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity record exceeds the size limit",
+            )));
+        }
         Ok(Some(IdentityRecord::from_json_bytes(&bytes)?))
     }
 
@@ -213,6 +232,23 @@ mod tests {
             let mode = meta.permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_refuses_an_identity_path_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TmpDir::new("symlink");
+        let target = tmp.0.join("elsewhere.json");
+        let bytes = fixture_record().to_json_bytes().unwrap();
+        fs::write(&target, bytes).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        let path = tmp.0.join("primary.json");
+        symlink(&target, &path).unwrap();
+
+        let store = DiskIdentityStore::at(path);
+        assert!(store.load().is_err());
     }
 
     #[test]
