@@ -101,28 +101,28 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
                     .and_then(|v| v.parse::<u32>().ok())
                     .unwrap_or(1)
                     .max(1);
-                cur_row = row + 1;
+                cur_row = row.saturating_add(1);
                 col = 0;
             }
             Event::End(e) if end_local_name(&e) == b"table-row" => {
                 let _ = &e;
-                row += row_repeat; // repeated (usually empty) rows advance the counter
+                row = row.saturating_add(row_repeat); // repeated (usually empty) rows advance the counter
                 row_repeat = 1;
             }
             // A self-closing cell — no `<text:p>` child, flush immediately.
             Event::Empty(e)
                 if local_name(&e) == b"table-cell" || local_name(&e) == b"covered-table-cell" =>
             {
-                let (cell, repeat) = read_cell_attrs(&e, col + 1);
+                let (cell, repeat) = read_cell_attrs(&e, col.saturating_add(1));
                 if let Some(sid) = sheet_id.as_deref() {
                     flush_cell(wb, sid, &cell, cur_row);
                 }
-                col += repeat;
+                col = col.saturating_add(repeat);
             }
             Event::Start(e)
                 if local_name(&e) == b"table-cell" || local_name(&e) == b"covered-table-cell" =>
             {
-                let (cell, repeat) = read_cell_attrs(&e, col + 1);
+                let (cell, repeat) = read_cell_attrs(&e, col.saturating_add(1));
                 cur = cell;
                 cur.repeat = repeat;
                 in_text_p = false;
@@ -135,7 +135,7 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
                 if let Some(sid) = sheet_id.as_deref() {
                     flush_cell(wb, sid, &cur, cur_row);
                 }
-                col += cur.repeat;
+                col = col.saturating_add(cur.repeat);
                 cur = OdsCell::default();
             }
             Event::Start(e) if local_name(&e) == b"p" => {
@@ -322,8 +322,8 @@ fn table_xml(sheet: &SheetView) -> String {
     let mut rows_xml = String::new();
     let mut prev_row = 0u32;
     for (&row, cells) in &by_row {
-        if row > prev_row + 1 {
-            let gap = row - prev_row - 1;
+        if row > prev_row.saturating_add(1) {
+            let gap = row.saturating_sub(prev_row).saturating_sub(1);
             let _ = write!(
                 rows_xml,
                 r#"<table:table-row table:number-rows-repeated="{gap}"><table:table-cell/></table:table-row>"#
@@ -334,8 +334,8 @@ fn table_xml(sheet: &SheetView) -> String {
         let mut ordered = cells.clone();
         ordered.sort_by_key(|c| c.col);
         for c in ordered {
-            if c.col > prev_col + 1 {
-                let gap = c.col - prev_col - 1;
+            if c.col > prev_col.saturating_add(1) {
+                let gap = c.col.saturating_sub(prev_col).saturating_sub(1);
                 let _ = write!(
                     rows_xml,
                     r#"<table:table-cell table:number-columns-repeated="{gap}"/>"#
