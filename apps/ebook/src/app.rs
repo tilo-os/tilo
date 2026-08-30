@@ -40,6 +40,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Widget};
 
+use crate::comment_overlay::{CommentAction, CommentOverlay};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
 use crate::model::{
@@ -534,11 +535,9 @@ pub struct BooksApp {
     page_top_block: usize,
     /// The note currently being typed into (a CRDT annotation id).
     composing: Option<Uuid>,
-    /// The highlight group whose floating comment overlay is open, if any.
-    comment_group: Option<Uuid>,
-    /// On-page bounds `(x0, y0, x1, y1)` of the open comment overlay's
-    /// highlight, recomputed each `draw` so the popover tracks it.
-    comment_anchor: Option<(f64, f64, f64, f64)>,
+    /// Floating highlight-comments panel. It owns open/anchor state, drawing,
+    /// and its modal hit stack; the app only applies emitted domain actions.
+    comment_overlay: CommentOverlay,
     /// The highlight group under the current press, consumed on release to
     /// open the comment overlay — only when the press stayed a plain click.
     press_hl_group: Option<Uuid>,
@@ -721,8 +720,7 @@ impl BooksApp {
             cursor: Point::ZERO,
             page_top_block: 0,
             composing: None,
-            comment_group: None,
-            comment_anchor: None,
+            comment_overlay: CommentOverlay::default(),
             press_hl_group: None,
             pending_last_page: false,
             pending_jump_block: None,
@@ -1386,7 +1384,7 @@ impl BooksApp {
         BooksDoc::write_progress(doc, &id, &p);
         self.clear_selection();
         self.composing = None;
-        self.comment_group = None;
+        self.comment_overlay.close();
         self.layout = None;
         self.last_persisted = None;
     }
@@ -1484,11 +1482,11 @@ impl BooksApp {
             Action::Back => {
                 self.view = View::Library;
                 self.composing = None;
-                self.comment_group = None;
+                self.comment_overlay.close();
                 self.type_popover = false;
             }
             Action::NextPage => {
-                self.comment_group = None;
+                self.comment_overlay.close();
                 if self.settings.mode.is_continuous() {
                     // A "page" in continuous mode is a viewport-height scroll.
                     self.scroll_continuous(self.flow_extent.1 * 0.9);
@@ -1511,7 +1509,7 @@ impl BooksApp {
                 }
             }
             Action::PrevPage => {
-                self.comment_group = None;
+                self.comment_overlay.close();
                 if self.settings.mode.is_continuous() {
                     self.scroll_continuous(-self.flow_extent.1 * 0.9);
                     return;
@@ -1554,7 +1552,7 @@ impl BooksApp {
                 self.chapter = c.min(self.num_chapters().saturating_sub(1));
                 self.page = 0;
                 self.selected_block = None;
-                self.comment_group = None;
+                self.comment_overlay.close();
                 self.layout = None;
             }
             Action::ToggleToc => {
@@ -1677,7 +1675,7 @@ impl BooksApp {
                     self.chapter = a.chapter.min(self.num_chapters().saturating_sub(1));
                     self.pending_jump_block = Some(a.block);
                     self.clear_selection();
-                    self.comment_group = None;
+                    self.comment_overlay.close();
                     self.layout = None;
                 }
             }
@@ -1692,19 +1690,19 @@ impl BooksApp {
                 // selection so its toolbar doesn't fight the popover.
                 self.clear_selection();
                 self.composing = None;
-                self.comment_group = Some(group);
+                self.comment_overlay.open(group);
             }
             Action::CloseComments => {
                 // Finish any comment mid-composition so its text is saved.
                 if self.composing.is_some() {
                     self.edit_note_text(doc, NoteEdit::Done);
                 }
-                self.comment_group = None;
+                self.comment_overlay.close();
             }
             Action::DeleteHighlight(group) => {
                 self.perform_action(doc, crate::actions::delete_highlight_action(group));
-                if self.comment_group == Some(group) {
-                    self.comment_group = None;
+                if self.comment_overlay.group() == Some(group) {
+                    self.comment_overlay.close();
                 }
                 self.composing = None;
             }
@@ -1735,7 +1733,7 @@ impl BooksApp {
                         "",
                     );
                     self.perform_action(doc, action);
-                    self.comment_group = Some(group);
+                    self.comment_overlay.open(group);
                     self.composing = Some(id);
                 }
             }
@@ -2036,6 +2034,18 @@ impl BooksApp {
                 BooksDoc::write_library_prefs(doc, &p);
             }
         }
+    }
+
+    fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut AutoCommit) {
+        let action = match action {
+            CommentAction::Close => Action::CloseComments,
+            CommentAction::Swallow => Action::Swallow,
+            CommentAction::DeleteHighlight(group) => Action::DeleteHighlight(group),
+            CommentAction::Add(group) => Action::AddComment(group),
+            CommentAction::Edit(id) => Action::EditComment(id),
+            CommentAction::Delete(id) => Action::DeleteComment(id),
+        };
+        self.dispatch(action, doc);
     }
 
     /// Apply the picker's live colour to its target (called on every drag). For
@@ -2482,18 +2492,6 @@ impl BooksApp {
                 a.start < hi && a.end > lo
             })
             .map(|a| a.group)
-    }
-
-    /// Every comment (note row) attached to a highlight group, oldest first.
-    fn comments_in_group(&self, group: Uuid) -> Vec<Annotation> {
-        let mut v: Vec<Annotation> = self
-            .annotations
-            .iter()
-            .filter(|a| a.kind == AnnoKind::Note && a.group == group)
-            .cloned()
-            .collect();
-        v.sort_by_key(|a| a.created);
-        v
     }
 
     /// Dispatch one Books [`EbookAction`](crate::actions::EbookAction) — the
@@ -2964,7 +2962,7 @@ impl Widget for BooksApp {
                     self.chapter = a.chapter.min(self.num_chapters().saturating_sub(1));
                     self.pending_jump_block = Some(a.block);
                     self.clear_selection();
-                    self.comment_group = None;
+                    self.comment_overlay.close();
                     self.layout = None;
                 }
             }
@@ -3006,7 +3004,7 @@ impl Widget for BooksApp {
                 self.composing = Some(aid);
             }
         }
-        if self.shot_comments && self.comment_group.is_none() {
+        if self.shot_comments && !self.comment_overlay.is_open() {
             self.shot_comments = false;
             let bid = self.book_id();
             let group = Uuid::new_v4();
@@ -3037,7 +3035,7 @@ impl Widget for BooksApp {
                 cm.created = now_ms() + i as u64;
                 BooksDoc::upsert_annotation(doc, &cm);
             }
-            self.comment_group = Some(group);
+            self.comment_overlay.open(group);
         }
         // On the very first sync, adopt any persisted position for the open book.
         if self.last_persisted.is_none() && self.view == View::Reader {
@@ -3093,6 +3091,7 @@ impl Widget for BooksApp {
         _presence: &ui::presence::PresenceCtx,
     ) {
         self.hits.clear();
+        self.comment_overlay.begin_frame();
         // Advance the rail flap transitions (reconcile first so a resize this
         // frame uses the right mode default) before laying anything out.
         self.reconcile_flaps();
@@ -3231,13 +3230,20 @@ impl Widget for BooksApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // The comment panel owns a modal, private hit stack. Ask it
+                // before the app-wide regions so its card cannot fall through
+                // to page selection or rail controls underneath.
+                let comment_action = self.comment_overlay.hit_test(self.cursor);
                 // Topmost wins: later-recorded hits draw on top.
-                let top = self
-                    .hits
-                    .iter()
-                    .rev()
-                    .find(|h| h.rect.contains(self.cursor))
-                    .cloned();
+                let top = if comment_action.is_none() {
+                    self.hits
+                        .iter()
+                        .rev()
+                        .find(|h| h.rect.contains(self.cursor))
+                        .cloned()
+                } else {
+                    None
+                };
                 self.mouse_down = true;
                 self.dragging_sel = false;
                 self.press_pos = self.cursor;
@@ -3266,6 +3272,7 @@ impl Widget for BooksApp {
                 // drag, taking priority over text selection. A press that
                 // doesn't move opens the highlight's comments on release instead.
                 if self.view == View::Reader
+                    && comment_action.is_none()
                     && top.is_none()
                     && let Some((group, origin)) = self.marker_at(self.cursor)
                 {
@@ -3282,7 +3289,8 @@ impl Widget for BooksApp {
 
                 // A press on page text runs through the shared
                 // selection-gesture core: single → double (word) → triple.
-                let on_page = self.view == View::Reader && top.is_none();
+                let on_page =
+                    self.view == View::Reader && comment_action.is_none() && top.is_none();
                 let shift = _modifiers.state().shift_key();
                 self.press_doc = if on_page {
                     self.hit_doc_pos(self.cursor)
@@ -3334,7 +3342,13 @@ impl Widget for BooksApp {
                         }
                     }
                 }
-                if let Some(h) = top {
+                if let Some(action) = comment_action {
+                    self.dispatch_comment_action(action, doc);
+                    self.refresh_from_doc(doc);
+                    self.persist_progress(doc);
+                    self.dirty = true;
+                    *handled = true;
+                } else if let Some(h) = top {
                     self.dispatch(h.action, doc);
                     self.refresh_from_doc(doc);
                     self.persist_progress(doc);
@@ -3676,7 +3690,7 @@ impl BooksApp {
                 let toc_overlay = self.toc_layout() == SplitLayout::Overlay && self.toc_open();
                 let notes_overlay =
                     self.notes_layout() == SplitLayout::Overlay && self.notes_open();
-                if self.comment_group.is_some() {
+                if self.comment_overlay.is_open() {
                     self.dispatch(Action::CloseComments, doc);
                 } else if self.type_popover {
                     self.type_popover = false;
@@ -5247,7 +5261,7 @@ impl BooksApp {
         self.hi_bands.clear();
         self.page_first_doc = None;
         self.page_last_doc = None;
-        let comment_group = self.comment_group;
+        let comment_group = self.comment_overlay.group();
         let sel_ord = self.sel.filter(|s| !s.is_empty()).map(|s| s.ordered());
         // Screen (x, y) of the first selected band, if any — anchors the HUD.
         let mut sel_anchor: Option<(f64, f64)> = None;
@@ -5341,7 +5355,7 @@ impl BooksApp {
         if turning {
             scene.pop_layer();
         }
-        self.comment_anchor = comment_box;
+        self.comment_overlay.set_anchor(comment_box);
         // A drag that auto-advanced a page extends the head to this page's edge.
         if let Some(to_end) = self.pending_sel_edge.take()
             && let Some(mut sel) = self.sel
@@ -5399,7 +5413,17 @@ impl BooksApp {
         self.draw_note_composer(scene, t, tr, theme, &c, sel_anchor.map(|(_, y)| y));
         // The floating comment overlay for a clicked highlight (its own composer
         // lives inside it, so the standalone note composer above stands down).
-        self.draw_comment_overlay(scene, t, tr, theme, &c);
+        self.comment_overlay.draw(
+            scene,
+            t,
+            tr,
+            theme,
+            self.rect,
+            self.cursor,
+            &self.annotations,
+            self.hi_color,
+            self.composing,
+        );
         // Reading-settings popover floats above everything.
         self.draw_type_popover(scene, t, tr, theme, &c);
 
@@ -5856,7 +5880,7 @@ impl BooksApp {
         }
         // When a highlight's comment overlay is open it hosts its own composer,
         // so the standalone note composer stands down to avoid two cards.
-        if self.comment_group.is_some() {
+        if self.comment_overlay.is_open() {
             return;
         }
         let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() else {
@@ -5995,259 +6019,6 @@ impl BooksApp {
             TextWeight::Semibold,
         );
         self.push_hit(save, Action::FinishNote);
-    }
-
-    /// The floating comment overlay for a clicked highlight: a popover
-    /// anchored to the glyphs showing the passage, a delete-highlight trash
-    /// button, each comment with inline edit/delete, and an add-comment row.
-    fn draw_comment_overlay(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-    ) {
-        let Some(group) = self.comment_group else {
-            return;
-        };
-        if self.view != View::Reader {
-            return;
-        }
-        let r = self.rect;
-
-        // Tap-away closes (and saves any comment mid-edit). Behind the panel.
-        self.push_hit(r, Action::CloseComments);
-
-        // Gather the highlight's colour + passage as owned values, so no borrow
-        // of `self.annotations` lingers into the hit-pushing below.
-        let (color, excerpt) = {
-            let mut hl_rows: Vec<&Annotation> = self
-                .annotations
-                .iter()
-                .filter(|a| a.kind == AnnoKind::Highlight && a.group == group)
-                .collect();
-            hl_rows.sort_by_key(|a| (a.block, a.start));
-            let color = hl_rows.first().map_or(self.hi_color, |a| a.color);
-            let mut excerpt = String::new();
-            for a in &hl_rows {
-                if a.excerpt.trim().is_empty() {
-                    continue;
-                }
-                if !excerpt.is_empty() {
-                    excerpt.push(' ');
-                }
-                excerpt.push_str(a.excerpt.trim());
-            }
-            (color, excerpt)
-        };
-        let excerpt_disp = if excerpt.is_empty() {
-            "Highlighted passage".to_string()
-        } else {
-            format!("\u{201C}{excerpt}\u{201D}")
-        };
-        let comments = self.comments_in_group(group);
-
-        let cw = 360.0_f64.min(r.width() - 24.0);
-        let pad = 16.0;
-        let inner_w = (cw - pad * 2.0) as f32;
-        let text_w = inner_w - 52.0; // room for the per-comment edit/delete icons
-
-        let (_, eh) = tr.measure(&excerpt_disp, 12.0, Some(inner_w));
-
-        // Measure each comment row (its text with a caret while composing).
-        let disp_of = |a: &Annotation, composing: bool| -> String {
-            if composing {
-                format!("{}\u{2502}", a.note)
-            } else if a.note.trim().is_empty() {
-                "Empty comment".to_string()
-            } else {
-                a.note.clone()
-            }
-        };
-        let mut rows_h: Vec<f64> = Vec::with_capacity(comments.len());
-        for a in &comments {
-            let d = disp_of(a, self.composing == Some(a.id));
-            let (_, h) = tr.measure(&d, 13.0, Some(text_w));
-            rows_h.push(f64::from(h).max(18.0) + 16.0);
-        }
-
-        let header_h = 28.0;
-        let comments_gap = 8.0;
-        let comments_total: f64 =
-            rows_h.iter().sum::<f64>() + comments_gap * comments.len().max(1) as f64;
-        let add_h = 34.0;
-        let ch = pad + header_h + 8.0 + f64::from(eh) + 12.0 + comments_total + add_h + pad;
-
-        // Anchor to the highlight's on-page bounds; fall back to the page centre.
-        let (ax, atop, abot) = match self.comment_anchor {
-            Some((x0, y0, x1, y1)) => (f64::midpoint(x0, x1), y0, y1),
-            None => (
-                f64::midpoint(r.x0, r.x1),
-                f64::midpoint(r.y0, r.y1),
-                f64::midpoint(r.y0, r.y1),
-            ),
-        };
-        let x0 = (ax - cw / 2.0).clamp(r.x0 + 12.0, (r.x1 - 12.0 - cw).max(r.x0 + 12.0));
-        let top_lim = r.y0 + TOP_BAR + 8.0;
-        let bot_lim = r.y1 - 16.0;
-        let y0 = if abot + 12.0 + ch <= bot_lim {
-            abot + 12.0
-        } else if atop - 12.0 - ch >= top_lim {
-            atop - 12.0 - ch
-        } else {
-            (bot_lim - ch).max(top_lim)
-        };
-        let card = Rect::new(x0, y0, x0 + cw, y0 + ch);
-        let shadow = Rect::new(card.x0 - 1.0, card.y0 + 4.0, card.x1 + 1.0, card.y1 + 7.0);
-        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
-        paint::fill_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            theme.border_focus,
-            1.4,
-        );
-        self.push_hit(card, Action::Swallow);
-
-        let ix0 = x0 + pad;
-        let ix1 = x0 + cw - pad;
-        let mut y = y0 + pad;
-
-        // Header: colour dot + "Highlight" + trash (delete the whole highlight).
-        paint::circle(
-            scene,
-            t,
-            Point::new(ix0 + 6.0, y + 8.0),
-            6.0,
-            ReaderPalette::highlight_swatch(color),
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Highlight",
-            13.5,
-            c.text_primary,
-            t * Affine::translate((ix0 + 20.0, y + 1.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let trash_s = 24.0;
-        let trash = Rect::new(ix1 - trash_s, y - 2.0, ix1, y - 2.0 + trash_s);
-        let thov = self.is_hover(trash);
-        if thov {
-            paint::fill_round(scene, t, trash, 6.0, theme.bg_hover);
-        }
-        paint::trash(
-            scene,
-            t,
-            trash,
-            if thov { c.semantic.danger } else { c.text_dim },
-            1.5,
-        );
-        self.push_hit(trash, Action::DeleteHighlight(group));
-        y += header_h;
-
-        // Passage.
-        tr.draw_text(
-            scene,
-            &excerpt_disp,
-            12.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            Some(inner_w),
-        );
-        y += f64::from(eh) + 12.0;
-
-        // Comments — each with inline edit (pencil) + delete (×).
-        for (a, rh) in comments.iter().zip(rows_h.iter()) {
-            let rh = *rh;
-            let composing = self.composing == Some(a.id);
-            let row = Rect::new(ix0, y, ix1, y + rh);
-            paint::fill_round(scene, t, row, 8.0, c.surfaces.overlay);
-            if composing {
-                paint::stroke_round(scene, t, row, 8.0, theme.border_focus, 1.4);
-            }
-            let d = disp_of(a, composing);
-            let empty = a.note.trim().is_empty() && !composing;
-            tr.draw_text(
-                scene,
-                &d,
-                13.0,
-                if empty { c.text_dim } else { c.text_primary },
-                t * Affine::translate((ix0 + 10.0, y + 8.0)),
-                Some(text_w),
-            );
-            // Edit (pencil) + Delete (×) icons at the row's top-right.
-            let del = Rect::new(ix1 - 24.0, y + 4.0, ix1 - 2.0, y + 26.0);
-            let dhov = self.is_hover(del);
-            paint::close(
-                scene,
-                t,
-                del,
-                if dhov {
-                    c.semantic.danger
-                } else {
-                    c.text_dim.with_alpha_factor(0.7)
-                },
-                1.4,
-            );
-            self.push_hit(del, Action::DeleteComment(a.id));
-            let edit = Rect::new(ix1 - 48.0, y + 4.0, ix1 - 26.0, y + 26.0);
-            let ehov = self.is_hover(edit);
-            paint::pencil(
-                scene,
-                t,
-                edit,
-                if ehov {
-                    c.text_primary
-                } else {
-                    c.text_dim.with_alpha_factor(0.7)
-                },
-                1.4,
-            );
-            if !composing {
-                self.push_hit(edit, Action::EditComment(a.id));
-            }
-            y += rh + comments_gap;
-        }
-
-        // Add-comment row.
-        let add = Rect::new(ix0, y, ix1, y + add_h - 4.0);
-        let ahov = self.is_hover(add);
-        paint::fill_round(
-            scene,
-            t,
-            add,
-            8.0,
-            if ahov {
-                theme.accent_primary
-            } else {
-                theme.accent_primary.with_alpha_factor(0.14)
-            },
-        );
-        let acol = if ahov {
-            Color::from_rgb8(248, 248, 252)
-        } else {
-            theme.accent_primary
-        };
-        tr.draw_text_weighted(
-            scene,
-            "＋  Add comment",
-            12.5,
-            acol,
-            t * Affine::translate((ix0 + 12.0, y + 8.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        self.push_hit(add, Action::AddComment(group));
     }
 
     /// Paint the contents + annotations rails: either docked (flush, page
@@ -8943,11 +8714,25 @@ mod interaction_tests {
 
     /// Centre of the topmost recorded hit whose action matches `pred`.
     fn find_hit(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Point> {
-        app.hits
-            .iter()
-            .rev()
-            .find(|h| pred(&h.action))
-            .map(|h| h.rect.center())
+        app.comment_overlay
+            .action_center(|action| {
+                let action = match action {
+                    CommentAction::Close => Action::CloseComments,
+                    CommentAction::Swallow => Action::Swallow,
+                    CommentAction::DeleteHighlight(group) => Action::DeleteHighlight(group),
+                    CommentAction::Add(group) => Action::AddComment(group),
+                    CommentAction::Edit(id) => Action::EditComment(id),
+                    CommentAction::Delete(id) => Action::DeleteComment(id),
+                };
+                pred(&action)
+            })
+            .or_else(|| {
+                app.hits
+                    .iter()
+                    .rev()
+                    .find(|h| pred(&h.action))
+                    .map(|h| h.rect.center())
+            })
     }
 
     /// Route a real left-click at `p` (logical px) through `handle_event`.
@@ -10234,7 +10019,7 @@ mod interaction_tests {
         ptr_down(&mut app, &mut doc);
         ptr_up(&mut app, &mut doc);
         assert_eq!(
-            app.comment_group,
+            app.comment_overlay.group(),
             Some(group),
             "a tap on the marker opened the highlight's comments"
         );
@@ -10865,7 +10650,7 @@ mod interaction_tests {
         cm.id = cid;
         BooksDoc::upsert_annotation(&mut doc, &cm);
         // Open the highlight's comment overlay (presentation).
-        app.comment_group = Some(group);
+        app.comment_overlay.open(group);
         frame(&mut app, &mut doc, 1280.0, 800.0);
 
         // The EncodedAction the palette would dispatch for "Delete comment".
@@ -11567,7 +11352,7 @@ mod interaction_tests {
             .into_iter()
             .find(|a| a.kind == AnnoKind::Highlight)
             .expect("a highlight now exists");
-        assert!(app.comment_group.is_none(), "no overlay yet");
+        assert!(!app.comment_overlay.is_open(), "no overlay yet");
 
         // Re-lay the page, then plain-click on the highlight. A char range can be
         // sub-word (this one starts and ends mid-word), so there isn't always a
@@ -11589,7 +11374,7 @@ mod interaction_tests {
         ptr_down(&mut app, &mut doc);
         ptr_up(&mut app, &mut doc);
         assert_eq!(
-            app.comment_group,
+            app.comment_overlay.group(),
             Some(hl.group),
             "clicking the highlight opened its overlay"
         );
@@ -11628,7 +11413,7 @@ mod interaction_tests {
             .find(|a| a.kind == AnnoKind::Highlight)
             .expect("a highlight")
             .group;
-        app.comment_group = Some(group);
+        app.comment_overlay.open(group);
         frame(&mut app, &mut doc, 1000.0, 700.0);
 
         let notes_in_group = |d: &AutoCommit| {
@@ -11648,7 +11433,7 @@ mod interaction_tests {
         key_named(&mut app, &mut doc, NamedKey::Enter);
         assert_eq!(notes_in_group(&doc), 1, "one comment saved");
         assert!(
-            app.comment_group == Some(group),
+            app.comment_overlay.group() == Some(group),
             "overlay stays open after saving"
         );
 
@@ -11689,7 +11474,7 @@ mod interaction_tests {
             left.is_empty(),
             "deleting the highlight removed every row in its group"
         );
-        assert!(app.comment_group.is_none(), "the overlay closed");
+        assert!(!app.comment_overlay.is_open(), "the overlay closed");
     }
 
     /// The selection toolbar grows a trash button when the selection covers an
