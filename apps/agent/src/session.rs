@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
 use ui::permissions::PermissionContext;
 use ui::presence::{PathSegment, PresenceKey};
 use uuid::Uuid;
@@ -22,10 +22,6 @@ pub struct Config {
     /// Explicit typed Cap'n Proto endpoint for headless diagnostics outside
     /// the launcher. Normal sessions leave this `None` and inherit the fd.
     pub endpoint: Option<PathBuf>,
-    /// Legacy JSON broker used only by socket-level characterization tests.
-    /// Production callers leave this `None` and inherit `QOS_SVC_COLLAB_FD`.
-    #[doc(hidden)]
-    pub socket: Option<PathBuf>,
     /// The app whose document this is — its manifest package id, which is
     /// what a launched copy of the app announces.
     pub app_id: String,
@@ -136,46 +132,30 @@ fn block_key(block_id: &str) -> PresenceKey {
 impl Session {
     /// Connect, announce the route, and ask the room for the document.
     pub fn connect(cfg: Config) -> Result<Self> {
-        let legacy_test_transport = cfg.socket.is_some();
-        let mut link = match &cfg.socket {
-            Some(path) => Link::connect_legacy(path)?,
-            None => match &cfg.endpoint {
-                Some(path) => Link::connect_endpoint(
-                    path,
-                    &cfg.app_id,
-                    cfg.cluster,
-                    cfg.record.clone(),
-                    Some(cfg.name.clone()),
-                )?,
-                None => Link::connect(
-                    &cfg.app_id,
-                    cfg.cluster,
-                    cfg.record.clone(),
-                    Some(cfg.name.clone()),
-                )?,
-            },
+        let mut link = match &cfg.endpoint {
+            Some(path) => Link::connect_endpoint(
+                path,
+                &cfg.app_id,
+                cfg.cluster,
+                cfg.record.clone(),
+                Some(cfg.name.clone()),
+            )?,
+            None => Link::connect(
+                &cfg.app_id,
+                cfg.cluster,
+                cfg.record.clone(),
+                Some(cfg.name.clone()),
+            )?,
         };
-        // The name here is self-declared, and a self-declared name is
-        // spoofable — which is why a *peer's* name is resolved through the
-        // room document, under the authority that admitted it, rather than
-        // taken from what the peer says it is called. The agent should end
-        // up resolving the same way. What keeps this honest meanwhile is
-        // that the agent is admitted by a capability its inviter granted,
-        // so nothing false is being asserted about who is in the room; the
-        // name is a label on a participant that was already let in.
-        if legacy_test_transport {
-            link.send(&CollabRequest::Hello {
-                app_id: cfg.app_id.clone(),
-                cluster_id: cfg.cluster,
-                record: cfg.record.clone(),
-                handle: Some(cfg.name.clone()),
-            })?;
-        }
+        // Discovery is room-wide, but writes never are. This subscription
+        // lets the agent learn other applications' exported operations while
+        // every mutation below still names its owning app route explicitly.
+        link.join_route(RouteSpec::cluster(cfg.cluster));
         // The late-join handshake: every peer in the room answers an
         // `Arrived` with its full document.
         ask_for_document(&mut link)?;
         tracing::info!(
-            transport = if legacy_test_transport { "legacy-test-socket" } else if cfg.endpoint.is_some() { "typed-endpoint" } else { "QOS_SVC_COLLAB_FD" },
+            transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "QOS_SVC_COLLAB_FD" },
             app = %cfg.app_id,
             room = %cfg.cluster,
             record = ?cfg.record,
@@ -316,7 +296,10 @@ impl Session {
                 }
                 for peer in self.peers.values_mut() {
                     let full = peer.full();
-                    self.link.send(&CollabRequest::SyncCRDT { data: full })?;
+                    self.link.send_to_route(
+                        RouteSpec::app(peer.contract().app_id, self.cfg.cluster),
+                        &CollabRequest::SyncCRDT { data: full },
+                    )?;
                 }
                 tracing::debug!(%user_id, peers = self.peers.len(), "sent our documents to a new participant");
             }
@@ -474,11 +457,11 @@ impl Session {
         let namespace = surface::app_of(&address.resource).to_string();
         let view = self.view(None);
         let registry = surface::registry();
-        let held = if self
+        let is_primary = self
             .editor
             .as_ref()
-            .is_some_and(|e| e.contract().namespace == namespace)
-        {
+            .is_some_and(|e| e.contract().namespace == namespace);
+        let held = if is_primary {
             self.editor.as_mut()
         } else {
             self.peers.get_mut(namespace.as_str())
@@ -486,10 +469,16 @@ impl Session {
         let Some(ed) = held else {
             return Ok(Err("that isn't open here, so I can't act on it".to_string()));
         };
+        let target_app_id = ed.contract().app_id;
         match ed.invoke(&view, &address, argument, &registry) {
             Ok(Some(delta)) => {
-                self.link
-                    .send(&CollabRequest::SyncIncremental { data: delta })?;
+                let req = CollabRequest::SyncIncremental { data: delta };
+                if is_primary {
+                    self.link.send(&req)?;
+                } else {
+                    self.link
+                        .send_to_route(RouteSpec::app(target_app_id, self.cfg.cluster), &req)?;
+                }
                 tracing::info!(%id, "performed a discovered operation");
                 std::thread::sleep(self.cfg.pace);
                 Ok(Ok(()))

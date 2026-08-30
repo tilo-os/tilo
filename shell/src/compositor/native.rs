@@ -1592,7 +1592,7 @@ fn load_session_tree(
     (tree.shared(), peer_sync_possible, state_notice)
 }
 
-/// Is something already listening on `path`? `collab_broker::spawn_full`
+/// Is something already listening on `path`? The collaboration broker
 /// unlinks before it binds, so without this check a second compositor on
 /// the same `XDG_RUNTIME_DIR` would steal the socket from the running
 /// session, splitting apps across two unreachable brokers. A successful
@@ -3135,9 +3135,6 @@ mod tests {
         // an already-dropped tempdir, and failed to bind a socket in a
         // directory that no longer existed.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
-        // Do not let an inherited value pick the legacy socket's home.
-        unsafe { std::env::remove_var("QUICK_COLLAB_SOCK") };
-
         let fb = FrameBuilder::new((800, 600));
         let chrome = fb.chrome_handle();
         let broker = spawn_session_collab_broker(&chrome, None)
@@ -3176,14 +3173,13 @@ mod tests {
 
     /// A live socket is not taken away from the session that owns it. Two
     /// compositors against one `XDG_RUNTIME_DIR` is what a second login (or
-    /// stray test) produces, and `spawn_full` unlinks before binding — without
+    /// stray test) produces, and the broker unlinks before binding — without
     /// the liveness probe, the newcomer would silently strand the first session's apps. Refusing loudly is correct, and must reach the chrome.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_second_session_refuses_to_take_a_live_collab_socket() {
         let runtime = tempfile::tempdir().expect("tempdir");
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
-        unsafe { std::env::remove_var("QUICK_COLLAB_SOCK") };
 
         let first_fb = FrameBuilder::new((800, 600));
         let first_chrome = first_fb.chrome_handle();
