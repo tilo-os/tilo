@@ -166,6 +166,44 @@ fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: WindowEvent) {
     );
 }
 
+/// Hover a group's first tab and hold its chip-reveal curve past the end, so
+/// the per-tab chips have hit rects to click.
+///
+/// The cluster slides out on wall time: `TabBar::advance_reveal` starts the
+/// curve and returns where it started, so the rects stay `Rect::ZERO` until it
+/// has run. A test that hovers and reads straight back always reads zero and
+/// clicks nothing. `hold_reveal_at` is the renderer's own escape from that —
+/// an offscreen frame costs more wall time than the curve lasts — and layout
+/// has to run again afterwards, since `apply_layout` is what places the rects.
+fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: StripId) -> Layout {
+    let pill = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("group after layout")
+        .tab_rects()
+        .first()
+        .copied()
+        .expect("a pill")
+        .center();
+    cursor(host, layout, pill);
+    // The curve is created by the layout pass that first sees the new hover
+    // target, so it has to exist before it can be held.
+    let layout = lay_out_host(host);
+    let mut held = false;
+    if let Some(row) = host.group_row_mut_for_tests(strip_id) {
+        for g in row.groups.iter_mut() {
+            held |= g
+                .bar_mut_for_tests()
+                .hold_reveal_at(std::time::Duration::from_secs(1));
+        }
+    }
+    assert!(
+        held,
+        "hovering the pill started no reveal, so there is nothing to click",
+    );
+    let _ = layout;
+    lay_out_host(host)
+}
+
 fn cursor(host: &mut ShellOverlayHost, layout: &Layout, p: Point) {
     dispatch(
         host,
@@ -390,25 +428,16 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
     assert!(!host.palette_visible(), "palette starts closed");
 
     // Hover the pill so the per-tab chips get hit rects, then click search.
-    let (pill, chip) = {
-        let g = host
-            .group_at_for_tests(strip_id, 0)
-            .expect("group after layout");
-        let pill = g.tab_rects().first().copied().expect("a pill").center();
-        (pill, g.bar_for_tests().search_rects().first().copied())
-    };
-    cursor(&mut host, &layout, pill);
-    let chip = chip
+    let layout = reveal_tab_chips(&mut host, &layout, strip_id);
+    let chip = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("group after layout")
+        .bar_for_tests()
+        .search_rects()
+        .first()
+        .copied()
         .filter(|r| r.area() > 0.0)
-        .or_else(|| {
-            host.group_at_for_tests(strip_id, 0)
-                .unwrap()
-                .bar_for_tests()
-                .search_rects()
-                .first()
-                .copied()
-        })
-        .expect("search chip rect");
+        .expect("search chip rect once its reveal has run");
     cursor(&mut host, &layout, chip.center());
     press(&mut host, &layout);
     release(&mut host, &layout);
@@ -441,19 +470,21 @@ fn expand_takes_the_group_genuinely_fullscreen() {
     );
 
     // The real production path, not a test-only intent publisher.
+    let layout = reveal_tab_chips(&mut host, &layout, strip_id);
     let chip = {
         let g = host
             .group_at_for_tests(strip_id, 0)
             .expect("group after layout");
         let rects = g.bar_for_tests().max_rects();
         assert!(
-            !rects.is_empty(),
-            "the active tab must expose an Expand chip"
+            rects.first().is_some_and(|r| r.area() > 0.0),
+            "the active tab must expose an Expand chip once its reveal has run"
         );
         rects[0].center()
     };
     cursor(&mut host, &layout, chip);
     press(&mut host, &layout);
+    release(&mut host, &layout);
 
     host.tick_pending_maximize_harvest_for_tests();
 
