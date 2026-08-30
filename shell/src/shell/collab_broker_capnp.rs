@@ -1189,6 +1189,11 @@ fn pack_color(rgb: [f32; 3]) -> u32 {
 ///
 /// The accept thread runs a `current_thread` tokio runtime + `LocalSet`
 /// (capnp-rpc futures are `!Send`), polling `quit` on a 100 ms cadence.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error if `socket_path` can't be bound
+/// (e.g. already in use, or the parent directory doesn't exist).
 pub fn spawn(
     socket_path: PathBuf,
     peer_table: Arc<PeerTable>,
@@ -1276,6 +1281,11 @@ pub fn spawn(
 /// Dial the capnp socket at `path` for tests. Production apps go through
 /// `runtime_collab::try_connect` (launcher-passed fd). Public so
 /// out-of-tree integration tests can reach it too.
+///
+/// # Errors
+///
+/// Returns an I/O error if the socket still hasn't appeared after
+/// retrying with backoff for ~2s, or if connecting to it fails outright.
 pub async fn dial_capnp_for_test(
     path: PathBuf,
 ) -> Result<
@@ -1301,17 +1311,15 @@ pub async fn dial_capnp_for_test(
                 }
             }
         }
-        match stream {
-            Some(s) => s,
-            None => {
-                return Err(last_err.unwrap_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "capnp socket did not appear within 2s",
-                    )
-                }));
-            }
-        }
+        let Some(stream) = stream else {
+            return Err(last_err.unwrap_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "capnp socket did not appear within 2s",
+                )
+            }));
+        };
+        stream
     };
     let (r, w) = stream.into_split();
     let network = Box::new(twoparty::VatNetwork::new(
