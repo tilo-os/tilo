@@ -166,9 +166,9 @@ mod tests {
             elapsed < DEADLINE * 4,
             "the input path must not wait on the bus: took {elapsed:?}"
         );
-        // A dev machine with a player running legitimately returns Some.
-        if outcome.is_none() {
-            assert!(true, "no player: reported as nothing, which is correct");
-        }
+        // A dev machine with a player running legitimately returns Some; on
+        // a machine with none (CI), `outcome` is `None` — either is correct,
+        // the assertion above is the only hard requirement.
+        let _ = outcome;
     }
 }

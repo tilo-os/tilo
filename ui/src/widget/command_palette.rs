@@ -21,6 +21,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use qos_actions::{ActionInput, FlatAction};
 
@@ -1533,21 +1534,19 @@ impl Widget for CommandPalette {
         // `desired_size` is the single source of truth so a hand-placed
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(width as f32),
-                    height: Dimension::length(height as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(width as f32),
+                height: Dimension::length(height as f32),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -1862,7 +1861,7 @@ impl CommandPalette {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).expect("leaf never fails");
+        let node = taffy.leaf_node(Style::default());
         <Self as Widget>::handle_event(
             self,
             event,
@@ -2070,7 +2069,7 @@ mod tests {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
 
         p.handle_event(
             &event,
@@ -2176,7 +2175,7 @@ mod tests {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         p.handle_event(
             &event,
             1.0,
@@ -2345,7 +2344,7 @@ mod tests {
             let mut handled = false;
             let mut focus = None;
             let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
+            let node = taffy.leaf_node(Style::default());
             p.handle_event(
                 &key_press(Key::Named(NamedKey::ArrowDown)),
                 1.0,
@@ -2714,7 +2713,7 @@ mod tests {
         let root = automerge::ROOT.clone();
         let mut focus: Option<NodeId> = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         p.handle_event(
             &event, 1.0, &modifiers, &mut doc, &root, handled, &mut focus, node, &taffy,
         );

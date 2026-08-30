@@ -81,9 +81,6 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
         // decide who is in this room, so all gate on the same verb.
         "peer.invite" | "peer.invite.named" | "peer.connect" | "agent.invite" => Some(Verb::Invite),
 
-        // Acts on the room's contents.
-        "tab.new.terminal.here" | "window.new.terminal" | "tab.duplicate" => Some(Verb::Write),
-
         // Changes what the room holds — `Write`, same as spawning a tab.
         // Seeing which records a room holds stays ungated; adding one is an act.
         "record.bring" => Some(Verb::Write),
@@ -94,7 +91,9 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
         // Changes a session-wide setting.
         "notifications.dnd.toggle" => Some(Verb::Write),
 
-        // Unknown chrome action — fails closed.
+        // Everything else: acts on the room's contents ("tab.new.terminal.here",
+        // "window.new.terminal", "tab.duplicate") and any unknown chrome
+        // action — all fail closed to the same gate as the arms above.
         _ => Some(Verb::Write),
     }
 }

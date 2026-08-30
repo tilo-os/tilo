@@ -23,6 +23,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, ButtonFace, Widget};
 
 /// Default time-to-live for a freshly pushed toast.
@@ -495,21 +496,19 @@ impl Widget for ToastStack {
             let height = (TOAST_HEIGHT * n as f64) + (TOAST_GAP * (n.saturating_sub(1)) as f64);
             (TOAST_WIDTH as f32, height as f32)
         };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(w),
+                height: Dimension::length(h),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -640,7 +639,7 @@ mod tests {
 
     fn feed(s: &mut ToastStack, ev: WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();

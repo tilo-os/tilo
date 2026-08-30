@@ -38,7 +38,7 @@ impl ApplicationsProvider {
     }
 
     /// Split out so tests can exercise scoring against a known list.
-    fn apps(&self) -> Vec<InstalledApp> {
+    fn apps() -> Vec<InstalledApp> {
         launcher::gui_apps()
     }
 
@@ -92,7 +92,7 @@ impl ApplicationsProvider {
         out
     }
 
-    fn catalogue_apps(&self) -> Vec<CatalogueApp> {
+    fn catalogue_apps() -> Vec<CatalogueApp> {
         catalogue::available_apps()
     }
 
@@ -138,7 +138,7 @@ impl ApplicationsProvider {
                 id: app.package_id.clone(),
                 title: format!("Open {}", app.display_name),
                 subtitle: Some(subtitle),
-                score: score - NOT_INSTALLED_TIEBREAK,
+                score: score.saturating_sub(NOT_INSTALLED_TIEBREAK),
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
                     // Captured now, not re-read at launch: the window may be
                     // a minute away and the user's selection can change.
@@ -386,12 +386,12 @@ impl SearchProvider for ApplicationsProvider {
         {
             return Vec::new();
         }
-        let installed = self.apps();
+        let installed = Self::apps();
         let installed_ids: Vec<String> = installed.iter().map(|a| a.package_id.clone()).collect();
         let mut out = self.results_for(ctx.needle, installed, ctx.chrome.open_target);
         out.extend(self.catalogue_results_for(
             ctx.needle,
-            self.catalogue_apps(),
+            Self::catalogue_apps(),
             &installed_ids,
             ctx.chrome.open_target,
         ));

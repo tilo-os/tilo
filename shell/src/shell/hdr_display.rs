@@ -128,7 +128,7 @@ mod tests {
         assert!(!caps.supports_pq_output);
         assert!(!caps.supports_hlg_output);
         assert!(!caps.bt2020_gamut);
-        assert_eq!(caps.max_luminance_nits as u32, 100);
+        assert!((caps.max_luminance_nits - 100.0).abs() < f32::EPSILON);
     }
 
     #[test]

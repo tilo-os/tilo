@@ -13,6 +13,9 @@ use crate::sheet::{CellInput, Workbook};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 const NS_MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const NS_REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -393,10 +396,11 @@ fn content_types_xml(nsheets: usize, has_styles: bool) -> String {
     let mut overrides = String::new();
     overrides.push_str(r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#);
     for i in 0..nsheets {
-        overrides.push_str(&format!(
+        let _ = write!(
+            overrides,
             r#"<Override PartName="/xl/worksheets/sheet{}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#,
             i + 1
-        ));
+        );
     }
     if has_styles {
         overrides.push_str(r#"<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>"#);
@@ -416,12 +420,13 @@ fn root_rels_xml() -> String {
 fn workbook_xml(snap: &crate::sheet::WorkbookSnapshot) -> String {
     let mut sheets = String::new();
     for (i, sheet) in snap.sheets.iter().enumerate() {
-        sheets.push_str(&format!(
+        let _ = write!(
+            sheets,
             r#"<sheet name="{}" sheetId="{}" r:id="rIdSheet{}"/>"#,
             xml_escape(&sheet.name),
             i + 1,
             i + 1
-        ));
+        );
     }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -432,11 +437,12 @@ fn workbook_xml(snap: &crate::sheet::WorkbookSnapshot) -> String {
 fn workbook_rels_xml(nsheets: usize, has_styles: bool) -> String {
     let mut rels = String::new();
     for i in 0..nsheets {
-        rels.push_str(&format!(
+        let _ = write!(
+            rels,
             r#"<Relationship Id="rIdSheet{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{}.xml"/>"#,
             i + 1,
             i + 1
-        ));
+        );
     }
     if has_styles {
         rels.push_str(r#"<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#);
@@ -455,7 +461,7 @@ fn worksheet_xml(sheet: &crate::sheet::SheetView) -> String {
     }
     let mut data = String::new();
     for (row, cells) in &rows {
-        data.push_str(&format!(r#"<row r="{row}">"#));
+        let _ = write!(data, r#"<row r="{row}">"#);
         for cell in cells {
             data.push_str(&cell_xml(cell));
         }
@@ -522,22 +528,24 @@ fn minimal_styles_xml() -> String {
 fn core_props_xml(props: &BTreeMap<String, String>) -> String {
     let mut fields = String::new();
     if let Some(v) = props.get("title") {
-        fields.push_str(&format!("<dc:title>{}</dc:title>", xml_escape(v)));
+        let _ = write!(fields, "<dc:title>{}</dc:title>", xml_escape(v));
     }
     if let Some(v) = props.get("author") {
-        fields.push_str(&format!("<dc:creator>{}</dc:creator>", xml_escape(v)));
+        let _ = write!(fields, "<dc:creator>{}</dc:creator>", xml_escape(v));
     }
     if let Some(v) = props.get("created") {
-        fields.push_str(&format!(
+        let _ = write!(
+            fields,
             r#"<dcterms:created xsi:type="dcterms:W3CDTF">{}</dcterms:created>"#,
             xml_escape(v)
-        ));
+        );
     }
     if let Some(v) = props.get("modified") {
-        fields.push_str(&format!(
+        let _ = write!(
+            fields,
             r#"<dcterms:modified xsi:type="dcterms:W3CDTF">{}</dcterms:modified>"#,
             xml_escape(v)
-        ));
+        );
     }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

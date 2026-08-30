@@ -3,7 +3,7 @@
 //! numbering parts a from-scratch document lacks.
 
 use super::container::DocxContainer;
-use crate::export::{InlineBoundary, InlinePlan};
+use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocRef;
 use crate::schema::{
@@ -12,6 +12,9 @@ use crate::schema::{
 };
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 const W_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -500,7 +503,7 @@ fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
             _ => "",
         };
         if !v.is_empty() {
-            pp.push_str(&format!(r#"<w:jc w:val="{v}"/>"#));
+            let _ = write!(pp, r#"<w:jc w:val="{v}"/>"#);
         }
     }
     let before = getf(STYLE_SPACE_BEFORE).filter(|v| *v != 0.0);
@@ -508,21 +511,21 @@ fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
     if before.is_some() || after.is_some() {
         pp.push_str("<w:spacing");
         if let Some(v) = before {
-            pp.push_str(&format!(r#" w:before="{}""#, px_to_twips(v)));
+            let _ = write!(pp, r#" w:before="{}""#, px_to_twips(v));
         }
         if let Some(v) = after {
-            pp.push_str(&format!(r#" w:after="{}""#, px_to_twips(v)));
+            let _ = write!(pp, r#" w:after="{}""#, px_to_twips(v));
         }
         pp.push_str("/>");
     }
     if let Some(v) = getf(STYLE_INDENT).filter(|v| *v != 0.0) {
-        pp.push_str(&format!(r#"<w:ind w:left="{}"/>"#, px_to_twips(v)));
+        let _ = write!(pp, r#"<w:ind w:left="{}"/>"#, px_to_twips(v));
     }
 
     let mut rp = String::new();
     if let Some(f) = gets(STYLE_FONT) {
         let n = font_name(f);
-        rp.push_str(&format!(r#"<w:rFonts w:ascii="{n}" w:hAnsi="{n}"/>"#));
+        let _ = write!(rp, r#"<w:rFonts w:ascii="{n}" w:hAnsi="{n}"/>"#);
     }
     if getb(STYLE_BOLD) {
         rp.push_str("<w:b/>");
@@ -531,11 +534,11 @@ fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
         rp.push_str("<w:i/>");
     }
     if let Some(c) = gets(STYLE_COLOR) {
-        rp.push_str(&format!(r#"<w:color w:val="{}"/>"#, color_hex(c)));
+        let _ = write!(rp, r#"<w:color w:val="{}"/>"#, color_hex(c));
     }
     if let Some(sz) = getf(STYLE_SIZE) {
         let hp = (sz * 2.0).round() as i64;
-        rp.push_str(&format!(r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#));
+        let _ = write!(rp, r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#);
     }
 
     let name = gets(STYLE_NAME).unwrap_or(id);
@@ -603,8 +606,19 @@ fn font_name(generic: &str) -> &'static str {
     }
 }
 
+/// The active marks covering character `i`, sorted by name for stable grouping.
+fn marks_at(i: usize, marks: &[crate::document::MarkSpan]) -> Vec<(String, MarkValue)> {
+    let mut v: Vec<(String, MarkValue)> = marks
+        .iter()
+        .filter(|m| i >= m.start && i < m.end)
+        .map(|m| (m.name.clone(), m.value.clone()))
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
 /// Build the `<w:rPr>` body for an active mark set (empty if none modeled).
-fn run_props(marks: &[&crate::document::MarkSpan]) -> String {
+fn run_props(marks: &[(String, MarkValue)]) -> String {
     let (mut b, mut i, mut u, mut strike) = (false, false, false, false);
     let mut sz: Option<i64> = None;
     let mut font: Option<&str> = None;
@@ -614,17 +628,17 @@ fn run_props(marks: &[&crate::document::MarkSpan]) -> String {
     let mut lang: Option<&str> = None;
     // Vertical alignment: `superscript`/`subscript` (super wins if both present).
     let mut vert_align: Option<&'static str> = None;
-    for mark in marks {
-        match mark.name.as_str() {
+    for (name, val) in marks {
+        match name.as_str() {
             "strong" => b = true,
             "em" => i = true,
             "underline" => u = true,
             "strike" => strike = true,
-            "fontSize" => sz = mark.value.as_int(),
-            "fontFamily" => font = mark.value.as_str(),
-            "color" => color = mark.value.as_str(),
-            "highlight" => highlight = mark.value.as_str(),
-            "lang" => lang = mark.value.as_str(),
+            "fontSize" => sz = val.as_int(),
+            "fontFamily" => font = val.as_str(),
+            "color" => color = val.as_str(),
+            "highlight" => highlight = val.as_str(),
+            "lang" => lang = val.as_str(),
             "super" => vert_align = Some("superscript"),
             "sub" if vert_align.is_none() => vert_align = Some("subscript"),
             _ => {}
@@ -633,7 +647,7 @@ fn run_props(marks: &[&crate::document::MarkSpan]) -> String {
     let mut s = String::new();
     if let Some(f) = font {
         let n = font_name(f);
-        s.push_str(&format!(r#"<w:rFonts w:ascii="{n}" w:hAnsi="{n}"/>"#));
+        let _ = write!(s, r#"<w:rFonts w:ascii="{n}" w:hAnsi="{n}"/>"#);
     }
     if b {
         s.push_str("<w:b/>");
@@ -645,28 +659,29 @@ fn run_props(marks: &[&crate::document::MarkSpan]) -> String {
         s.push_str("<w:strike/>");
     }
     if let Some(c) = color {
-        s.push_str(&format!(r#"<w:color w:val="{}"/>"#, color_hex(c)));
+        let _ = write!(s, r#"<w:color w:val="{}"/>"#, color_hex(c));
     }
     // w:shd carries the arbitrary hex highlight fill, since it round-trips any colour unlike the named w:highlight palette.
     if let Some(c) = highlight {
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             r#"<w:shd w:val="clear" w:color="auto" w:fill="{}"/>"#,
             color_hex(c)
-        ));
+        );
     }
     if let Some(n) = sz {
         let hp = n * 2;
-        s.push_str(&format!(r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#));
+        let _ = write!(s, r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#);
     }
     // BCP-47 tag emitted verbatim; Word uses it for spell-check locale and screen-reader language.
     if let Some(l) = lang {
-        s.push_str(&format!(r#"<w:lang w:val="{}"/>"#, escape_attr(l)));
+        let _ = write!(s, r#"<w:lang w:val="{}"/>"#, escape_attr(l));
     }
     if u {
         s.push_str(r#"<w:u w:val="single"/>"#);
     }
     if let Some(va) = vert_align {
-        s.push_str(&format!(r#"<w:vertAlign w:val="{va}"/>"#));
+        let _ = write!(s, r#"<w:vertAlign w:val="{va}"/>"#);
     }
     s
 }
@@ -702,6 +717,13 @@ fn run_content(chars: &[char]) -> String {
     out
 }
 
+fn note_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> {
+    marks
+        .iter()
+        .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == i + 1)
+        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
+}
+
 /// The footnote/endnote reference run, carrying the FootnoteReference/EndnoteReference character style so Word superscripts it.
 fn note_reference_run(
     note_id: &str,
@@ -722,11 +744,101 @@ fn note_reference_run(
     ))
 }
 
+/// The comment ids whose `comment` mark starts/ends exactly at `i` (sorted for determinism).
+fn comment_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.start == i)
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
+fn comment_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.end == i)
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
+/// The bookmark names whose `bookmark` mark starts/ends exactly at `i` (sorted for determinism).
+fn bookmark_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
+fn bookmark_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
+/// The internal cross-reference target of a `link` mark (`#name` → `name`); external URL links aren't modeled by this codec.
+fn cross_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> {
+    marks
+        .iter()
+        .find(|m| m.name == crate::schema::MARK_LINK && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str())
+        .and_then(|v| {
+            v.strip_prefix(crate::schema::CROSS_REF_PREFIX)
+                .map(std::string::ToString::to_string)
+        })
+}
+
+/// Whether a run must break before `j`: any mark-set change, note-ref, comment/bookmark boundary, or cross-reference change.
+fn run_breaks_at(
+    chars: &[char],
+    marks: &[crate::document::MarkSpan],
+    active: &[(String, MarkValue)],
+    active_change: &Option<(crate::snapshot::ChangeKind, String)>,
+    active_xref: &Option<String>,
+    j: usize,
+) -> bool {
+    marks_at(j, marks) != active
+        || &change_at(marks, j) != active_change
+        || &cross_ref_at(marks, j) != active_xref
+        || is_note_ref_placeholder(chars, marks, j)
+        || !comment_starts_at(marks, j).is_empty()
+        || !comment_ends_at(marks, j).is_empty()
+        || !bookmark_starts_at(marks, j).is_empty()
+        || !bookmark_ends_at(marks, j).is_empty()
+}
+
 /// A change-id → `&ChangeView` lookup for wrapping runs in `<w:ins>`/`<w:del>` on export.
 type ChangeIndex<'a> = BTreeMap<String, &'a crate::snapshot::ChangeView>;
 
 fn change_index(snap: &DocSnapshot) -> ChangeIndex<'_> {
     snap.changes.iter().map(|c| (c.id.clone(), c)).collect()
+}
+
+/// The tracked change anchoring char `i`, if any; insertion wins if both somehow overlap.
+fn change_at(
+    marks: &[crate::document::MarkSpan],
+    i: usize,
+) -> Option<(crate::snapshot::ChangeKind, String)> {
+    let find = |name: &str| {
+        marks
+            .iter()
+            .find(|m| m.name == name && i >= m.start && i < m.end)
+            .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
+    };
+    if let Some(id) = find(crate::schema::MARK_INS) {
+        return Some((crate::snapshot::ChangeKind::Ins, id));
+    }
+    find(crate::schema::MARK_DEL).map(|id| (crate::snapshot::ChangeKind::Del, id))
 }
 
 /// The `<w:ins>`/`<w:del>` open tag for a tracked change (docx id + author/date), wrapping the affected `<w:r>` runs.
@@ -791,78 +903,75 @@ fn render_runs(
     change_ids: &BTreeMap<String, i64>,
     bookmark_ids: &BTreeMap<String, i64>,
 ) -> String {
-    let plan = InlinePlan::new(text, marks);
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
     let mut out = String::new();
-    // Comment boundaries: ends (+ reference run) close before starts open, so adjacent ranges don't collide.
-    let emit_comment_boundaries = |out: &mut String, boundary: &InlineBoundary<'_>| {
-        for id in &boundary.comments.ends {
-            if let Some(end) = super::comments::comment_range_end(id, comment_ids) {
+    // Comment boundaries at `i`: ends (+ reference run) close before starts open, so adjacent ranges don't collide.
+    let emit_comment_boundaries = |out: &mut String, i: usize| {
+        for id in comment_ends_at(marks, i) {
+            if let Some(end) = super::comments::comment_range_end(&id, comment_ids) {
                 out.push_str(&end);
             }
-            if let Some(rf) = super::comments::comment_reference_run(id, comment_ids) {
+            if let Some(rf) = super::comments::comment_reference_run(&id, comment_ids) {
                 out.push_str(&rf);
             }
         }
-        for id in &boundary.comments.starts {
-            if let Some(start) = super::comments::comment_range_start(id, comment_ids) {
+        for id in comment_starts_at(marks, i) {
+            if let Some(start) = super::comments::comment_range_start(&id, comment_ids) {
                 out.push_str(&start);
             }
         }
     };
-    // Bookmark boundaries: end (by id) before start (id + name) — empty elements sitting between runs.
-    let emit_bookmark_boundaries = |out: &mut String, boundary: &InlineBoundary<'_>| {
-        for name in &boundary.bookmarks.ends {
-            if let Some(id) = bookmark_ids.get(*name) {
-                out.push_str(&format!(r#"<w:bookmarkEnd w:id="{id}"/>"#));
+    // Bookmark boundaries at `i`: end (by id) before start (id + name) — empty elements sitting between runs.
+    let emit_bookmark_boundaries = |out: &mut String, i: usize| {
+        for name in bookmark_ends_at(marks, i) {
+            if let Some(id) = bookmark_ids.get(&name) {
+                let _ = write!(out, r#"<w:bookmarkEnd w:id="{id}"/>"#);
             }
         }
-        for name in &boundary.bookmarks.starts {
-            if let Some(id) = bookmark_ids.get(*name) {
-                out.push_str(&format!(
+        for name in bookmark_starts_at(marks, i) {
+            if let Some(id) = bookmark_ids.get(&name) {
+                let _ = write!(
+                    out,
                     r#"<w:bookmarkStart w:id="{id}" w:name="{}"/>"#,
-                    escape_attr(name)
-                ));
+                    escape_attr(&name)
+                );
             }
         }
     };
-    for point in plan.points() {
-        // Preserve the established terminal ordering (bookmarks, then comments).
-        if point.run.is_none() {
-            // A bookmark beginning after the final character has no representable
-            // body range; the legacy traversal emitted terminal ends only.
-            for name in &point.boundary.bookmarks.ends {
-                if let Some(id) = bookmark_ids.get(*name) {
-                    out.push_str(&format!(r#"<w:bookmarkEnd w:id="{id}"/>"#));
-                }
+    let mut i = 0;
+    while i < n {
+        emit_comment_boundaries(&mut out, i);
+        emit_bookmark_boundaries(&mut out, i);
+        // A note-reference placeholder is its own run (no text), independent of the surrounding marks.
+        if chars[i] == crate::schema::FIELD_PLACEHOLDER
+            && let Some(note_id) = note_ref_at(marks, i)
+        {
+            if let Some(run) = note_reference_run(&note_id, note_ids, note_kinds) {
+                out.push_str(&run);
             }
-            emit_comment_boundaries(&mut out, &point.boundary);
+            i += 1;
             continue;
         }
-        emit_comment_boundaries(&mut out, &point.boundary);
-        emit_bookmark_boundaries(&mut out, &point.boundary);
-        let run = point.run.as_ref().expect("checked above");
-        // A note-reference placeholder is its own run (no text), independent of the surrounding marks.
-        if let Some(note_id) = run.note_reference {
-            if let Some(reference) = note_reference_run(note_id, note_ids, note_kinds) {
-                out.push_str(&reference);
-            }
-            continue;
+        let active = marks_at(i, marks);
+        let active_change = change_at(marks, i);
+        let active_xref = cross_ref_at(marks, i);
+        let mut j = i + 1;
+        while j < n && !run_breaks_at(&chars, marks, &active, &active_change, &active_xref, j) {
+            j += 1;
         }
         // The `<w:ins>`/`<w:del>` wrapper (if any) for this run group; deleted text uses `<w:delText>`.
-        let (wrap_open, wrap_close, is_del) = match run.change {
-            Some(active_change) => match (
-                changes.get(active_change.id),
-                change_ids.get(active_change.id),
-            ) {
+        let (wrap_open, wrap_close, is_del) = match &active_change {
+            Some((kind, id)) => match (changes.get(id), change_ids.get(id)) {
                 (Some(ch), Some(docx_id)) => {
-                    let close = match active_change.kind {
+                    let close = match kind {
                         crate::snapshot::ChangeKind::Ins => "</w:ins>",
                         crate::snapshot::ChangeKind::Del => "</w:del>",
                     };
                     (
                         change_open_tag(ch, *docx_id),
                         close,
-                        active_change.kind == crate::snapshot::ChangeKind::Del,
+                        *kind == crate::snapshot::ChangeKind::Del,
                     )
                 }
                 _ => (String::new(), "", false),
@@ -870,30 +979,41 @@ fn render_runs(
             None => (String::new(), "", false),
         };
         // A cross-reference wraps the whole run group in `<w:hyperlink w:anchor>`, the outermost wrapper.
-        let (xref_open, xref_close) = match run.cross_reference() {
+        let (xref_open, xref_close) = match &active_xref {
             Some(target) => (
                 format!(r#"<w:hyperlink w:anchor="{}">"#, escape_attr(target)),
                 "</w:hyperlink>",
             ),
             None => (String::new(), ""),
         };
-        let rpr = run_props(&run.marks);
+        let rpr = run_props(&active);
         out.push_str(&xref_open);
         out.push_str(&wrap_open);
         out.push_str("<w:r>");
         if !rpr.is_empty() {
-            out.push_str(&format!("<w:rPr>{rpr}</w:rPr>"));
+            let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
         }
         if is_del {
-            out.push_str(&del_run_content(&run.text.chars().collect::<Vec<_>>()));
+            out.push_str(&del_run_content(&chars[i..j]));
         } else {
-            out.push_str(&run_content(&run.text.chars().collect::<Vec<_>>()));
+            out.push_str(&run_content(&chars[i..j]));
         }
         out.push_str("</w:r>");
         out.push_str(wrap_close);
         out.push_str(xref_close);
+        i = j;
     }
+    for name in bookmark_ends_at(marks, n) {
+        if let Some(id) = bookmark_ids.get(&name) {
+            let _ = write!(out, r#"<w:bookmarkEnd w:id="{id}"/>"#);
+        }
+    }
+    emit_comment_boundaries(&mut out, n);
     out
+}
+
+fn is_note_ref_placeholder(chars: &[char], marks: &[crate::document::MarkSpan], j: usize) -> bool {
+    chars[j] == crate::schema::FIELD_PLACEHOLDER && note_ref_at(marks, j).is_some()
 }
 
 fn jc_xml(b: &BlockView) -> String {
@@ -995,12 +1115,14 @@ impl Numbering {
         nums.push_str(r#"<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>"#);
         for ((_, fmt, start), id) in &self.ids {
             let nf = ooxml_num_format(fmt);
-            abs.push_str(&format!(
+            let _ = write!(
+                abs,
                 r#"<w:abstractNum w:abstractNumId="{id}"><w:lvl w:ilvl="0"><w:start w:val="{start}"/><w:numFmt w:val="{nf}"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>"#
-            ));
-            nums.push_str(&format!(
+            );
+            let _ = write!(
+                nums,
                 r#"<w:num w:numId="{id}"><w:abstractNumId w:val="{id}"/></w:num>"#
-            ));
+            );
         }
         format!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1052,10 +1174,11 @@ impl ImageExport {
     fn relationships(&self) -> String {
         let mut s = String::new();
         for img in &self.images {
-            s.push_str(&format!(
+            let _ = write!(
+                s,
                 r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{}"/>"#,
                 img.rel_id, img.target
-            ));
+            );
         }
         s
     }
@@ -1200,7 +1323,8 @@ fn build_document_xml(
                     Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
                     _ => 1,
                 };
-                body.push_str(&format!(
+                let _ = write!(
+                    body,
                     r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
                     spacing_xml(b),
@@ -1214,23 +1338,33 @@ fn build_document_xml(
                         change_ids,
                         bookmark_ids
                     )
-                ));
+                );
                 i += 1;
             }
             "list_item" => {
                 let numid = numbering.num_id(b);
-                body.push_str(&format!(
+                let _ = write!(
+                    body,
                     r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
                     spacing_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids)
-                ));
+                    render_runs(
+                        &b.text,
+                        &b.marks,
+                        note_ids,
+                        note_kinds,
+                        comment_ids,
+                        changes,
+                        change_ids,
+                        bookmark_ids
+                    )
+                );
                 i += 1;
             }
             "image" => {
                 // Wrap the drawing run in a paragraph (Word images live in a `w:p`).
                 if let Some(drawing) = image_drawing_xml(b, snap, &mut imgs) {
-                    body.push_str(&format!("<w:p>{drawing}</w:p>"));
+                    let _ = write!(body, "<w:p>{drawing}</w:p>");
                 }
                 i += 1;
             }
@@ -1277,9 +1411,10 @@ fn build_document_xml(
                                 )
                             })
                             .unwrap_or_default();
-                        body.push_str(&format!(
+                        let _ = write!(
+                            body,
                             r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
-                        ));
+                        );
                     }
                     body.push_str("</w:tr>");
                 }
@@ -1291,7 +1426,7 @@ fn build_document_xml(
                 if let Some(AttrVal::Str(sid)) = b.attrs.get("style")
                     && snap.styles.contains_key(sid)
                 {
-                    ppr_inner.push_str(&format!(r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid)));
+                    let _ = write!(ppr_inner, r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid));
                     named_refs.insert(sid.clone());
                 }
                 ppr_inner.push_str(&jc_xml(b));
@@ -1301,7 +1436,8 @@ fn build_document_xml(
                 } else {
                     format!("<w:pPr>{ppr_inner}</w:pPr>")
                 };
-                body.push_str(&format!(
+                let _ = write!(
+                    body,
                     "<w:p>{ppr}{}</w:p>",
                     render_runs(
                         &b.text,
@@ -1313,7 +1449,7 @@ fn build_document_xml(
                         change_ids,
                         bookmark_ids
                     )
-                ));
+                );
                 i += 1;
             }
         }

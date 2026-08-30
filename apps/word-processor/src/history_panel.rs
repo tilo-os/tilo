@@ -20,6 +20,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::num;
 use automerge::{AutoCommit, ChangeHash};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -257,7 +258,8 @@ impl HistoryPanel {
             self.source.authors_mut().register_local_identity(&actor);
         }
 
-        let at_end = self.scrubber.current_tick() + 1 >= self.scrubber.tick_count().max(1);
+        let at_end =
+            self.scrubber.current_tick().saturating_add(1) >= self.scrubber.tick_count().max(1);
         let entries = self.source.entries(doc);
         let tick = self.scrubber.current_tick();
         // The names people have given runs of this document live in the document,
@@ -336,7 +338,11 @@ impl HistoryPanel {
         // rect — but `Widget::handle_event` asks for a layout tree, so hand it
         // a throwaway one rather than threading the host's.
         let mut scratch: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let node = scratch.new_leaf(taffy::Style::default()).unwrap();
+        let Ok(node) = scratch.new_leaf(taffy::Style::default()) else {
+            // A fresh tree cannot be out of capacity; if it ever were, the
+            // panel simply reports "nothing happened" for this event.
+            return HistoryOutcome::default();
+        };
         self.scrubber.handle_event(
             event,
             scale_factor,
@@ -499,7 +505,7 @@ fn draw_preview_card(
     );
     let head = format!(
         "Version {} \u{00b7} {} \u{00b7} {}",
-        p.version + 1,
+        p.version.saturating_add(1),
         p.author,
         p.summary
     );
@@ -522,7 +528,7 @@ fn draw_preview_card(
         13.0,
         theme.tokens.colors.text_primary,
         transform * Affine::translate((card.x0 + 12.0, card.y0 + 28.0)),
-        Some((card.width() - 24.0) as f32),
+        Some(num::f32_of_f64(card.width() - 24.0)),
     );
     let _ = Point::ZERO;
 }
@@ -749,7 +755,7 @@ mod tests {
         qdoc::history::commit_stamped_at(&mut s.doc, 1_000_010);
 
         // Session one: five more edits, seconds apart.
-        for i in 0..5 {
+        for stamp in (1_000_020..).step_by(10).take(5) {
             let at = {
                 let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
                 qdoc::model::materialize(&s.doc, &cc).blocks[0]
@@ -763,14 +769,14 @@ mod tests {
                 ids: &mut ids,
             };
             dm.splice_text(&p, at, 0, " one");
-            qdoc::history::commit_stamped_at(&mut s.doc, 1_000_020 + i * 10);
+            qdoc::history::commit_stamped_at(&mut s.doc, stamp);
         }
 
         // Session two, an hour later, by a peer — forked, edited under its own
         // actor, merged back, exactly as a sync round arrives.
         let mut peer = s.doc.fork();
         peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
-        for i in 0..3 {
+        for stamp in (1_004_000..).step_by(10).take(3) {
             let at = {
                 let cc = qdoc::model::open(&peer, &s.root).unwrap();
                 qdoc::model::materialize(&peer, &cc).blocks[0]
@@ -786,12 +792,12 @@ mod tests {
                 ids: &mut pids,
             };
             dm.splice_text(&p, at, 0, " two");
-            qdoc::history::commit_stamped_at(&mut peer, 1_004_000 + i * 10);
+            qdoc::history::commit_stamped_at(&mut peer, stamp);
         }
         s.doc.merge(&mut peer).expect("peers merge");
 
         // Session three, two hours after that, back to the local author.
-        for i in 0..4 {
+        for stamp in (1_012_000..).step_by(10).take(4) {
             let at = {
                 let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
                 qdoc::model::materialize(&s.doc, &cc).blocks[0]
@@ -806,7 +812,7 @@ mod tests {
                 ids: &mut ids,
             };
             dm.splice_text(&p, at, 0, " three");
-            qdoc::history::commit_stamped_at(&mut s.doc, 1_012_000 + i * 10);
+            qdoc::history::commit_stamped_at(&mut s.doc, stamp);
         }
         (s, Vec::new())
     }
@@ -853,9 +859,8 @@ mod tests {
         let mut panel = HistoryPanel::new();
         panel.toggle();
         panel.refresh(&mut s.doc);
-        assert_eq!(
-            panel.band_height(),
-            HISTORY_BAND_H,
+        assert!(
+            (panel.band_height() - HISTORY_BAND_H).abs() < f64::EPSILON,
             "the strip asks for the taller band once it has versions to show"
         );
         let mut empty = HistoryPanel::new();

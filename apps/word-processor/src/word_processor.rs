@@ -5,6 +5,7 @@
 //! mutations of the canonical document. Rendering + the `ui::Widget` impl live
 //! in `widget.rs`; click-to-caret needs layout and is wired there.
 
+use crate::num;
 use crate::styles::{StyleProps, StyleSheet};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
@@ -98,7 +99,7 @@ pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
 /// then a dotted leader and the page number when known. Levels deeper than 1 are
 /// indented by two spaces each. An entry with no page just shows the text.
 fn toc_line(e: &TocEntry) -> String {
-    let indent = "  ".repeat((e.level.max(1) - 1) as usize);
+    let indent = "  ".repeat(num::usize_of_i64(e.level.max(1) - 1));
     let title = e.text.trim();
     match e.page {
         Some(p) => format!("{indent}{title} .......... {p}"),
@@ -407,7 +408,7 @@ impl WordProcessor {
             dm.splice_text(
                 block_id,
                 char_start,
-                char_end.saturating_sub(char_start) as isize,
+                num::isize_of_usize(char_end.saturating_sub(char_start)),
                 text,
             );
         }
@@ -723,8 +724,8 @@ impl WordProcessor {
         let Some(containers) = self.containers.clone() else {
             return;
         };
-        let w = width.round().clamp(16.0, 4000.0) as i64;
-        let h = height.round().clamp(16.0, 4000.0) as i64;
+        let w = num::i64_of_f64(width.round().clamp(16.0, 4000.0));
+        let h = num::i64_of_f64(height.round().clamp(16.0, 4000.0));
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut {
                 doc: state,
@@ -770,7 +771,7 @@ impl WordProcessor {
             .into_iter()
             .find(|b| b.id == block_id)?;
         let num = |k: &str| match b.attrs.get(k) {
-            Some(qdoc::AttrVal::Int(n)) if *n > 0 => Some(*n as f64),
+            Some(qdoc::AttrVal::Int(n)) if *n > 0 => Some(num::f64_of_i64(*n)),
             Some(qdoc::AttrVal::Float(f)) if *f > 0.0 => Some(*f),
             _ => None,
         };
@@ -859,7 +860,7 @@ impl WordProcessor {
                 dm.splice_text(
                     &start.block,
                     start.offset,
-                    (end.offset - start.offset) as isize,
+                    num::isize_of_usize(end.offset - start.offset),
                     "",
                 );
             }
@@ -883,7 +884,7 @@ impl WordProcessor {
                     dm.splice_text(
                         &start.block,
                         start.offset,
-                        (start_len - start.offset) as isize,
+                        num::isize_of_usize(start_len - start.offset),
                         "",
                     );
                 }
@@ -1440,7 +1441,7 @@ impl WordProcessor {
                 // remote peer's action) is not a usable multiplier — fall back
                 // like an unset attr rather than propagating it.
                 Some(qdoc::AttrVal::Float(f)) if f.is_finite() && *f > 0.0 => *f,
-                Some(qdoc::AttrVal::Int(n)) if *n > 0 => *n as f64,
+                Some(qdoc::AttrVal::Int(n)) if *n > 0 => num::f64_of_i64(*n),
                 _ => 1.0,
             })
     }
@@ -1465,7 +1466,7 @@ impl WordProcessor {
             .find(|b| b.id == block)
             .map_or(0.0, |b| match b.attrs.get(key) {
                 Some(qdoc::AttrVal::Float(f)) => *f,
-                Some(qdoc::AttrVal::Int(n)) => *n as f64,
+                Some(qdoc::AttrVal::Int(n)) => num::f64_of_i64(*n),
                 _ => 0.0,
             })
     }
@@ -1611,8 +1612,8 @@ impl WordProcessor {
                 for col in 0..cols {
                     let id = dm.insert_block(prev.as_deref(), "cell");
                     dm.set_attr(&id, "table", table_id.as_str());
-                    dm.set_attr(&id, "row", r as i64);
-                    dm.set_attr(&id, "col", col as i64);
+                    dm.set_attr(&id, "row", num::i64_of_usize(r));
+                    dm.set_attr(&id, "col", num::i64_of_usize(col));
                     if first_cell.is_none() {
                         first_cell = Some(id.clone());
                     }
@@ -1666,7 +1667,7 @@ impl WordProcessor {
                 let hash = dm.put_blob(bytes);
                 // Trim the caret block down to the head before the caret.
                 if offset < char_count {
-                    dm.splice_text(&block, offset, (char_count - offset) as isize, "");
+                    dm.splice_text(&block, offset, num::isize_of_usize(char_count - offset), "");
                 }
                 let img = dm.insert_block(Some(&block), "image");
                 dm.set_attr(&img, "blob", hash.as_str());
@@ -1701,7 +1702,7 @@ impl WordProcessor {
             _ => return None,
         };
         let int = |b: &qdoc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
-            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => *n as usize,
+            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
             _ => 0,
         };
         let cells = snap
@@ -1789,14 +1790,14 @@ impl WordProcessor {
                 ids,
             };
             for (id, r) in &to_bump {
-                dm.set_attr(id, "row", (*r + 1) as i64);
+                dm.set_attr(id, "row", num::i64_of_usize(*r + 1));
             }
             let mut prev = anchor;
             for col in 0..ncols {
                 let id = dm.insert_block(prev.as_deref(), "cell");
                 dm.set_attr(&id, "table", tid.as_str());
-                dm.set_attr(&id, "row", new_row as i64);
-                dm.set_attr(&id, "col", col as i64);
+                dm.set_attr(&id, "row", num::i64_of_usize(new_row));
+                dm.set_attr(&id, "col", num::i64_of_usize(col));
                 if first_new.is_none() {
                     first_new = Some(id.clone());
                 }
@@ -1889,13 +1890,13 @@ impl WordProcessor {
                 ids,
             };
             for (id, c) in &to_bump {
-                dm.set_attr(id, "col", (*c + 1) as i64);
+                dm.set_attr(id, "col", num::i64_of_usize(*c + 1));
             }
             for (r, anchor) in anchors.iter().enumerate() {
                 let id = dm.insert_block(anchor.as_deref(), "cell");
                 dm.set_attr(&id, "table", tid.as_str());
-                dm.set_attr(&id, "row", r as i64);
-                dm.set_attr(&id, "col", new_col as i64);
+                dm.set_attr(&id, "row", num::i64_of_usize(r));
+                dm.set_attr(&id, "col", num::i64_of_usize(new_col));
                 if r == cur_row {
                     caret_new = Some(id.clone());
                 }
@@ -2041,7 +2042,7 @@ impl WordProcessor {
                 dm.remove_block(id);
             }
             for (id, r) in &to_shift {
-                dm.set_attr(id, "row", (*r - 1) as i64);
+                dm.set_attr(id, "row", num::i64_of_usize(*r - 1));
             }
         }
         if let Some(nc) = new_caret {
@@ -2094,7 +2095,7 @@ impl WordProcessor {
                 dm.remove_block(id);
             }
             for (id, c) in &to_shift {
-                dm.set_attr(id, "col", (*c - 1) as i64);
+                dm.set_attr(id, "col", num::i64_of_usize(*c - 1));
             }
         }
         if let Some(nc) = new_caret {
@@ -2685,7 +2686,7 @@ impl WordProcessor {
             "###" => ("heading", Some(3), None),
             _ => return false,
         };
-        let plen = prefix.chars().count() as isize;
+        let plen = num::isize_of_usize(prefix.chars().count());
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut {
                 doc: state,
@@ -2789,7 +2790,13 @@ impl WordProcessor {
             "paragraph"
         };
         if offset < char_count {
-            self.region_splice(state, &block, offset, (char_count - offset) as isize, "");
+            self.region_splice(
+                state,
+                &block,
+                offset,
+                num::isize_of_usize(char_count - offset),
+                "",
+            );
         }
         let Some(id) = self.region_insert_block(state, Some(&block), new_kind) else {
             return;
@@ -2945,7 +2952,9 @@ impl WordProcessor {
             return;
         }
         if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block) {
-            let new = (pos as i32 + delta).clamp(0, blocks.len() as i32 - 1) as usize;
+            let new = num::usize_of_i32(
+                (num::i32_of_usize(pos) + delta).clamp(0, num::i32_of_usize(blocks.len()) - 1),
+            );
             self.move_to_block(state, new);
         }
     }
@@ -3728,7 +3737,7 @@ mod tests {
         let c = wp.containers.as_ref().unwrap();
         let snap = qdoc::model::materialize(state, c);
         let int = |b: &qdoc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
-            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => *n as usize,
+            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
             _ => 0,
         };
         let mut g: Vec<(usize, usize)> = snap

@@ -23,6 +23,7 @@ use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Base divider thickness (px) along the split axis.
@@ -201,37 +202,33 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             let _ = taffy.set_style(right_node, style);
         }
 
-        let divider_node = taffy
-            .new_leaf(Style {
-                size: divider_size,
-                flex_grow: 0.0,
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let divider_node = taffy.leaf_node(Style {
+            size: divider_size,
+            flex_grow: 0.0,
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
 
         let _ = theme; // unused — kept in signature for trait conformance
 
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction,
-                    size: taffy::Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction,
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
                 },
-                &[left_node, divider_node, right_node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[left_node, divider_node, right_node],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -239,7 +236,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        let children = taffy.children(node).unwrap();
+        let children = taffy.children(node).unwrap_or_default();
         // [left, divider leaf, right]
         if let Some(&n) = children.first() {
             self.left.apply_layout(taffy, n, new_origin);
@@ -596,13 +593,13 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.new_leaf(Style::default()).unwrap();
+            let node = taffy.leaf_node(Style::default());
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).unwrap();
+            let l = taffy.layout(node).copied().unwrap_or_default();
             self.rect = Rect::new(
                 origin.x + l.location.x as f64,
                 origin.y + l.location.y as f64,
@@ -688,12 +685,10 @@ mod tests {
         let mut tree = TaffyTree::<()>::new();
         // Node count must match the production `build_layout` shape so the
         // index-based dispatch (children[0], children[2]) finds something.
-        let left = tree.new_leaf(Style::default()).unwrap();
-        let divider = tree.new_leaf(Style::default()).unwrap();
-        let right = tree.new_leaf(Style::default()).unwrap();
-        let node = tree
-            .new_with_children(Style::default(), &[left, divider, right])
-            .unwrap();
+        let left = tree.leaf_node(Style::default());
+        let divider = tree.leaf_node(Style::default());
+        let right = tree.leaf_node(Style::default());
+        let node = tree.parent_node(Style::default(), &[left, divider, right]);
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();

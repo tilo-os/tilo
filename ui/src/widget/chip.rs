@@ -24,6 +24,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::AccentChip;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 const HEIGHT: f64 = 28.0;
@@ -423,16 +424,14 @@ impl Widget for Chip {
                 * (f64::from(theme.tokens.typography.scale.sm) * 0.6)
             + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
             + if self.removable { GAP + X_D } else { 0.0 };
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: taffy::Size {
-                    width: length(approx as f32),
-                    height: length(HEIGHT as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            flex_shrink: 0.0,
+            size: taffy::Size {
+                width: length(approx as f32),
+                height: length(HEIGHT as f32),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -450,7 +449,7 @@ impl Widget for Chip {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -654,7 +653,7 @@ mod tests {
     }
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut ft = None;
         let mut doc = AutoCommit::new();

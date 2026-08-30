@@ -13,6 +13,9 @@ use crate::sheet::{CellInput, CellView, SheetView, Workbook, WorkbookSnapshot};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 const MIMETYPE: &str = "application/vnd.oasis.opendocument.spreadsheet";
 
@@ -321,7 +324,10 @@ fn table_xml(sheet: &SheetView) -> String {
     for (&row, cells) in &by_row {
         if row > prev_row + 1 {
             let gap = row - prev_row - 1;
-            rows_xml.push_str(&format!(r#"<table:table-row table:number-rows-repeated="{gap}"><table:table-cell/></table:table-row>"#));
+            let _ = write!(
+                rows_xml,
+                r#"<table:table-row table:number-rows-repeated="{gap}"><table:table-cell/></table:table-row>"#
+            );
         }
         rows_xml.push_str("<table:table-row>");
         let mut prev_col = 0u32;
@@ -330,9 +336,10 @@ fn table_xml(sheet: &SheetView) -> String {
         for c in ordered {
             if c.col > prev_col + 1 {
                 let gap = c.col - prev_col - 1;
-                rows_xml.push_str(&format!(
+                let _ = write!(
+                    rows_xml,
                     r#"<table:table-cell table:number-columns-repeated="{gap}"/>"#
-                ));
+                );
             }
             rows_xml.push_str(&cell_xml(c));
             prev_col = c.col;
@@ -394,19 +401,20 @@ fn cell_xml(cell: &CellView) -> String {
 fn meta_xml(props: &BTreeMap<String, String>) -> String {
     let mut fields = String::new();
     if let Some(v) = props.get("title") {
-        fields.push_str(&format!("<dc:title>{}</dc:title>", xml_escape(v)));
+        let _ = write!(fields, "<dc:title>{}</dc:title>", xml_escape(v));
     }
     if let Some(v) = props.get("author") {
-        fields.push_str(&format!("<dc:creator>{}</dc:creator>", xml_escape(v)));
+        let _ = write!(fields, "<dc:creator>{}</dc:creator>", xml_escape(v));
     }
     if let Some(v) = props.get("created") {
-        fields.push_str(&format!(
+        let _ = write!(
+            fields,
             "<meta:creation-date>{}</meta:creation-date>",
             xml_escape(v)
-        ));
+        );
     }
     if let Some(v) = props.get("modified") {
-        fields.push_str(&format!("<dc:date>{}</dc:date>", xml_escape(v)));
+        let _ = write!(fields, "<dc:date>{}</dc:date>", xml_escape(v));
     }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

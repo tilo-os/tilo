@@ -29,7 +29,7 @@ impl HostApplicationsProvider {
     }
 
     /// Split out so tests can score against a known list.
-    fn apps(&self) -> Vec<HostApp> {
+    fn apps() -> Vec<HostApp> {
         host_apps::host_apps()
     }
 
@@ -216,7 +216,7 @@ impl SearchProvider for HostApplicationsProvider {
         {
             return Vec::new();
         }
-        self.results_for(ctx.needle, self.apps())
+        self.results_for(ctx.needle, Self::apps())
     }
 }
 

@@ -35,6 +35,7 @@ use crate::actions::{self, NotesAction};
 use crate::doc::NotesDoc;
 use crate::main_panel::MainPanel;
 use crate::model::{PageId, Workspace};
+use crate::num;
 use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{NoteTreeView, OutEvent};
 use crate::status_bar::{StatusBarState, StatusModel, count_words};
@@ -531,7 +532,7 @@ impl NotesApp {
         let size = tokens.typography.scale.base;
         let text_x = self.menu_btn_rect.x1 + 4.0;
         let text_y = self.topbar_rect.y0 + (self.topbar_rect.height() - f64::from(size)) / 2.0;
-        let avail = (self.topbar_rect.x1 - text_x - 12.0).max(0.0) as f32;
+        let avail = num::f32_of_f64((self.topbar_rect.x1 - text_x - 12.0).max(0.0));
         text_renderer.draw_text(
             scene,
             &title,
@@ -1439,7 +1440,7 @@ impl Widget for NotesApp {
                         bottom: length(0.0_f32),
                     },
                     size: Size {
-                        width: Dimension::length(DRAWER_WIDTH as f32),
+                        width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH)),
                         height: Dimension::percent(1.0),
                     },
                     flex_shrink: 0.0,
@@ -1453,7 +1454,7 @@ impl Widget for NotesApp {
                 sidebar_node,
                 Style {
                     size: Size {
-                        width: Dimension::length(SIDEBAR_WIDTH as f32),
+                        width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH)),
                         height: Dimension::percent(1.0),
                     },
                     min_size: Size {
@@ -1527,7 +1528,7 @@ impl Widget for NotesApp {
                 .new_leaf(Style {
                     size: Size {
                         width: Dimension::percent(1.0),
-                        height: Dimension::length(TOPBAR_HEIGHT as f32),
+                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT)),
                     },
                     flex_shrink: 0.0,
                     ..Default::default()

@@ -29,6 +29,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::{ON_FILL_MIN_CONTRAST, over};
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Drives the active-segment colour. `Neutral` is the de-emphasised
@@ -127,16 +128,14 @@ impl Widget for TriStateControl {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: length(SEGMENT_HEIGHT as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            flex_shrink: 0.0,
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(SEGMENT_HEIGHT as f32),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -155,7 +154,7 @@ impl Widget for TriStateControl {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -422,16 +421,14 @@ impl Widget for ColorSwatchPicker {
         let pad = 8.0_f32;
         let w = self.columns as f32 * self.cell as f32 + pad * 2.0;
         let h = self.rows() as f32 * self.cell as f32 + pad * 2.0;
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: taffy::Size {
-                    width: length(w),
-                    height: length(h),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            flex_shrink: 0.0,
+            size: taffy::Size {
+                width: length(w),
+                height: length(h),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -450,7 +447,7 @@ impl Widget for ColorSwatchPicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -641,7 +638,7 @@ mod tests {
     }
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut ft = None;
         let mut doc = AutoCommit::new();

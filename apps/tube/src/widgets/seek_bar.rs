@@ -86,28 +86,23 @@ impl Widget for SeekBar {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
+        let node = super::leaf_node(
+            taffy,
+            Style {
                 size: taffy::Size {
                     width: percent(1.0_f32),
                     height: length(26.0_f32),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = super::layout_rect(taffy, node, origin);
     }
 
     fn draw(
