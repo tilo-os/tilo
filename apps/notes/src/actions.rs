@@ -190,6 +190,16 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`NotesAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Notes action into a
 /// replayable envelope.
+///
+/// # Panics
+///
+/// Panics if `action` fails to serialize. [`NotesAction`] is a plain,
+/// non-recursive enum of owned strings and integers, so this cannot happen
+/// for any value this module constructs.
+#[allow(
+    clippy::expect_used,
+    reason = "NotesAction serializes with plain serde_json over owned strings/ints; encoding cannot fail"
+)]
 pub fn encode(action: &NotesAction) -> EncodedAction {
     EncodedAction::encode(NOTES_ACTION_TYPE, action).expect("NotesAction is always serializable")
 }
@@ -251,6 +261,10 @@ fn page_label(m: &PageMeta) -> String {
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "wraps encode(), which cannot fail for NotesAction — see its doc comment"
+)]
 fn immediate_spec(id: &str, label: &str, action: &NotesAction) -> ActionSpec {
     ActionSpec::immediate(id, label, NOTES_ACTION_TYPE, action).expect("encode notes action")
 }
@@ -369,14 +383,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
@@ -677,7 +691,9 @@ mod tests {
                 assert_eq!(d.title, "Child");
                 assert_eq!(d.order, 2, "appended after the two existing children");
             }
-            other => panic!("new-child built the wrong action: {other:?}"),
+            NotesAction::DeletePage { id } => {
+                panic!("new-child built the wrong action: DeletePage {{ id: {id:?} }}")
+            }
         }
     }
 
