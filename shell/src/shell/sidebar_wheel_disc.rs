@@ -1498,6 +1498,107 @@ impl Widget for SidebarWheelDisc {
         }
     }
 
+    fn wants_pointer_capture(&self) -> bool {
+        self.drag_from.is_some()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // A drag is a stream of `CursorMoved`; the host's incremental gate
+        // skips repaint on pointer move unless something reports work —
+        // without this, the wheel sits still under the finger and jumps on release.
+        let spring_active = self
+            .rotation_spring
+            .as_ref()
+            .is_some_and(|s| !s.is_settled());
+        spring_active || self.wheel_last_event.is_some() || self.drag_from.is_some()
+    }
+
+    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        // Real (clamped) frame dt keeps the spring wall-clock-correct
+        // under frame drops. Clamped to 1/30 s: semi-implicit Euler
+        // stays stable, and a long stall just resumes rather than
+        // exploding.
+        let now = std::time::Instant::now();
+        let dt = self.last_update_at.map_or(1.0 / 60.0, |prev| {
+            (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0)
+        });
+        self.last_update_at = Some(now);
+        let mut keep = self.advance(dt);
+        // Clears the sub-detent residual `wheel_accumulator` once the
+        // user pauses, so a partial scroll doesn't silently bias the
+        // next gesture into a switch the user thought they'd cancelled.
+        if let Some(last) = self.wheel_last_event {
+            if last.elapsed() > Duration::from_millis(WHEEL_SCROLL_TIMEOUT_MS) {
+                self.wheel_accumulator = 0.0;
+                self.wheel_last_event = None;
+                // A scroll wheel has no equivalent of lifting a finger,
+                // so the idle gap is the release: any pull held against
+                // an end lets go and the wheel returns to the end.
+                if self.wheel_overscroll_px != 0.0 {
+                    self.wheel_overscroll_px = 0.0;
+                    let from = self.visual_rotation_deg();
+                    let home = self.rotation_for_idx(self.active_idx);
+                    self.rotation_deg = home;
+                    self.aim_settle_spring(from, home);
+                }
+            }
+            // Even sub-threshold movement holds the redraw loop awake
+            // until the idle timer clears the accumulator.
+            keep = true;
+        }
+        keep
+    }
+
+    fn name(&self) -> &'static str {
+        "SidebarWheelDisc"
+    }
+
+    /// Stable e2e test identifier — scenarios that click the disc itself
+    /// (vs. an individual spoke) address it through the driver registry.
+    fn test_id(&self) -> Option<&str> {
+        Some("wheel_disc")
+    }
+
+    /// Opt into downcasting so the screenshot harness can reach
+    /// [`SidebarWheelDisc::hold_rotation_at`].
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Without this override the default leaf impl returns `true` every
+    /// frame, defeating the host's "skip redraw on hover-only
+    /// `CursorMoved`" gate.
+    fn needs_redraw(&self) -> bool {
+        // Dirty when the live fingerprint differs from the cached one, or a
+        // spring is in flight — needed for a drag's first frame, where the
+        // target has moved but the spring hasn't stepped, so the fingerprint
+        // still matches and reporting clean would deadlock the gesture
+        // (repaint is the only thing that pumps `update`, which moves the spring).
+        let spring_in_flight = self
+            .rotation_spring
+            .as_ref()
+            .is_some_and(|s| !s.is_settled());
+        spring_in_flight
+            || !self.cached_fp.is_populated()
+            || self.current_fingerprint() != self.cached_fp
+    }
+
+    fn mark_drawn(&mut self) {
+        // No-op — `cached_fp` is updated inside `draw` itself.
+    }
+
+    /// Fixed-width leaf, so layout never needs recomputing after the
+    /// first pass.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl SidebarWheelDisc {
     /// `MouseInput { Pressed, Left }`: the add-button, a click onto a
     /// non-active spoke, or the start of a rotation drag — whichever the
     /// press lands on first, in that priority order.
@@ -1670,105 +1771,6 @@ impl Widget for SidebarWheelDisc {
         }
         self.apply_wheel_overscroll();
         *handled = true;
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.drag_from.is_some()
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        // A drag is a stream of `CursorMoved`; the host's incremental gate
-        // skips repaint on pointer move unless something reports work —
-        // without this, the wheel sits still under the finger and jumps on release.
-        let spring_active = self
-            .rotation_spring
-            .as_ref()
-            .is_some_and(|s| !s.is_settled());
-        spring_active || self.wheel_last_event.is_some() || self.drag_from.is_some()
-    }
-
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
-        // Real (clamped) frame dt keeps the spring wall-clock-correct
-        // under frame drops. Clamped to 1/30 s: semi-implicit Euler
-        // stays stable, and a long stall just resumes rather than
-        // exploding.
-        let now = std::time::Instant::now();
-        let dt = self.last_update_at.map_or(1.0 / 60.0, |prev| {
-            (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0)
-        });
-        self.last_update_at = Some(now);
-        let mut keep = self.advance(dt);
-        // Clears the sub-detent residual `wheel_accumulator` once the
-        // user pauses, so a partial scroll doesn't silently bias the
-        // next gesture into a switch the user thought they'd cancelled.
-        if let Some(last) = self.wheel_last_event {
-            if last.elapsed() > Duration::from_millis(WHEEL_SCROLL_TIMEOUT_MS) {
-                self.wheel_accumulator = 0.0;
-                self.wheel_last_event = None;
-                // A scroll wheel has no equivalent of lifting a finger,
-                // so the idle gap is the release: any pull held against
-                // an end lets go and the wheel returns to the end.
-                if self.wheel_overscroll_px != 0.0 {
-                    self.wheel_overscroll_px = 0.0;
-                    let from = self.visual_rotation_deg();
-                    let home = self.rotation_for_idx(self.active_idx);
-                    self.rotation_deg = home;
-                    self.aim_settle_spring(from, home);
-                }
-            }
-            // Even sub-threshold movement holds the redraw loop awake
-            // until the idle timer clears the accumulator.
-            keep = true;
-        }
-        keep
-    }
-
-    fn name(&self) -> &'static str {
-        "SidebarWheelDisc"
-    }
-
-    /// Stable e2e test identifier — scenarios that click the disc itself
-    /// (vs. an individual spoke) address it through the driver registry.
-    fn test_id(&self) -> Option<&str> {
-        Some("wheel_disc")
-    }
-
-    /// Opt into downcasting so the screenshot harness can reach
-    /// [`SidebarWheelDisc::hold_rotation_at`].
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// Without this override the default leaf impl returns `true` every
-    /// frame, defeating the host's "skip redraw on hover-only
-    /// `CursorMoved`" gate.
-    fn needs_redraw(&self) -> bool {
-        // Dirty when the live fingerprint differs from the cached one, or a
-        // spring is in flight — needed for a drag's first frame, where the
-        // target has moved but the spring hasn't stepped, so the fingerprint
-        // still matches and reporting clean would deadlock the gesture
-        // (repaint is the only thing that pumps `update`, which moves the spring).
-        let spring_in_flight = self
-            .rotation_spring
-            .as_ref()
-            .is_some_and(|s| !s.is_settled());
-        spring_in_flight
-            || !self.cached_fp.is_populated()
-            || self.current_fingerprint() != self.cached_fp
-    }
-
-    fn mark_drawn(&mut self) {
-        // No-op — `cached_fp` is updated inside `draw` itself.
-    }
-
-    /// Fixed-width leaf, so layout never needs recomputing after the
-    /// first pass.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

@@ -414,7 +414,7 @@ impl Widget for PeerView {
                 // (composition is associative, so chaining the two `pre_*`
                 // combinators onto `transform` gives the same matrix).
                 let placement = transform
-                    .pre_translate((rect.x0, rect.y0))
+                    .pre_translate((rect.x0, rect.y0).into())
                     .pre_scale_non_uniform(sx, sy);
                 scene.draw_image(image, placement);
             }
@@ -429,7 +429,7 @@ impl Widget for PeerView {
                 label,
                 size,
                 tokens.colors.text_dim,
-                transform.pre_translate((cx, cy)),
+                transform.pre_translate((cx, cy).into()),
                 None,
             );
         }

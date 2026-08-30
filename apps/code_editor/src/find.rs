@@ -617,113 +617,6 @@ impl Widget for FindBar {
         }
     }
 
-    /// Draw the status readout and the transport/option/close button
-    /// cluster on the find row's right edge, recording each button's hit
-    /// rect.
-    fn draw_find_controls(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let c = &theme.tokens.colors;
-        let find_row_mid = self.rect.y0 + BAR_HEIGHT / 2.0;
-
-        // Status readout, immediately left of the control cluster.
-        let buttons = Self::buttons();
-        let cluster_w = buttons.len() as f64 * (BTN_W + GAP);
-        let cluster_x0 = self.rect.x1 - PAD - cluster_w;
-        let status = self.status_label();
-        if !status.is_empty() {
-            let color = if self.total == 0 {
-                c.semantic.warning
-            } else {
-                c.text_dim
-            };
-            let (w, _) = text_renderer.measure(&status, 12.0, None);
-            text_renderer.draw_text(
-                scene,
-                &status,
-                12.0,
-                color,
-                transform
-                    * Affine::translate((cluster_x0 - GAP - f64::from(w), find_row_mid - 7.0)),
-                None,
-            );
-        }
-
-        // The control cluster, painted through the shared button face so the
-        // hover/press/disabled palette is the OS's, not this app's.
-        let mut x = cluster_x0;
-        for b in buttons {
-            let rect = Rect::new(
-                x,
-                find_row_mid - BTN_H / 2.0,
-                x + BTN_W,
-                find_row_mid + BTN_H / 2.0,
-            );
-            let enabled = match b {
-                Btn::Prev | Btn::Next => self.total > 0,
-                _ => true,
-            };
-            let style = if self.is_active(b) {
-                ButtonStyle::Primary
-            } else {
-                ButtonStyle::Ghost
-            };
-            let face = ButtonFace::new(rect, Self::label_of(b))
-                .style(style)
-                .radius(6.0)
-                .text_size(12.0)
-                .disabled(!enabled)
-                .hovered(enabled && rect.contains(self.hover))
-                .accessible_name(Self::accessible_name_of(b));
-            Button::paint(scene, transform, text_renderer, theme, &face);
-            self.button_rects.push((b, rect));
-            x += BTN_W + GAP;
-        }
-    }
-
-    /// Draw the replace row's "Replace"/"All" buttons, recording their hit
-    /// rects.
-    fn draw_replace_buttons(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let mid = self.rect.y0 + BAR_HEIGHT + (BAR_HEIGHT_REPLACE - BAR_HEIGHT) / 2.0;
-        let all = Rect::new(
-            self.rect.x1 - PAD - 56.0,
-            mid - BTN_H / 2.0,
-            self.rect.x1 - PAD,
-            mid + BTN_H / 2.0,
-        );
-        let one = Rect::new(
-            all.x0 - GAP - 96.0,
-            mid - BTN_H / 2.0,
-            all.x0 - GAP,
-            mid + BTN_H / 2.0,
-        );
-        for (b, rect, style) in [
-            (Btn::ReplaceOne, one, ButtonStyle::Neutral),
-            (Btn::ReplaceAll, all, ButtonStyle::Neutral),
-        ] {
-            let enabled = self.total > 0;
-            let face = ButtonFace::new(rect, Self::label_of(b))
-                .style(style)
-                .radius(6.0)
-                .text_size(12.0)
-                .disabled(!enabled)
-                .hovered(enabled && rect.contains(self.hover))
-                .accessible_name(Self::accessible_name_of(b));
-            Button::paint(scene, transform, text_renderer, theme, &face);
-            self.button_rects.push((b, rect));
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn handle_event(
         &mut self,
@@ -861,6 +754,115 @@ impl Widget for FindBar {
         self.needs_redraw = false;
         self.find.mark_drawn();
         self.replace.mark_drawn();
+    }
+}
+
+impl FindBar {
+    /// Draw the status readout and the transport/option/close button
+    /// cluster on the find row's right edge, recording each button's hit
+    /// rect.
+    fn draw_find_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let find_row_mid = self.rect.y0 + BAR_HEIGHT / 2.0;
+
+        // Status readout, immediately left of the control cluster.
+        let buttons = Self::buttons();
+        let cluster_w = buttons.len() as f64 * (BTN_W + GAP);
+        let cluster_x0 = self.rect.x1 - PAD - cluster_w;
+        let status = self.status_label();
+        if !status.is_empty() {
+            let color = if self.total == 0 {
+                c.semantic.warning
+            } else {
+                c.text_dim
+            };
+            let (w, _) = text_renderer.measure(&status, 12.0, None);
+            text_renderer.draw_text(
+                scene,
+                &status,
+                12.0,
+                color,
+                transform
+                    * Affine::translate((cluster_x0 - GAP - f64::from(w), find_row_mid - 7.0)),
+                None,
+            );
+        }
+
+        // The control cluster, painted through the shared button face so the
+        // hover/press/disabled palette is the OS's, not this app's.
+        let mut x = cluster_x0;
+        for b in buttons {
+            let rect = Rect::new(
+                x,
+                find_row_mid - BTN_H / 2.0,
+                x + BTN_W,
+                find_row_mid + BTN_H / 2.0,
+            );
+            let enabled = match b {
+                Btn::Prev | Btn::Next => self.total > 0,
+                _ => true,
+            };
+            let style = if self.is_active(b) {
+                ButtonStyle::Primary
+            } else {
+                ButtonStyle::Ghost
+            };
+            let face = ButtonFace::new(rect, Self::label_of(b))
+                .style(style)
+                .radius(6.0)
+                .text_size(12.0)
+                .disabled(!enabled)
+                .hovered(enabled && rect.contains(self.hover))
+                .accessible_name(Self::accessible_name_of(b));
+            Button::paint(scene, transform, text_renderer, theme, &face);
+            self.button_rects.push((b, rect));
+            x += BTN_W + GAP;
+        }
+    }
+
+    /// Draw the replace row's "Replace"/"All" buttons, recording their hit
+    /// rects.
+    fn draw_replace_buttons(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let mid = self.rect.y0 + BAR_HEIGHT + (BAR_HEIGHT_REPLACE - BAR_HEIGHT) / 2.0;
+        let all = Rect::new(
+            self.rect.x1 - PAD - 56.0,
+            mid - BTN_H / 2.0,
+            self.rect.x1 - PAD,
+            mid + BTN_H / 2.0,
+        );
+        let one = Rect::new(
+            all.x0 - GAP - 96.0,
+            mid - BTN_H / 2.0,
+            all.x0 - GAP,
+            mid + BTN_H / 2.0,
+        );
+        for (b, rect, style) in [
+            (Btn::ReplaceOne, one, ButtonStyle::Neutral),
+            (Btn::ReplaceAll, all, ButtonStyle::Neutral),
+        ] {
+            let enabled = self.total > 0;
+            let face = ButtonFace::new(rect, Self::label_of(b))
+                .style(style)
+                .radius(6.0)
+                .text_size(12.0)
+                .disabled(!enabled)
+                .hovered(enabled && rect.contains(self.hover))
+                .accessible_name(Self::accessible_name_of(b));
+            Button::paint(scene, transform, text_renderer, theme, &face);
+            self.button_rects.push((b, rect));
+        }
     }
 }
 
