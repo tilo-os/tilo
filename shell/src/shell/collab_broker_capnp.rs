@@ -1027,11 +1027,14 @@ impl stream::Server for OpStreamServer {
     ) -> Promise<(), capnp::Error> {
         let rx = self.rx.clone();
         Promise::from_future(async move {
-            let env = match rx.borrow_mut().recv().await {
-                Some(e) => e,
-                None => {
-                    return Err(capnp::Error::disconnected("op stream fanout closed".into()));
-                }
+            // `poll_fn` rather than `rx.borrow_mut().recv().await`: the
+            // latter would hold the `RefMut` across the await point, so a
+            // second `read()` call landing on this same `Rc<RefCell<_>>`
+            // while this one is still pending would hit `.borrow_mut()`
+            // on an already-borrowed cell and panic. Borrowing only for
+            // the duration of each individual poll avoids that.
+            let Some(env) = std::future::poll_fn(|cx| rx.borrow_mut().poll_recv(cx)).await else {
+                return Err(capnp::Error::disconnected("op stream fanout closed".into()));
             };
             let mut r = results.get();
             r.set_op(&env.op_bytes);
@@ -1054,13 +1057,14 @@ impl presence_stream::Server for PresenceStreamServer {
     ) -> Promise<(), capnp::Error> {
         let rx = self.rx.clone();
         Promise::from_future(async move {
-            let env = match rx.borrow_mut().recv().await {
-                Some(e) => e,
-                None => {
-                    return Err(capnp::Error::disconnected(
-                        "presence stream fanout closed".into(),
-                    ));
-                }
+            // See `OpStreamServer::read`: borrowing only per-poll (not
+            // across the whole await) keeps a second concurrent `read()`
+            // on this same `Rc<RefCell<_>>` from panicking on an
+            // already-borrowed cell.
+            let Some(env) = std::future::poll_fn(|cx| rx.borrow_mut().poll_recv(cx)).await else {
+                return Err(capnp::Error::disconnected(
+                    "presence stream fanout closed".into(),
+                ));
             };
             let mut ev: presence_event::Builder = results.get().init_event();
             ev.set_user_id(&env.user_id);
@@ -1106,13 +1110,12 @@ impl cursor_stream::Server for CursorStreamServer {
     ) -> Promise<(), capnp::Error> {
         let rx = self.rx.clone();
         Promise::from_future(async move {
-            let env = match rx.borrow_mut().recv().await {
-                Some(e) => e,
-                None => {
-                    return Err(capnp::Error::disconnected(
-                        "cursor stream fanout closed".into(),
-                    ));
-                }
+            // See `OpStreamServer::read` for why this borrows per-poll
+            // rather than holding the `RefCell` guard across the await.
+            let Some(env) = std::future::poll_fn(|cx| rx.borrow_mut().poll_recv(cx)).await else {
+                return Err(capnp::Error::disconnected(
+                    "cursor stream fanout closed".into(),
+                ));
             };
             let mut r = results.get();
             r.set_user_id(&env.user_id);
@@ -1135,13 +1138,12 @@ impl context_stream::Server for ContextStreamServer {
     ) -> Promise<(), capnp::Error> {
         let rx = self.rx.clone();
         Promise::from_future(async move {
-            let env = match rx.borrow_mut().recv().await {
-                Some(e) => e,
-                None => {
-                    return Err(capnp::Error::disconnected(
-                        "context stream fanout closed".into(),
-                    ));
-                }
+            // See `OpStreamServer::read` for why this borrows per-poll
+            // rather than holding the `RefCell` guard across the await.
+            let Some(env) = std::future::poll_fn(|cx| rx.borrow_mut().poll_recv(cx)).await else {
+                return Err(capnp::Error::disconnected(
+                    "context stream fanout closed".into(),
+                ));
             };
             let mut ctx = results.get().init_ctx();
             {
