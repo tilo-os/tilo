@@ -2,6 +2,42 @@
 
 qOS uses progressive disclosure without creating “basic” and “advanced” modes. A control has one domain owner and may have several views of the same state.
 
+## Personal and workspace settings
+
+qOS has two settings contexts, but not two unrelated implementations:
+
+- **Personal Settings** is a normal application for this person's device,
+  account, accessibility and fallback preferences. Its window title and
+  launcher name always say *Personal Settings*.
+- **Workspace Settings** is opened from the active workspace's name in shell
+  chrome. It always shows that workspace's identity and the local person's
+  role, and owner/admin-only controls stay visibly disabled for other members.
+
+Workspace Settings is contextual rather than a second launcher application:
+opening a generic “Workspace Settings” icon and then asking which workspace to
+edit makes high-impact permission changes too easy to misdirect. Global search
+may deep-link to it, but the shell must bind the route to a concrete workspace
+id and show that workspace before accepting a mutation.
+
+Cross-cutting domains use a single resolver. Default applications, for
+example, have a personal fallback, an optional workspace-admin policy, and an
+optional per-person choice within that workspace. Both settings surfaces call
+the resolver; neither copies or rewrites the other scope's record.
+
+For a resource kind `r`, resolution is explicit and deterministic:
+
+1. A person's explicit workspace choice wins, including an explicit
+   `FollowPersonal` choice.
+2. Otherwise, an explicit workspace policy wins.
+3. `FollowPersonal` at either workspace layer resolves through the person's
+   personal default.
+4. With no personal choice, the registered system recommendation is used.
+
+Only a workspace administrator can write the workspace policy. Every person
+can write only their own workspace choice and personal defaults. Application
+ids must resolve through the installed-app registry and support the requested
+resource type; persisted strings are never executed as commands.
+
 ## Product boundary
 
 | Surface | Put here | Keep out |
