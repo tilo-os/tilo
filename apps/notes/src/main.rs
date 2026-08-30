@@ -24,6 +24,10 @@
 use notes::NotesApp;
 use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
 
+/// # Errors
+///
+/// Returns an error if `--shots` mode fails to render, or if the app fails
+/// to spawn against its workspace.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
