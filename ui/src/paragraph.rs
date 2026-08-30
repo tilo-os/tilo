@@ -14,6 +14,13 @@ pub struct ParagraphBox {
     /// Natural glue before this fragment. It is ignored when the fragment is
     /// first on a line.
     pub glue_before: f32,
+    /// Additional stretch capacity at this boundary. Zero derives capacity
+    /// from natural glue; a positive value supports script-specific expansion
+    /// such as spacing between CJK ideographs.
+    pub stretch_before: f32,
+    /// Additional shrink capacity at this boundary. Zero derives capacity
+    /// from natural glue.
+    pub shrink_before: f32,
     /// Whether a line may end immediately before this fragment.
     pub break_before: bool,
     /// Extra demerit for breaking before this fragment. Positive values make
@@ -24,6 +31,9 @@ pub struct ParagraphBox {
     /// Width added only when the line ends at this boundary (for example the
     /// visible hyphen exercised by a discretionary break).
     pub break_width: f32,
+    /// Portion of this box allowed to protrude beyond the right margin when
+    /// it ends a line. Typically a fraction of a closing punctuation glyph.
+    pub end_protrusion: f32,
 }
 
 impl ParagraphBox {
@@ -31,10 +41,13 @@ impl ParagraphBox {
         Self {
             width,
             glue_before,
+            stretch_before: 0.0,
+            shrink_before: 0.0,
             break_before: true,
             break_penalty: 0,
             flagged_break: false,
             break_width: 0.0,
+            end_protrusion: 0.0,
         }
     }
 }
@@ -54,6 +67,12 @@ pub struct ParagraphOptions {
     pub line_penalty: f64,
     pub fitness_demerit: f64,
     pub flagged_demerit: f64,
+    /// Maximum horizontal glyph expansion/contraction used to improve colour
+    /// without making individual spaces conspicuously loose or tight.
+    pub max_glyph_expansion: f32,
+    /// Cost of using the full configured expansion. Larger values prefer
+    /// inter-word glue; smaller values prefer micro-expansion.
+    pub expansion_demerit: f64,
     /// Justify non-final lines. When false, the same global break search is
     /// used but output glue remains natural.
     pub justify: bool,
@@ -69,6 +88,8 @@ impl ParagraphOptions {
             line_penalty: 10.0,
             fitness_demerit: 3_000.0,
             flagged_demerit: 10_000.0,
+            max_glyph_expansion: 0.02,
+            expansion_demerit: 40.0,
             justify: true,
         }
     }
@@ -81,6 +102,9 @@ pub struct ComposedLine {
     pub end: usize,
     /// Multiplier applied to every natural glue on this line.
     pub glue_scale: f32,
+    /// Horizontal scale applied to glyph outlines and advances on this line.
+    /// Values stay very close to 1.0 and are never used on the final line.
+    pub glyph_scale: f32,
     pub natural_width: f32,
     /// Normalized stretch (>0) or shrink (<0) used by the cost model.
     pub adjustment_ratio: f32,
@@ -95,6 +119,16 @@ struct State {
     flagged: bool,
     ratio: f32,
     natural_width: f32,
+    glyph_scale: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LineMetrics {
+    natural: f32,
+    ratio: f32,
+    fitness: u8,
+    glyph_scale: f32,
+    badness: f64,
 }
 
 const FITNESS_CLASSES: usize = 4;
@@ -123,20 +157,38 @@ fn line_metrics(
     end: usize,
     options: ParagraphOptions,
     final_line: bool,
-) -> Option<(f32, f32, u8)> {
+) -> Option<LineMetrics> {
     let mut natural = 0.0;
-    let mut glue = 0.0;
+    let mut stretch = 0.0;
+    let mut shrink = 0.0;
+    let mut glyph_width = 0.0;
     for (offset, item) in boxes[start..end].iter().enumerate() {
-        natural += item.width.max(0.0);
+        let width = item.width.max(0.0);
+        natural += width;
+        glyph_width += width;
         if offset != 0 {
             let amount = item.glue_before.max(0.0);
             natural += amount;
-            glue += amount;
+            stretch += if item.stretch_before > 0.0 {
+                item.stretch_before
+            } else {
+                amount * options.space_stretch.max(0.0)
+            };
+            shrink += if item.shrink_before > 0.0 {
+                item.shrink_before
+            } else {
+                amount * options.space_shrink.max(0.0)
+            };
         }
     }
     if end < boxes.len() {
-        natural += boxes[end].break_width.max(0.0);
+        let break_width = boxes[end].break_width.max(0.0);
+        natural += break_width;
+        glyph_width += break_width;
     }
+    let protrusion = boxes[end - 1].end_protrusion.max(0.0).min(glyph_width);
+    natural -= protrusion;
+    glyph_width -= protrusion;
 
     // TeX's paragraph fill glue makes the final line effectively ragged.
     if final_line || !options.justify {
@@ -148,37 +200,83 @@ fn line_metrics(
         } else {
             0.0
         };
-        return Some((natural, ragged_ratio * 0.35, 1));
+        let ratio = ragged_ratio * 0.35;
+        return Some(LineMetrics {
+            natural,
+            ratio,
+            fitness: 1,
+            glyph_scale: 1.0,
+            badness: f64::from(ratio * 100.0),
+        });
     }
 
     let delta = options.line_width - natural;
-    let capacity = if delta >= 0.0 {
-        glue * options.space_stretch.max(0.0)
-    } else {
-        glue * options.space_shrink.max(0.0)
-    };
+    let capacity = if delta >= 0.0 { stretch } else { shrink };
     if capacity <= f32::EPSILON {
-        if end < boxes.len() && boxes[end].flagged_break && natural <= options.line_width {
+        if end < boxes.len() && boxes[end].break_before && natural <= options.line_width {
             let ratio = ((options.line_width - natural) / options.line_width.max(1.0)) * 3.0;
             if ratio <= options.tolerance.max(0.0) {
-                return Some((natural, ratio, fitness_class(ratio)));
+                return Some(LineMetrics {
+                    natural,
+                    ratio,
+                    fitness: fitness_class(ratio),
+                    glyph_scale: 1.0,
+                    badness: (100.0 * f64::from(ratio.abs()).powi(3)).min(10_000.0),
+                });
             }
         }
         // A non-final line with no adjustable glue is only unavoidable when a
         // single unbreakable box itself fills or overruns the measure. Treating
         // a short one-word row as perfect would make every word its own line.
-        return (end == start + 1 && natural >= options.line_width).then_some((natural, 0.0, 1));
+        return (end == start + 1 && natural >= options.line_width).then_some(LineMetrics {
+            natural,
+            ratio: 0.0,
+            fitness: 1,
+            glyph_scale: 1.0,
+            badness: 10_000.0,
+        });
     }
-    let ratio = delta / capacity;
     let minimum_ratio = if options.tolerance >= 100.0 {
         -4.0
     } else {
         -1.0
     };
-    if ratio < minimum_ratio || ratio > options.tolerance.max(0.0) {
-        return None;
+    let max_expansion = options.max_glyph_expansion.max(0.0);
+    let mut best_metrics: Option<LineMetrics> = None;
+    for step in -8..=8 {
+        let expansion = max_expansion * step as f32 / 8.0;
+        let adjusted_delta = delta - glyph_width * expansion;
+        let adjusted_capacity = if adjusted_delta >= 0.0 {
+            stretch
+        } else {
+            shrink
+        };
+        if adjusted_capacity <= f32::EPSILON {
+            continue;
+        }
+        let ratio = adjusted_delta / adjusted_capacity;
+        if ratio < minimum_ratio || ratio > options.tolerance.max(0.0) {
+            continue;
+        }
+        let space_badness = (100.0 * f64::from(ratio.abs()).powi(3)).min(10_000.0);
+        let expansion_fraction = if max_expansion <= f32::EPSILON {
+            0.0
+        } else {
+            f64::from((expansion / max_expansion).abs())
+        };
+        let badness = space_badness + options.expansion_demerit * expansion_fraction.powi(2);
+        let candidate = LineMetrics {
+            natural,
+            ratio,
+            fitness: fitness_class(ratio),
+            glyph_scale: 1.0 + expansion,
+            badness,
+        };
+        if best_metrics.is_none_or(|current| candidate.badness < current.badness) {
+            best_metrics = Some(candidate);
+        }
     }
-    Some((natural, ratio, fitness_class(ratio)))
+    best_metrics
 }
 
 fn compose_at_tolerance(
@@ -201,6 +299,7 @@ fn compose_at_tolerance(
         flagged: false,
         ratio: 0.0,
         natural_width: 0.0,
+        glyph_scale: 1.0,
     });
 
     for end in 1..=count {
@@ -214,40 +313,33 @@ fn compose_at_tolerance(
                     continue;
                 };
                 let final_line = end == count;
-                let Some((natural, ratio, fitness)) =
-                    line_metrics(boxes, start, end, options, final_line)
-                else {
+                let Some(metrics) = line_metrics(boxes, start, end, options, final_line) else {
                     continue;
                 };
-                let badness = if final_line {
-                    // A modest ragged-last-line cost avoids absurdly short endings
-                    // without forcing the last row to justify.
-                    f64::from(ratio * 100.0)
-                } else {
-                    (100.0 * f64::from(ratio.abs()).powi(3)).min(10_000.0)
-                };
+                let badness = metrics.badness;
                 let boundary = if end < count { Some(boxes[end]) } else { None };
                 let penalty = boundary.map_or(0.0, |item| f64::from(item.break_penalty));
                 let flagged = boundary.is_some_and(|item| item.flagged_break);
                 let mut demerits = previous.demerits
                     + (options.line_penalty + badness).powi(2)
                     + penalty.signum() * penalty.powi(2);
-                if previous.fitness.abs_diff(fitness) > 1 {
+                if previous.fitness.abs_diff(metrics.fitness) > 1 {
                     demerits += options.fitness_demerit;
                 }
                 if previous.flagged && flagged {
                     demerits += options.flagged_demerit;
                 }
-                let slot = state_slot(fitness, flagged);
+                let slot = state_slot(metrics.fitness, flagged);
                 if best[end][slot].is_none_or(|current| demerits < current.demerits) {
                     best[end][slot] = Some(State {
                         demerits,
                         previous: start,
                         previous_slot,
-                        fitness,
+                        fitness: metrics.fitness,
                         flagged,
-                        ratio,
-                        natural_width: natural,
+                        ratio: metrics.ratio,
+                        natural_width: metrics.natural,
+                        glyph_scale: metrics.glyph_scale,
                     });
                 }
             }
@@ -275,6 +367,11 @@ fn compose_at_tolerance(
             start: state.previous,
             end,
             glue_scale,
+            glyph_scale: if final_line || !options.justify {
+                1.0
+            } else {
+                state.glyph_scale
+            },
             natural_width: state.natural_width,
             adjustment_ratio: state.ratio,
         });
@@ -317,6 +414,7 @@ pub fn compose_paragraph(boxes: &[ParagraphBox], options: ParagraphOptions) -> V
             start,
             end,
             glue_scale: 1.0,
+            glyph_scale: 1.0,
             natural_width: natural,
             adjustment_ratio: 0.0,
         });
@@ -388,6 +486,20 @@ mod tests {
     }
 
     #[test]
+    fn micro_expansion_shares_adjustment_with_interword_glue() {
+        let boxes: Vec<_> = (0..6)
+            .map(|index| ParagraphBox::word(80.0, if index == 0 { 0.0 } else { 10.0 }))
+            .collect();
+        let lines = compose_paragraph(&boxes, ParagraphOptions::new(270.0));
+        let first = lines.first().unwrap();
+        assert!((0.98..=1.02).contains(&first.glyph_scale));
+        assert_ne!(first.glyph_scale, 1.0, "micro-expansion should participate");
+        let visual_width = 240.0 * first.glyph_scale + 20.0 * first.glue_scale;
+        assert!((visual_width - 270.0).abs() < 0.1, "line fills exactly");
+        assert_eq!(lines.last().unwrap().glyph_scale, 1.0);
+    }
+
+    #[test]
     fn fallback_keeps_a_forbidden_break_group_together() {
         let mut options = ParagraphOptions::new(1.0);
         options.space_shrink = 0.0;
@@ -397,14 +509,31 @@ mod tests {
             ParagraphBox {
                 width: 5.0,
                 glue_before: 0.0,
+                stretch_before: 0.0,
+                shrink_before: 0.0,
                 break_before: false,
                 break_penalty: 0,
                 flagged_break: false,
                 break_width: 0.0,
+                end_protrusion: 0.0,
             },
             ParagraphBox::word(10.0, 2.0),
         ];
         let lines = compose_paragraph(&boxes, options);
         assert_eq!((lines[0].start, lines[0].end), (0, 2));
+    }
+
+    #[test]
+    fn closing_punctuation_can_protrude_past_the_measure() {
+        let mut boxes: Vec<_> = (0..6)
+            .map(|index| ParagraphBox::word(80.0, if index == 0 { 0.0 } else { 10.0 }))
+            .collect();
+        boxes[2].end_protrusion = 10.0;
+        let mut options = ParagraphOptions::new(260.0);
+        options.max_glyph_expansion = 0.0;
+        let lines = compose_paragraph(&boxes, options);
+        assert_eq!(lines[0].end, 3);
+        assert_eq!(lines[0].natural_width, 250.0);
+        assert_eq!(lines[0].glue_scale, 1.5);
     }
 }
