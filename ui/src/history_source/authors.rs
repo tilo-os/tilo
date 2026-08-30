@@ -343,6 +343,19 @@ mod tests {
     /// here straight from `ed25519-dalek`, independently of anything the
     /// writer or reader reports, so a test asserting on it checks the whole
     /// chain rather than echoing one side of it.
+    /// Narrow an identity record to owner-only (0600), the mode
+    /// `runtime_identity` insists on before it will read one.
+    ///
+    /// The check is deliberate — a private key that any local account can read
+    /// is not private — so the fixture has to satisfy it rather than the reader
+    /// relax. Real records are written by first boot, which sets the mode; a
+    /// test using `fs::write` inherits the umask instead.
+    fn set_owner_only(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .expect("narrow the identity record to owner-only");
+    }
+
     fn firstboot_identity_bytes(display_name: &str, avatar_color: [u8; 3]) -> (Vec<u8>, [u8; 32]) {
         let identity =
             threshold_identity::ThresholdIdentity::from_single_device_seed(&FIXTURE_SEED);
@@ -437,6 +450,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("primary.json");
         std::fs::write(&path, &bytes).expect("write identity");
+        // The reader refuses a record that is group- or world-readable,
+        // and `fs::write` obeys the umask — 0644 on a normal login, which
+        // it rejects. Without this the test only passes for someone whose
+        // umask happens to be 0077.
+        set_owner_only(&path);
         let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
 
         let author = local_identity_author().expect("an identity on disk resolves to an author");
@@ -461,6 +479,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("primary.json");
         std::fs::write(&path, &bytes).expect("write identity");
+        // The reader refuses a record that is group- or world-readable,
+        // and `fs::write` obeys the umask — 0644 on a normal login, which
+        // it rejects. Without this the test only passes for someone whose
+        // umask happens to be 0077.
+        set_owner_only(&path);
         let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
 
         let author = local_identity_author().expect("a provisioned identity resolves to an author");
