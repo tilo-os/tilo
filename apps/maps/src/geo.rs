@@ -305,7 +305,7 @@ mod tests {
     fn simplify_drops_collinear_shape_points() {
         // 100 points evenly along a straight east–west line.
         let pts: Vec<LatLon> = (0..100)
-            .map(|i| LatLon::new(48.0, 11.0 + i as f64 * 0.001))
+            .map(|i| LatLon::new(48.0, 11.0 + f64::from(i) * 0.001))
             .collect();
         let out = simplify_polyline(&pts, 3.0);
         assert_eq!(out.len(), 2, "a straight run reduces to its endpoints");
@@ -320,10 +320,10 @@ mod tests {
         // An L-shape: east then north, with jitter points along each leg.
         let mut pts = Vec::new();
         for i in 0..20 {
-            pts.push(LatLon::new(48.0, 11.0 + i as f64 * 0.001));
+            pts.push(LatLon::new(48.0, 11.0 + f64::from(i) * 0.001));
         }
         for i in 1..20 {
-            pts.push(LatLon::new(48.0 + i as f64 * 0.001, 11.019));
+            pts.push(LatLon::new(48.0 + f64::from(i) * 0.001, 11.019));
         }
         let out = simplify_polyline(&pts, 3.0);
         assert!(
@@ -360,7 +360,7 @@ mod tests {
             two,
             "two points are already minimal"
         );
-        let many: Vec<LatLon> = (0..10).map(|i| LatLon::new(i as f64, 0.0)).collect();
+        let many: Vec<LatLon> = (0..10).map(|i| LatLon::new(f64::from(i), 0.0)).collect();
         assert_eq!(
             simplify_polyline(&many, 0.0),
             many,

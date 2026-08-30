@@ -76,7 +76,7 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
 
     // Bounded wait: the child builds a throw-away FontSystem, which is
     // slow on a cold fontconfig cache but nowhere near this long.
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let deadline = Instant::now() + Duration::from_mins(3);
     let status = loop {
         match child.try_wait().expect("try_wait") {
             Some(status) => break status,
@@ -116,12 +116,11 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
 fn child_body() -> ! {
     // Prove the simulation works, before the aborting hook is installed,
     // so a surprise here surfaces as a clean exit code rather than a signal.
-    match ui::offscreen::OffscreenRenderer::try_new(4, 4) {
-        Err(e) => eprintln!("child: no adapter, as intended: {e}"),
-        Ok(_) => {
-            eprintln!("child: an adapter was still available — cannot simulate a GPU-less machine");
-            std::process::exit(EXIT_SIMULATION_FAILED);
-        }
+    if let Err(e) = ui::offscreen::OffscreenRenderer::try_new(4, 4) {
+        eprintln!("child: no adapter, as intended: {e}")
+    } else {
+        eprintln!("child: an adapter was still available — cannot simulate a GPU-less machine");
+        std::process::exit(EXIT_SIMULATION_FAILED);
     }
 
     // Make this process behave like a release build — see the module docs.

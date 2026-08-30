@@ -631,7 +631,7 @@ mod tests {
             text: "x".into(),
             edited: false,
             history: vec![],
-            parent: parent.map(|s| s.to_string()),
+            parent: parent.map(std::string::ToString::to_string),
             reactions: vec![],
             mentions: vec![],
             reference: None,

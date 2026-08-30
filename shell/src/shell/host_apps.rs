@@ -170,7 +170,10 @@ mod tests {
             source_label: "Flatpak",
             categories: Vec::new(),
             keywords: Vec::new(),
-            window_identities: identities.iter().map(|s| s.to_string()).collect(),
+            window_identities: identities
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         }
     }
 

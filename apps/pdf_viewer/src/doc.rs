@@ -686,7 +686,7 @@ mod tests {
             rect: PtRect::new(100.0, 100.0, 200.0, 70.0),
             signer: "Grace".into(),
             date: "2026-08-17".into(),
-            ink: crate::model::SignatureInk::Drawn { strokes: strokes },
+            ink: crate::model::SignatureInk::Drawn { strokes },
         };
         PdfDoc::add_signature(&mut doc, &s);
         let got = PdfDoc::list_signatures(&doc);

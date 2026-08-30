@@ -2411,7 +2411,7 @@ mod tests {
     /// Count focusable widgets anywhere in the subtree (the Account step's
     /// nav buttons live nested inside a Row, not as direct card children).
     fn count_focusable(widget: &dyn Widget) -> usize {
-        let mut n = if widget.is_focusable() { 1 } else { 0 };
+        let mut n = usize::from(widget.is_focusable());
         for c in widget.children() {
             n += count_focusable(c);
         }

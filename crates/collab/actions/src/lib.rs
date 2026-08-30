@@ -312,9 +312,9 @@ mod tests {
             );
         let flat = flatten(std::slice::from_ref(&video));
         assert_eq!(flat.len(), 2);
-        assert_eq!(flat[0].key, format!("tube.video:v1{}like", KEY_SEP));
+        assert_eq!(flat[0].key, format!("tube.video:v1{KEY_SEP}like"));
         assert_eq!(flat[0].resource_kind, "tube.video");
-        assert_eq!(flat[1].key, format!("tube.comment:v1:0{}like", KEY_SEP));
+        assert_eq!(flat[1].key, format!("tube.comment:v1:0{KEY_SEP}like"));
         assert_eq!(flat[1].resource_kind, "tube.comment");
     }
 }

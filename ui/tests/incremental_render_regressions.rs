@@ -59,21 +59,21 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                             leak(&format!("dash_btnlbl_{row_idx}")),
                             None,
                         ))),
-                ))
+                ));
             }
             1 => {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
                         .push(Box::new(Badge::count((i as u32) * 3))),
-                ))
+                ));
             }
             _ => {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
                         .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
-                ))
+                ));
             }
         }
     }
@@ -159,9 +159,9 @@ fn count_non_bg(rgba: &[u8], bg: vello::peniko::Color) -> usize {
     let [br, bgc, bb, _] = bg.to_rgba8().to_u8_array();
     rgba.chunks_exact(4)
         .filter(|p| {
-            let dr = p[0] as i32 - br as i32;
-            let dg = p[1] as i32 - bgc as i32;
-            let db = p[2] as i32 - bb as i32;
+            let dr = i32::from(p[0]) - i32::from(br);
+            let dg = i32::from(p[1]) - i32::from(bgc);
+            let db = i32::from(p[2]) - i32::from(bb);
             dr.abs() + dg.abs() + db.abs() > 12
         })
         .count()
@@ -199,8 +199,8 @@ impl Harness {
             root.build_layout(&mut taffy, &theme, &mut node_map)
         };
 
-        let logical_w = (canvas_w as f64) / scale;
-        let logical_h = (canvas_h as f64) / scale;
+        let logical_w = f64::from(canvas_w) / scale;
+        let logical_h = f64::from(canvas_h) / scale;
 
         // Initial layout — matches the live App which only runs
         // compute_layout when `app.layout_dirty` is set.
@@ -243,7 +243,7 @@ impl Harness {
         }
     }
 
-    /// Re-run compute_layout + apply_layout — the live App
+    /// Re-run `compute_layout` + `apply_layout` — the live App
     /// fires this on any frame where `layout_dirty` is set
     /// (scroll, resize, text change, …).
     fn relayout(&mut self) {
@@ -337,8 +337,8 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
     let canvas_w = 800u32;
     let canvas_h = 600u32;
     let scale = 1.0_f64;
-    let logical_w = canvas_w as f64;
-    let logical_h = canvas_h as f64;
+    let logical_w = f64::from(canvas_w);
+    let logical_h = f64::from(canvas_h);
 
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();

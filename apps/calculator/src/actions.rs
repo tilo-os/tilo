@@ -539,7 +539,7 @@ mod tests {
         if let Some(list) = list_at(doc, kind.doc_key()) {
             for i in 0..doc.length(&list) {
                 if let Some(row) = row_at(doc, &list, i) {
-                    let expr = doc.text(&row_text(doc, &row)).unwrap_or_default();
+                    let expr = doc.text(row_text(doc, &row)).unwrap_or_default();
                     out.push((expr, row_visible(doc, &row)));
                 }
             }
@@ -678,7 +678,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             read_history(&state.doc).len(),

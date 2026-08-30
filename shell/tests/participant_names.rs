@@ -40,13 +40,13 @@ fn labels_in(events: &[CollabEvent]) -> Vec<(&'static str, String)> {
     for e in events {
         match e {
             CollabEvent::RemotePresenceUpdate { user_id, .. } => {
-                out.push(("presence", user_id.clone()))
+                out.push(("presence", user_id.clone()));
             }
             CollabEvent::RemoteCursorMoved { user_id, .. } => {
-                out.push(("pointer", user_id.clone()))
+                out.push(("pointer", user_id.clone()));
             }
             CollabEvent::SignedCRDTIncremental { from_user_id, .. } => {
-                out.push(("delta", from_user_id.clone()))
+                out.push(("delta", from_user_id.clone()));
             }
             CollabEvent::Context { collaborators, .. } => {
                 for c in collaborators {
@@ -68,8 +68,7 @@ fn is_raw_peer_form(label: &str) -> bool {
 fn temp_sock(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!(
         "qos-broker-names-{label}-{}-{nanos}.sock",
         std::process::id()

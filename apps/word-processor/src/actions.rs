@@ -1118,7 +1118,7 @@ mod tests {
 
         let action = set_paragraph_style_action(vec![block.clone()], "heading", Some(1), None);
         dispatch(&mut state.doc, &action);
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             kind_of(&state.doc).as_deref(),
@@ -1174,7 +1174,7 @@ mod tests {
             .find(|a| a.id == "align-center")
             .unwrap();
         let from_spec = immediate_encode(spec);
-        let from_builder = encode(&set_align_action(vec![block.clone()], "center"));
+        let from_builder = encode(&set_align_action(vec![block], "center"));
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "align is one source of truth"

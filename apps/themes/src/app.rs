@@ -1410,12 +1410,7 @@ mod tests {
             "live catalog is presets only"
         );
         let sel = selected(&st);
-        assert!(
-            cat.iter()
-                .find(|s| s.id == sel)
-                .map(|s| s.builtin)
-                .unwrap_or(false)
-        );
+        assert!(cat.iter().find(|s| s.id == sel).is_some_and(|s| s.builtin));
         assert!(
             !cat.iter().any(|s| s.id == "sunset"),
             "no seeded custom theme on the live path"

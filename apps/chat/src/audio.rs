@@ -373,7 +373,7 @@ mod tests {
     }
 
     /// Real codec round-trip with no audio device: PCM → Opus → PCM. Proves the
-    /// GStreamer Opus encode/decode contract the call transport carries.
+    /// `GStreamer` Opus encode/decode contract the call transport carries.
     #[test]
     fn opus_encode_decode_round_trips_without_a_device() {
         let (Some(mut enc), Some(mut dec)) = (OpusEncoder::new(), OpusDecoder::new()) else {

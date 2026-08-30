@@ -200,8 +200,8 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     let dest_rect = host
         .group_row_rect_for_tests(s_b)
         .expect("strip B's GroupRow rect must be populated after apply_layout");
-    let drop_y = (dest_rect.y0 + dest_rect.y1) / 2.0;
-    let drop_x = (dest_rect.x0 + dest_rect.x1) / 2.0;
+    let drop_y = f64::midpoint(dest_rect.y0, dest_rect.y1);
+    let drop_x = f64::midpoint(dest_rect.x0, dest_rect.x1);
     let release = Point::new(drop_x, drop_y);
 
     // Same shape `TabBar::handle_event` writes when a drag releases outside
@@ -304,7 +304,7 @@ fn drag_outside_every_strip_returns_tab_to_source_row() {
 
     // Far above every strip's band: the fallback splices into a new group on
     // strip A near `release.x`.
-    let release = Point::new(W as f64 / 2.0, -100.0);
+    let release = Point::new(f64::from(W) / 2.0, -100.0);
     let dragged = a_tabs[0];
     {
         let g = host

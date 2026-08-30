@@ -699,7 +699,9 @@ mod tests {
         assert!(!custom.builtin);
         let t = custom.to_theme();
         // Popover is deeper than the theme's own ground…
-        let lum = |c: Color| 0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32;
+        let lum = |c: Color| {
+            0.2126 * f32::from(c.r()) + 0.7152 * f32::from(c.g()) + 0.0722 * f32::from(c.b())
+        };
         assert!(
             lum(t.tokens.colors.surfaces.overlay) < lum(t.bg_app),
             "popover deeper than ground"

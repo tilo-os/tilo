@@ -29,8 +29,7 @@ fn main() {
         .collect::<Vec<_>>()
         .windows(2)
         .find(|w| w[0] == "--out")
-        .map(|w| w[1].clone())
-        .unwrap_or_else(|| "target/docpdf-sample.pdf".into());
+        .map_or_else(|| "target/docpdf-sample.pdf".into(), |w| w[1].clone());
 
     let mut blocks = vec![
         block(

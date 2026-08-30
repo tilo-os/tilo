@@ -211,9 +211,9 @@ mod tests {
                 .any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8)
         );
         // The top row is lighter than the bottom row (the vertical gradient).
-        let top_lum: u32 = t.rgba[0..4].iter().take(3).map(|&v| v as u32).sum();
+        let top_lum: u32 = t.rgba[0..4].iter().take(3).map(|&v| u32::from(v)).sum();
         let last = (17 * 32 * 4) as usize;
-        let bot_lum: u32 = t.rgba[last..last + 3].iter().map(|&v| v as u32).sum();
+        let bot_lum: u32 = t.rgba[last..last + 3].iter().map(|&v| u32::from(v)).sum();
         assert!(
             top_lum > bot_lum,
             "gradient runs light→dark ({top_lum} vs {bot_lum})"

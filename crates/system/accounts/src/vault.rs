@@ -274,7 +274,7 @@ mod tests {
         // A different key can't open it.
         assert!(open(&[9u8; KEY_LEN], &blob).is_none());
         // A single flipped ciphertext byte fails authentication.
-        let mut tampered = blob.clone();
+        let mut tampered = blob;
         let last = tampered.len() - 1;
         tampered[last] ^= 0x01;
         assert!(open(&key, &tampered).is_none());

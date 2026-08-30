@@ -208,8 +208,7 @@ mod tests {
         let result = check(&dict, text);
         assert!(
             result.is_empty(),
-            "expected zero misspellings, got {:?}",
-            result
+            "expected zero misspellings, got {result:?}"
         );
     }
 
@@ -260,8 +259,7 @@ mod tests {
         let flagged: Vec<&str> = result.iter().map(|m| m.word.as_str()).collect();
         assert!(
             flagged.is_empty(),
-            "numbers/URLs/emails/ALL-CAPS should be skipped, but flagged: {:?}",
-            flagged
+            "numbers/URLs/emails/ALL-CAPS should be skipped, but flagged: {flagged:?}"
         );
     }
 

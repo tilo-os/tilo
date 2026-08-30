@@ -54,13 +54,13 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         Some("serve") => cmd_serve(&args[1..]),
         Some("guest-init") => guest::init(&args[1..]),
         Some("dsh") => host(Profile::Dsh, &args[1..]),
-        Some("ush") | Some("run") => host(Profile::Ush, &args[1..]),
+        Some("ush" | "run") => host(Profile::Ush, &args[1..]),
         Some("pkg") => guest::pkg(&args[1..]),
         Some("perm") => guest::perm(&args[1..]),
         Some("scan") => guest::scan(&args[1..]),
         Some("guard") => guest::guard(&args[1..]),
         Some("quarantine") => guest::quarantine(&args[1..]),
-        Some("--help") | Some("-h") | None => {
+        Some("--help" | "-h") | None => {
             print!("{USAGE}");
             Ok(0)
         }
@@ -178,10 +178,10 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
 /// `$XDG_RUNTIME_DIR/qos/services/ush.sock` — the path `qos-launcher` looks in
 /// for a `[sandbox.services]` entry named `ush`.
 fn default_service_socket() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        // SAFETY: `geteuid` cannot fail.
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+        || PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })),
+        PathBuf::from,
+    );
     runtime.join("qos/services/ush.sock")
 }
 
@@ -199,13 +199,12 @@ fn init_tracing(verbose: bool) {
 }
 
 mod guest {
-    use super::*;
+    use super::{Path, PathBuf, Request, Response};
     use ush::pkg::{InstalledPackage, Manifest};
 
     fn broker_socket() -> PathBuf {
         std::env::var_os("QOS_USH_BROKER")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(ush::GUEST_BROKER_SOCK))
+            .map_or_else(|| PathBuf::from(ush::GUEST_BROKER_SOCK), PathBuf::from)
     }
 
     fn ask(req: &Request) -> anyhow::Result<Response> {
@@ -251,9 +250,7 @@ mod guest {
         // Everything the guest may write, in here: layered system dirs, scratch,
         // home, and whatever was trusted (named again so a later remount can't
         // widen it).
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/root"));
+        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/root"), PathBuf::from);
         let mut rw: Vec<PathBuf> = ["/usr", "/etc", "/tmp", "/var", "/run", "/dev", "/proc"]
             .iter()
             .map(PathBuf::from)

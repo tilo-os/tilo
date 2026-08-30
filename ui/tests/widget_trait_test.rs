@@ -49,7 +49,7 @@ fn button_uses_token_radius() {
         accent_primary: t.colors.accent[5],
         accent_hover: t.colors.accent[4],
         status_success: t.colors.semantic.success,
-        radius_standard: t.radii.md as f64,
+        radius_standard: f64::from(t.radii.md),
         padding_standard: t.spacing.s3,
         gap_standard: t.spacing.s3,
         reduce_motion: false,

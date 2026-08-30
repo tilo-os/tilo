@@ -116,8 +116,7 @@ fn text_len(doc: &AutoCommit, root: &automerge::ObjId) -> usize {
     qdoc::model::materialize(doc, &c)
         .blocks
         .first()
-        .map(|b| b.text.chars().count())
-        .unwrap_or(0)
+        .map_or(0, |b| b.text.chars().count())
 }
 
 /// A document three people took turns editing, so most runs are one change long.
@@ -477,7 +476,7 @@ fn main() {
 
     // Narrow strips: the button row has to shed buttons rather than overlap.
     for w in [620u32, 460, 360] {
-        let mut s = scrubber(w as f64, entries.clone(), segs.clone());
+        let mut s = scrubber(f64::from(w), entries.clone(), segs.clone());
         s.set_current_tick(entries.len() - 1);
         shot.paint(&format!("strip-narrow-{w}"), w, h, &mut s);
     }
@@ -491,7 +490,7 @@ fn main() {
 
     // One change, and none at all.
     let single_segs = segments(&single_entries, &[]);
-    let mut s = scrubber(1000.0, single_entries.clone(), single_segs);
+    let mut s = scrubber(1000.0, single_entries, single_segs);
     shot.paint(
         "strip-bands-of-one",
         1000,

@@ -3699,7 +3699,7 @@ mod tests {
             "toast shows immediately"
         );
         assert!(app.toast_pending(), "a dismiss deadline is armed");
-        app.expire_toast_at(t0 + std::time::Duration::from_millis(1000));
+        app.expire_toast_at(t0 + std::time::Duration::from_secs(1));
         assert!(
             app.shared.borrow().status.is_some(),
             "still visible within its lifetime"

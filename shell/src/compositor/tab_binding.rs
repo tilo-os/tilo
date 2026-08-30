@@ -515,7 +515,7 @@ mod tests {
                 assert_eq!(app_id, "org.example.app");
                 assert_eq!(*surface_id, 4242);
             }
-            other => panic!("expected Foreign tile, got {:?}", other),
+            other => panic!("expected Foreign tile, got {other:?}"),
         }
     }
 
@@ -555,7 +555,7 @@ mod tests {
             "the new window joins the group the selection was in"
         );
         let now: Vec<u64> = strip.window_groups[0].tabs.iter().map(|t| t.id).collect();
-        let mut expected = tab_ids_before.clone();
+        let mut expected = tab_ids_before;
         expected.insert(selected_idx + 1, tab_id);
         assert_eq!(
             now, expected,
@@ -888,7 +888,7 @@ mod tests {
                 assert_eq!(*surface_id, 99);
                 assert_eq!(app_id, "org.example.late");
             }
-            other => panic!("expected Foreign tile, got {:?}", other),
+            other => panic!("expected Foreign tile, got {other:?}"),
         }
         // Humanised, not raw. A tab is a name badge; `late` is a fragment of an identifier and `Late` is a word.
         assert_eq!(tab.title, "Late", "title is the humanised app-id component");
@@ -1132,7 +1132,7 @@ mod tests {
                     "anonymous toplevels get a synthetic anon-<surface_id> placeholder"
                 );
             }
-            other => panic!("expected Foreign tile, got {:?}", other),
+            other => panic!("expected Foreign tile, got {other:?}"),
         }
     }
 }

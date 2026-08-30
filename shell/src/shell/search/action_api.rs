@@ -711,10 +711,10 @@ mod tests {
     }
 
     impl super::super::SearchProvider for ParamProvider {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "params"
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Params"
         }
         fn resource_kinds(&self) -> &[ResourceKind] {

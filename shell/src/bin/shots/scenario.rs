@@ -88,7 +88,7 @@ pub enum Action {
     },
     /// Synth a `KeyboardInput { Pressed }` for a logical key.
     Key(Key),
-    /// Type a literal string (one Key::Character per char, skipping
+    /// Type a literal string (one `Key::Character` per char, skipping
     /// control). The caller is expected to have opened an input target
     /// (palette, name editor, etc.) first.
     Type(String),
@@ -332,14 +332,14 @@ pub fn run_with<S: SnapshotSink>(
                 for i in 0..frames {
                     // Distribute the remainder over the first `remainder`
                     // slices so the total advance still equals `n`.
-                    let extra = if i < remainder { 1 } else { 0 };
+                    let extra = u32::from(i < remainder);
                     let advance = per_slice + extra;
                     if advance > 0 {
                         driver.step_frames(advance);
                     }
                     driver.relayout();
                     let name: &'static str =
-                        Box::leak(format!("{}-frame{:02}", prefix, i).into_boxed_str());
+                        Box::leak(format!("{prefix}-frame{i:02}").into_boxed_str());
                     sink.capture(driver, name);
                 }
             }
@@ -387,7 +387,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 // `&'static str` `Snapshot` variant can carry it. The
                 // process exits at the end of `shots`, so the leak is
                 // bounded by scenario length and stays within tens of KB.
-                let name: &'static str = Box::leak(format!("{}-{:03}", prefix, i).into_boxed_str());
+                let name: &'static str = Box::leak(format!("{prefix}-{i:03}").into_boxed_str());
                 sink.capture(driver, name);
             }
         }
@@ -558,21 +558,23 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 .sidebar_wheel_mut_for_tests()
                 .and_then(|w| w.drag_from.map(|_| w.last_cursor_pos))
                 .flatten();
-            let from = match in_flight {
-                Some(p) => p,
-                None => {
-                    // A third of the way in from the rim, vertically
-                    // centred: inside the arc at every rotation, and
-                    // clear of the add-workspace button at the bottom.
-                    let p = Point::new(rect.x0 + rect.width() * 0.66, (rect.y0 + rect.y1) / 2.0);
-                    driver.move_cursor(p);
-                    driver.press();
-                    p
-                }
+            let from = if let Some(p) = in_flight {
+                p
+            } else {
+                // A third of the way in from the rim, vertically
+                // centred: inside the arc at every rotation, and
+                // clear of the add-workspace button at the bottom.
+                let p = Point::new(
+                    rect.x0 + rect.width() * 0.66,
+                    f64::midpoint(rect.y0, rect.y1),
+                );
+                driver.move_cursor(p);
+                driver.press();
+                p
             };
             let n = (*steps).max(1);
             for s in 1..=n {
-                let t = s as f64 / n as f64;
+                let t = f64::from(s) / f64::from(n);
                 driver.move_cursor(Point::new(from.x, from.y + dy * t));
                 // One frame per increment so the follow spring actually
                 // integrates — with no frames between moves the rim
@@ -597,7 +599,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             // the content keeps the time, which is the point.
             driver.step_frames(24);
             driver.relayout();
-            for ms in at_ms.iter() {
+            for ms in *at_ms {
                 let held = match driver.host_mut().sidebar_wheel_mut_for_tests() {
                     None => {
                         eprintln!("scenario: no wheel disc in the tree to sample at {ms} ms");
@@ -643,11 +645,11 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                         .map(|ws| ws.strips.iter().map(|s| s.id).collect())
                         .unwrap_or_default()
                 };
-                for ms in at_ms.iter() {
+                for ms in *at_ms {
                     let mut any = false;
                     for sid in &strips {
                         if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                            for g in row.groups.iter_mut() {
+                            for g in &mut row.groups {
                                 any |= g
                                     .bar_mut_for_tests()
                                     .hold_reveal_at(std::time::Duration::from_millis(*ms));
@@ -678,7 +680,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     .map(|ws| ws.strips.iter().map(|s| s.id).collect())
                     .unwrap_or_default()
             };
-            for ms in at_ms.iter() {
+            for ms in *at_ms {
                 let mut any = false;
                 for sid in &strips {
                     if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
@@ -699,8 +701,8 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 {
                     let mut tree = st.tree_mut();
                     if let Some(ws) = tree.active_workspace_mut() {
-                        for strip in ws.strips.iter_mut() {
-                            for g in strip.window_groups.iter_mut() {
+                        for strip in &mut ws.strips {
+                            for g in &mut strip.window_groups {
                                 g.width = shell::shell::state::WindowWidth::Fraction(permille);
                             }
                         }
@@ -720,7 +722,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             };
             for sid in strips {
                 if let Some(row) = driver.host_mut().group_row_mut_for_tests(sid) {
-                    for g in row.groups.iter_mut() {
+                    for g in &mut row.groups {
                         g.set_width(ui::widget::WindowWidth::Fraction(permille));
                     }
                 }
@@ -869,16 +871,15 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             driver.with_chrome(|st: &mut ChromeState| {
                 {
                     let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.active_workspace_mut() {
-                        if let Some(g) = ws
+                    if let Some(ws) = tree.active_workspace_mut()
+                        && let Some(g) = ws
                             .strips
                             .first_mut()
                             .and_then(|s| s.window_groups.get_mut(idx))
-                        {
-                            g.tabs.truncate(1);
-                            if let Some(t) = g.tabs.first() {
-                                g.active_tab = t.id;
-                            }
+                    {
+                        g.tabs.truncate(1);
+                        if let Some(t) = g.tabs.first() {
+                            g.active_tab = t.id;
                         }
                     }
                 }
@@ -1061,7 +1062,7 @@ impl<'a> JsonDirSink<'a> {
     }
 }
 
-impl<'a> SnapshotSink for JsonDirSink<'a> {
+impl SnapshotSink for JsonDirSink<'_> {
     fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
         let path = self.dir.join(format!("{name}.json"));
         let json = chrome_state_json(driver);
@@ -1926,7 +1927,7 @@ fn palette_typing() -> Scenario {
 /// pixel positions match the bootstrap tree's first strip's first group
 /// (Notes / Files / Terminal / Browser pills). Coordinates approximate;
 /// good enough for headless smoke / state JSON. For pixel-perfect drag
-/// the e2e_shell_flows::probe_tab_centers helper is the source of truth.
+/// the `e2e_shell_flows::probe_tab_centers` helper is the source of truth.
 fn tab_drag() -> Scenario {
     Scenario {
         name: "tab_drag",
@@ -1964,7 +1965,7 @@ fn tab_drag() -> Scenario {
 ///     `Column::with_extra_left_padding(SIDEBAR_WIDTH_PX)`
 ///   - the lone Wide group (800 px) sits roughly at x ∈ [224, 1024]
 ///   - tab pills live in the bar inside that group, around y≈80
-///   - releasing at (1100, 80) is right of the source group → gap_idx=1
+///   - releasing at (1100, 80) is right of the source group → `gap_idx=1`
 ///
 /// `from` targets the second tab pill (Files) — a non-active source so
 /// the source group's active-tab promotion path doesn't muddy the
@@ -2171,9 +2172,9 @@ fn overview_transition() -> Scenario {
     }
 }
 
-/// Drive the wheel disc via MouseWheel events over its hit area and
+/// Drive the wheel disc via `MouseWheel` events over its hit area and
 /// capture frame-by-frame so the user can verify the discrete-detent
-/// click_to_spoke animation is visible (one workspace per scroll burst).
+/// `click_to_spoke` animation is visible (one workspace per scroll burst).
 /// Scroll the strip until the docked wheel has panned off the left
 /// edge, then call it back to the pointer with Super+S and dismiss it
 /// with Escape.
@@ -2343,7 +2344,7 @@ fn wheel_scroll_workspaces() -> Scenario {
     }
 }
 
-/// Drive the strip's MouseWheel path: cursor over the active tile,
+/// Drive the strip's `MouseWheel` path: cursor over the active tile,
 /// fire horizontal-dominant wheel events, capture before / after.
 /// On a single-group strip the strip pans into empty wallpaper space
 /// past the rightmost group (Niri-style infinite canvas). The
@@ -2625,8 +2626,9 @@ mod tests {
             };
             let (scroll_x, max_scroll_x) = strip_id
                 .and_then(|sid| driver.host_mut().group_row_mut_for_tests(sid))
-                .map(|row| (row.scroll_x(), row.max_scroll_x()))
-                .unwrap_or((f64::NAN, f64::NAN));
+                .map_or((f64::NAN, f64::NAN), |row| {
+                    (row.scroll_x(), row.max_scroll_x())
+                });
             self.seen.push((name.to_string(), scroll_x, max_scroll_x));
         }
     }

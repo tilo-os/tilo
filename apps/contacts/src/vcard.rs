@@ -474,7 +474,7 @@ mod tests {
                 label: "home".into(),
                 street: "12 St James's Square".into(),
                 city: "London".into(),
-                region: "".into(),
+                region: String::new(),
                 postal: "SW1Y 4LE".into(),
                 country: "UK".into(),
             }],

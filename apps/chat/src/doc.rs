@@ -1387,7 +1387,7 @@ impl ChatDoc {
             .filter_map(|id| {
                 let cat = map_at(doc, &cats, &id)?;
                 Some(Category {
-                    id: id,
+                    id,
                     workspace: get_str(doc, &cat, "workspace"),
                     name: get_str(doc, &cat, "name"),
                     order: get_i64(doc, &cat, "order") as u32,
@@ -1413,7 +1413,7 @@ impl ChatDoc {
                 let m = map_at(doc, &ch, &user)?;
                 let ticket = get_str(doc, &m, "ticket");
                 Some(VoiceMember {
-                    user: user,
+                    user,
                     talking: get_bool(doc, &m, "talking"),
                     muted: get_bool(doc, &m, "muted"),
                     deafened: get_bool(doc, &m, "deafened"),
@@ -1444,7 +1444,7 @@ impl ChatDoc {
             .filter_map(|id| {
                 let w = map_at(doc, &wss, &id)?;
                 Some(Workspace {
-                    id: id,
+                    id,
                     name: get_str(doc, &w, "name"),
                     glyph: get_str(doc, &w, "glyph"),
                     color_idx: get_i64(doc, &w, "color_idx") as usize,
@@ -1464,7 +1464,7 @@ impl ChatDoc {
             .filter_map(|id| {
                 let u = map_at(doc, &us, &id)?;
                 Some(User {
-                    id: id,
+                    id,
                     name: get_str(doc, &u, "name"),
                     initials: get_str(doc, &u, "initials"),
                     color_idx: get_i64(doc, &u, "color_idx") as usize,
@@ -1484,7 +1484,7 @@ impl ChatDoc {
             .filter_map(|id| {
                 let c = map_at(doc, &chans, &id)?;
                 Some(Channel {
-                    id: id,
+                    id,
                     workspace: get_str(doc, &c, "workspace"),
                     category: get_str(doc, &c, "category"),
                     name: get_str(doc, &c, "name"),
@@ -1887,7 +1887,7 @@ mod tests {
         // 30 corrections, each touching only the last word.
         for i in 0..30 {
             let edited = format!("{body} v{i}");
-            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &edited, NOW + i as i64);
+            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &edited, NOW + i64::from(i));
         }
         let grown = doc.save().len() - baseline;
 
@@ -2071,8 +2071,7 @@ mod tests {
             ChatDoc::list_voice_members(doc, "c_huddle")
                 .into_iter()
                 .find(|m| m.user == "u_me")
-                .map(|m| m.sharing)
-                .unwrap_or(false)
+                .is_some_and(|m| m.sharing)
         };
         assert!(!sharing(&doc), "a fresh member is not sharing");
         ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", true);

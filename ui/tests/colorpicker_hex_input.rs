@@ -113,8 +113,8 @@ fn clicking_hex_input_focuses_it() {
     let modifiers = Modifiers::default();
 
     let hex_rect = picker.hex_input_rect();
-    let center_x = (hex_rect.x0 + hex_rect.x1) / 2.0;
-    let center_y = (hex_rect.y0 + hex_rect.y1) / 2.0;
+    let center_x = f64::midpoint(hex_rect.x0, hex_rect.x1);
+    let center_y = f64::midpoint(hex_rect.y0, hex_rect.y1);
 
     let move_ev = WindowEvent::CursorMoved {
         device_id: synth_device_id(),
@@ -180,8 +180,8 @@ fn clicking_outside_hex_input_releases_input_focus() {
     let modifiers = Modifiers::default();
 
     let hex_rect = picker.hex_input_rect();
-    let in_x = (hex_rect.x0 + hex_rect.x1) / 2.0;
-    let in_y = (hex_rect.y0 + hex_rect.y1) / 2.0;
+    let in_x = f64::midpoint(hex_rect.x0, hex_rect.x1);
+    let in_y = f64::midpoint(hex_rect.y0, hex_rect.y1);
     let move_in = WindowEvent::CursorMoved {
         device_id: synth_device_id(),
         position: PhysicalPosition::new(in_x, in_y),

@@ -53,7 +53,7 @@ impl Widget for AgentTarget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path)
+        self.inner.sync(state, path);
     }
     fn build_layout(
         &mut self,
@@ -69,7 +69,7 @@ impl Widget for AgentTarget {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        self.inner.apply_layout(taffy, node, origin)
+        self.inner.apply_layout(taffy, node, origin);
     }
     fn draw(
         &mut self,
@@ -80,7 +80,7 @@ impl Widget for AgentTarget {
         presence: &ui::presence::PresenceCtx,
     ) {
         self.inner
-            .draw(scene, transform, text_renderer, theme, presence)
+            .draw(scene, transform, text_renderer, theme, presence);
     }
     #[allow(clippy::too_many_arguments)]
     fn handle_event(
@@ -105,9 +105,9 @@ impl Widget for AgentTarget {
             focus_target,
             node_id,
             taffy,
-        )
+        );
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AgentTarget"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {

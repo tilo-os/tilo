@@ -345,7 +345,7 @@ pub fn ensure_collaboration_identity(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos()
-            .min(u64::MAX as u128) as u64;
+            .min(u128::from(u64::MAX)) as u64;
         let mut cert = DeviceCert {
             user_public_key: root_public,
             device_public_key: device.verifying_key().to_bytes(),
@@ -368,8 +368,7 @@ pub fn ensure_collaboration_identity(
 pub fn collaboration_identity_paths() -> IdentityPaths {
     std::env::var_os("QOS_IDENTITY_ROOT")
         .filter(|value| !value.is_empty())
-        .map(IdentityPaths::under)
-        .unwrap_or_else(IdentityPaths::default_system)
+        .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -395,8 +394,7 @@ mod tests {
             let pid = std::process::id();
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
+                .map_or(0, |d| d.as_nanos());
             let path = base.join(format!("quick-desktop-firstboot-{name}-{pid}-{nonce}"));
             std::fs::create_dir_all(&path).expect("create tmpdir");
             TmpDir(path)
@@ -464,7 +462,7 @@ mod tests {
         );
 
         // File loads through runtime-identity's parser — real seed, real derived pubkey, no soft-mismatch.
-        let ident = runtime_identity::load_from_path(identity_file.clone())
+        let ident = runtime_identity::load_from_path(identity_file)
             .expect("runtime-identity must parse the minted record");
         assert!(ident.is_single_device());
         assert_eq!(ident.threshold(), 1);

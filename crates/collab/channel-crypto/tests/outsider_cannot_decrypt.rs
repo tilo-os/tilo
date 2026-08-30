@@ -2,7 +2,7 @@
 //! read its ciphertexts.
 //!
 //! The core promise is "only group members can decrypt"; this file
-//! pins that from several angles — a fresh standalone ChannelGroup, a
+//! pins that from several angles — a fresh standalone `ChannelGroup`, a
 //! different-channel group, and a tampered ciphertext.
 
 use channel_crypto::{ChannelGroup, MemberKey};

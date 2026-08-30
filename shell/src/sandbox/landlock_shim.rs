@@ -362,7 +362,7 @@ mod tests {
     use super::*;
 
     fn s(v: &[&str]) -> Vec<String> {
-        v.iter().map(|x| x.to_string()).collect()
+        v.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]
@@ -448,20 +448,14 @@ mod tests {
         let plan = access_plan(&ro, &rw, abi);
         assert_eq!(plan.len(), 2);
 
-        let ro_rule = plan
-            .iter()
-            .find(|r| r.path == PathBuf::from("/usr"))
-            .unwrap();
+        let ro_rule = plan.iter().find(|r| r.path == *"/usr").unwrap();
         assert_eq!(ro_rule.access, AccessFs::from_read(abi));
         assert!(
             !ro_rule.access.contains(AccessFs::WriteFile),
             "read-only rule must not grant WriteFile"
         );
 
-        let rw_rule = plan
-            .iter()
-            .find(|r| r.path == PathBuf::from("/work"))
-            .unwrap();
+        let rw_rule = plan.iter().find(|r| r.path == *"/work").unwrap();
         assert_eq!(rw_rule.access, AccessFs::from_all(abi));
         assert!(
             rw_rule.access.contains(AccessFs::WriteFile),
@@ -571,8 +565,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_nanos())
         ));
         let ro_dir = base.join("ro");
         std::fs::create_dir_all(&ro_dir).unwrap();
@@ -623,7 +616,7 @@ mod tests {
 
         // Parent: reap and assert.
         let mut status: libc::c_int = 0;
-        unsafe { libc::waitpid(pid, &mut status, 0) };
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
         let _ = std::fs::remove_dir_all(&base);
 
         assert!(libc::WIFEXITED(status), "child did not exit normally");

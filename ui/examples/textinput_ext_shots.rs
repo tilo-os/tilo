@@ -7,8 +7,8 @@
 //! caret come from the production `draw` path, not private pokes (only
 //! `set_selection`, a public API, arms the highlight for the still frame).
 //!
-//! Run:  cargo run -p ui --example textinput_ext_shots
-//! Out:  $TEXTINPUT_EXT_SHOTS_OUT (default target/textinput_ext_shots)
+//! Run:  cargo run -p ui --example `textinput_ext_shots`
+//! Out:  $`TEXTINPUT_EXT_SHOTS_OUT` (default `target/textinput_ext_shots`)
 
 use std::path::PathBuf;
 

@@ -1073,11 +1073,7 @@ mod tests {
             .into_iter()
             .find(|m| m.id == "m_reply")
             .unwrap();
-        assert_eq!(
-            m.work,
-            Some(done.clone()),
-            "the finished record was not stored"
-        );
+        assert_eq!(m.work, Some(done), "the finished record was not stored");
         assert_eq!(m.text, "Cropped it.", "the agent's words were not supplied");
 
         // A later state must not restate the body — it is authored once.
@@ -1218,7 +1214,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             ChatDoc::list_messages(&state.doc, "c_general").len(),

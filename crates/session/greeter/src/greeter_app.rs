@@ -1400,8 +1400,7 @@ mod tests {
     /// what it says on screen.
     fn ident(w: &dyn Widget) -> String {
         w.test_id()
-            .map(str::to_string)
-            .unwrap_or_else(|| w.name().to_string())
+            .map_or_else(|| w.name().to_string(), str::to_string)
     }
 
     /// Every focusable widget under `w`, in the depth-first order the App

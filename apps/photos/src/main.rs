@@ -129,7 +129,7 @@ fn parse_size(s: &str) -> Option<(u32, u32)> {
 }
 
 /// Render one scenario offscreen. Mirrors `ui::App`'s frame exactly:
-/// sync → build_layout → compute_layout → apply_layout → draw.
+/// sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot(
     scenario: &str,
     viewport: (u32, u32),

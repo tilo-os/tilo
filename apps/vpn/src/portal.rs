@@ -133,7 +133,7 @@ mod tests {
         ];
         match map_uris(&uris) {
             ImportOutcome::Opened(p) => {
-                assert_eq!(p, std::path::Path::new("/home/alice/home.conf"))
+                assert_eq!(p, std::path::Path::new("/home/alice/home.conf"));
             }
             other => panic!("expected Opened, got {other:?}"),
         }

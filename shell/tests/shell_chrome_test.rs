@@ -1,5 +1,5 @@
-//! Interaction tests for shell chrome widgets (OverviewView, GlobalSearch,
-//! QuickSettings, WorkspaceSettings, SidebarWheel, TopBar, …).
+//! Interaction tests for shell chrome widgets (`OverviewView`, `GlobalSearch`,
+//! `QuickSettings`, `WorkspaceSettings`, `SidebarWheel`, `TopBar`, …).
 
 #[test]
 fn visual_smoke_checklist_is_documented() {
@@ -338,7 +338,7 @@ fn topbar_chrome_surface_alpha_tracks_the_shared_chrome_opacity() {
     );
 }
 
-/// The GlobalSearch palette surface is opaque (a tint would read as
+/// The `GlobalSearch` palette surface is opaque (a tint would read as
 /// chrome bleeding through long result rows), leaning on the scrim below
 /// for depth. Pinned against `overlay_host::MODAL_SURFACE_ALPHA`, since
 /// the palette and workspace-settings modal share one value.
@@ -531,7 +531,7 @@ fn topbar_center_widget_cycles_with_wheel_cooldown() {
     tb.on_center_wheel(1, Duration::from_millis(700));
     assert_eq!(tb.center_widget(), CenterWidget::Clock);
     // negative direction
-    tb.on_center_wheel(-1, Duration::from_millis(1000));
+    tb.on_center_wheel(-1, Duration::from_secs(1));
     assert_eq!(tb.center_widget(), CenterWidget::Calendar);
 }
 
@@ -573,7 +573,7 @@ fn overscroll_commit_fires_toast() {
     let mut shell = Shell::new_for_test();
     let before = shell.toast_count();
     shell.simulate_overscroll_commit();
-    assert!(shell.toast_count() >= before + 1);
+    assert!(shell.toast_count() > before);
 }
 
 #[test]

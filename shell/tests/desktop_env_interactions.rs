@@ -102,8 +102,8 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
     // toolkit's fallback.
     host.set_output_geometry(&[shell::shell::overlay_host::OutputGeometry {
         x: 0.0,
-        width: W as f64,
-        height: H as f64,
+        width: f64::from(W),
+        height: f64::from(H),
     }]);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -190,7 +190,7 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
     let layout = lay_out_host(host);
     let mut held = false;
     if let Some(row) = host.group_row_mut_for_tests(strip_id) {
-        for g in row.groups.iter_mut() {
+        for g in &mut row.groups {
             held |= g
                 .bar_mut_for_tests()
                 .hold_reveal_at(std::time::Duration::from_secs(1));
@@ -263,8 +263,8 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
         .handle_at(0)
         .expect("one inter-group resize handle for a 2-group strip")
         .get_rect();
-    let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
-    let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+    let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
+    let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
     // Drag the handle +40 px right: left neighbour grows, right shrinks.
     cursor(&mut host, &layout, Point::new(cx, cy));
@@ -308,7 +308,7 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     // Start both at Narrow. From two Normals the right group can't reach its
     // minimum at all (the left would grow past the display), so the pair sum
     // has to leave slack for the clamp to be reachable.
-    for g in tree.workspaces[0].strips[0].window_groups.iter_mut() {
+    for g in &mut tree.workspaces[0].strips[0].window_groups {
         g.width = WindowWidth::Narrow;
     }
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
@@ -323,8 +323,8 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
         .handle_at(0)
         .expect("one inter-group resize handle for a 2-group strip")
         .get_rect();
-    let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
-    let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+    let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
+    let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
     // Far past the right neighbour's min: it can only shrink to the
     // display's minimum, so the left group grows by that slack, not by 5000.
@@ -365,7 +365,10 @@ fn group_grab_point(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: u
         .expect("group widget");
     let bar = g.bar_rect();
     let last = g.tab_rects().last().copied().unwrap_or(bar);
-    Point::new((last.x1 + bar.x1) / 2.0, (bar.y0 + bar.y1) / 2.0)
+    Point::new(
+        f64::midpoint(last.x1, bar.x1),
+        f64::midpoint(bar.y0, bar.y1),
+    )
 }
 
 #[test]
@@ -856,8 +859,8 @@ fn wheel_over_strip_does_not_move_it() {
         &mut host,
         &layout,
         Point::new(
-            (row_rect.x0 + row_rect.x1) / 2.0,
-            (row_rect.y0 + row_rect.y1) / 2.0,
+            f64::midpoint(row_rect.x0, row_rect.x1),
+            f64::midpoint(row_rect.y0, row_rect.y1),
         ),
     );
     dispatch(

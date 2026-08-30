@@ -72,14 +72,15 @@ fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
         match serde_json::from_str::<Vec<iroh::EndpointAddr>>(&value) {
             Ok(parsed) => hosts.extend(parsed),
             Err(error) => {
-                tracing::warn!(%error, "QOS_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses")
+                tracing::warn!(%error, "QOS_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses");
             }
         }
     }
     if let Ok(value) = std::env::var("QOS_COLLAB_HOST") {
-        match parse_host_addr(&value) {
-            Some(addr) => hosts.push(addr),
-            None => tracing::warn!("QOS_COLLAB_HOST is not a valid Iroh endpoint address or id"),
+        if let Some(addr) = parse_host_addr(&value) {
+            hosts.push(addr)
+        } else {
+            tracing::warn!("QOS_COLLAB_HOST is not a valid Iroh endpoint address or id")
         }
     }
     hosts.sort_by_key(|addr| addr.id.to_string());
@@ -433,8 +434,7 @@ impl ShellNetwork {
             .tree
             .read()
             .active_workspace()
-            .map(|workspace| room_topic_id(workspace.room))
-            .unwrap_or(DEFAULT_WS_TOPIC)
+            .map_or(DEFAULT_WS_TOPIC, |workspace| room_topic_id(workspace.room))
     }
 
     fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
@@ -1498,7 +1498,7 @@ mod tests {
             // reads it, so an unset owner would refuse every name below
             // for the wrong reason.
             let me = crate::shell::state::local_user_id();
-            for ws in t.workspaces.iter_mut() {
+            for ws in &mut t.workspaces {
                 ws.set_owner(me.clone());
             }
             t.workspaces.iter().map(|w| w.room).collect()
@@ -1669,8 +1669,7 @@ mod tests {
         NetEvent::Msg {
             ws: RoomId::parse(cluster_id)
                 .filter(|room| !room.is_nil())
-                .map(room_topic_id)
-                .unwrap_or(DEFAULT_WS_TOPIC),
+                .map_or(DEFAULT_WS_TOPIC, room_topic_id),
             peer: iroh::SecretKey::generate().public(),
             msg: NeighbourMsg::AppCrdtIncremental {
                 peer: from_peer_hash,

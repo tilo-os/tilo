@@ -223,7 +223,7 @@ pub fn render_to_path(
     storage::ensure_layout(&root)?;
     seed_sample_workspace(&root);
 
-    let mut app = NotesApp::spawn(root.clone()).map_err(|e| e)?;
+    let mut app = NotesApp::spawn(root.clone())?;
 
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme

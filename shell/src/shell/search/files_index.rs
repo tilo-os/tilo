@@ -594,7 +594,7 @@ mod content_index_integration {
             "# Notes\n\nsearch registry uses BM25.\n",
         )
         .unwrap();
-        fs::write(home.join("binary.png"), &[0u8, 1, 2, 3]).unwrap();
+        fs::write(home.join("binary.png"), [0u8, 1, 2, 3]).unwrap();
 
         let index = FilesIndex::open_or_create(home).expect("open index");
         let ready = wait_for(
@@ -609,16 +609,14 @@ mod content_index_integration {
         let hits = index.query("apples", 5);
         assert!(
             hits.iter().any(|h| h.path.ends_with("shopping.md")),
-            "expected shopping.md in results, got {:?}",
-            hits
+            "expected shopping.md in results, got {hits:?}"
         );
 
         // Binary must NOT surface — filtered by extension.
         let hits = index.query("binary", 5);
         assert!(
             !hits.iter().any(|h| h.path.ends_with("binary.png")),
-            "binary.png should be excluded, got {:?}",
-            hits
+            "binary.png should be excluded, got {hits:?}"
         );
     }
 

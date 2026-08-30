@@ -53,7 +53,7 @@ enum Cmd {
         /// Target architecture. Defaults to the host arch
         /// (`std::env::consts::ARCH`). Explicit override lets you
         /// build a cross-arch bundle from a fabricated rootfs (e.g.
-        /// an aarch64 sysroot on an x86_64 CI runner).
+        /// an aarch64 sysroot on an `x86_64` CI runner).
         #[arg(long)]
         arch: Option<String>,
         /// Path to an identity JSON file for signing the bundle.
@@ -210,11 +210,11 @@ fn main() -> ExitCode {
         Cmd::Key { cmd } => match cmd {
             KeyCmd::Generate { out } => {
                 let identity = Identity::generate();
-                if let Some(parent) = out.parent() {
-                    if let Err(e) = std::fs::create_dir_all(parent) {
-                        eprintln!("qos-runtime-bundle key generate: {e}");
-                        return ExitCode::from(1);
-                    }
+                if let Some(parent) = out.parent()
+                    && let Err(e) = std::fs::create_dir_all(parent)
+                {
+                    eprintln!("qos-runtime-bundle key generate: {e}");
+                    return ExitCode::from(1);
                 }
                 if let Err(e) = std::fs::write(&out, identity.to_json_bytes()) {
                     eprintln!("qos-runtime-bundle key generate: {e}");

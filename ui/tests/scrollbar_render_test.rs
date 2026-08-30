@@ -1,5 +1,5 @@
 //! Offscreen render guard for [`Scrollable`]'s visual scrollbar: drives
-//! the full build_layout → measure → apply_layout → draw pipeline with a
+//! the full `build_layout` → measure → `apply_layout` → draw pipeline with a
 //! tall child and asserts the scrollbar actually paints along the right
 //! edge. A differential render with the scrollbar disabled proves the
 //! painted pixels come from the bar, not from the content.

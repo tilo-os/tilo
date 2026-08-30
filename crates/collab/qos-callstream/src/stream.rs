@@ -321,7 +321,7 @@ mod tests {
         };
         let bytes = frame.encode();
         assert!(
-            SurfaceFrame::decode(&bytes[..FRAME_HEADER_LEN + 1])
+            SurfaceFrame::decode(&bytes[..=FRAME_HEADER_LEN])
                 .expect("decode")
                 .is_none()
         );

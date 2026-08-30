@@ -146,7 +146,7 @@ impl ui::widget::Widget for NoOpWidget {
         _t: &taffy::TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "noop"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -228,7 +228,7 @@ impl ui::widget::Widget for GatedButton {
     ) {
         self.clicked = true;
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "gated"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {

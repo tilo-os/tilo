@@ -2137,10 +2137,7 @@ mod tests {
         w.confirm_prompt();
         assert!(w.attachments.is_empty(), "a missing path stages nothing");
         assert!(
-            w.prompt
-                .as_ref()
-                .map(|p| p.error.is_some())
-                .unwrap_or(false),
+            w.prompt.as_ref().is_some_and(|p| p.error.is_some()),
             "the prompt stays open showing an error"
         );
     }

@@ -122,7 +122,7 @@ fn threshold_signed_op_passes_inbound_validator() {
     // the threshold identity (`a.group_public_key`) has the
     // Editor role on this channel.
     let now = SystemTime::UNIX_EPOCH;
-    let later = now + std::time::Duration::from_secs(60 * 60 * 24 * 365);
+    let later = now + std::time::Duration::from_hours(8760);
     let attestation_id = AttestationId::new();
     let mut attestation = Attestation {
         id: attestation_id,
@@ -146,7 +146,7 @@ fn threshold_signed_op_passes_inbound_validator() {
         a.group_public_key,
         attestation_id,
         OpClass::Splice,
-        now + std::time::Duration::from_secs(60),
+        now + std::time::Duration::from_mins(1),
         1,
     );
     // Sign the op via threshold.

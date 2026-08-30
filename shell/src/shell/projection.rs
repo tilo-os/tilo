@@ -2,7 +2,7 @@
 //!
 //! The shell owns the picker and its lifecycle, while the transport broker owns
 //! protocol details.  Keeping that boundary explicit matters here: Miracast,
-//! Google Cast, AirPlay and FCast have different discovery and authentication
+//! Google Cast, `AirPlay` and `FCast` have different discovery and authentication
 //! handshakes, but the UI must not grow four subtly different connection flows.
 //!
 //! The production integration point is `/usr/libexec/qos-projector`. It speaks
@@ -41,7 +41,7 @@ pub trait ProjectionBackend: Send + 'static {
 }
 
 /// Production adapter for the small privileged projection broker provided by
-/// the OS image. The compositor never grants a third-party app raw PipeWire,
+/// the OS image. The compositor never grants a third-party app raw `PipeWire`,
 /// Wi-Fi Direct or mDNS access just to populate this picker.
 #[derive(Clone, Debug)]
 pub struct SystemProjectionBackend {
@@ -149,7 +149,7 @@ impl ProjectionBackend for SystemProjectionBackend {
                 "--device",
                 &device.id,
                 "--address",
-                device.addresses.first().map(String::as_str).unwrap_or(""),
+                device.addresses.first().map_or("", String::as_str),
                 "--port",
                 &port,
                 "--mode",
@@ -399,7 +399,7 @@ mod tests {
 
     fn device(protocol: ProjectionProtocol) -> ProjectionDevice {
         ProjectionDevice {
-            id: format!("{:?}", protocol),
+            id: format!("{protocol:?}"),
             name: format!("{} display", protocol.label()),
             protocol,
             detail: "Test room".into(),

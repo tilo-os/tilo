@@ -623,7 +623,7 @@ fn highest_cleared_at(
         }
         for claim in &att.claims {
             if let Claim::ClearedAt(c) = claim
-                && best.map_or(true, |(b, _)| c > &b)
+                && best.is_none_or(|(b, _)| c > &b)
             {
                 best = Some((*c, att.issued_by));
             }

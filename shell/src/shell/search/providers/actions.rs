@@ -642,7 +642,7 @@ mod tests {
         assert!(!c.borrow().dnd(), "DND starts off");
         let fire = |doc: &mut AutoCommit| {
             (dnd.on_open)(doc, &automerge::ROOT, &c, &ActionArgs::none())
-                .expect("a nullary chrome action must run")
+                .expect("a nullary chrome action must run");
         };
         fire(&mut doc);
         assert!(c.borrow().dnd(), "opening the action turns DND on");

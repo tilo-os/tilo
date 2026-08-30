@@ -212,7 +212,7 @@ async fn denying_a_prompt_releases_the_portal_call_too() {
         .iter()
         .find(|w| w.id == ws)
         .expect("workspace")
-        .app_capabilities(&APP.to_string());
+        .app_capabilities(APP);
     assert!(
         caps.is_empty(),
         "a denied prompt must record nothing; got {caps:?}"
@@ -240,7 +240,7 @@ async fn a_session_grant_answers_and_persists() {
         .iter()
         .find(|w| w.id == ws)
         .expect("workspace")
-        .app_capabilities(&APP.to_string())
+        .app_capabilities(APP)
         .into_iter()
         .any(|c| {
             matches!(

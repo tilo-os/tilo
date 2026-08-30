@@ -73,7 +73,10 @@ fn walk(
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(base_dir)
         .map_err(|e| format!("read_dir '{}': {e}", base_dir.display()))?;
-    let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    let mut entries: Vec<_> = entries
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.path())
+        .collect();
     // Stable order so test output is deterministic across runs.
     entries.sort();
     for entry in entries {
@@ -89,8 +92,7 @@ fn walk(
         if entry
             .file_name()
             .and_then(|s| s.to_str())
-            .map(|s| s.ends_with(".diff.png"))
-            .unwrap_or(false)
+            .is_some_and(|s| s.ends_with(".diff.png"))
         {
             continue;
         }
@@ -99,9 +101,7 @@ fn walk(
             .map_err(|e| format!("strip_prefix: {e}"))?
             .to_path_buf();
         let cur = current_root.join(&rel);
-        let kind = if !cur.exists() {
-            DiffKind::Missing
-        } else {
+        let kind = if cur.exists() {
             match compare_png(&entry, &cur, threshold) {
                 Ok(0) => DiffKind::Ok,
                 Ok(n) => {
@@ -120,6 +120,8 @@ fn walk(
                 }
                 Err(DiffError::Io(msg)) => DiffKind::ReadError(msg),
             }
+        } else {
+            DiffKind::Missing
         };
         report.entries.push(DiffEntry { path: rel, kind });
     }
@@ -155,11 +157,11 @@ fn compare_png(a: &Path, b: &Path, threshold: u8) -> Result<u64, DiffError> {
 pub fn count_diff_pixels(a: &[u8], b: &[u8], threshold: u8) -> u64 {
     assert_eq!(a.len(), b.len(), "buffers must be the same length");
     let mut n = 0u64;
-    let t = threshold as i32;
+    let t = i32::from(threshold);
     for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
-        let dr = (pa[0] as i32 - pb[0] as i32).abs();
-        let dg = (pa[1] as i32 - pb[1] as i32).abs();
-        let db = (pa[2] as i32 - pb[2] as i32).abs();
+        let dr = (i32::from(pa[0]) - i32::from(pb[0])).abs();
+        let dg = (i32::from(pa[1]) - i32::from(pb[1])).abs();
+        let db = (i32::from(pa[2]) - i32::from(pb[2])).abs();
         if dr > t || dg > t || db > t {
             n += 1;
         }
@@ -175,13 +177,13 @@ fn write_diff_overlay(baseline: &Path, current: &Path, threshold: u8) -> Result<
     let (b_pix, dims) = load_rgba(baseline)?;
     let (mut c_pix, c_dims) = load_rgba(current)?;
     if dims != c_dims {
-        return Err(format!("size mismatch: {:?} vs {:?}", dims, c_dims));
+        return Err(format!("size mismatch: {dims:?} vs {c_dims:?}"));
     }
-    let t = threshold as i32;
+    let t = i32::from(threshold);
     for (a, b) in c_pix.chunks_exact_mut(4).zip(b_pix.chunks_exact(4)) {
-        let dr = (a[0] as i32 - b[0] as i32).abs();
-        let dg = (a[1] as i32 - b[1] as i32).abs();
-        let db = (a[2] as i32 - b[2] as i32).abs();
+        let dr = (i32::from(a[0]) - i32::from(b[0])).abs();
+        let dg = (i32::from(a[1]) - i32::from(b[1])).abs();
+        let db = (i32::from(a[2]) - i32::from(b[2])).abs();
         if dr > t || dg > t || db > t {
             a[0] = 255;
             a[1] = 0;
@@ -305,7 +307,7 @@ mod tests {
     /// tree walker, and assert the report kinds line up.
     #[test]
     fn baseline_diff_tree_walker_classifies_each_file() {
-        let tmp = std::env::temp_dir().join(format!("shots-diff-test-{}", std::process::id(),));
+        let tmp = std::env::temp_dir().join(format!("shots-diff-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let baseline = tmp.join("baseline");
         let current = tmp.join("current");
@@ -348,7 +350,7 @@ mod tests {
         assert!(matches!(by_name["ok.png"], DiffKind::Ok));
         match by_name["diff.png"] {
             DiffKind::Diff(n) => assert_eq!(*n, 2, "two pixels mutated"),
-            other => panic!("expected Diff, got {:?}", other),
+            other => panic!("expected Diff, got {other:?}"),
         }
         assert!(matches!(by_name["missing.png"], DiffKind::Missing));
         assert!(matches!(by_name["size.png"], DiffKind::SizeMismatch { .. }));
@@ -369,8 +371,7 @@ mod tests {
     /// previous diff, not real baselines).
     #[test]
     fn diff_overlay_files_are_skipped() {
-        let tmp =
-            std::env::temp_dir().join(format!("shots-diff-skip-test-{}", std::process::id(),));
+        let tmp = std::env::temp_dir().join(format!("shots-diff-skip-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let baseline = tmp.join("baseline");
         let current = tmp.join("current");

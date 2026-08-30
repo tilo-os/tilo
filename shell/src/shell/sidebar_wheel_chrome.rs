@@ -705,12 +705,12 @@ mod drag_rotate_tests {
     ) -> (SidebarWheelChrome, crate::shell::chrome_state::Chrome) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         for i in 1..n {
-            tree.append_empty_workspace(&format!("WS-{}", i));
+            tree.append_empty_workspace(&format!("WS-{i}"));
         }
         let chrome = ChromeState::new(tree);
         let sidebar = {
             let state = chrome.borrow();
-            SidebarWheelChrome::from_tree(&*state.tree()).with_chrome(chrome.clone())
+            SidebarWheelChrome::from_tree(&state.tree()).with_chrome(chrome.clone())
         };
         (sidebar, chrome)
     }
@@ -740,11 +740,11 @@ mod drag_rotate_tests {
             if s.drag_moved {
                 s.drag_accum += dy;
                 while s.drag_accum >= DRAG_SWITCH_THRESHOLD_PX {
-                    if let Some(ch) = s.chrome.clone() {
-                        if !ch.borrow_mut().switch_workspace(1) {
-                            s.drag_accum = 0.0;
-                            break;
-                        }
+                    if let Some(ch) = s.chrome.clone()
+                        && !ch.borrow_mut().switch_workspace(1)
+                    {
+                        s.drag_accum = 0.0;
+                        break;
                     }
                     s.drag_accum -= DRAG_SWITCH_THRESHOLD_PX;
                 }
@@ -767,10 +767,11 @@ mod drag_rotate_tests {
 
         // 2px wiggle — below the 4px click tolerance.
         let p = Point::new(48.0, 102.0);
-        if let (Some(start), Some(_last)) = (s.drag_start_y, s.drag_last_y) {
-            if !s.drag_moved && (p.y - start).abs() > DRAG_CLICK_TOLERANCE_PX {
-                s.drag_moved = true;
-            }
+        if let (Some(start), Some(_last)) = (s.drag_start_y, s.drag_last_y)
+            && !s.drag_moved
+            && (p.y - start).abs() > DRAG_CLICK_TOLERANCE_PX
+        {
+            s.drag_moved = true;
         }
 
         assert!(
@@ -801,11 +802,11 @@ mod drag_rotate_tests {
             if s.drag_moved {
                 s.drag_accum += dy;
                 while s.drag_accum <= -DRAG_SWITCH_THRESHOLD_PX {
-                    if let Some(ch) = s.chrome.clone() {
-                        if !ch.borrow_mut().switch_workspace(-1) {
-                            s.drag_accum = 0.0;
-                            break;
-                        }
+                    if let Some(ch) = s.chrome.clone()
+                        && !ch.borrow_mut().switch_workspace(-1)
+                    {
+                        s.drag_accum = 0.0;
+                        break;
                     }
                     s.drag_accum += DRAG_SWITCH_THRESHOLD_PX;
                 }

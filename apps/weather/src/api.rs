@@ -354,7 +354,7 @@ mod tests {
         for h in 0..26 {
             times.push(format!("2026-06-30T{h:02}:00"));
         }
-        let temps: Vec<f64> = (0..26).map(|h| h as f64).collect();
+        let temps: Vec<f64> = (0..26).map(|h| f64::from(h)).collect();
         let codes: Vec<i64> = vec![0; 26];
         let isday: Vec<i64> = vec![1; 26];
         let body = serde_json::json!({

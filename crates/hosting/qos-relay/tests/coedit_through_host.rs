@@ -43,13 +43,11 @@ fn text_of(doc: &AutoCommit) -> String {
 }
 
 fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(dir).map_or(0, |rd| {
+        rd.flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+            .count()
+    })
 }
 
 /// Drain `session` until an `Inbound::Delta` arrives, applying each

@@ -5006,7 +5006,7 @@ mod tests {
             d.addresses.push(Address {
                 label: "work".into(),
                 ..Default::default()
-            })
+            });
         });
         drive_frame(&mut app, 1280, 800);
         assert_eq!(app.mode, Mode::Edit);
@@ -5353,8 +5353,7 @@ mod tests {
                         .form
                         .as_ref()
                         .and_then(|f| f.inputs.iter().find(|i| i.slot == slot))
-                        .map(|i| i.ti.is_focused())
-                        .unwrap_or(false)
+                        .is_some_and(|i| i.ti.is_focused())
                 }
                 _ => false,
             }
@@ -5412,8 +5411,7 @@ mod tests {
             .inputs
             .iter()
             .find(|f| f.slot == Slot::Birthday)
-            .map(|f| f.ti.is_focused())
-            .unwrap_or(false);
+            .is_some_and(|f| f.ti.is_focused());
         assert!(
             birthday_focused,
             "the double-clicked field is focused for editing"
@@ -5789,10 +5787,10 @@ mod tests {
         assert!(h.press_right(h.row_center(0)));
         assert_eq!(
             CONTEXT_ACTIONS[fav_idx].label(!before),
-            if !before {
-                "Remove from favorites"
-            } else {
+            if before {
                 "Add to favorites"
+            } else {
+                "Remove from favorites"
             },
             "the relabelled item reflects the toggled state",
         );
@@ -5930,10 +5928,10 @@ mod tests {
         let cur = h.app.selected.unwrap();
         let c = h.app.store.get(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
-        if let Some(form) = h.app.form.as_mut() {
-            if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title) {
-                fi.ti.set_text("Brand New Title");
-            }
+        if let Some(form) = h.app.form.as_mut()
+            && let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title)
+        {
+            fi.ti.set_text("Brand New Title");
         }
         h.relayout();
         assert!(h.app.form_is_dirty(), "the edited form is dirty");
@@ -5979,10 +5977,10 @@ mod tests {
         let original_title = h.app.store.get(cur).unwrap().title.clone();
         let c = h.app.store.get(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
-        if let Some(form) = h.app.form.as_mut() {
-            if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title) {
-                fi.ti.set_text("Throwaway Title");
-            }
+        if let Some(form) = h.app.form.as_mut()
+            && let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title)
+        {
+            fi.ti.set_text("Throwaway Title");
         }
         h.relayout();
         let other_idx = (0..h.app.list_rows.len())
@@ -6586,7 +6584,7 @@ mod tests {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
         let c = h.app.store.get(id).cloned().unwrap();
-        let stored_bday = c.birthday.clone();
+        let stored_bday = c.birthday;
         h.app.begin_edit(c, false);
         h.relayout();
         assert!(
@@ -6610,7 +6608,7 @@ mod tests {
             .find(|(d, r)| *d != 10 && panel.contains(r.center()))
             .expect("a selectable in-panel day");
         h.press_left(rect.center());
-        let expect = format!("{:04}-{:02}-{:02}", year, month, day);
+        let expect = format!("{year:04}-{month:02}-{day:02}");
         assert_eq!(
             h.app.form.as_ref().unwrap().draft.birthday,
             Some(Birthday::Full { year, month, day }),
@@ -7102,7 +7100,7 @@ mod tests {
 
         // Drive the parse+merge core directly with the paths the portal would
         // have handed back (the picker itself can't run headless).
-        let n = app.import_paths(&mut doc, &[vcf_a.clone(), vcf_b.clone()]);
+        let n = app.import_paths(&mut doc, &[vcf_a, vcf_b]);
         assert_eq!(n, 3, "all three cards across the two files were imported");
         assert_eq!(
             app.store.len(),
@@ -7290,7 +7288,7 @@ mod tests {
                 .find(|(s, _)| *s == Slot::First)
                 .map(|(_, r)| *r)
                 .expect("the detail header exposes a name row hit rect");
-            let measured = tr.measure_weighted(&name, 26.0, None, TextWeight::Bold).0 as f64;
+            let measured = f64::from(tr.measure_weighted(&name, 26.0, None, TextWeight::Bold).0);
             assert!(
                 name_rect.width() >= measured,
                 "name {name:?} needs {measured:.0}px but its row is only {:.0}px — it would truncate",
@@ -7328,7 +7326,8 @@ mod tests {
         // Back-date the toast past its lifetime and draw again → it clears,
         // and the loop is then free to idle.
         if let Some((_, shown)) = app.toast.as_mut() {
-            *shown = Instant::now() - TOAST_LIFETIME - Duration::from_millis(50);
+            *shown =
+                Instant::now().checked_sub(TOAST_LIFETIME).unwrap() - Duration::from_millis(50);
         }
         assert!(
             app.toast_expired(),

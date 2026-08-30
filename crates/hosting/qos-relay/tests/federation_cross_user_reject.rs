@@ -4,7 +4,7 @@
 //! that already rejects cross-user device clients.
 //!
 //! We spin up two relays under two different users, put user A's
-//! relay1 into a peer_relays config pointing at user B's relay2,
+//! relay1 into a `peer_relays` config pointing at user B's relay2,
 //! and assert:
 //!  - the dial task's `RelayClient::connect` fails at the mutual-
 //!    auth stage (user B's cert doesn't chain to user A's root);

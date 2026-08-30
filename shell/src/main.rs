@@ -38,10 +38,10 @@ fn install_crash_log_hook() {
             .map(|s| (*s).to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "<unknown payload>".to_string());
-        let loc = info
-            .location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "<unknown location>".to_string());
+        let loc = info.location().map_or_else(
+            || "<unknown location>".to_string(),
+            |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
+        );
         let body = format!(
             "qos shell panic\n\
              ===============\n\
@@ -149,15 +149,13 @@ fn main() {
         return;
     }
 
-    if firstboot_requested {
-        if let Err(e) = firstboot::run() {
-            // Don't fail the boot — log and continue. A non-zero exit still poisons
-            // the wider boot transaction even though the systemd unit marks first-boot done regardless, so we swallow the error here.
-            tracing::warn!("firstboot: setup hit an error ({e}); continuing with compositor boot");
-        }
-        // Fall through to the normal compositor entry point — the systemd unit
-        // runs us as `Type=oneshot`, so the process exits at the bottom of `app.run()` as usual.
+    if firstboot_requested && let Err(e) = firstboot::run() {
+        // Don't fail the boot — log and continue. A non-zero exit still poisons
+        // the wider boot transaction even though the systemd unit marks first-boot done regardless, so we swallow the error here.
+        tracing::warn!("firstboot: setup hit an error ({e}); continuing with compositor boot");
     }
+    // Fall through to the normal compositor entry point — the systemd unit
+    // runs us as `Type=oneshot`, so the process exits at the bottom of `app.run()` as usual.
 
     // A signing identity belongs to the person, so it's created here — in
     // their session, never by the system unit running as root before anyone
@@ -167,7 +165,7 @@ fn main() {
     match identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
             if provision_identity_requested {
-                run_identity_onboarding(store.path().parent().map(|p| p.to_path_buf()));
+                run_identity_onboarding(store.path().parent().map(std::path::Path::to_path_buf));
                 return;
             }
             tracing::warn!(

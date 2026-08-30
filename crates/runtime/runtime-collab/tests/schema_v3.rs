@@ -147,15 +147,12 @@ impl invocation_stream::Server for FakeInvocationStream {
         r.set_resource(&seed.resource);
         r.set_action(&seed.action);
         r.set_actor(&seed.actor);
-        match &seed.argument {
-            Some(a) => {
-                r.set_has_argument(true);
-                r.set_argument(a);
-            }
-            None => {
-                r.set_has_argument(false);
-                r.set_argument("");
-            }
+        if let Some(a) = &seed.argument {
+            r.set_has_argument(true);
+            r.set_argument(a);
+        } else {
+            r.set_has_argument(false);
+            r.set_argument("");
         }
         Promise::ok(())
     }
