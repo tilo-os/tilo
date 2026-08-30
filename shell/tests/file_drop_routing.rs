@@ -258,11 +258,15 @@ fn two_drops_route_to_the_two_distinct_groups_they_land_on() {
     let left_before = tab_count(&chrome, g_left);
     let right_before = tab_count(&chrome, g_right);
 
+    // An extension no app claims, as everywhere else in this file. A claimed
+    // type takes the document-open path instead of the placeholder-tab one,
+    // and that path needs a file that exists — which is a different test than
+    // this one, whose subject is which group a drop lands on.
     let left_center = group_center(&mut host, strip_id, 0);
-    hover_and_drop(&mut host, &layout, left_center, "/drop/left.md");
+    hover_and_drop(&mut host, &layout, left_center, "/drop/left.ts");
 
     let right_center = group_center(&mut host, strip_id, 1);
-    hover_and_drop(&mut host, &layout, right_center, "/drop/right.md");
+    hover_and_drop(&mut host, &layout, right_center, "/drop/right.ts");
 
     assert_eq!(
         tab_count(&chrome, g_left),

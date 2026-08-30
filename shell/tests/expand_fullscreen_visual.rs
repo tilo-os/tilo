@@ -105,17 +105,33 @@ fn render_expand_to_fullscreen() {
     };
     d.cursor(&mut fb, pill_center);
     fb.relayout();
+    // The chip cluster slides out on wall time, and the rects stay `Rect::ZERO`
+    // until that curve has run, so hold it past the end and lay out again.
+    // Without this the capture below shows a pill with no chips and the click
+    // lands on nothing — which is what this file did, silently, because it
+    // printed the outcome instead of asserting it.
+    let mut held = false;
+    if let Some(row) = fb.host_mut().group_row_mut_for_tests(strip_id) {
+        for g in row.groups.iter_mut() {
+            held |= g
+                .bar_mut_for_tests()
+                .hold_reveal_at(std::time::Duration::from_secs(1));
+        }
+    }
+    assert!(held, "hovering the pill started no chip reveal");
+    fb.relayout();
 
     let chip = {
         let g = fb.host_mut().group_at_for_tests(strip_id, 0).unwrap();
-        g.bar_for_tests()
+        let r = g
+            .bar_for_tests()
             .max_rects()
             .first()
             .copied()
-            .expect("Expand chip")
-            .center()
+            .expect("Expand chip");
+        assert!(r.area() > 0.0, "the Expand chip has no hit rect to click");
+        r.center()
     };
-    println!("pill_center={pill_center:?} expand_chip={chip:?}");
     let scene = fb.paint();
     r.render_png(&scene, Color::BLACK, dir.join("02-pill-hovered.png"));
 
@@ -128,7 +144,11 @@ fn render_expand_to_fullscreen() {
         .group_at_for_tests(strip_id, 0)
         .map(|g| g.maximized)
         .unwrap_or(false);
-    println!("after Expand click: maximized={maximized}");
+    assert!(
+        maximized,
+        "the Expand click must maximize the group — the shots below are of \
+         that state, and are worthless if it never happened",
+    );
     // Cursor in the top reveal band, so the floating pill is showing.
     d.cursor(&mut fb, Point::new(200.0, 20.0));
     fb.relayout();
