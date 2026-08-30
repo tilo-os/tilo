@@ -222,6 +222,18 @@ pub fn sign_device_cert(
     Ok(())
 }
 
+/// Return the domain-separated digest an external signer must sign for this
+/// certificate.
+///
+/// This is the broker-friendly counterpart to [`sign_device_cert`]. It lets a
+/// caller ask a non-exportable user-root capability to sign the exact wire-ABI
+/// preimage without copying the private key into another file. Callers must
+/// attach the resulting signature and validate it with [`verify_device_cert`]
+/// before persisting the certificate.
+pub fn device_cert_signing_digest(cert: &DeviceCert) -> Result<[u8; 32], DeviceCertError> {
+    signing_digest(DEVCERT_PREIMAGE_TAG, &cert.view()).map_err(Into::into)
+}
+
 /// Verify a device cert against the user root public key embedded
 /// in the cert.
 ///

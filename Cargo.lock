@@ -7061,6 +7061,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "collab-types",
+ "ed25519-dalek 2.2.0",
  "landlock",
  "libc",
  "pkg",
@@ -11677,14 +11678,17 @@ dependencies = [
 name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
  "ed25519-dalek 2.2.0",
+ "hex",
+ "libc",
  "runtime-portal",
  "serde",
  "serde_bytes",
  "serde_json",
+ "serial_test",
  "sha2 0.10.9",
  "tempfile",
+ "zeroize",
 ]
 
 [[package]]

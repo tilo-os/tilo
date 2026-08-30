@@ -30,8 +30,8 @@
 //!
 //! [`portal`] owns the low-level `service_fd` + `UnixCapnpClient` plumbing
 //! that [`collab`] and [`fs`] each wrap with a Cap'n Proto schema and typed
-//! clients; [`identity`] reads the on-disk identity record and signs
-//! locally, without talking to a service.
+//! clients; [`identity`] consumes an app-scoped signing connection while
+//! private key material remains in the host launcher-side broker.
 //!
 //! The broker lives in the compositor, the FUSE driver in `fs/`, and the
 //! launcher is `qos-launcher` — this umbrella is client-side only.
