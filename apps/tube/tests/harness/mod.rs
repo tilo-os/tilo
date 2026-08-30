@@ -61,6 +61,13 @@ impl<W: Widget> Harness<W> {
 
     /// Run one full layout frame (sync + build + compute + apply). Called after
     /// every event that dirties the structure so rects reflect the new tree.
+    #[allow(
+        clippy::unwrap_used,
+        reason = "test-harness plumbing (this module compiles only into the test \
+              binary): a broken layout / missing test_id is a real test \
+              failure and must fail loudly here, not be swallowed by a \
+              production-safety Result the harness has no caller to check"
+    )]
     pub fn frame(&mut self) {
         self.taffy = TaffyTree::new();
         self.node_map.clear();
@@ -129,11 +136,11 @@ impl<W: Widget> Harness<W> {
         self.rect_by_id(id).is_some()
     }
 
-    fn dispatch(&mut self, event: WindowEvent) {
+    fn dispatch(&mut self, event: &WindowEvent) {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         self.app.handle_event(
-            &event,
+            event,
             1.0,
             &self.modifiers,
             &mut self.state.doc,
@@ -163,6 +170,13 @@ impl<W: Widget> Harness<W> {
     /// asked `ui::App` to move keyboard focus to that same widget. This is the
     /// real hit-test + event-routing path: a `true` means a real click at the
     /// real coordinates focuses the real input.
+    #[allow(
+        clippy::panic,
+        reason = "test-harness plumbing (this module compiles only into the test \
+              binary): a broken layout / missing test_id is a real test \
+              failure and must fail loudly here, not be swallowed by a \
+              production-safety Result the harness has no caller to check"
+    )]
     pub fn click_focuses(&mut self, id: &str) -> bool {
         let r = self
             .rect_by_id(id)
@@ -172,16 +186,16 @@ impl<W: Widget> Harness<W> {
         let pos = PhysicalPosition::new(p.x, p.y);
         let dev = DeviceId::dummy();
         self.last_focus = None;
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: dev,
             position: pos,
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: dev,
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: dev,
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -194,11 +208,11 @@ impl<W: Widget> Harness<W> {
     /// through `handle_event`. Moving the cursor first mirrors a real gesture.
     pub fn wheel_at(&mut self, at: Point, lines: f32) {
         let dev = DeviceId::dummy();
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: dev,
             position: PhysicalPosition::new(at.x, at.y),
         });
-        self.dispatch(WindowEvent::MouseWheel {
+        self.dispatch(&WindowEvent::MouseWheel {
             device_id: dev,
             delta: MouseScrollDelta::LineDelta(0.0, lines),
             phase: TouchPhase::Moved,
@@ -210,16 +224,16 @@ impl<W: Widget> Harness<W> {
     pub fn click_at(&mut self, p: Point) {
         let pos = PhysicalPosition::new(p.x, p.y);
         let dev = DeviceId::dummy();
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: dev,
             position: pos,
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: dev,
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: dev,
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -229,6 +243,13 @@ impl<W: Widget> Harness<W> {
 
     /// Click the centre of the widget addressed by `id`. Panics if not found —
     /// a missing id is a real test failure (the affordance isn't in the tree).
+    #[allow(
+        clippy::panic,
+        reason = "test-harness plumbing (this module compiles only into the test \
+              binary): a broken layout / missing test_id is a real test \
+              failure and must fail loudly here, not be swallowed by a \
+              production-safety Result the harness has no caller to check"
+    )]
     pub fn click_id(&mut self, id: &str) {
         let r = self
             .rect_by_id(id)
