@@ -144,19 +144,33 @@ impl CrdtTextBody {
             return range.start;
         };
         // Automerge `Text` is char-addressed; the mirror is byte-addressed.
-        let char_start = self.text[..range.start].chars().count();
-        let char_count = self.text[range.clone()].chars().count();
+        // A `range` that doesn't land on char boundaries would be an
+        // upstream bug (Automerge itself would then splice at the wrong
+        // char), so treat it the same as "resolve failed": skip the edit
+        // rather than panic on the byte slice.
+        let Some(before) = self.text.get(..range.start) else {
+            return range.start;
+        };
+        let Some(changed) = self.text.get(range.clone()) else {
+            return range.start;
+        };
+        let char_start = before.chars().count();
+        let char_count = changed.chars().count();
         self.text.replace_range(range.clone(), s);
-        let _ = state.splice_text(&body, char_start, char_count as isize, s);
+        // A single edit's char count is bounded by the buffer length,
+        // nowhere near isize::MAX; `unwrap_or` only matters for a
+        // document large enough that no editor could scroll it anyway.
+        let char_count_isize = isize::try_from(char_count).unwrap_or(isize::MAX);
+        let _ = state.splice_text(&body, char_start, char_count_isize, s);
         self.last_edit = Some(Instant::now());
-        range.start + s.len()
+        range.start.saturating_add(s.len())
     }
 
     /// Nearest char boundary at or below `pos`, clamped to the buffer.
     pub fn clamp(&self, pos: usize) -> usize {
         let mut p = pos.min(self.text.len());
         while p > 0 && !self.text.is_char_boundary(p) {
-            p -= 1;
+            p = p.saturating_sub(1);
         }
         p
     }
@@ -197,28 +211,44 @@ impl CrdtTextBody {
 ///
 /// `widget` must be the `self` pointer of the caller — that is what makes
 /// the `node_map` entry point back at the right widget during dispatch.
-pub fn full_bleed_leaf(
+/// Does not panic: `TaffyTree::new_leaf` can only err on an exhausted
+/// node capacity, which a single-leaf insert into a live UI tree cannot
+/// reach, but this degrades to a dummy `NodeId` and no `node_map` entry
+/// rather than assert it.
+pub fn full_bleed_leaf<S: std::hash::BuildHasher>(
     taffy: &mut TaffyTree<()>,
-    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    node_map: &mut HashMap<NodeId, *mut dyn Widget, S>,
     widget: *mut dyn Widget,
 ) -> NodeId {
-    let node = taffy
-        .new_leaf(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        })
-        .unwrap();
+    let style = Style {
+        size: Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::percent(1.0),
+        },
+        ..Style::default()
+    };
+    let Ok(node) = taffy.new_leaf(style) else {
+        // Genuinely unreachable for a single leaf in a live tree, but
+        // `TaffyTree::new_leaf` returns `Result`, and this crate never
+        // unwraps a Result it can instead handle — a zero rect with no
+        // node_map entry degrades to "this tile doesn't lay out this
+        // frame" rather than tearing down the whole compositor.
+        return NodeId::new(0);
+    };
     node_map.insert(node, widget);
     node
 }
 
 /// `Widget::apply_layout` body matching [`full_bleed_leaf`]: taffy's
-/// computed box translated into the parent's coordinate space.
+/// computed box translated into the parent's coordinate space. Does not
+/// panic: `node` always comes from this same frame's `full_bleed_leaf`
+/// call into the same `taffy` tree so a layout for it always exists, but
+/// a missing layout degrades to a zero-size `Rect` at `origin` rather
+/// than assert it.
 pub fn full_bleed_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let l = taffy.layout(node).unwrap();
+    let Ok(l) = taffy.layout(node) else {
+        return Rect::new(origin.x, origin.y, origin.x, origin.y);
+    };
     Rect::new(
         origin.x + f64::from(l.location.x),
         origin.y + f64::from(l.location.y),
