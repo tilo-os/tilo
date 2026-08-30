@@ -400,6 +400,10 @@ impl Widget for SearchField {
         Widget::ime_cursor_rect(&self.input)
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Widget::ime_purpose(&self.input)
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.input as &dyn Widget]
     }
