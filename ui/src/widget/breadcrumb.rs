@@ -64,6 +64,7 @@ impl Breadcrumb {
     /// Builder: install a click callback. The callback receives the index
     /// into the original `segments` vector — never the visible-list index
     /// — so middle-truncation never confuses the consumer.
+    #[must_use]
     pub fn on_navigate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_navigate = Some(Box::new(f));
         self
@@ -94,7 +95,7 @@ impl Breadcrumb {
         if self.segments.is_empty() {
             return Vec::new();
         }
-        let full_width = self.measure_total_width(&self.segments, theme, tr);
+        let full_width = measure_total_width(&self.segments, theme, tr);
         if full_width <= available_width {
             return self.segments.clone();
         }
@@ -105,32 +106,20 @@ impl Breadcrumb {
             return self.segments.clone();
         }
 
-        let n = self.segments.len();
-        vec![
-            self.segments[0].clone(),
-            ELLIPSIS.to_string(),
-            self.segments[n - 2].clone(),
-            self.segments[n - 1].clone(),
-        ]
-    }
-
-    /// Sum the widths of all segments + interleaved separators (with
-    /// `s2` padding on each side of each separator). Used by
-    /// `visible_segments` to decide whether the full path fits.
-    fn measure_total_width(&self, labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
-        let size = theme.tokens.typography.scale.sm;
-        let sep_pad = f64::from(theme.tokens.spacing.s2);
-        let (sep_w, _) = tr.measure(SEPARATOR_GLYPH, size, None);
-        let sep_block = f64::from(sep_w) + sep_pad * 2.0;
-        let mut total = 0.0_f64;
-        for (i, label) in labels.iter().enumerate() {
-            let (w, _) = tr.measure(label, size, None);
-            total += f64::from(w);
-            if i + 1 < labels.len() {
-                total += sep_block;
-            }
+        // At least 5 segments here (the `<= 4` guard above), so this slice
+        // pattern always matches — reading first/second-last/last through
+        // it keeps the lookup indexing-free rather than computing `n - 1`
+        // / `n - 2` and indexing with them.
+        if let [first, .., second_last, last] = self.segments.as_slice() {
+            vec![
+                first.clone(),
+                ELLIPSIS.to_string(),
+                second_last.clone(),
+                last.clone(),
+            ]
+        } else {
+            self.segments.clone()
         }
-        total
     }
 
     /// Recompute `cached_visible`, `segment_rects`, and `visible_origin`
@@ -144,13 +133,13 @@ impl Breadcrumb {
         // originals survive (first + last two); otherwise each visible
         // index equals the original index.
         let n = self.segments.len();
-        let truncated = labels.len() == 4 && n > 4 && labels[1] == ELLIPSIS;
+        let truncated = labels.len() == 4 && n > 4 && labels.get(1).is_some_and(|l| l == ELLIPSIS);
         let mut origin = Vec::with_capacity(labels.len());
         if truncated {
             origin.push(Some(0));
             origin.push(None); // ellipsis is non-clickable
-            origin.push(Some(n - 2));
-            origin.push(Some(n - 1));
+            origin.push(Some(n.saturating_sub(2)));
+            origin.push(Some(n.saturating_sub(1)));
         } else {
             for i in 0..labels.len() {
                 origin.push(Some(i));
@@ -173,7 +162,7 @@ impl Breadcrumb {
             let r = Rect::new(cursor_x, pill_y0, cursor_x + w, pill_y1);
             rects.push(r);
             cursor_x += w;
-            if i + 1 < labels.len() {
+            if i.saturating_add(1) < labels.len() {
                 cursor_x += sep_pad + sep_w + sep_pad;
             }
         }
@@ -190,6 +179,37 @@ impl Breadcrumb {
     fn apply_layout_helper(&mut self, theme: &Theme, tr: &mut TextRenderer) {
         self.rebuild_rects(theme, tr);
     }
+}
+
+/// Sum the widths of all `labels` + interleaved separators (with `s2`
+/// padding on each side of each separator). Used by
+/// [`Breadcrumb::visible_segments`] to decide whether the full path
+/// fits. A free function (not a method) since it touches no `self` field.
+fn measure_total_width(labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
+    let size = theme.tokens.typography.scale.sm;
+    let sep_pad = f64::from(theme.tokens.spacing.s2);
+    let (sep_w, _) = tr.measure(SEPARATOR_GLYPH, size, None);
+    let sep_block = f64::from(sep_w) + sep_pad * 2.0;
+    let mut total = 0.0_f64;
+    for (i, label) in labels.iter().enumerate() {
+        let (w, _) = tr.measure(label, size, None);
+        total += f64::from(w);
+        if i.saturating_add(1) < labels.len() {
+            total += sep_block;
+        }
+    }
+    total
+}
+
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
+              or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
 }
 
 impl Widget for Breadcrumb {
@@ -257,9 +277,17 @@ impl Widget for Breadcrumb {
 
         let labels = self.cached_visible.clone();
         let n = labels.len();
-        for (i, label) in labels.iter().enumerate() {
-            let r = self.segment_rects[i];
-            let orig = self.visible_origin[i];
+        // Zipped rather than indexed by a shared `i`: `rebuild_rects` builds
+        // `cached_visible`, `segment_rects` and `visible_origin` together
+        // from the same label list, so they're always the same length —
+        // zipping makes that invariant visible instead of trusting three
+        // separate index lookups to stay in bounds.
+        for (i, ((label, &r), &orig)) in labels
+            .iter()
+            .zip(self.segment_rects.iter())
+            .zip(self.visible_origin.iter())
+            .enumerate()
+        {
             // Ellipsis (orig == None) is treated as dim/idle.
             let color = match orig {
                 Some(idx) if idx == active_origin => text_primary,
@@ -272,11 +300,11 @@ impl Widget for Breadcrumb {
                 label,
                 size,
                 color,
-                transform * Affine::translate((r.x0, text_y)),
+                translated(transform, r.x0, text_y),
                 None,
             );
             // Always dim — the chevron is chrome, not content.
-            if i + 1 < n {
+            if i.saturating_add(1) < n {
                 let sep_x = r.x1 + sep_pad;
                 let sep_y = text_y;
                 text_renderer.draw_text(
@@ -284,7 +312,7 @@ impl Widget for Breadcrumb {
                     SEPARATOR_GLYPH,
                     size,
                     text_dim,
-                    transform * Affine::translate((sep_x, sep_y)),
+                    translated(transform, sep_x, sep_y),
                     None,
                 );
                 let _ = sep_w; // measured for layout symmetry; not used here
@@ -470,8 +498,8 @@ mod tests {
 
     #[test]
     fn breadcrumb_with_long_path_truncates_middle_segments() {
-        let segments: Vec<String> = (0..10).map(|i| format!("segment_{:02}", i)).collect();
-        let bc = Breadcrumb::new(segments.clone());
+        let segments: Vec<String> = (0..10).map(|i| format!("segment_{i:02}")).collect();
+        let bc = Breadcrumb::new(segments);
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
 
