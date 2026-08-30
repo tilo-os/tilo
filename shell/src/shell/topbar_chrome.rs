@@ -1150,12 +1150,8 @@ impl TopBarChrome {
         let time_weight = TextWeight::Medium;
         let (pw, ph) = text_renderer.measure_weighted(prefix, size, None, prefix_weight);
         let (ew, _) = text_renderer.measure_weighted(event, size, None, event_weight);
-        let (tw, _) = text_renderer.measure_weighted(
-            time,
-            tokens.typography.scale.xs,
-            None,
-            time_weight,
-        );
+        let (tw, _) =
+            text_renderer.measure_weighted(time, tokens.typography.scale.xs, None, time_weight);
         let gap = 8.0;
         let total = f64::from(pw) + gap + f64::from(ew) + gap + f64::from(tw);
         let mut tx = content_cx - total / 2.0;
@@ -1241,7 +1237,8 @@ impl TopBarChrome {
             // the settings glyph.
             tray_pad * 2.0 + tray_slot
         } else {
-            tray_pad * 2.0 + small_count_to_f64(slots) * tray_slot
+            tray_pad * 2.0
+                + small_count_to_f64(slots) * tray_slot
                 + small_count_to_f64(slots.saturating_sub(1)) * tray_gap
         };
         if pct_w > 0.0 {
@@ -1421,7 +1418,15 @@ impl TopBarChrome {
         } else {
             layout.dim
         };
-        Self::draw_battery_gauge(scene, transform, layout.slot_rect(sx), pct, charging, hue, colors);
+        Self::draw_battery_gauge(
+            scene,
+            transform,
+            layout.slot_rect(sx),
+            pct,
+            charging,
+            hue,
+            colors,
+        );
         let label_x = sx + layout.tray_slot;
         if let Some(label) = layout.pct_label.as_ref() {
             // The gauge is the at-a-glance read; the number is
@@ -1464,7 +1469,15 @@ impl TopBarChrome {
         }
         sx = Self::draw_tray_volume_icon(scene, transform, &self.status, layout, sx);
         sx = Self::draw_tray_network_icon(scene, transform, &self.status, layout, sx);
-        Self::draw_tray_battery_icon(scene, transform, text_renderer, &self.status, layout, sx, colors);
+        Self::draw_tray_battery_icon(
+            scene,
+            transform,
+            text_renderer,
+            &self.status,
+            layout,
+            sx,
+            colors,
+        );
     }
 
     /// Up to 3 collaborator chips plus an overflow "+N" chip, growing
@@ -1788,13 +1801,27 @@ impl Widget for TopBarChrome {
         self.draw_backdrop(scene, transform, theme);
 
         let after_chevrons = self.draw_workspace_nav(scene, transform, theme, center_y);
-        self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, after_chevrons);
+        self.draw_workspace_pill(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            after_chevrons,
+        );
 
         let (content_x0, content_x1, content_cx) =
             self.draw_center_band(scene, transform, theme, center_y);
         match self.center_widget {
             CenterWidget::Clock => {
-                self.draw_clock_widget(scene, transform, theme, text_renderer, center_y, content_cx);
+                self.draw_clock_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    content_cx,
+                );
             }
             CenterWidget::SystemMonitor => {
                 self.draw_system_monitor_widget(
@@ -1807,7 +1834,14 @@ impl Widget for TopBarChrome {
                 );
             }
             CenterWidget::Calendar => {
-                self.draw_calendar_widget(scene, transform, theme, text_renderer, center_y, content_cx);
+                self.draw_calendar_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    content_cx,
+                );
             }
         }
 
@@ -1821,8 +1855,14 @@ impl Widget for TopBarChrome {
             - layout.tray_w
             - f64::from(theme.tokens.spacing.s4);
 
-        let slot_count =
-            self.draw_avatar_chips(scene, transform, theme, text_renderer, center_y, stack_right_x);
+        let slot_count = self.draw_avatar_chips(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
         self.draw_avatar_stack_bounds(
             scene,
             transform,
