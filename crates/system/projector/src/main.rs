@@ -1671,6 +1671,24 @@ mod tests {
     }
 
     #[test]
+    fn link_feedback_scales_continuously_without_crossing_the_display_ceiling() {
+        let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
+        let current = CaptureProfile::new(1920, 1080, 60, 10_000);
+        let reduced = adapt_capture_profile(current, ceiling, 3_000_000, 300_000);
+        assert_eq!((reduced.max_width, reduced.max_height), (1440, 810));
+        assert!(reduced.bitrate_kbps < current.bitrate_kbps);
+
+        let raised = adapt_capture_profile(current, ceiling, 30_000_000, 20_000);
+        assert_eq!((raised.max_width, raised.max_height), (2560, 1440));
+        assert!(raised.bitrate_kbps <= ceiling.bitrate_kbps);
+
+        assert_eq!(
+            adapt_capture_profile(ceiling, ceiling, 50_000_000, 20_000),
+            ceiling
+        );
+    }
+
+    #[test]
     fn real_h264_frames_are_muxed_into_a_playable_hls_playlist() {
         if Command::new("gst-inspect-1.0")
             .args(["h264parse", "hlssink2"])
