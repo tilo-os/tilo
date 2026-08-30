@@ -37,6 +37,11 @@ pub struct Button {
     /// same source of truth the immediate-mode [`Button::paint`] face uses.
     style: ButtonStyle,
     on_click_path: Option<String>, // Path in CRDT to mutate
+    /// Optional string to write instead of the default counter/boolean pulse.
+    /// This lets command-bus users share the standard button implementation.
+    click_value: Option<String>,
+    /// Size the width from the visible label rather than using the 120px default.
+    fit_content: bool,
     /// Fires on release-while-hovered *in addition to* any
     /// `on_click_path` CRDT mutation, for app code that isn't modelling
     /// its control flow in the CRDT (e.g. the file explorer's command sink).
@@ -72,6 +77,8 @@ impl Button {
             size: None,
             style: ButtonStyle::Neutral,
             on_click_path: on_click_path.map(std::string::ToString::to_string),
+            click_value: None,
+            fit_content: false,
             on_click: None,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -136,6 +143,24 @@ impl Button {
     /// Overrides the default 120×40 intrinsic size.
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.size = Some((width, height));
+        self
+    }
+
+    /// Use a compact label-derived width and the supplied height.
+    ///
+    /// Layout cannot access the text renderer, so this deliberately mirrors the
+    /// conservative sizing used by app-local buttons: 8px per character plus
+    /// 30px of horizontal padding, with a 64px minimum.
+    pub fn fit_content(mut self, height: f32) -> Self {
+        self.fit_content = true;
+        self.size = Some((0.0, height));
+        self
+    }
+
+    /// Write `value` to the click path on activation instead of pulsing it as a
+    /// boolean/counter. A button without an `on_click_path` ignores this value.
+    pub fn with_click_value(mut self, value: impl Into<String>) -> Self {
+        self.click_value = Some(value.into());
         self
     }
 
@@ -532,7 +557,10 @@ impl Widget for Button {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let (w, h) = self.size.unwrap_or((120.0, 40.0));
+        let (mut w, h) = self.size.unwrap_or((120.0, 40.0));
+        if self.fit_content {
+            w = (self.label.chars().count() as f32 * 8.0 + 30.0).max(64.0);
+        }
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: Size {
@@ -764,27 +792,7 @@ impl Widget for Button {
                         }
 
                         if !self.is_pressed {
-                            if let Some(path) = &self.on_click_path {
-                                match state.get(root, path.as_str()) {
-                                    Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                                        automerge::ScalarValue::Counter(_) => {
-                                            let _ = state.increment(root, path.as_str(), 1);
-                                        }
-                                        automerge::ScalarValue::Boolean(_) => {
-                                            let _ = state.put(root, path.as_str(), true);
-                                        }
-                                        _ => {
-                                            let _ = state.put(root, path.as_str(), true);
-                                        }
-                                    },
-                                    _ => {
-                                        let _ = state.put(root, path.as_str(), true);
-                                    }
-                                }
-                            }
-                            if let Some(cb) = &mut self.on_click {
-                                cb();
-                            }
+                            self.activate(state, root);
                         }
                     }
                 } else if self.is_pressed {
@@ -943,6 +951,36 @@ impl Widget for Button {
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
+        }
+    }
+}
+
+impl Button {
+    fn activate(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(path) = &self.on_click_path {
+            if let Some(value) = &self.click_value {
+                let _ = state.put(root, path.as_str(), value.as_str());
+            } else {
+                match state.get(root, path.as_str()) {
+                    Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                        automerge::ScalarValue::Counter(_) => {
+                            let _ = state.increment(root, path.as_str(), 1);
+                        }
+                        automerge::ScalarValue::Boolean(_) => {
+                            let _ = state.put(root, path.as_str(), true);
+                        }
+                        _ => {
+                            let _ = state.put(root, path.as_str(), true);
+                        }
+                    },
+                    _ => {
+                        let _ = state.put(root, path.as_str(), true);
+                    }
+                }
+            }
+        }
+        if let Some(cb) = &mut self.on_click {
+            cb();
         }
     }
 }
@@ -1340,6 +1378,18 @@ mod tests {
         let b = Button::new("id", "Save", None).with_accessible_name("Persist");
         let node = Widget::accessibility(&b).unwrap();
         assert_eq!(node.name.as_deref(), Some("Save"));
+    }
+
+    #[test]
+    fn click_value_writes_a_string_command() {
+        let mut button = Button::new("id", "Apply", Some("command"))
+            .with_click_value("apply")
+            .fit_content(34.0);
+        let mut doc = AutoCommit::new();
+        button.activate(&mut doc, &automerge::ROOT);
+
+        let (value, _) = doc.get(&automerge::ROOT, "command").unwrap().unwrap();
+        assert_eq!(value.to_str(), Some("apply"));
     }
 
     #[test]
