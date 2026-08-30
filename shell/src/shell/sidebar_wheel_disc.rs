@@ -695,24 +695,6 @@ fn disc_segment(c: Point, r_out: f64, a0: f64, a1: f64) -> BezPath {
     path
 }
 
-/// Ring slice between radii `r_in`/`r_out` and angles `a0`/`a1`, walked as
-/// polylines (not `kurbo::Arc`) so both ends join into one closed, seamless
-/// subpath. 96 steps keeps the chord error under 0.05px on a 2000px disc.
-fn annular_segment(c: Point, r_in: f64, r_out: f64, a0: f64, a1: f64) -> BezPath {
-    const STEPS: usize = 96;
-    let mut path = BezPath::new();
-    let span = a1 - a0;
-    path.move_to(polar(c, r_out, a0));
-    for i in 1..=STEPS {
-        path.line_to(polar(c, r_out, a0 + span * (i as f64 / STEPS as f64)));
-    }
-    for i in 0..=STEPS {
-        path.line_to(polar(c, r_in, a1 - span * (i as f64 / STEPS as f64)));
-    }
-    path.close_path();
-    path
-}
-
 /// Workspace label → lucide glyph. Inputs are lower-cased;
 /// `dev`/`development` both map to `Code`.
 fn spoke_icon_for_label(label: &str) -> Icon {
