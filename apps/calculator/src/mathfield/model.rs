@@ -390,7 +390,7 @@ impl LinParser {
                         chars: format!("{name}(").chars().chain(self.tail()).collect(),
                         pos: 0,
                     };
-                    let mut nodes = sub.parse_row(&[]);
+                    let nodes = sub.parse_row(&[]);
                     // advance self by what sub consumed past `name(`
                     let consumed = sub.pos.saturating_sub(name.chars().count() + 1);
                     self.pos += consumed;

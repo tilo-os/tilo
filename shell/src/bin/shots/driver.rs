@@ -27,7 +27,6 @@ use shell::shell::state::WorkspaceTree;
 use ui::Widget;
 
 use taffy::prelude::NodeId;
-use ui::theme::Theme;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
 /// Used only as the unit for the spin-wait loop; animations themselves

@@ -21,7 +21,7 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 
 use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
+    Connection, Dispatch, QueueHandle,
     protocol::{wl_compositor, wl_registry, wl_surface},
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{

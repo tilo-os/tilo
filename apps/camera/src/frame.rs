@@ -253,7 +253,7 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
             // Layered mountain ridges.
             for layer in 0..3 {
                 let base = horizon - (3 - layer) * (h / 18);
-                let amp = (h as f32 * (0.05 + layer as f32 * 0.02));
+                let amp = h as f32 * (0.05 + layer as f32 * 0.02);
                 let shade = lerp(pal.ridge, pal.ground, layer as f32 / 3.0);
                 for x in 0..w {
                     let t = x as f32 / w as f32 * std::f32::consts::PI * (2.0 + layer as f32);

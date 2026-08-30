@@ -15,9 +15,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use collab_fixtures::{role_attestation, signed_op};
 use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
-    CompactionCheckpoint, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
-    encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event, sign_op,
+    ArtifactId, ArtifactKind, AttestationId, ChannelId, ChannelState, CompactionCheckpoint,
+    Ed25519PublicKey, OpClass, Role, SignedOp, encode_compaction_payload, generate_keypair,
+    hash_op_prefix,
 };
 use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
