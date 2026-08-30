@@ -90,7 +90,7 @@ impl SnapshotAssertion {
 
         let diff = diff_rgba(&rendered.rgba, &golden.rgba, self.tolerance);
         assert!(
-            diff.mismatching_pixels <= 0,
+            diff.mismatching_pixels == 0,
             "snapshot diff: rendered={} golden={}\n  \
              {} pixels differ (max delta {} per channel; tolerance {})\n  \
              rerun with UPDATE_SNAPSHOTS=1 to refresh the golden",
