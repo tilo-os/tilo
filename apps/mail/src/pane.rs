@@ -1933,6 +1933,107 @@ fn new_html_engine() -> SharedEngine {
     e
 }
 
+impl Pane {
+    /// Forward pointer-move/wheel into the sandboxed HTML body view while one
+    /// is actually shown in the reader, so an HTML mail scrolls; the view
+    /// consumes a wheel that lands over it. Part of [`Widget::handle_event`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
+    )]
+    fn forward_html_view_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let over_html = self.role == Role::Reader
+            && self.html_view_rect.is_some()
+            && matches!(
+                event,
+                WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. }
+            );
+        if !over_html {
+            return;
+        }
+        if let Some(view) = self.html_view.as_mut() {
+            view.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+    }
+
+    /// Route a keyboard event to the focused search field (list role only),
+    /// reflecting the field's value into the query + first-row selection.
+    /// Returns whether [`Widget::handle_event`] should return immediately
+    /// after this (true whenever the event was a keyboard event on the list
+    /// role, matching the field regardless of whether search was focused).
+    /// Part of [`Widget::handle_event`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
+    )]
+    fn handle_search_keyboard(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !(matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List) {
+            return false;
+        }
+        let focused = self.shared.borrow().search_focused;
+        if focused {
+            if let Some(inp) = self.search_input.as_mut() {
+                inp.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+            }
+            // Reflect the field into the query + first-row selection.
+            let value = self
+                .search_input
+                .as_ref()
+                .map(|i| i.value().to_string())
+                .unwrap_or_default();
+            let mut st = self.shared.borrow_mut();
+            st.search = value;
+            crate::doc::MailDoc::set_search(state, &st.search);
+            st.selected = st.list_rows().first().map(|(id, _)| *id);
+            st.dirty = true;
+            *handled = true;
+        }
+        true
+    }
+}
+
 impl Widget for Pane {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if let Some(i) = self.search_input.as_mut() {
@@ -2015,105 +2116,6 @@ impl Widget for Pane {
             }
             Role::Reader => self.draw_reader(scene, t, tr, theme, presence),
         }
-    }
-
-    /// Forward pointer-move/wheel into the sandboxed HTML body view while one
-    /// is actually shown in the reader, so an HTML mail scrolls; the view
-    /// consumes a wheel that lands over it. Part of [`Self::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn forward_html_view_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let over_html = self.role == Role::Reader
-            && self.html_view_rect.is_some()
-            && matches!(
-                event,
-                WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. }
-            );
-        if !over_html {
-            return;
-        }
-        if let Some(view) = self.html_view.as_mut() {
-            view.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-    }
-
-    /// Route a keyboard event to the focused search field (list role only),
-    /// reflecting the field's value into the query + first-row selection.
-    /// Returns whether [`Self::handle_event`] should return immediately
-    /// after this (true whenever the event was a keyboard event on the list
-    /// role, matching the field regardless of whether search was focused).
-    /// Part of [`Self::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn handle_search_keyboard(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        if !(matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List) {
-            return false;
-        }
-        let focused = self.shared.borrow().search_focused;
-        if focused {
-            if let Some(inp) = self.search_input.as_mut() {
-                inp.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
-            }
-            // Reflect the field into the query + first-row selection.
-            let value = self
-                .search_input
-                .as_ref()
-                .map(|i| i.value().to_string())
-                .unwrap_or_default();
-            let mut st = self.shared.borrow_mut();
-            st.search = value;
-            crate::doc::MailDoc::set_search(state, &st.search);
-            st.selected = st.list_rows().first().map(|(id, _)| *id);
-            st.dirty = true;
-            *handled = true;
-        }
-        true
     }
 
     fn handle_event(
